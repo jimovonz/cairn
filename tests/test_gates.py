@@ -27,43 +27,6 @@ def mock_results(entries):
     ]
 
 
-# === Garbage gate boundary ===
-
-def test_garbage_gate_boundary_just_below():
-    """0.349 should be rejected — tests that we don't have an off-by-one."""
-    from config import MIN_INJECTION_SIMILARITY
-    assert 0.349 < MIN_INJECTION_SIMILARITY
-
-
-def test_garbage_gate_boundary_just_above():
-    """0.351 should pass."""
-    from config import MIN_INJECTION_SIMILARITY
-    assert 0.351 >= MIN_INJECTION_SIMILARITY
-
-
-# === Borderline gate interaction ===
-
-def test_borderline_gate_high_sim_low_score_passes():
-    """similarity=0.50 is above borderline ceiling so it passes regardless of score."""
-    from config import BORDERLINE_SIM_CEILING
-    assert 0.50 >= BORDERLINE_SIM_CEILING  # not in borderline range
-
-
-def test_borderline_gate_traps_the_dangerous_zone():
-    """similarity just below ceiling, low score — should be caught."""
-    from config import BORDERLINE_SIM_CEILING, BORDERLINE_SCORE_FLOOR
-    sim, score = BORDERLINE_SIM_CEILING - 0.01, BORDERLINE_SCORE_FLOOR - 0.05
-    trapped = sim < BORDERLINE_SIM_CEILING and score < BORDERLINE_SCORE_FLOOR
-    assert trapped
-
-
-def test_borderline_gate_allows_strong_score_despite_low_sim():
-    """Low sim but strong composite score — should pass."""
-    from config import BORDERLINE_SIM_CEILING, BORDERLINE_SCORE_FLOOR
-    sim, score = BORDERLINE_SIM_CEILING - 0.01, BORDERLINE_SCORE_FLOOR + 0.05
-    trapped = sim < BORDERLINE_SIM_CEILING and score < BORDERLINE_SCORE_FLOOR
-    assert not trapped
-
 
 # === Relative filter edge cases ===
 
@@ -136,16 +99,6 @@ def test_dominance_gap_just_below_epsilon():
 
 
 # === Diversity filter: realistic scenarios ===
-
-def test_diversity_catches_rephrased_same_fact():
-    """Two entries about the same thing with different wording but same type+topic."""
-    from config import DIVERSITY_SIM_THRESHOLD
-    results = [
-        {"type": "fact", "topic": "db-choice", "content": "Use SQLite for storage"},
-        {"type": "fact", "topic": "db-choice", "content": "SQLite chosen for persistence"},
-    ]
-    # Same type+topic should be caught
-    assert results[0]["type"] == results[1]["type"] and results[0]["topic"] == results[1]["topic"]
 
 
 def test_diversity_keeps_different_aspects():

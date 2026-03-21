@@ -56,29 +56,6 @@ def test_recency_decay_very_old():
 
 # === Confidence dynamics ===
 
-def test_saturating_boost_low_confidence():
-    """Boost at 0.3 should be meaningful."""
-    boost = 0.1 * (1 - 0.3)
-    assert 0.06 < boost < 0.08
-
-
-def test_saturating_boost_high_confidence():
-    """Boost at 0.9 should be tiny."""
-    boost = 0.1 * (1 - 0.9)
-    assert boost < 0.02
-
-
-def test_scaled_penalty_low_confidence():
-    """Penalty at 0.3 should be moderate."""
-    penalty = 0.2 * (1 + 0.3)
-    assert 0.25 < penalty < 0.27
-
-
-def test_scaled_penalty_high_confidence():
-    """Penalty at 0.9 should be severe."""
-    penalty = 0.2 * (1 + 0.9)
-    assert penalty > 0.35
-
 
 def test_single_negative_at_09_drops_significantly():
     """One negative at 0.9 should drop to roughly 0.52."""

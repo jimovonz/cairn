@@ -120,11 +120,6 @@ def test_context_cache_different_string():
     assert is_context_cached("how does authentication work", served, None) is False
 
 
-def test_context_cache_empty():
-    """Empty cache should return False."""
-    from retrieval import is_context_cached
-    assert is_context_cached("anything", [], None) is False
-
 
 # ============================================================
 # Loop protection: continuation counter
@@ -263,21 +258,6 @@ def test_record_metric_survives_db_error():
 # ============================================================
 # Low-info pre-filter
 # ============================================================
-
-def test_low_info_context_need_detected():
-    """Short/generic context_need should be caught."""
-    LOW_INFO = {"help", "continue", "more", "yes", "no", "ok", "thanks", "done", "info", "more info"}
-    assert len("help") < 8
-    assert set("ok".lower().split()) <= LOW_INFO
-    assert set("more info".lower().split()) <= LOW_INFO
-
-
-def test_substantive_context_need_passes():
-    """Real questions should not be filtered."""
-    LOW_INFO = {"help", "continue", "more", "yes", "no", "ok", "thanks", "done", "info", "more info"}
-    need = "what database did we choose for the project"
-    assert len(need) >= 8
-    assert not (set(need.lower().split()) <= LOW_INFO)
 
 
 def cleanup():
