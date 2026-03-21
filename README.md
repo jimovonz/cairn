@@ -22,12 +22,19 @@ Most LLM memory systems store conversation logs and retrieve them with RAG. Engr
 
 **Enforcement is mechanical, not advisory.** A Stop hook fires after every response. No memory block? Blocked and re-prompted. Says it's incomplete? Blocked and continued. Needs context? Blocked, searched, injected, continued. The LLM can't forget to participate.
 
+**Session 1** — casual conversation in `~/temp`:
 ```
-You: "what was on my lawn?"
+You:    "I see a fairly big mostly blue bird on my lawn. Solid red beak and huge feet"
+Claude: "That's a pukeko — NZ Purple Swamphen..."
+```
+
+**Session 2** — different directory, days later, working on something unrelated:
+```
+You:    "what was on my lawn?"
 Claude: "A pukeko — NZ Purple Swamphen. Large blue bird, red beak, big feet."
 ```
 
-That memory was stored in a different session, in a different project directory. The user never asked Claude to remember it. The user never asked Claude to look it up. It just knew.
+The user never asked Claude to remember the bird. Never asked it to look anything up. The memory was captured invisibly in session 1 and surfaced automatically in session 2.
 
 ## Features
 
