@@ -10,6 +10,9 @@ Query commands:
 - `python3 ./cairn/query.py <search>` — full-text search
 - `python3 ./cairn/query.py --semantic <query>` — semantic similarity search
 - `python3 ./cairn/query.py --recent` — list recent memories
+- `python3 ./cairn/query.py --today` — memories from today
+- `python3 ./cairn/query.py --since <date>` — memories from date onward (ISO, today, yesterday, 3d, 2w, 1m)
+- `python3 ./cairn/query.py --since <date> --until <date>` — memories in a date range
 - `python3 ./cairn/query.py --type <type>` — filter by type
 - `python3 ./cairn/query.py --session <id>` — filter by session
 - `python3 ./cairn/query.py --history <id>` — show version history

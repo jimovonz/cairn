@@ -58,6 +58,59 @@ def semantic_search(query, limit=10, threshold=0.5):
         return None
 
 
+def _parse_date(date_str):
+    """Parse a date string into ISO format. Supports:
+    - ISO dates: 2026-03-22, 2026-03-22T14:00
+    - Relative: today, yesterday, 3d (days ago), 2w (weeks ago), 1m (months ago)
+    """
+    from datetime import datetime, timedelta
+    date_str = date_str.strip().lower()
+    if date_str == "today":
+        return datetime.now().strftime("%Y-%m-%d")
+    if date_str == "yesterday":
+        return (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    # Relative: 3d, 2w, 1m
+    import re
+    rel = re.match(r"^(\d+)([dwm])$", date_str)
+    if rel:
+        n, unit = int(rel.group(1)), rel.group(2)
+        if unit == "d":
+            return (datetime.now() - timedelta(days=n)).strftime("%Y-%m-%d")
+        elif unit == "w":
+            return (datetime.now() - timedelta(weeks=n)).strftime("%Y-%m-%d")
+        elif unit == "m":
+            return (datetime.now() - timedelta(days=n * 30)).strftime("%Y-%m-%d")
+    # Assume ISO format
+    return date_str
+
+
+def list_by_date(since=None, until=None, limit=50):
+    """List memories filtered by date range."""
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
+    conn.row_factory = sqlite3.Row
+    conditions = []
+    params = []
+    if since:
+        conditions.append("updated_at >= ?")
+        params.append(_parse_date(since))
+    if until:
+        # Include the full day
+        parsed = _parse_date(until)
+        if len(parsed) == 10:  # date only, no time
+            parsed += " 23:59:59"
+        conditions.append("updated_at <= ?")
+        params.append(parsed)
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    params.append(limit)
+    rows = conn.execute(f"""
+        SELECT id, type, topic, content, updated_at
+        FROM memories {where}
+        ORDER BY updated_at DESC LIMIT ?
+    """, params).fetchall()
+    conn.close()
+    return rows
+
+
 def list_by_session(session_id, limit=50):
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
@@ -578,6 +631,9 @@ Commands:
   <search_term>          Full-text search
   --recent               List recent memories
   --type <type>          Filter by type (decision|preference|fact|correction|person|project|skill|workflow)
+  --since <date>         Memories updated on or after date (ISO, today, yesterday, 3d, 2w, 1m)
+  --until <date>         Memories updated on or before date
+  --today                Shorthand for --since today
   --semantic <query>     Semantic similarity search
   --session <id>         List memories from a session
   --chain <id>           Show session chain (parent/child links)
@@ -673,7 +729,21 @@ if __name__ == "__main__":
         sys.exit(1)
 
     cmd = sys.argv[1]
-    if cmd == "--recent":
+    if cmd == "--today":
+        format_rows(list_by_date(since="today"))
+    elif cmd == "--since" and len(sys.argv) > 2:
+        until = None
+        if "--until" in sys.argv:
+            idx = sys.argv.index("--until")
+            until = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else None
+        format_rows(list_by_date(since=sys.argv[2], until=until))
+    elif cmd == "--until" and len(sys.argv) > 2:
+        since = None
+        if "--since" in sys.argv:
+            idx = sys.argv.index("--since")
+            since = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else None
+        format_rows(list_by_date(since=since, until=sys.argv[2]))
+    elif cmd == "--recent":
         format_rows(list_recent())
     elif cmd == "--type" and len(sys.argv) > 2:
         format_rows(list_by_type(sys.argv[2]))

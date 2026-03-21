@@ -141,6 +141,9 @@ Memories are stored in `$CAIRN_HOME/cairn/cairn.db`. You can query it directly:
 - `python3 $CAIRN_HOME/cairn/query.py <search>` — full-text search
 - `python3 $CAIRN_HOME/cairn/query.py --semantic <query>` — semantic similarity search
 - `python3 $CAIRN_HOME/cairn/query.py --recent` — list recent memories
+- `python3 $CAIRN_HOME/cairn/query.py --today` — memories from today
+- `python3 $CAIRN_HOME/cairn/query.py --since <date>` — memories from date onward (ISO, today, yesterday, 3d, 2w, 1m)
+- `python3 $CAIRN_HOME/cairn/query.py --since <date> --until <date>` — memories in a date range
 - `python3 $CAIRN_HOME/cairn/query.py --type <type>` — filter by type
 - `python3 $CAIRN_HOME/cairn/query.py --session <id>` — filter by session
 - `python3 $CAIRN_HOME/cairn/query.py --chain <id>` — show session chain
