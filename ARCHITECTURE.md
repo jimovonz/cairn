@@ -771,6 +771,27 @@ All tunable parameters are centralised in `cairn/config.py`:
 | `MAX_CONTINUATIONS` | 3 | Hard cap on consecutive re-prompts |
 | `L1_*` / `L2_*` / `L3_*` | various | Per-layer retrieval thresholds |
 
+## Testing
+
+134 tests across 8 files, runnable without the embedding model (deterministic mock vectors and patched DB paths).
+
+```bash
+python3 -m pytest tests/
+```
+
+| File | Tests | Coverage area |
+|------|-------|--------------|
+| `test_parser.py` | 32 | Memory block parsing — valid, malformed, unclosed tags, code fences, special chars, angle brackets in content, 10-entry stress, all-fields-populated |
+| `test_scoring.py` | 18 | Composite scoring weights, recency decay curve, saturating confidence dynamics, negation/directional contradiction heuristics |
+| `test_gates.py` | 21 | All 9 quality gates — boundary values, gate interactions, diversity filter word overlap, combined pass/fail paths |
+| `test_integration.py` | 14 | Full pipeline with in-memory DB — insert → dedup → retrieve → gate, contradiction confidence drop, version history trigger, write throttle |
+| `test_hook_e2e.py` | 13 | Stop hook `main()` with patched stdin — storage, blocking, continuation, sessions, metrics, realistic Claude output (extra text, markdown fences) |
+| `test_prompt_hook.py` | 8 | Layer 1/2 — first-prompt detection, staged context loading/consumption, short message handling, empty DB |
+| `test_daemon_and_cache.py` | 16 | Daemon embed fallback, allow_slow=False, stale PID, context cache semantic hit/miss, continuation counter lifecycle, fail-open crash → exit 0, metric recording |
+| `test_query_cli.py` | 12 | CLI commands — search, stats, review, delete, history, compact, projects against test DB |
+
+Tests run on every push via GitHub Actions (`.github/workflows/test.yml`).
+
 ## Limitations and Future Work
 
 - **LLM compliance with "ask first" posture is imperfect** — despite prominent instructions, the LLM sometimes answers "I don't know" before declaring `context: insufficient`. Layer 1 (first-prompt push) mitigates the worst case by proactively injecting context before the LLM starts generating. Layer 3 (Stop hook) catches the remaining cases but the user sees the wrong answer first then the correction.
