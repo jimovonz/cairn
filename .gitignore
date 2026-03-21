@@ -7,6 +7,7 @@ cairn/cairn.db-wal
 cairn/hook.log
 cairn/.daemon.sock
 cairn/.daemon.pid
+cairn/.daemon.lock
 cairn/.context_cache
 cairn/.staged_context
 cairn/.first_prompt_done

@@ -61,6 +61,14 @@ DOMINANCE_EPSILON = 0.05           # If gap between top1 and top2 < epsilon, inc
 # === Diversity filter (post-retrieval dedup) ===
 DIVERSITY_SIM_THRESHOLD = 0.9      # Drop retrieved entries with cosine > this to already-selected entries
 
+# === Trailing intent detection ===
+TRAILING_INTENT_SIM_THRESHOLD = 0.65   # Similarity above which last sentence is flagged as unfulfilled intent
+
+# === Content dedup thresholds ===
+DISTINCT_VARIANT_SIM_THRESHOLD = 0.8   # Below this, same type+topic entries treated as distinct rather than updates
+NEGATION_SIM_FLOOR = 0.6               # Minimum similarity for negation/contradiction check
+WEAK_ENTRY_SCORE_FLOOR = 0.4           # Top score below this triggers weak-entry suppression
+
 # === Write throttling ===
 MAX_MEMORIES_PER_RESPONSE = 5      # Max memory entries stored per LLM response — drop lowest-confidence excess
 

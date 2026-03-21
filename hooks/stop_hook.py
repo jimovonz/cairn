@@ -157,7 +157,9 @@ from config import (DEDUP_THRESHOLD, MAX_CONTINUATIONS, CONFIDENCE_BOOST, CONFID
                      CONFIDENCE_MIN, CONFIDENCE_MAX, CONFIDENCE_DEFAULT,
                      L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
                      L3_GLOBAL_SIM_WITHOUT_PROJECT, L3_MAX_PROJECT_RESULTS,
-                     L3_MAX_GLOBAL_RESULTS, MIN_INJECTION_SIMILARITY)
+                     L3_MAX_GLOBAL_RESULTS, MIN_INJECTION_SIMILARITY,
+                     TRAILING_INTENT_SIM_THRESHOLD, DISTINCT_VARIANT_SIM_THRESHOLD,
+                     NEGATION_SIM_FLOOR, WEAK_ENTRY_SCORE_FLOOR)
 
 
 def apply_confidence_updates(updates, session_id=None, conn=None):
@@ -308,7 +310,7 @@ def check_trailing_intent(text):
         if sim > max_sim:
             max_sim = sim
 
-    if max_sim > 0.65:
+    if max_sim > TRAILING_INTENT_SIM_THRESHOLD:
         log(f"Trailing intent match: sim={max_sim:.3f} last='{last[:60]}'")
         return last[:100]
 
@@ -410,7 +412,7 @@ def insert_memories(entries, session_id=None, conn=None):
                     inserted += 1
                     continue
                 # Negation-based contradiction dampening for similar but non-duplicate entries
-                if nearest and nearest[0]["similarity"] >= 0.6 and nearest[0]["similarity"] < DEDUP_THRESHOLD:
+                if nearest and nearest[0]["similarity"] >= NEGATION_SIM_FLOOR and nearest[0]["similarity"] < DEDUP_THRESHOLD:
                     match = nearest[0]
                     if _has_negation_mismatch(content, match["content"]):
                         log(f"Negation mismatch: '{content[:40]}' vs '{match['content'][:40]}' — dampening both")
@@ -443,7 +445,7 @@ def insert_memories(entries, session_id=None, conn=None):
                 except Exception:
                     old_sim = 0.0
 
-            if old_content and old_content != content and old_sim < 0.8:
+            if old_content and old_content != content and old_sim < DISTINCT_VARIANT_SIM_THRESHOLD:
                 # Low similarity despite same type+topic — treat as distinct variant, not contradiction
                 log(f"Distinct variant: type={mem_type} topic={topic} (sim={old_sim:.2f}) — inserting as new")
                 conn.execute(
@@ -1032,7 +1034,7 @@ def main():
                     import re as _re
                     score_match = _re.search(r'score="([0-9.]+)"', retrieved)
                     top_score = float(score_match.group(1)) if score_match else 1.0
-                    if top_score < 0.4:
+                    if top_score < WEAK_ENTRY_SCORE_FLOOR:
                         log(f"Weak-entry suppression: top score {top_score:.2f} — skipping injection")
                         record_metric(session_id, "context_weak_suppressed", context_need[:100], conn=conn)
                     else:

@@ -19,16 +19,28 @@ def _daemon_embed(text):
         from daemon import send_request, is_running, SOCKET_PATH
         import subprocess
 
-        # Auto-start daemon if not running (once per process)
+        # Auto-start daemon if not running (once per process, with file lock to prevent races)
         if not is_running() and not _daemon_start_attempted:
             _daemon_start_attempted = True
             daemon_path = os.path.join(os.path.dirname(__file__), "daemon.py")
             venv_python = os.path.join(os.path.dirname(__file__), "..", ".venv", "bin", "python3")
+            lock_path = os.path.join(os.path.dirname(__file__), ".daemon.lock")
             if os.path.exists(venv_python):
-                subprocess.Popen([venv_python, daemon_path, "start"],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                import time
-                time.sleep(2)  # Give daemon time to load model
+                import fcntl, time
+                try:
+                    lock_fd = open(lock_path, "w")
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    # Double-check after acquiring lock
+                    if not is_running():
+                        subprocess.Popen([venv_python, daemon_path, "start"],
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        time.sleep(2)
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    lock_fd.close()
+                except (IOError, OSError):
+                    # Another process holds the lock — daemon is being started
+                    import time
+                    time.sleep(3)
 
         resp = send_request({"action": "embed", "text": text})
         if resp and "vector" in resp:

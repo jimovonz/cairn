@@ -392,6 +392,16 @@ Four mechanisms prevent infinite re-prompting:
 3. **Context cache** — a JSON file (`.context_cache`) tracks which `context_need` strings have been served per session. Duplicate requests are silently skipped.
 4. **Fallback instruction** — injected context includes "if this context is not sufficient, declare context: sufficient and work with what you have."
 
+### Trailing intent detection
+
+The stop hook detects when the LLM's response ends with an unfulfilled action intent (e.g. "let me run the tests") — a common failure mode where the agentic loop terminates before the stated intent is executed.
+
+**How it works:** The last sentence of the response (after stripping the `<memory>` block) is embedded and compared against 15 reference intent phrases using cosine similarity. If similarity exceeds the threshold (default 0.65), the hook blocks the stop and re-prompts the LLM to either follow through or acknowledge it has nothing more to do.
+
+**Escape mechanism:** The LLM can add `- intent: resolved` to its `<memory>` block to explicitly signal that no further action is needed. This bypasses the trailing intent check without requiring a false action.
+
+The detection is embedding-based rather than regex-based to handle paraphrasing robustly (e.g. "I'll investigate" matches "let me check that" semantically).
+
 ## Embedding and Deduplication
 
 ### Embedding model
