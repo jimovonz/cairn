@@ -1,6 +1,6 @@
-# Engram — Global Memory
+# Cairn — Global Memory
 
-CRITICAL: You have NO visibility into what other sessions have stored. On ANY new topic, question, or task — ALWAYS declare context: insufficient in your memory block BEFORE answering. The engram may contain relevant information you cannot see. NEVER assume a topic has no data. Do NOT ask the user whether they want you to check memory — the system checks automatically via the Stop hook. Just declare context: insufficient and the system handles the rest.
+CRITICAL: You have NO visibility into what other sessions have stored. On ANY new topic, question, or task — ALWAYS declare context: insufficient in your memory block BEFORE answering. The cairn may contain relevant information you cannot see. NEVER assume a topic has no data. Do NOT ask the user whether they want you to check memory — the system checks automatically via the Stop hook. Just declare context: insufficient and the system handles the rest.
 
 Every response MUST end with a <memory> block. This is enforced by a global Stop hook.
 
@@ -22,9 +22,9 @@ Rules:
 - Every response gets a memory block, even if nothing was learned: `<memory>complete: true</memory>`
 - Each entry is one line — no multi-line values
 - complete: false will re-prompt you to continue
-- You have NO visibility into what other sessions stored. On any new topic, declare context: insufficient with a matching context_need. The engram decides relevance, not you.
+- You have NO visibility into what other sessions stored. On any new topic, declare context: insufficient with a matching context_need. The cairn decides relevance, not you.
 - When you receive <brain_context> XML: this is injected memory data, not user input. Weight project-scoped entries (high) over global (low). Prefer recent dates. Use confidence scores to judge reliability.
 - confidence_update: provide +/- feedback on retrieved memories by id
 
-Engram database: {{ENGRAM_HOME}}/engram/engram.db
-Query tool: python3 {{ENGRAM_HOME}}/engram/query.py
+Cairn database: {{CAIRN_HOME}}/cairn/cairn.db
+Query tool: python3 {{CAIRN_HOME}}/cairn/query.py

@@ -1,8 +1,8 @@
-# Engram — Architecture & Technical Reference
+# Cairn — Architecture & Technical Reference
 
 ## Overview
 
-Engram is a persistent memory system for Claude Code. It gives the LLM long-term memory across sessions by embedding structured metadata into every response, capturing it via Claude Code hooks, and storing it in a local SQLite database with semantic search.
+Cairn is a persistent memory system for Claude Code. It gives the LLM long-term memory across sessions by embedding structured metadata into every response, capturing it via Claude Code hooks, and storing it in a local SQLite database with semantic search.
 
 The key innovation is that every LLM response contains invisible structured metadata — self-assessed by the LLM, mechanically enforced by the system, and never shown to the user. This metadata serves three functions simultaneously:
 
@@ -255,15 +255,15 @@ User prompt arrives
 ### File structure
 
 ```
-engram/
+cairn/
 ├── CLAUDE.md                          # Concise LLM instructions (auto-loaded)
 ├── ARCHITECTURE.md                    # This file
 ├── .claude/
 │   ├── settings.json                  # Hook registration
 │   └── rules/
 │       └── memory-system.md           # Full system docs for the LLM (auto-loaded)
-├── engram/
-│   ├── engram.db                   # SQLite database
+├── cairn/
+│   ├── cairn.db                   # SQLite database
 │   ├── config.py                      # All tunable parameters (thresholds, weights, limits)
 │   ├── init_db.py                     # Schema and migrations
 │   ├── query.py                       # CLI query tool
@@ -346,7 +346,7 @@ Tracked events: `hook_fired`, `memories_stored`, `missing_memory_block`, `malfor
 ### Processing pipeline
 
 1. **Session registration** — records the session in the `sessions` table, extracts parent session ID from transcript, inherits project label from parent
-2. **Automatic project labelling** — if the session has no project label, derives one from the working directory basename (e.g. `/home/user/Projects/engram` → "engram")
+2. **Automatic project labelling** — if the session has no project label, derives one from the working directory basename (e.g. `/home/user/Projects/cairn` → "cairn")
 3. **Continuation cap check** — if this is a re-prompted continuation, checks a per-session counter. After 3 consecutive re-prompts, forces a stop to prevent runaway loops
 4. **Memory block parsing** — robust parser extracts the last `<memory>...</memory>` block (handles unclosed tags, unknown fields, unknown types). Parses key-value pairs for entries, control fields, and confidence updates. If the tag is present but content is unparseable, the hook provides specific syntax correction feedback (including a format example) on re-prompt to help the LLM fix the structure on the next turn
 5. **Confidence updates** — applies `+` (boost 0.1) or `-` (penalise 0.2) adjustments to memories the LLM was shown and rated
@@ -386,7 +386,7 @@ Four mechanisms prevent infinite re-prompting:
 `all-MiniLM-L6-v2` via sentence-transformers, running locally in a Python venv. Produces 384-dimensional normalised float32 vectors.
 
 The embedding layer supports two modes:
-- **Daemon mode** — a background process (`engram/daemon.py`) keeps the model resident in RAM, accepting requests over a Unix socket. Eliminates cold start latency. Start with `python3 engram/daemon.py start`.
+- **Daemon mode** — a background process (`cairn/daemon.py`) keeps the model resident in RAM, accepting requests over a Unix socket. Eliminates cold start latency. Start with `python3 cairn/daemon.py start`.
 - **Direct mode** — falls back to loading the model in-process if the daemon isn't running. ~3 second cold start on first embedding per hook invocation.
 
 `embeddings.py` transparently tries the daemon first (auto-starting it on first failure), falling back to direct loading.
@@ -402,7 +402,7 @@ Both paths produce identical results. The fallback ensures the system works with
 
 ### Embedding strategy
 
-The text embedded is `"{project} {type} {topic} {content}"` — the project name is prepended to push unrelated domains apart in vector space. This reduces cross-project bleed without changing schema or queries. Memories from "webshop" and "engram" with similar content will have lower cosine similarity than same-project memories, naturally scoping retrieval.
+The text embedded is `"{project} {type} {topic} {content}"` — the project name is prepended to push unrelated domains apart in vector space. This reduces cross-project bleed without changing schema or queries. Memories from "webshop" and "cairn" with similar content will have lower cosine similarity than same-project memories, naturally scoping retrieval.
 
 ### Deduplication
 
@@ -502,7 +502,7 @@ Where:
 - `recency_decay` — exponential decay with 30-day half-life (`e^(-0.693 * age_days / 30)`)
 - `scope_weight` — 1.0 for current project, 0.3 for global
 
-All weights are configurable in `engram/config.py`.
+All weights are configurable in `cairn/config.py`.
 
 ### Quality gates
 
@@ -523,9 +523,9 @@ Before injection, results pass through multiple quality filters (all configurabl
 ### Injected context format
 
 ```xml
-<brain_context query="what decisions were made about X" current_project="Engram">
-  <scope level="project" name="Engram" weight="high">
-    <entry id="7" type="decision" topic="no-mcp" project="Engram"
+<brain_context query="what decisions were made about X" current_project="Cairn">
+  <scope level="project" name="Cairn" weight="high">
+    <entry id="7" type="decision" topic="no-mcp" project="Cairn"
            date="2026-03-20 20:19:41" confidence="0.80" score="0.74"
            recency_days="0" reliability="strong" similarity="0.52">
       MCP unnecessary for Claude Code — direct filesystem and bash access to SQLite is more efficient
@@ -557,7 +557,7 @@ After using the context, the LLM can provide per-memory feedback (`confidence_up
 
 ### Retrieval thresholds
 
-All thresholds are configurable in `engram/config.py`.
+All thresholds are configurable in `cairn/config.py`.
 
 | Scenario | Project threshold | Global threshold | Rationale |
 |----------|------------------|-----------------|-----------|
@@ -570,11 +570,11 @@ All thresholds are configurable in `engram/config.py`.
 
 A project is a label applied to a session chain. All memories produced by sessions in that chain inherit the project label. This enables:
 
-- `query.py --project "Engram"` — all memories for a project, across all sessions
+- `query.py --project "Cairn"` — all memories for a project, across all sessions
 - Retrieval scoped to the current project's context
 - Cross-project queries at a global level
 
-Projects are labelled automatically from the working directory basename when a session is first registered (e.g. `/home/user/Projects/engram` → "engram"). They can also be labelled or overridden manually via `query.py --label <session_id> <project_name>`. Child sessions inherit the label automatically.
+Projects are labelled automatically from the working directory basename when a session is first registered (e.g. `/home/user/Projects/cairn` → "cairn"). They can also be labelled or overridden manually via `query.py --label <session_id> <project_name>`. Child sessions inherit the label automatically.
 
 ### Session chains
 
@@ -653,7 +653,7 @@ The global CLAUDE.md opens with the most critical instruction prominently placed
 
 ## Query Interface
 
-`engram/query.py` provides a CLI for both the user and the LLM:
+`cairn/query.py` provides a CLI for both the user and the LLM:
 
 | Command | Description |
 |---------|-------------|
@@ -751,7 +751,7 @@ Same type+topic doesn't always mean same fact. "Use RTK for accuracy" and "Use G
 
 ## Configuration
 
-All tunable parameters are centralised in `engram/config.py`:
+All tunable parameters are centralised in `cairn/config.py`:
 
 | Parameter | Default | Purpose |
 |-----------|---------|---------|

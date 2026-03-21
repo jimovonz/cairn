@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Claude Code UserPromptSubmit Hook for Engram.
+Claude Code UserPromptSubmit Hook for Cairn.
 
 Handles two retrieval layers:
 - Layer 1: First-prompt push — searches brain using user's message on first prompt of session
@@ -15,11 +15,11 @@ import sys
 import os
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "engram", "engram.db")
-BRAIN_DIR = os.path.join(os.path.dirname(__file__), "..", "engram")
-LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "engram", "hook.log")
-STAGED_PATH = os.path.join(os.path.dirname(__file__), "..", "engram", ".staged_context")
-FIRST_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "..", "engram", ".first_prompt_done")
+DB_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "cairn.db")
+BRAIN_DIR = os.path.join(os.path.dirname(__file__), "..", "cairn")
+LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "hook.log")
+STAGED_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".staged_context")
+FIRST_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".first_prompt_done")
 
 sys.path.insert(0, BRAIN_DIR)
 

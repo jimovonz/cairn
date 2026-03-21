@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Initialize the Engram SQLite database."""
+"""Initialize the Cairn SQLite database."""
 
 import sqlite3
 import os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "engram.db")
+DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 
 def init():
     conn = sqlite3.connect(DB_PATH)

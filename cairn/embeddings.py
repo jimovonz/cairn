@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Embedding utilities for Engram."""
+"""Embedding utilities for Cairn."""
 
 import numpy as np
 import os

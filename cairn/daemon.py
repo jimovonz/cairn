@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Engram Embedding Daemon.
+Cairn Embedding Daemon.
 
 Keeps the sentence-transformers model resident in RAM, accepting requests
 over a Unix socket. Eliminates the ~3s cold start per hook invocation.
 
 Usage:
-  Start:  python3 engram/daemon.py start
-  Stop:   python3 engram/daemon.py stop
-  Status: python3 engram/daemon.py status
+  Start:  python3 cairn/daemon.py start
+  Stop:   python3 cairn/daemon.py stop
+  Status: python3 cairn/daemon.py status
 """
 
 import json
@@ -50,7 +50,7 @@ def handle_client(conn, model):
             threshold = request.get("threshold", 0.5)
             limit = request.get("limit", 10)
             import sqlite3
-            DB_PATH = os.path.join(BRAIN_DIR, "engram.db")
+            DB_PATH = os.path.join(BRAIN_DIR, "cairn.db")
             conn_db = sqlite3.connect(DB_PATH)
             results = emb.find_similar(conn_db, text, threshold=threshold, limit=limit)
             conn_db.close()
@@ -173,11 +173,11 @@ if __name__ == "__main__":
             sys.exit(0)
         # Launch as detached subprocess
         import subprocess
-        engram_dir = os.path.dirname(os.path.abspath(__file__))
+        cairn_dir = os.path.dirname(os.path.abspath(__file__))
         subprocess.Popen(
             [sys.executable, "-c",
-             f"import sys,os; sys.path.insert(0,{repr(engram_dir)}); "
-             f"os.chdir({repr(engram_dir)}); "
+             f"import sys,os; sys.path.insert(0,{repr(cairn_dir)}); "
+             f"os.chdir({repr(cairn_dir)}); "
              "from daemon import run_server; run_server()"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

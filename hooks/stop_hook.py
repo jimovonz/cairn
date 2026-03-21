@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Claude Code Stop Hook for Engram.
+Claude Code Stop Hook for Cairn.
 
 Reads the hook input from stdin, parses <memory> blocks from the transcript,
 inserts new memories into the database, and blocks stopping if complete: false.
@@ -16,11 +16,11 @@ import sqlite3
 import sys
 import os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "engram", "engram.db")
-LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "engram", "hook.log")
-CONTEXT_CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "engram", ".context_cache")
-CONTINUATION_COUNT_PATH = os.path.join(os.path.dirname(__file__), "..", "engram", ".continuation_count")
-BRAIN_DIR = os.path.join(os.path.dirname(__file__), "..", "engram")
+DB_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "cairn.db")
+LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "hook.log")
+CONTEXT_CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".context_cache")
+CONTINUATION_COUNT_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".continuation_count")
+BRAIN_DIR = os.path.join(os.path.dirname(__file__), "..", "cairn")
 sys.path.insert(0, BRAIN_DIR)
 
 
@@ -534,7 +534,7 @@ def retrieve_context(context_need, session_id=None):
     return "\n".join(lines)
 
 
-STAGED_PATH = os.path.join(os.path.dirname(__file__), "..", "engram", ".staged_context")
+STAGED_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".staged_context")
 
 
 def layer2_cross_project_search(keywords_list, session_id=None):

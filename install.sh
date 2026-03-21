@@ -1,16 +1,16 @@
 #!/bin/bash
 set -e
 
-# Engram Installer
+# Cairn Installer
 # Sets up persistent AI memory for Claude Code
 
-ENGRAM_HOME="$(cd "$(dirname "$0")" && pwd)"
-VENV_PATH="$ENGRAM_HOME/.venv"
+CAIRN_HOME="$(cd "$(dirname "$0")" && pwd)"
+VENV_PATH="$CAIRN_HOME/.venv"
 VENV_PYTHON="$VENV_PATH/bin/python3"
 CLAUDE_DIR="$HOME/.claude"
 
-echo "=== Engram Installer ==="
-echo "Install location: $ENGRAM_HOME"
+echo "=== Cairn Installer ==="
+echo "Install location: $CAIRN_HOME"
 echo ""
 
 # --- Python venv ---
@@ -30,33 +30,33 @@ fi
 
 # --- Dependencies ---
 echo "Installing dependencies..."
-"$VENV_PATH/bin/pip" install -q -r "$ENGRAM_HOME/requirements.txt" 2>&1 | tail -1
+"$VENV_PATH/bin/pip" install -q -r "$CAIRN_HOME/requirements.txt" 2>&1 | tail -1
 
 # --- Database ---
 echo "Initializing database..."
-"$VENV_PYTHON" "$ENGRAM_HOME/engram/init_db.py"
+"$VENV_PYTHON" "$CAIRN_HOME/cairn/init_db.py"
 
 # --- Global CLAUDE.md ---
 mkdir -p "$CLAUDE_DIR" "$CLAUDE_DIR/rules" "$CLAUDE_DIR/commands"
 
 if [ -f "$CLAUDE_DIR/CLAUDE.md" ]; then
-    if grep -q "Engram" "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null; then
+    if grep -q "Cairn" "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null; then
         echo "Global CLAUDE.md already configured."
     else
         echo ""
-        echo "WARNING: ~/.claude/CLAUDE.md already exists and does not contain Engram config."
-        echo "You may need to merge manually. Engram template saved to:"
-        echo "  $ENGRAM_HOME/templates/global-claude.md"
+        echo "WARNING: ~/.claude/CLAUDE.md already exists and does not contain Cairn config."
+        echo "You may need to merge manually. Cairn template saved to:"
+        echo "  $CAIRN_HOME/templates/global-claude.md"
         echo ""
     fi
 else
-    sed "s|{{ENGRAM_HOME}}|$ENGRAM_HOME|g" "$ENGRAM_HOME/templates/global-claude.md" > "$CLAUDE_DIR/CLAUDE.md"
+    sed "s|{{CAIRN_HOME}}|$CAIRN_HOME|g" "$CAIRN_HOME/templates/global-claude.md" > "$CLAUDE_DIR/CLAUDE.md"
     echo "Installed global CLAUDE.md"
 fi
 
 # --- Global rules ---
-sed "s|{{ENGRAM_HOME}}|$ENGRAM_HOME|g" "$ENGRAM_HOME/.claude/rules/memory-system.md" | \
-    sed "s|\\\$ENGRAM_HOME|$ENGRAM_HOME|g" > "$CLAUDE_DIR/rules/memory-system.md"
+sed "s|{{CAIRN_HOME}}|$CAIRN_HOME|g" "$CAIRN_HOME/.claude/rules/memory-system.md" | \
+    sed "s|\\\$CAIRN_HOME|$CAIRN_HOME|g" > "$CLAUDE_DIR/rules/memory-system.md"
 echo "Installed global rules."
 
 # --- Global settings (hooks) ---
@@ -65,25 +65,25 @@ if [ -f "$CLAUDE_DIR/settings.json" ]; then
         echo "Global hooks already configured."
     else
         echo ""
-        echo "WARNING: ~/.claude/settings.json exists but does not contain Engram hooks."
+        echo "WARNING: ~/.claude/settings.json exists but does not contain Cairn hooks."
         echo "You need to merge the hooks manually from:"
-        echo "  $ENGRAM_HOME/templates/global-settings.json"
+        echo "  $CAIRN_HOME/templates/global-settings.json"
         echo ""
         echo "The hooks to add are:"
-        sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{ENGRAM_HOME}}|$ENGRAM_HOME|g" \
-            "$ENGRAM_HOME/templates/global-settings.json" | python3 -m json.tool
+        sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" \
+            "$CAIRN_HOME/templates/global-settings.json" | python3 -m json.tool
         echo ""
     fi
 else
-    sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{ENGRAM_HOME}}|$ENGRAM_HOME|g" \
-        "$ENGRAM_HOME/templates/global-settings.json" > "$CLAUDE_DIR/settings.json"
+    sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" \
+        "$CAIRN_HOME/templates/global-settings.json" > "$CLAUDE_DIR/settings.json"
     echo "Installed global hooks."
 fi
 
 # --- Slash command ---
-sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{ENGRAM_HOME}}|$ENGRAM_HOME|g" \
-    "$ENGRAM_HOME/templates/engram-command.md" > "$CLAUDE_DIR/commands/engram.md"
-echo "Installed /engram slash command."
+sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" \
+    "$CAIRN_HOME/templates/cairn-command.md" > "$CLAUDE_DIR/commands/cairn.md"
+echo "Installed /cairn slash command."
 
 # --- Pre-download model ---
 echo ""
@@ -96,17 +96,17 @@ print('Model ready.')
 
 # --- Start daemon ---
 echo "Starting embedding daemon..."
-"$VENV_PYTHON" "$ENGRAM_HOME/engram/daemon.py" start
+"$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" start
 
 echo ""
-echo "=== Engram installed successfully ==="
+echo "=== Cairn installed successfully ==="
 echo ""
 echo "Restart Claude Code to activate hooks."
 echo ""
 echo "Commands:"
-echo "  /engram          — memory stats"
-echo "  /engram recent   — recent memories"
-echo "  /engram search X — search memories"
-echo "  /engram review   — low-confidence memories"
-echo "  /engram projects — list projects"
+echo "  /cairn          — memory stats"
+echo "  /cairn recent   — recent memories"
+echo "  /cairn search X — search memories"
+echo "  /cairn review   — low-confidence memories"
+echo "  /cairn projects — list projects"
 echo ""

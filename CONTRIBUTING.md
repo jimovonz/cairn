@@ -1,11 +1,11 @@
-# Contributing to Engram
+# Contributing to Cairn
 
-Thanks for your interest in contributing! Engram is a young project and contributions are welcome.
+Thanks for your interest in contributing! Cairn is a young project and contributions are welcome.
 
 ## Getting started
 
 1. Fork the repo
-2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/engram`
+2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/cairn`
 3. Run the installer: `./install.sh`
 4. Create a branch: `git checkout -b my-feature`
 5. Make your changes
@@ -38,7 +38,7 @@ Thanks for your interest in contributing! Engram is a young project and contribu
 - Python 3.10+
 - No type annotations required (keep it simple)
 - Functions should fail gracefully — the stop hook must never block the user
-- All thresholds and weights belong in `engram/config.py`
+- All thresholds and weights belong in `cairn/config.py`
 
 ## Testing
 
@@ -46,7 +46,7 @@ There's no formal test suite yet (contributions welcome). For now:
 
 1. Run `./install.sh` on a clean setup
 2. Start a Claude Code session and verify the hook fires
-3. Check `/engram` shows stats
+3. Check `/cairn` shows stats
 4. Test context retrieval by asking about a topic from a previous session
 
 ## Reporting issues
@@ -54,8 +54,8 @@ There's no formal test suite yet (contributions welcome). For now:
 Include:
 - Claude Code version (`claude --version`)
 - Python version (`python3 --version`)
-- Contents of `engram/hook.log` (last ~20 lines)
-- Output of `/engram stats`
+- Contents of `cairn/hook.log` (last ~20 lines)
+- Output of `/cairn stats`
 
 ## License
 

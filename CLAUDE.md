@@ -1,4 +1,4 @@
-# Engram — Persistent Memory System
+# Cairn — Persistent Memory System
 
 ## Memory Output Requirement
 
@@ -32,22 +32,22 @@ Rules:
 - complete: false will cause the system to re-prompt you to continue
 - Never narrate a future action without executing it — if you say "let me do X", do X in the same response via a tool call
 
-## Engram Database
+## Cairn Database
 
-The memory database is at `./engram/engram.db`. Use `python3 ./engram/query.py` to search it.
+The memory database is at `./cairn/cairn.db`. Use `python3 ./cairn/query.py` to search it.
 
 Query commands:
-- `python3 ./engram/query.py <search>` — full-text search
-- `python3 ./engram/query.py --semantic <query>` — semantic similarity search
-- `python3 ./engram/query.py --recent` — list recent memories
-- `python3 ./engram/query.py --type <type>` — filter by type
-- `python3 ./engram/query.py --session <id>` — filter by session
-- `python3 ./engram/query.py --history <id>` — show version history
-- `python3 ./engram/query.py --delete <id>` — delete a memory
-- `python3 ./engram/query.py --stats` — database statistics
+- `python3 ./cairn/query.py <search>` — full-text search
+- `python3 ./cairn/query.py --semantic <query>` — semantic similarity search
+- `python3 ./cairn/query.py --recent` — list recent memories
+- `python3 ./cairn/query.py --type <type>` — filter by type
+- `python3 ./cairn/query.py --session <id>` — filter by session
+- `python3 ./cairn/query.py --history <id>` — show version history
+- `python3 ./cairn/query.py --delete <id>` — delete a memory
+- `python3 ./cairn/query.py --stats` — database statistics
 
-At the start of a conversation, query the engram for context relevant to the user's first message.
+At the start of a conversation, query the cairn for context relevant to the user's first message.
 
 ## Project
 
-This is the Engram project — a persistent AI memory system using SQLite, Claude Code hooks, and structured self-assessment.
+This is the Cairn project — a persistent AI memory system using SQLite, Claude Code hooks, and structured self-assessment.

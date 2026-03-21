@@ -1,6 +1,6 @@
-# Engram Memory System
+# Cairn Memory System
 
-You are connected to a persistent memory system called Engram. This document explains how it works and how you should interact with it.
+You are connected to a persistent memory system called Cairn. This document explains how it works and how you should interact with it.
 
 ## How It Works
 
@@ -54,10 +54,10 @@ Every response MUST end with a `<memory>` block. No exceptions.
 
 ## Context Retrieval
 
-You have NO visibility into what other sessions have stored. NEVER assume a topic has no relevant memories — the engram may contain information from sessions you cannot see.
+You have NO visibility into what other sessions have stored. NEVER assume a topic has no relevant memories — the cairn may contain information from sessions you cannot see.
 
 - On ANY new topic, question, or task where you have not already received brain context in this session: declare `context: insufficient` with a `context_need` matching the topic
-- The system searches the engram database and re-prompts you with relevant memories if any exist. If nothing is found, you proceed normally — there is no penalty for asking.
+- The system searches the cairn database and re-prompts you with relevant memories if any exist. If nothing is found, you proceed normally — there is no penalty for asking.
 - The same context_need is only served once per session to prevent loops
 - After receiving context on a topic, you do not need to re-request it
 - The default posture is **ask first**. Only declare `context: sufficient` for topics you have already received context on, or for purely mechanical tasks (e.g. fixing a syntax error you can see in the current code)
@@ -92,7 +92,7 @@ If the retrieved context does not answer your need, set `context: sufficient` an
 
 Memories are distilled one-liners. When you need the full detail behind a memory (exact wording of a decision, complete error output, nuanced discussion):
 
-1. Run `python3 $ENGRAM_HOME/engram/query.py --context <memory_id>` (the installer sets ENGRAM_HOME)
+1. Run `python3 $CAIRN_HOME/cairn/query.py --context <memory_id>` (the installer sets CAIRN_HOME)
 2. This shows the conversation excerpt from the session where the memory was recorded, with the source range highlighted
 3. Use this when:
    - A memory's one-liner is ambiguous and you need the original discussion
@@ -133,20 +133,20 @@ This is a system-level learning signal — it helps tune retrieval quality over 
 
 ## Database
 
-Memories are stored in `./engram/engram.db`. You can query it directly:
+Memories are stored in `./cairn/cairn.db`. You can query it directly:
 
-- `python3 ./engram/query.py <search>` — full-text search
-- `python3 ./engram/query.py --semantic <query>` — semantic similarity search
-- `python3 ./engram/query.py --recent` — list recent memories
-- `python3 ./engram/query.py --type <type>` — filter by type
-- `python3 ./engram/query.py --session <id>` — filter by session
-- `python3 ./engram/query.py --chain <id>` — show session chain
-- `python3 ./engram/query.py --project <name>` — list memories for a project
-- `python3 ./engram/query.py --projects` — list all projects
-- `python3 ./engram/query.py --label <session_id> <name>` — label a session chain
-- `python3 ./engram/query.py --history <id>` — show version history
-- `python3 ./engram/query.py --delete <id>` — delete a memory
-- `python3 ./engram/query.py --stats` — database statistics
+- `python3 ./cairn/query.py <search>` — full-text search
+- `python3 ./cairn/query.py --semantic <query>` — semantic similarity search
+- `python3 ./cairn/query.py --recent` — list recent memories
+- `python3 ./cairn/query.py --type <type>` — filter by type
+- `python3 ./cairn/query.py --session <id>` — filter by session
+- `python3 ./cairn/query.py --chain <id>` — show session chain
+- `python3 ./cairn/query.py --project <name>` — list memories for a project
+- `python3 ./cairn/query.py --projects` — list all projects
+- `python3 ./cairn/query.py --label <session_id> <name>` — label a session chain
+- `python3 ./cairn/query.py --history <id>` — show version history
+- `python3 ./cairn/query.py --delete <id>` — delete a memory
+- `python3 ./cairn/query.py --stats` — database statistics
 
 ## Organisation
 

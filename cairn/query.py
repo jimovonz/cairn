@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Query the Engram database. Used by Claude Code to retrieve context."""
+"""Query the Cairn database. Used by Claude Code to retrieve context."""
 
 import sqlite3
 import sys
 import os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "engram.db")
+DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 
 
 def search(query, limit=10):

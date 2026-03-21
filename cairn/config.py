@@ -1,5 +1,5 @@
 """
-Engram Configuration — All tunable parameters in one place.
+Cairn Configuration — All tunable parameters in one place.
 
 Adjust these values to control retrieval quality, deduplication sensitivity,
 confidence dynamics, and injection behaviour.

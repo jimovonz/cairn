@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{VENV_PYTHON}} {{ENGRAM_HOME}}/hooks/prompt_hook.py",
+            "command": "{{VENV_PYTHON}} {{CAIRN_HOME}}/hooks/prompt_hook.py",
             "timeout": 30,
             "statusMessage": "Retrieving context..."
           }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{VENV_PYTHON}} {{ENGRAM_HOME}}/hooks/stop_hook.py",
+            "command": "{{VENV_PYTHON}} {{CAIRN_HOME}}/hooks/stop_hook.py",
             "timeout": 60,
             "statusMessage": "Thinking..."
           }

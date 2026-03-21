@@ -1,10 +1,10 @@
-# Engram
+# Cairn
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **Every Claude Code response secretly writes structured metadata about itself. The user never sees it. A hook captures it. A database stores it. The next session remembers.**
 
-Engram exploits the gap between Claude Code's raw LLM output and its rendered display. Angle bracket tags in LLM responses are stripped from the terminal — but they're preserved in the hook system. This creates an invisible control plane where the LLM self-annotates every response with structured memory data, and the infrastructure enforces it mechanically.
+Cairn exploits the gap between Claude Code's raw LLM output and its rendered display. Angle bracket tags in LLM responses are stripped from the terminal — but they're preserved in the hook system. This creates an invisible control plane where the LLM self-annotates every response with structured memory data, and the infrastructure enforces it mechanically.
 
 No cloud. No API keys. No MCP. One SQLite file. Two hooks.
 
@@ -12,7 +12,7 @@ No cloud. No API keys. No MCP. One SQLite file. Two hooks.
 
 ## What makes this different
 
-Most LLM memory systems store conversation logs and retrieve them with RAG. Engram does something fundamentally different:
+Most LLM memory systems store conversation logs and retrieve them with RAG. Cairn does something fundamentally different:
 
 **The LLM is the memory author.** It distills its own output into one-line structured memories — not raw transcripts, not embeddings of chat logs, but the LLM's own assessment of what matters. A 50,000-token session becomes 10 precise facts.
 
@@ -51,8 +51,8 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 ## Quick start
 
 ```bash
-git clone https://github.com/jimovonz/engram.git ~/engram
-cd ~/engram
+git clone https://github.com/jimovonz/cairn.git ~/cairn
+cd ~/cairn
 ./install.sh
 ```
 
@@ -61,7 +61,7 @@ Restart Claude Code. The system is now active in every session.
 The installer:
 1. Creates a Python venv and installs dependencies
 2. Initializes the SQLite database
-3. Deploys global hooks, instructions, and the `/engram` slash command
+3. Deploys global hooks, instructions, and the `/cairn` slash command
 4. Downloads the embedding model (~80MB, one-time)
 5. Starts the embedding daemon
 
@@ -75,20 +75,20 @@ Every Claude Code response produces invisible metadata that gets captured and st
 
 | Command | Description |
 |---------|-------------|
-| `/engram` | Memory stats, confidence distribution, drift indicators |
-| `/engram recent` | Recently stored memories |
-| `/engram projects` | List all projects with memory counts |
-| `/engram project <name>` | All memories for a project |
-| `/engram search <term>` | Full-text search |
-| `/engram semantic <query>` | Semantic similarity search |
-| `/engram review` | Surface low-confidence and suppressed memories |
-| `/engram context <id>` | Show conversation context around where a memory was recorded |
-| `/engram history <id>` | Version history for a memory |
-| `/engram compact [project]` | Dense dump suitable for LLM ingestion |
-| `/engram verify` | Analyse source location accuracy |
-| `/engram backfill` | Generate embeddings for memories stored without daemon |
-| `/engram delete <id>` | Delete a memory |
-| `/engram daemon start\|stop\|status` | Manage the embedding daemon |
+| `/cairn` | Memory stats, confidence distribution, drift indicators |
+| `/cairn recent` | Recently stored memories |
+| `/cairn projects` | List all projects with memory counts |
+| `/cairn project <name>` | All memories for a project |
+| `/cairn search <term>` | Full-text search |
+| `/cairn semantic <query>` | Semantic similarity search |
+| `/cairn review` | Surface low-confidence and suppressed memories |
+| `/cairn context <id>` | Show conversation context around where a memory was recorded |
+| `/cairn history <id>` | Version history for a memory |
+| `/cairn compact [project]` | Dense dump suitable for LLM ingestion |
+| `/cairn verify` | Analyse source location accuracy |
+| `/cairn backfill` | Generate embeddings for memories stored without daemon |
+| `/cairn delete <id>` | Delete a memory |
+| `/cairn daemon start\|stop\|status` | Manage the embedding daemon |
 
 ## How it works
 
@@ -137,7 +137,7 @@ Retrieved results pass through 9 configurable gates before injection:
 8. Weak-entry suppression (don't inject if top result is unreliable)
 9. Hard cap (max 5 entries)
 
-All thresholds configurable in `engram/config.py`.
+All thresholds configurable in `cairn/config.py`.
 
 ## Architecture
 
@@ -153,7 +153,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical reference (600+ li
 ## File structure
 
 ```
-engram/
+cairn/
 ├── install.sh              # One-command installer
 ├── requirements.txt        # Python dependencies
 ├── CLAUDE.md               # Project-local LLM instructions
@@ -161,7 +161,7 @@ engram/
 │   ├── settings.json       # Project-local hooks
 │   └── rules/
 │       └── memory-system.md  # Full system rules for the LLM
-├── engram/
+├── cairn/
 │   ├── config.py           # All tunable parameters
 │   ├── init_db.py          # Schema and migrations
 │   ├── query.py            # CLI query tool (20+ commands)
@@ -184,7 +184,7 @@ engram/
 
 ## Configuration
 
-All tunable parameters are in `engram/config.py`:
+All tunable parameters are in `cairn/config.py`:
 
 - Retrieval thresholds per layer
 - Composite scoring weights
@@ -207,7 +207,7 @@ All tunable parameters are in `engram/config.py`:
 
 ## Limitations
 
-**Claude Code only.** Engram is tightly coupled to Claude Code's hook system and tag-stripping behaviour. It will not work with Cursor, VS Code agents, other LLMs, or the Claude web interface. This is by design — the architecture exploits Claude Code's specific capabilities rather than targeting a lowest common denominator.
+**Claude Code only.** Cairn is tightly coupled to Claude Code's hook system and tag-stripping behaviour. It will not work with Cursor, VS Code agents, other LLMs, or the Claude web interface. This is by design — the architecture exploits Claude Code's specific capabilities rather than targeting a lowest common denominator.
 
 **LLM cooperation is imperfect.** The system depends on the LLM reliably producing well-formed `<memory>` blocks and accurately declaring when it needs context. In practice, the LLM sometimes answers "I don't know" before the hook can inject memories, or produces generic memories instead of extracting specific facts. Mechanical enforcement (the Stop hook) catches most failures but adds a re-prompt turn when it does.
 
