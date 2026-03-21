@@ -27,6 +27,80 @@ def mock_results(entries):
     ]
 
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
+
+
+# === Garbage and borderline gates through find_similar ===
+
+def test_garbage_gate_rejects_weak_results():
+    """Results below MIN_INJECTION_SIMILARITY should return empty from find_similar."""
+    import sqlite3, tempfile
+    import numpy as np
+    from unittest.mock import patch, MagicMock
+    import hook_helpers
+    from config import MIN_INJECTION_SIMILARITY
+
+    db_path = os.path.join(tempfile.mkdtemp(), "gate.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY, type TEXT, topic TEXT,
+        content TEXT, embedding BLOB, session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
+        source_start INTEGER, source_end INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    # Insert a memory with a known embedding
+    vec = np.random.RandomState(42).randn(384).astype(np.float32)
+    vec = vec / np.linalg.norm(vec)
+    conn.execute("INSERT INTO memories (type, topic, content, embedding, confidence) VALUES (?,?,?,?,?)",
+                 ("fact", "test", "some content", vec.tobytes(), 0.7))
+    conn.commit()
+
+    from embeddings import find_similar
+    # Use an orthogonal query vector to get low similarity
+    query_vec = np.random.RandomState(999).randn(384).astype(np.float32)
+    query_vec = query_vec / np.linalg.norm(query_vec)
+
+    with patch('embeddings.embed', return_value=query_vec), \
+         patch('embeddings._load_vec', return_value=False):
+        results = find_similar(conn, "completely unrelated query")
+
+    # All results should be filtered out by garbage gate
+    for r in results:
+        assert r["similarity"] >= MIN_INJECTION_SIMILARITY, \
+            f"Garbage gate should have filtered sim={r['similarity']:.3f}"
+    conn.close()
+
+
+def test_diversity_filter_drops_same_type_topic():
+    """Two results with identical type+topic — diversity filter should keep only one."""
+    import sqlite3, tempfile
+    import numpy as np
+    from unittest.mock import patch
+    from embeddings import find_similar
+
+    db_path = os.path.join(tempfile.mkdtemp(), "div.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY, type TEXT, topic TEXT,
+        content TEXT, embedding BLOB, session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
+        source_start INTEGER, source_end INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    # Two memories with same type+topic but slightly different embeddings
+    base = np.random.RandomState(42).randn(384).astype(np.float32)
+    base = base / np.linalg.norm(base)
+    nudged = base + np.random.RandomState(43).randn(384).astype(np.float32) * 0.01
+    nudged = nudged / np.linalg.norm(nudged)
+    conn.execute("INSERT INTO memories (type, topic, content, embedding, confidence) VALUES (?,?,?,?,?)",
+                 ("fact", "db-choice", "Use SQLite for storage", base.tobytes(), 0.8))
+    conn.execute("INSERT INTO memories (type, topic, content, embedding, confidence) VALUES (?,?,?,?,?)",
+                 ("fact", "db-choice", "SQLite chosen for persistence", nudged.tobytes(), 0.8))
+    conn.commit()
+
+    with patch('embeddings.embed', return_value=base), \
+         patch('embeddings._load_vec', return_value=False):
+        results = find_similar(conn, "database choice")
+
+    topics = [r["topic"] for r in results if r["topic"] == "db-choice"]
+    assert len(topics) <= 1, f"Diversity filter should deduplicate same type+topic, got {len(topics)}"
+    conn.close()
+
 
 # === Relative filter edge cases ===
 

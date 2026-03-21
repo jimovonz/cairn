@@ -256,8 +256,107 @@ def test_record_metric_survives_db_error():
 
 
 # ============================================================
-# Low-info pre-filter
+# Low-info pre-filter (through main())
 # ============================================================
+
+def test_low_info_context_need_filtered_through_main():
+    """A context_need of 'help' should be pre-filtered — verified via metric."""
+    import stop_hook
+    db_path = os.path.join(TEST_DIR, f"prefilter_{_counter[0]}.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY, type TEXT, topic TEXT,
+        content TEXT, embedding BLOB, session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
+        source_start INTEGER, source_end INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("""CREATE TABLE sessions (session_id TEXT PRIMARY KEY,
+        parent_session_id TEXT, project TEXT, transcript_path TEXT,
+        started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("""CREATE TABLE metrics (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event TEXT, session_id TEXT, detail TEXT, value REAL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("""CREATE TABLE hook_state (session_id TEXT NOT NULL, key TEXT NOT NULL,
+        value TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (session_id, key))""")
+    conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+        topic, content, content=memories, content_rowid=id)""")
+    conn.execute("""CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+        INSERT INTO memories_fts(rowid, topic, content) VALUES (new.id, new.topic, new.content); END""")
+    conn.commit()
+
+    payload = json.dumps({
+        "session_id": "s-prefilter", "transcript_path": "", "cwd": "/tmp",
+        "last_assistant_message": "ok\n<memory>\n- context: insufficient\n- context_need: help\n- complete: true\n</memory>"
+    })
+
+    captured = StringIO()
+    def mock_exit(code=0):
+        raise SystemExit(code)
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'LOG_PATH', os.path.join(TEST_DIR, 'prefilter.log')), \
+         patch.object(hook_helpers, 'get_embedder', return_value=None), \
+         patch('sys.stdin', StringIO(payload)), \
+         patch('sys.stdout', captured), \
+         patch('sys.exit', mock_exit):
+        try:
+            stop_hook.main()
+        except SystemExit:
+            pass
+
+    hit = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'context_prefiltered'").fetchone()[0]
+    assert hit >= 1, "Low-info context_need 'help' should trigger context_prefiltered metric"
+    conn.close()
+
+
+def test_substantive_context_need_not_filtered():
+    """A real question should NOT be pre-filtered."""
+    import stop_hook
+    db_path = os.path.join(TEST_DIR, f"subst_{_counter[0]}.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY, type TEXT, topic TEXT,
+        content TEXT, embedding BLOB, session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
+        source_start INTEGER, source_end INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("""CREATE TABLE sessions (session_id TEXT PRIMARY KEY,
+        parent_session_id TEXT, project TEXT, transcript_path TEXT,
+        started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("""CREATE TABLE metrics (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event TEXT, session_id TEXT, detail TEXT, value REAL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("""CREATE TABLE hook_state (session_id TEXT NOT NULL, key TEXT NOT NULL,
+        value TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (session_id, key))""")
+    conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+        topic, content, content=memories, content_rowid=id)""")
+    conn.execute("""CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+        INSERT INTO memories_fts(rowid, topic, content) VALUES (new.id, new.topic, new.content); END""")
+    conn.commit()
+
+    payload = json.dumps({
+        "session_id": "s-subst", "transcript_path": "", "cwd": "/tmp",
+        "last_assistant_message": "ok\n<memory>\n- context: insufficient\n- context_need: what database architecture decisions have we made\n- complete: true\n</memory>"
+    })
+
+    captured = StringIO()
+    def mock_exit(code=0):
+        raise SystemExit(code)
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'LOG_PATH', os.path.join(TEST_DIR, 'subst.log')), \
+         patch.object(hook_helpers, 'get_embedder', return_value=None), \
+         patch('sys.stdin', StringIO(payload)), \
+         patch('sys.stdout', captured), \
+         patch('sys.exit', mock_exit):
+        try:
+            stop_hook.main()
+        except SystemExit:
+            pass
+
+    prefiltered = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'context_prefiltered'").fetchone()[0]
+    requested = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'context_requested'").fetchone()[0]
+    assert prefiltered == 0, "Substantive context_need should NOT be pre-filtered"
+    assert requested >= 1, "Substantive context_need should trigger context_requested metric"
+    conn.close()
 
 
 def cleanup():
