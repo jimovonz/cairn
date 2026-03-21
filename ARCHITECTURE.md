@@ -773,7 +773,7 @@ All tunable parameters are centralised in `cairn/config.py`:
 
 ## Testing
 
-134 tests across 8 files, runnable without the embedding model (deterministic mock vectors and patched DB paths).
+156 tests across 9 files, runnable without the embedding model (deterministic mock vectors and patched DB paths).
 
 ```bash
 python3 -m pytest tests/
@@ -789,6 +789,7 @@ python3 -m pytest tests/
 | `test_prompt_hook.py` | 8 | Layer 1/2 — first-prompt detection, staged context loading/consumption, short message handling, empty DB |
 | `test_daemon_and_cache.py` | 16 | Daemon embed fallback, allow_slow=False, stale PID, context cache semantic hit/miss, continuation counter lifecycle, fail-open crash → exit 0, metric recording |
 | `test_query_cli.py` | 12 | CLI commands — search, stats, review, delete, history, compact, projects against test DB |
+| `test_retrieval_pipeline.py` | 22 | Retrieval pipeline — find_nearest, insert dedup/contradiction/variant, retrieve_context, adaptive thresholds, Layer 2 cross-project staging, session registration, auto-label edge cases, negation dampening in insert |
 
 Tests run on every push via GitHub Actions (`.github/workflows/test.yml`).
 
