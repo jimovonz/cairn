@@ -77,3 +77,23 @@ MAX_CONTINUATIONS = 3              # Hard cap on consecutive re-prompts per sess
 
 # === Concurrency ===
 DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for lock release
+
+
+# === Environment variable overrides ===
+# Any config value above can be overridden by setting CAIRN_<NAME>=value.
+# Example: CAIRN_DEDUP_THRESHOLD=0.90 lowers the dedup sensitivity.
+import os as _os
+_this = _os.sys.modules[__name__]
+for _name in list(vars(_this)):
+    if _name.startswith("_") or not _name.isupper():
+        continue
+    _env = f"CAIRN_{_name}"
+    _val = _os.environ.get(_env)
+    if _val is not None:
+        _current = getattr(_this, _name)
+        if isinstance(_current, float):
+            setattr(_this, _name, float(_val))
+        elif isinstance(_current, int):
+            setattr(_this, _name, int(_val))
+        elif isinstance(_current, str):
+            setattr(_this, _name, _val)
