@@ -20,9 +20,9 @@ import threading
 
 SOCKET_PATH = os.path.join(os.path.dirname(__file__), ".daemon.sock")
 PID_PATH = os.path.join(os.path.dirname(__file__), ".daemon.pid")
-BRAIN_DIR = os.path.dirname(__file__)
+CAIRN_DIR = os.path.dirname(__file__)
 
-sys.path.insert(0, BRAIN_DIR)
+sys.path.insert(0, CAIRN_DIR)
 
 
 def handle_client(conn, model):
@@ -50,7 +50,7 @@ def handle_client(conn, model):
             threshold = request.get("threshold", 0.5)
             limit = request.get("limit", 10)
             import sqlite3
-            DB_PATH = os.path.join(BRAIN_DIR, "cairn.db")
+            DB_PATH = os.path.join(CAIRN_DIR, "cairn.db")
             conn_db = sqlite3.connect(DB_PATH)
             results = emb.find_similar(conn_db, text, threshold=threshold, limit=limit)
             conn_db.close()

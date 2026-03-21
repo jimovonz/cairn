@@ -115,7 +115,7 @@ def test_staged_context_loaded():
     import prompt_hook
     db_path, conn, staged_path, first_path = fresh_env()
 
-    staged_data = {"sess-1": "<brain_context>test data</brain_context>"}
+    staged_data = {"sess-1": "<cairn_context>test data</cairn_context>"}
     with open(staged_path, "w") as f:
         json.dump(staged_data, f)
 

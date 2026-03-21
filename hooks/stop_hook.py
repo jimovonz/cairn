@@ -22,8 +22,8 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "cairn.db")
 LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "hook.log")
 CONTEXT_CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".context_cache")
 CONTINUATION_COUNT_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".continuation_count")
-BRAIN_DIR = os.path.join(os.path.dirname(__file__), "..", "cairn")
-sys.path.insert(0, BRAIN_DIR)
+CAIRN_DIR = os.path.join(os.path.dirname(__file__), "..", "cairn")
+sys.path.insert(0, CAIRN_DIR)
 
 
 def log(msg):
@@ -175,7 +175,7 @@ def apply_confidence_updates(updates, session_id=None):
 
 def get_embedder():
     """Lazy-load the embeddings module."""
-    sys.path.insert(0, BRAIN_DIR)
+    sys.path.insert(0, CAIRN_DIR)
     try:
         import embeddings
         return embeddings
@@ -431,7 +431,7 @@ def get_adaptive_threshold_boost():
 
 
 def retrieve_context(context_need, session_id=None):
-    """Search the brain for memories matching the context need. Returns structured XML context.
+    """Search the cairn for memories matching the context need. Returns structured XML context.
 
     Uses composite scoring, quality gates, adaptive thresholds, and epistemic qualifiers."""
     import time
@@ -518,7 +518,7 @@ def retrieve_context(context_need, session_id=None):
             f'{r["content"]}</entry>'
         )
 
-    lines = ['<brain_context query="{}" current_project="{}">'.format(
+    lines = ['<cairn_context query="{}" current_project="{}">'.format(
         context_need.replace('"', '&quot;'),
         project or "none"
     )]
@@ -537,7 +537,7 @@ def retrieve_context(context_need, session_id=None):
             lines.append("  " + format_entry(r))
         lines.append("  </scope>")
 
-    lines.append("</brain_context>")
+    lines.append("</cairn_context>")
 
     return "\n".join(lines)
 
@@ -580,9 +580,9 @@ def layer2_cross_project_search(keywords_list, session_id=None):
         log(f"Layer 2: no cross-project matches for keywords: {query[:50]}")
         return
 
-    # Format as brain_context XML
+    # Format as cairn_context XML
     from datetime import datetime as dt
-    lines = [f'<brain_context query="cross-project keywords: {query[:60]}" current_project="{project or "none"}" layer="cross-project">']
+    lines = [f'<cairn_context query="cross-project keywords: {query[:60]}" current_project="{project or "none"}" layer="cross-project">']
     lines.append('  <scope level="global" weight="low">')
     for r in cross_project:
         proj = r.get("project") or "global"
@@ -602,7 +602,7 @@ def layer2_cross_project_search(keywords_list, session_id=None):
             f'{r["content"]}</entry>'
         )
     lines.append('  </scope>')
-    lines.append('</brain_context>')
+    lines.append('</cairn_context>')
 
     staged_xml = "\n".join(lines)
 
@@ -886,7 +886,7 @@ def main():
                         increment_continuation(session_id)
                         result = {
                             "decision": "block",
-                            "reason": f"BRAIN CONTEXT:\n{retrieved}"
+                            "reason": f"CAIRN CONTEXT:\n{retrieved}"
                         }
                         print(json.dumps(result))
                         sys.exit(0)

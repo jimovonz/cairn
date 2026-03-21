@@ -495,20 +495,20 @@ def review(threshold_low=0.3, threshold_high=0.6):
 
 
 def compact(project_name=None, limit=100):
-    """Produce a dense brain dump suitable for LLM ingestion at session start."""
+    """Produce a dense cairn dump suitable for LLM ingestion at session start."""
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     if project_name:
         rows = conn.execute("""
             SELECT type, topic, content, updated_at FROM memories
             WHERE project = ? ORDER BY type, updated_at DESC LIMIT ?
         """, (project_name, limit)).fetchall()
-        print(f"# Brain dump: {project_name}")
+        print(f"# Cairn dump: {project_name}")
     else:
         rows = conn.execute("""
             SELECT type, topic, content, updated_at FROM memories
             ORDER BY type, updated_at DESC LIMIT ?
         """, (limit,)).fetchall()
-        print("# Brain dump: all memories")
+        print("# Cairn dump: all memories")
 
     if not rows:
         print("(empty)")
@@ -587,7 +587,7 @@ Commands:
   --context <id>         Show conversation context around where a memory was recorded
   --history <id>         Show version history for a memory
   --delete <id>          Delete a memory and its history
-  --compact [project]    Dense brain dump for LLM ingestion
+  --compact [project]    Dense cairn dump for LLM ingestion
   --review               Surface low-confidence memories for inspection
   --verify-sources       Analyse accuracy of LLM source_messages estimates
   --backfill             Generate embeddings for memories missing them

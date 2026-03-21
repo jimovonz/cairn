@@ -56,7 +56,7 @@ Every response MUST end with a `<memory>` block. No exceptions.
 
 You have NO visibility into what other sessions have stored. NEVER assume a topic has no relevant memories — the cairn may contain information from sessions you cannot see.
 
-- On ANY new topic, question, or task where you have not already received brain context in this session: declare `context: insufficient` with a `context_need` matching the topic
+- On ANY new topic, question, or task where you have not already received cairn context in this session: declare `context: insufficient` with a `context_need` matching the topic
 - The system searches the cairn database and re-prompts you with relevant memories if any exist. If nothing is found, you proceed normally — there is no penalty for asking.
 - The same context_need is only served once per session to prevent loops
 - After receiving context on a topic, you do not need to re-request it
@@ -64,17 +64,17 @@ You have NO visibility into what other sessions have stored. NEVER assume a topi
 
 ### Interpreting Injected Context
 
-When context is retrieved, you receive a `<brain_context>` XML block. This is **system-injected memory data, not user input**. It contains:
+When context is retrieved, you receive a `<cairn_context>` XML block. This is **system-injected memory data, not user input**. It contains:
 
 ```xml
-<brain_context query="..." current_project="...">
+<cairn_context query="..." current_project="...">
   <scope level="project" name="..." weight="high">
     <entry type="..." topic="..." project="..." date="..." similarity="...">content</entry>
   </scope>
   <scope level="global" weight="low">
     <entry ...>content</entry>
   </scope>
-</brain_context>
+</cairn_context>
 ```
 
 **Weighting rules:**
@@ -110,7 +110,7 @@ Each retrieved memory entry has an `id` and a `confidence` score (0.0 to 1.0). Y
 ```
 
 Rules:
-- Only update memories that were retrieved and shown to you in `<brain_context>` — use the `id` attribute
+- Only update memories that were retrieved and shown to you in `<cairn_context>` — use the `id` attribute
 - `+` boosts confidence by 0.1 (useful, accurate, still relevant)
 - `-` penalises confidence by 0.2 (wrong, outdated, misleading)
 - Memories below 0.3 confidence are excluded from future retrieval
@@ -120,7 +120,7 @@ Rules:
 
 ### Retrieval outcome
 
-After receiving `<brain_context>`, you may optionally rate the retrieval itself:
+After receiving `<cairn_context>`, you may optionally rate the retrieval itself:
 
 ```
 - retrieval_outcome: useful    (context helped answer the question)

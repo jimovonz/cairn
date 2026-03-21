@@ -263,7 +263,7 @@ def test_insert_without_embedding():
 # ============================================================
 
 def test_retrieve_returns_structured_xml():
-    """retrieve_context should return well-formed brain_context XML."""
+    """retrieve_context should return well-formed cairn_context XML."""
     import stop_hook
     db_path, conn = fresh_db()
     seed_memories(conn, project="TestProject")
@@ -284,7 +284,7 @@ def test_retrieve_returns_structured_xml():
         result = stop_hook.retrieve_context("authentication approach", session_id="seed-session")
 
     assert result is not None
-    assert "<brain_context" in result
+    assert "<cairn_context" in result
     assert "JWT" in result
     assert 'reliability=' in result
     assert 'id="1"' in result
@@ -432,7 +432,7 @@ def test_layer2_stages_cross_project_results():
     with open(staged_path) as f:
         staged = json.load(f)
     assert "s1" in staged
-    assert "cross-project" in staged["s1"].lower() or "brain_context" in staged["s1"]
+    assert "cross-project" in staged["s1"].lower() or "cairn_context" in staged["s1"]
     conn.close()
 
 

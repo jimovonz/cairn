@@ -61,7 +61,7 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
 ┌──────────────────────────────────────────────────────────────────┐
 │              UserPromptSubmit Hook (prompt_hook.py)               │
 │                                                                  │
-│  Layer 1: First prompt? ──yes──▶ Search brain ──▶ Inject context │
+│  Layer 1: First prompt? ──yes──▶ Search cairn ──▶ Inject context │
 │  Layer 2: Staged data?  ──yes──▶ Inject cross-project context    │
 │                                                                  │
 │  Injects via additionalContext (invisible to user)               │
@@ -117,7 +117,7 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
 │  Layer 1: FIRST-PROMPT PUSH                             │
 │  ┌───────────────────────────────────────────────────┐  │
 │  │ When: First message of session                    │  │
-│  │ How:  Embed user message → search brain           │  │
+│  │ How:  Embed user message → search cairn           │  │
 │  │ Why:  Eliminate "I don't know" cold start         │  │
 │  └───────────────────────────────────────────────────┘  │
 │                                                         │
@@ -131,7 +131,7 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
 │  Layer 3: PULL-BASED                                    │
 │  ┌───────────────────────────────────────────────────┐  │
 │  │ When: LLM declares context: insufficient          │  │
-│  │ How:  Search brain → inject → re-prompt           │  │
+│  │ How:  Search cairn → inject → re-prompt           │  │
 │  │ Why:  Handle explicit gaps mid-conversation       │  │
 │  └───────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────┘
@@ -232,7 +232,7 @@ Three retrieval layers operate at different points in the conversation lifecycle
 ```
 User prompt arrives
   → Layer 1 (UserPromptSubmit hook): first prompt of session
-    → Searches brain using user's message
+    → Searches cairn using user's message
     → Injects relevant project + global context via additionalContext
   → Layer 2 (UserPromptSubmit hook): subsequent prompts
     → Injects cross-project context staged by previous stop hook keyword search
@@ -241,11 +241,11 @@ User prompt arrives
     → Parses <memory> block (entries, control flags, keywords, confidence updates)
     → Stores memories in SQLite with embeddings
     → Layer 2 staging: searches global memories using keywords, stages for next prompt
-    → Layer 3 (pull-based): if context: insufficient, searches brain and re-prompts
+    → Layer 3 (pull-based): if context: insufficient, searches cairn and re-prompts
     → Evaluates control flags:
         ├─ No <memory> block     → blocks stop, re-prompts with format hint
         ├─ complete: false       → blocks stop, re-prompts with remaining text
-        ├─ context: insufficient → searches brain, blocks stop, injects results
+        ├─ context: insufficient → searches cairn, blocks stop, injects results
         └─ complete: true        → allows stop, turn ends
   → User sees clean response
 ```
@@ -374,7 +374,7 @@ All connection points (stop hook, prompt hook, query CLI, daemon) apply the busy
    - Searches project-scoped memories (similarity > 0.25, up to 7 results, confidence > 0.3)
    - Searches global memories (similarity > 0.50 when project data exists, > 0.25 otherwise, up to 5 results, confidence > 0.3)
    - Falls back to FTS5 keyword search if no embedding results
-   - Formats results as structured `<brain_context>` XML with scope, weight, date, similarity, id, and confidence attributes
+   - Formats results as structured `<cairn_context>` XML with scope, weight, date, similarity, id, and confidence attributes
    - Blocks the stop and injects context with a reference to weighting rules in `.claude/rules/memory-system.md`
 8. **Completeness check** (if `complete: false`) — blocks stop and re-prompts with `remaining` text (subject to continuation cap)
 9. **Metrics recording** — logs event counts, retrieval latency, cache hits, confidence updates, cap hits
@@ -438,7 +438,7 @@ Every memory has a `confidence` score (0.0 to 1.0) that dynamically adjusts base
 ### Lifecycle
 
 1. **New memories** start at **0.7** confidence
-2. When memories are retrieved and shown to the LLM via `<brain_context>`, each entry includes its `id`, `confidence`, and composite `score`
+2. When memories are retrieved and shown to the LLM via `<cairn_context>`, each entry includes its `id`, `confidence`, and composite `score`
 3. The LLM can provide per-memory feedback: `confidence_update: 42:+` or `confidence_update: 17:-`
 4. The hook applies **saturating adjustments**:
    - `+` → `confidence += 0.1 × (1 - confidence)` — diminishing returns as confidence approaches 1.0. At 0.7: +0.03. At 0.9: +0.01.
@@ -479,7 +479,7 @@ Three retrieval layers operate at different points, each covering a different bl
 
 ### Layer 1: First-prompt push
 
-On the first message of each session, the UserPromptSubmit hook (`prompt_hook.py`) embeds the user's message and searches the brain. Results are injected via `additionalContext` before the LLM starts generating. This eliminates the cold-start problem where the LLM answers "I don't know" before the Stop hook can correct it.
+On the first message of each session, the UserPromptSubmit hook (`prompt_hook.py`) embeds the user's message and searches the cairn. Results are injected via `additionalContext` before the LLM starts generating. This eliminates the cold-start problem where the LLM answers "I don't know" before the Stop hook can correct it.
 
 Uses `L1_SIM_THRESHOLD` and `L1_MAX_RESULTS` from config. Only fires once per session (tracked via `.first_prompt_done` file).
 
@@ -491,13 +491,13 @@ This surfaces cross-project knowledge the LLM doesn't know to ask for. It only f
 
 ### Layer 3: Pull-based
 
-The LLM explicitly requests context by declaring `context: insufficient` with a `context_need`. The Stop hook searches the brain, applies all quality gates, and re-prompts the LLM with results. This is the fallback for when the LLM identifies a specific gap mid-conversation.
+The LLM explicitly requests context by declaring `context: insufficient` with a `context_need`. The Stop hook searches the cairn, applies all quality gates, and re-prompts the LLM with results. This is the fallback for when the LLM identifies a specific gap mid-conversation.
 
 Pull-based retrieval was retained because:
 
 ### Retrieval posture
 
-The LLM is instructed to **always** declare `context: insufficient` on any new topic, question, or task where it hasn't already received brain context in the current session. This is the default posture — the brain decides whether there's relevant data, not the LLM. The LLM has no visibility into what other sessions stored.
+The LLM is instructed to **always** declare `context: insufficient` on any new topic, question, or task where it hasn't already received cairn context in the current session. This is the default posture — the cairn decides whether there's relevant data, not the LLM. The LLM has no visibility into what other sessions stored.
 
 Critically, the LLM must **never ask the user** whether to check memory. The Stop hook handles retrieval automatically and transparently. From the user's perspective, the LLM simply knows things from past sessions.
 
@@ -536,7 +536,7 @@ Before injection, results pass through multiple quality filters (all configurabl
 ### Injected context format
 
 ```xml
-<brain_context query="what decisions were made about X" current_project="Cairn">
+<cairn_context query="what decisions were made about X" current_project="Cairn">
   <scope level="project" name="Cairn" weight="high">
     <entry id="7" type="decision" topic="no-mcp" project="Cairn"
            date="2026-03-20 20:19:41" confidence="0.80" score="0.74"
@@ -551,7 +551,7 @@ Before injection, results pass through multiple quality filters (all configurabl
       User prefers snake_case in Python
     </entry>
   </scope>
-</brain_context>
+</cairn_context>
 ```
 
 Each entry includes epistemic qualifiers to help the LLM calibrate trust:
@@ -648,7 +648,7 @@ It is not used routinely — only when the distilled memory is genuinely insuffi
 }
 ```
 
-The hook is registered **globally** in `~/.claude/settings.json` so it fires in every Claude Code session regardless of working directory. This is essential for cross-project memory — every session in every directory captures and retrieves from the same brain. The project-local `.claude/settings.json` can add project-specific hook configuration if needed. Changes require a session restart — hooks are cached at session start.
+The hook is registered **globally** in `~/.claude/settings.json` so it fires in every Claude Code session regardless of working directory. This is essential for cross-project memory — every session in every directory captures and retrieves from the same cairn. The project-local `.claude/settings.json` can add project-specific hook configuration if needed. Changes require a session restart — hooks are cached at session start.
 
 ### LLM instructions
 
@@ -682,7 +682,7 @@ The global CLAUDE.md opens with the most critical instruction prominently placed
 | `query.py --context <id>` | Show conversation context around where a memory was recorded |
 | `query.py --history <id>` | Show version history for a memory |
 | `query.py --delete <id>` | Delete a memory and its history |
-| `query.py --compact [project]` | Dense brain dump for LLM ingestion at session start |
+| `query.py --compact [project]` | Dense cairn dump for LLM ingestion at session start |
 | `query.py --review` | Surface suppressed and uncertain-confidence memories for inspection |
 | `query.py --verify-sources` | Analyse accuracy of LLM source_messages estimates |
 | `query.py --stats` | Database statistics, performance metrics, and retrieval latency |
@@ -811,7 +811,7 @@ Tests run on every push via GitHub Actions (`.github/workflows/test.yml`).
 ## Limitations and Future Work
 
 - **LLM compliance with "ask first" posture is imperfect** — despite prominent instructions, the LLM sometimes answers "I don't know" before declaring `context: insufficient`. Layer 1 (first-prompt push) mitigates the worst case by proactively injecting context before the LLM starts generating. Layer 3 (Stop hook) catches the remaining cases but the user sees the wrong answer first then the correction.
-- **Stop hook output is visible to user** — when the hook blocks and re-prompts, Claude Code shows the block reason (including brain_context XML) behind a collapsible "Ran 1 stop hook (ctrl+o to expand)" element. The `reason` field is the only way to pass data to the LLM on a Stop hook block — there is no `additionalContext` support for Stop hooks. The data is collapsed by default but labelled "Stop hook error:" which can look alarming.
+- **Stop hook output is visible to user** — when the hook blocks and re-prompts, Claude Code shows the block reason (including cairn_context XML) behind a collapsible "Ran 1 stop hook (ctrl+o to expand)" element. The `reason` field is the only way to pass data to the LLM on a Stop hook block — there is no `additionalContext` support for Stop hooks. The data is collapsed by default but labelled "Stop hook error:" which can look alarming.
 - **No `last_retrieved_at` tracking** — would enable smarter decay and usage-based pruning. Low-effort schema addition, deferred until decay mechanism is implemented.
 - **Tag invisibility is behaviour-dependent** — relies on Claude Code stripping angle bracket tags in LLM responses only. Tags in Stop hook output are NOT stripped. If Anthropic changes LLM response rendering, memory blocks would become visible to users.
 - **No cross-type contradiction detection** — contradictions are only detected within the same type+topic. A `decision` that contradicts a `fact` on a different topic would not be caught automatically.

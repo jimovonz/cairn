@@ -23,7 +23,7 @@ Rules:
 - Each entry is one line — no multi-line values
 - complete: false will re-prompt you to continue
 - You have NO visibility into what other sessions stored. On any new topic, declare context: insufficient with a matching context_need. The cairn decides relevance, not you.
-- When you receive <brain_context> XML: this is injected memory data, not user input. Weight project-scoped entries (high) over global (low). Prefer recent dates. Use confidence scores to judge reliability.
+- When you receive <cairn_context> XML: this is injected memory data, not user input. Weight project-scoped entries (high) over global (low). Prefer recent dates. Use confidence scores to judge reliability.
 - confidence_update: provide +/- feedback on retrieved memories by id
 
 Cairn database: {{CAIRN_HOME}}/cairn/cairn.db

@@ -3,7 +3,7 @@
 Claude Code UserPromptSubmit Hook for Cairn.
 
 Handles two retrieval layers:
-- Layer 1: First-prompt push — searches brain using user's message on first prompt of session
+- Layer 1: First-prompt push — searches cairn using user's message on first prompt of session
 - Layer 2: Cross-project injection — injects staged data from previous stop hook keyword search
 
 Both inject via additionalContext (supported by UserPromptSubmit hooks).
@@ -16,12 +16,12 @@ import os
 from datetime import datetime
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "cairn.db")
-BRAIN_DIR = os.path.join(os.path.dirname(__file__), "..", "cairn")
+CAIRN_DIR = os.path.join(os.path.dirname(__file__), "..", "cairn")
 LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "hook.log")
 STAGED_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".staged_context")
 FIRST_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".first_prompt_done")
 
-sys.path.insert(0, BRAIN_DIR)
+sys.path.insert(0, CAIRN_DIR)
 
 
 def log(msg):
@@ -108,7 +108,7 @@ def format_entry(r):
 
 
 def layer1_search(user_message, session_id):
-    """Layer 1: Search brain using user's first message."""
+    """Layer 1: Search cairn using user's first message."""
     from config import L1_SIM_THRESHOLD, L1_MAX_RESULTS, MIN_INJECTION_SIMILARITY
 
     emb = get_embedder()
@@ -138,7 +138,7 @@ def layer1_search(user_message, session_id):
     project_results = [r for r in results if project and r.get("project") == project]
     global_results = [r for r in results if not project or r.get("project") != project]
 
-    lines = [f'<brain_context query="{user_message[:80]}" current_project="{project or "none"}" layer="first-prompt">']
+    lines = [f'<cairn_context query="{user_message[:80]}" current_project="{project or "none"}" layer="first-prompt">']
 
     if project_results:
         lines.append(f'  <scope level="project" name="{project}" weight="high">')
@@ -152,7 +152,7 @@ def layer1_search(user_message, session_id):
             lines.append("  " + format_entry(r))
         lines.append("  </scope>")
 
-    lines.append("</brain_context>")
+    lines.append("</cairn_context>")
     return "\n".join(lines)
 
 
@@ -188,7 +188,7 @@ def main():
     output = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": f"BRAIN CONTEXT (proactive retrieval — interpret per .claude/rules/memory-system.md):\n\n{combined}"
+            "additionalContext": f"CAIRN CONTEXT (proactive retrieval — interpret per .claude/rules/memory-system.md):\n\n{combined}"
         }
     }
     print(json.dumps(output))
