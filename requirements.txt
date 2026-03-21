@@ -1,0 +1,2 @@
+sentence-transformers>=5.0
+sqlite-vec>=0.1.6

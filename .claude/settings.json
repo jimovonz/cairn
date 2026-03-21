@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/james/Projects/openbrain/.venv/bin/python3 /home/james/Projects/openbrain/hooks/prompt_hook.py",
+            "timeout": 30,
+            "statusMessage": "Retrieving context..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/james/Projects/openbrain/.venv/bin/python3 /home/james/Projects/openbrain/hooks/stop_hook.py",
+            "timeout": 60,
+            "statusMessage": "Thinking..."
+          }
+        ]
+      }
+    ]
+  }
+}

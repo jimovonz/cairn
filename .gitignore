@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+engram/engram.db
+engram/hook.log
+engram/.daemon.sock
+engram/.daemon.pid
+engram/.context_cache
+engram/.staged_context
+engram/.first_prompt_done
+engram/.continuation_count

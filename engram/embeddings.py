@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+"""Embedding utilities for Engram."""
+
+import numpy as np
+import os
+import struct
+from datetime import datetime
+
+_model = None
+
+
+_daemon_start_attempted = False
+
+
+def _daemon_embed(text):
+    """Try embedding via the daemon. Auto-starts daemon on first failure."""
+    global _daemon_start_attempted
+    try:
+        from daemon import send_request, is_running, SOCKET_PATH
+        import subprocess
+
+        # Auto-start daemon if not running (once per process)
+        if not is_running() and not _daemon_start_attempted:
+            _daemon_start_attempted = True
+            daemon_path = os.path.join(os.path.dirname(__file__), "daemon.py")
+            venv_python = os.path.join(os.path.dirname(__file__), "..", ".venv", "bin", "python3")
+            if os.path.exists(venv_python):
+                subprocess.Popen([venv_python, daemon_path, "start"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                import time
+                time.sleep(2)  # Give daemon time to load model
+
+        resp = send_request({"action": "embed", "text": text})
+        if resp and "vector" in resp:
+            return np.frombuffer(bytes.fromhex(resp["vector"]), dtype=np.float32)
+    except Exception:
+        pass
+    return None
+
+
+def get_model():
+    global _model
+    if _model is None:
+        from sentence_transformers import SentenceTransformer
+        _model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _model
+
+
+def embed(text, allow_slow=True):
+    """Return embedding vector. Uses daemon if available.
+    If allow_slow=False and daemon unavailable, returns None instead of blocking for model load."""
+    vec = _daemon_embed(text)
+    if vec is not None:
+        return vec
+    if not allow_slow:
+        return None
+    model = get_model()
+    return model.encode(text, normalize_embeddings=True)
+
+
+def to_blob(vector):
+    """Convert numpy array to bytes for SQLite storage."""
+    return vector.astype(np.float32).tobytes()
+
+
+def from_blob(blob):
+    """Convert SQLite blob back to numpy array."""
+    return np.frombuffer(blob, dtype=np.float32)
+
+
+def cosine_similarity(a, b):
+    """Cosine similarity between two vectors. Assumes normalized vectors."""
+    return float(np.dot(a, b))
+
+
+def _load_vec(conn):
+    """Try to load sqlite-vec extension. Returns True if available."""
+    try:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        return True
+    except (ImportError, Exception):
+        return False
+
+
+def _recency_decay(updated_at_str):
+    """Compute recency decay factor (0-1). Recent = 1, old = approaching 0."""
+    from config import RECENCY_HALF_LIFE_DAYS
+    try:
+        updated = datetime.strptime(updated_at_str[:19], "%Y-%m-%d %H:%M:%S")
+        age_days = (datetime.now() - updated).total_seconds() / 86400
+        import math
+        return math.exp(-0.693 * age_days / RECENCY_HALF_LIFE_DAYS)  # 0.693 = ln(2)
+    except Exception:
+        return 0.5  # Unknown age, neutral
+
+
+def _scope_weight(project, current_project):
+    """Return scope weight: 1.0 for project match, 0.3 for global."""
+    if current_project and project == current_project:
+        return 1.0
+    return 0.3
+
+
+def composite_score(similarity, confidence, updated_at_str=None, project=None, current_project=None):
+    """Compute a single scalar retrieval score combining all signals.
+    Reduces cognitive load on the LLM by pre-ranking results."""
+    from config import SCORE_W_SIMILARITY, SCORE_W_CONFIDENCE, SCORE_W_RECENCY, SCORE_W_SCOPE
+    recency = _recency_decay(updated_at_str) if updated_at_str else 0.5
+    scope = _scope_weight(project, current_project) if project is not None else 0.5
+    return (
+        SCORE_W_SIMILARITY * similarity +
+        SCORE_W_CONFIDENCE * (confidence ** 2) +  # Non-linear: high confidence gains meaningful advantage
+        SCORE_W_RECENCY * recency +
+        SCORE_W_SCOPE * scope
+    )
+
+
+def _vec_candidates(conn, query_vec, k, current_project=None):
+    """Get top-k candidates from sqlite-vec index."""
+    query_blob = to_blob(query_vec)
+    rows = conn.execute("""
+        SELECT v.memory_id, v.distance, m.type, m.topic, m.content, m.updated_at, m.project, m.confidence, m.source_start, m.source_end
+        FROM memories_vec v
+        JOIN memories m ON v.memory_id = m.id
+        WHERE v.embedding MATCH ?
+          AND k = ?
+    """, (query_blob, k)).fetchall()
+
+    results = []
+    for row in rows:
+        confidence = row[7] if row[7] is not None else 0.7
+        l2_dist = row[1]
+        sim = 1.0 - (l2_dist * l2_dist / 2.0)
+        results.append({
+            "id": row[0],
+            "type": row[2],
+            "topic": row[3],
+            "content": row[4],
+            "similarity": sim,
+            "updated_at": row[5],
+            "project": row[6],
+            "confidence": confidence,
+            "source_start": row[8],
+            "source_end": row[9],
+            "score": composite_score(sim, confidence, row[5], row[6], current_project)
+        })
+    return results
+
+
+def _brute_force_candidates(conn, query_vec, k, current_project=None):
+    """Get top-k candidates via brute-force scan."""
+    rows = conn.execute(
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, source_start, source_end FROM memories WHERE embedding IS NOT NULL"
+    ).fetchall()
+
+    results = []
+    for row in rows:
+        confidence = row[7] if row[7] is not None else 0.7
+        row_vec = from_blob(row[4])
+        sim = cosine_similarity(query_vec, row_vec)
+        results.append({
+            "id": row[0],
+            "type": row[1],
+            "topic": row[2],
+            "content": row[3],
+            "similarity": sim,
+            "updated_at": row[5],
+            "project": row[6],
+            "confidence": confidence,
+            "source_start": row[8],
+            "source_end": row[9],
+            "score": composite_score(sim, confidence, row[5], row[6], current_project)
+        })
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:k]
+
+
+def upsert_vec_index(conn, memory_id, embedding_blob):
+    """Insert or update a vector in the vec index."""
+    try:
+        conn.execute("DELETE FROM memories_vec WHERE memory_id = ?", (memory_id,))
+        conn.execute("INSERT INTO memories_vec (memory_id, embedding) VALUES (?, ?)",
+                     (memory_id, embedding_blob))
+    except Exception:
+        pass  # Vec table may not exist
+
+
+def find_similar(conn, text, threshold=None, limit=None, current_project=None):
+    """Find memories similar to the given text with full quality filtering.
+
+    Applies:
+    - Soft confidence inclusion (high similarity overrides low confidence)
+    - Relative filtering (drop entries far below the best match)
+    - Dominance suppression (include runner-up if close to leader)
+    - Garbage gate (don't return anything if best match is too weak)
+    - Composite scoring (pre-ranked by similarity + confidence + recency + scope)
+
+    Uses sqlite-vec index if available, falls back to brute-force."""
+    from config import (SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR, RELATIVE_FILTER_RATIO,
+                        MIN_INJECTION_SIMILARITY, MAX_INJECTED_ENTRIES, DOMINANCE_EPSILON,
+                        BORDERLINE_SIM_CEILING, BORDERLINE_SCORE_FLOOR)
+
+    if threshold is None:
+        threshold = 0.15  # Permissive floor — quality gates handle the rest
+    if limit is None:
+        limit = MAX_INJECTED_ENTRIES
+
+    query_vec = embed(text)
+    k = limit * 5  # Over-fetch for post-filtering
+
+    candidates = []
+    if _load_vec(conn):
+        try:
+            candidates = _vec_candidates(conn, query_vec, k, current_project)
+        except Exception:
+            pass
+
+    if not candidates:
+        candidates = _brute_force_candidates(conn, query_vec, k, current_project)
+
+    # Soft confidence inclusion: keep if high similarity OR adequate confidence
+    filtered = [r for r in candidates
+                if r["similarity"] >= threshold
+                and (r["similarity"] >= SOFT_SIM_OVERRIDE or r["confidence"] >= SOFT_CONF_FLOOR)]
+
+    if not filtered:
+        return []
+
+    # Sort by composite score
+    filtered.sort(key=lambda x: x["score"], reverse=True)
+
+    # Garbage gate: if the best match is too weak, return nothing
+    if filtered[0]["similarity"] < MIN_INJECTION_SIMILARITY:
+        return []
+
+    # Borderline gate: weak similarity + low score → skip
+    if (filtered[0]["similarity"] < BORDERLINE_SIM_CEILING
+            and filtered[0]["score"] < BORDERLINE_SCORE_FLOOR):
+        return []
+
+    # Relative filtering: drop entries far below the best match
+    max_sim = filtered[0]["similarity"]
+    filtered = [r for r in filtered if r["similarity"] >= RELATIVE_FILTER_RATIO * max_sim]
+
+    # Dominance suppression: if top two are close, ensure both are included
+    if len(filtered) >= 2:
+        gap = filtered[0]["score"] - filtered[1]["score"]
+        if gap < DOMINANCE_EPSILON:
+            # Both are close — keep at least 2
+            limit = max(limit, 2)
+
+    return filtered[:limit]
+
+
+def find_nearest(conn, text, limit=1):
+    """Find the single nearest memory by raw similarity. Used for deduplication.
+    Uses vec index if available. No confidence or threshold filtering."""
+    query_vec = embed(text)
+
+    if _load_vec(conn):
+        try:
+            candidates = _vec_candidates(conn, query_vec, limit)
+            if candidates:
+                candidates.sort(key=lambda x: x["similarity"], reverse=True)
+                return candidates[:limit]
+        except Exception:
+            pass
+
+    # Brute-force fallback
+    rows = conn.execute(
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence FROM memories WHERE embedding IS NOT NULL"
+    ).fetchall()
+
+    results = []
+    for row in rows:
+        row_vec = from_blob(row[4])
+        sim = cosine_similarity(query_vec, row_vec)
+        results.append({
+            "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
+            "similarity": sim, "updated_at": row[5], "project": row[6],
+            "confidence": row[7] if row[7] is not None else 0.7
+        })
+
+    results.sort(key=lambda x: x["similarity"], reverse=True)
+    return results[:limit]
