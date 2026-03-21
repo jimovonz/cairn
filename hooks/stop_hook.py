@@ -506,19 +506,13 @@ def retrieve_context(context_need, session_id=None):
         return r.get("score", r.get("confidence", 0.7))
 
     def format_entry(r):
-        sim = f' similarity="{r["similarity"]:.2f}"' if "similarity" in r else ""
-        proj = r.get("project") or "global"
-        conf = r.get("confidence", 0.7)
-        score = r.get("score", conf)
-        days = recency_days(r.get("updated_at", ""))
         rel = reliability(r)
         rel_label = "strong" if rel >= 0.6 else "moderate" if rel >= 0.4 else "weak"
+        days = recency_days(r.get("updated_at", ""))
         has_source = r.get("source_start") is not None
-        source_attr = f' has_context="true"' if has_source else ""
+        source_attr = ' ctx="y"' if has_source else ""
         return (
-            f'  <entry id="{r["id"]}" type="{r["type"]}" topic="{r["topic"]}" '
-            f'project="{proj}" date="{r["updated_at"]}" confidence="{conf:.2f}" '
-            f'score="{score:.2f}" recency_days="{days}" reliability="{rel_label}"{sim}{source_attr}>'
+            f'  <entry id="{r["id"]}" reliability="{rel_label}" days="{days}"{source_attr}>'
             f'{r["content"]}</entry>'
         )
 
