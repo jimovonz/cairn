@@ -225,6 +225,18 @@ def insert_memories(entries, session_id=None):
     if not entries:
         return 0
 
+    from config import MAX_MEMORIES_PER_RESPONSE
+
+    # Write throttling: cap entries per response, keep highest-value ones
+    if len(entries) > MAX_MEMORIES_PER_RESPONSE:
+        # Prioritise: corrections > decisions > facts > preferences > project > others
+        type_priority = {"correction": 0, "decision": 1, "fact": 2, "preference": 3,
+                         "person": 4, "skill": 5, "workflow": 6, "project": 7}
+        entries.sort(key=lambda e: type_priority.get(e.get("type", ""), 99))
+        dropped = entries[MAX_MEMORIES_PER_RESPONSE:]
+        entries = entries[:MAX_MEMORIES_PER_RESPONSE]
+        log(f"Write throttle: kept {len(entries)}, dropped {len(dropped)}")
+
     emb = get_embedder()
     conn = sqlite3.connect(DB_PATH)
     project = get_session_project(conn, session_id)

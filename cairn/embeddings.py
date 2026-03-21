@@ -252,7 +252,28 @@ def find_similar(conn, text, threshold=None, limit=None, current_project=None):
             # Both are close — keep at least 2
             limit = max(limit, 2)
 
-    return filtered[:limit]
+    # Diversity filter: greedily drop near-duplicates from results
+    from config import DIVERSITY_SIM_THRESHOLD
+    diverse = []
+    for r in filtered:
+        is_dup = False
+        for selected in diverse:
+            # Same type+topic = duplicate
+            if r.get("topic") == selected.get("topic") and r.get("type") == selected.get("type"):
+                is_dup = True
+                break
+            # High content word overlap = likely duplicate
+            r_words = set(r.get("content", "").lower().split())
+            s_words = set(selected.get("content", "").lower().split())
+            if r_words and s_words:
+                overlap = len(r_words & s_words) / max(len(r_words | s_words), 1)
+                if overlap > DIVERSITY_SIM_THRESHOLD:
+                    is_dup = True
+                    break
+        if not is_dup:
+            diverse.append(r)
+
+    return diverse[:limit]
 
 
 def find_nearest(conn, text, limit=1):

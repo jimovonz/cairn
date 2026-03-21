@@ -58,5 +58,11 @@ SOFT_CONF_FLOOR = 0.30             # Minimum confidence unless similarity overri
 # === Dominance suppression ===
 DOMINANCE_EPSILON = 0.05           # If gap between top1 and top2 < epsilon, include both
 
+# === Diversity filter (post-retrieval dedup) ===
+DIVERSITY_SIM_THRESHOLD = 0.9      # Drop retrieved entries with cosine > this to already-selected entries
+
+# === Write throttling ===
+MAX_MEMORIES_PER_RESPONSE = 5      # Max memory entries stored per LLM response — drop lowest-confidence excess
+
 # === Loop protection ===
 MAX_CONTINUATIONS = 3              # Hard cap on consecutive re-prompts per session
