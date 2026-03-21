@@ -9,3 +9,4 @@ cairn/.context_cache
 cairn/.staged_context
 cairn/.first_prompt_done
 cairn/.continuation_count
+.coverage
