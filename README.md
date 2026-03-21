@@ -215,7 +215,7 @@ All tunable parameters are in `cairn/config.py`:
 
 **Distillation is lossy.** Memories are one-line summaries. The nuance and detail of the original conversation is compressed away. The `--context` command can recover the surrounding transcript, but only if the session's transcript file still exists on disk.
 
-**Early stage.** This project was built and iterated in a single extended session. It has no formal test suite, limited cross-platform testing, and may have edge cases around permissions, venv conflicts, or long-running daemon stability. Bug reports welcome.
+**Early stage.** This project was built and iterated in a single extended session. It has limited cross-platform testing and may have edge cases around permissions, venv conflicts, or long-running daemon stability. Bug reports welcome.
 
 ## Failure modes
 
@@ -235,6 +235,26 @@ Things that can go wrong and how the system handles them:
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test coverage, and platform compatibility contributions are especially welcome.
+
+## Testing
+
+134 tests across 8 test files. No embedding model required — tests use mock vectors and patched DB paths.
+
+```bash
+cd ~/cairn
+python3 -m pytest tests/     # or run individually: python3 tests/test_parser.py
+```
+
+| Test file | Count | What it covers |
+|-----------|-------|---------------|
+| `test_parser.py` | 32 | Memory block parsing: valid, malformed, unclosed tags, code fences, special chars, stress |
+| `test_scoring.py` | 18 | Composite scoring, recency decay, saturating confidence, negation heuristics |
+| `test_gates.py` | 21 | All 9 quality gates: boundary conditions, interactions, diversity filter |
+| `test_integration.py` | 14 | Full pipeline with in-memory DB: insert → dedup → retrieve → gate |
+| `test_hook_e2e.py` | 13 | Stop hook main() with patched stdin: storage, blocking, sessions, metrics |
+| `test_prompt_hook.py` | 8 | Layer 1/2: first-prompt detection, staged context, short message handling |
+| `test_daemon_and_cache.py` | 16 | Daemon fallback, context cache, loop protection, fail-open, metrics |
+| `test_query_cli.py` | 12 | CLI commands: search, stats, review, delete, history, compact, projects |
 
 ## License
 

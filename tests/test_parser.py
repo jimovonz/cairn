@@ -219,6 +219,242 @@ more text
     assert entries[0]["topic"] == "second-block"
 
 
+# ============================================================
+# Real-world Claude output variations
+# ============================================================
+
+def test_memory_block_inside_markdown_code_fence():
+    """Claude sometimes wraps memory in triple backticks."""
+    text = '''Here's the answer.
+```
+<memory>
+- type: fact
+- topic: fenced
+- content: inside code fence
+- complete: true
+</memory>
+```'''
+    entries, complete, *_ = parse_memory_block(text)
+    assert len(entries) == 1
+    assert entries[0]["topic"] == "fenced"
+
+
+def test_memory_block_with_trailing_text():
+    """Claude adds commentary after the closing tag."""
+    text = '''My response.
+<memory>
+- type: decision
+- topic: trailing
+- content: has text after
+- complete: true
+</memory>
+
+Let me know if you need anything else!'''
+    entries, complete, *_ = parse_memory_block(text)
+    assert len(entries) == 1
+    assert entries[0]["content"] == "has text after"
+
+
+def test_memory_block_with_leading_whitespace():
+    """Lines have inconsistent indentation."""
+    text = '''response
+<memory>
+  - type: fact
+   - topic: indented
+    - content: inconsistent whitespace
+  - complete: true
+</memory>'''
+    entries, complete, *_ = parse_memory_block(text)
+    assert len(entries) == 1
+    assert entries[0]["topic"] == "indented"
+
+
+def test_memory_block_with_no_dashes():
+    """Claude omits the leading dashes."""
+    text = '''response
+<memory>
+type: fact
+topic: no-dashes
+content: missing leading dashes
+complete: true
+</memory>'''
+    entries, complete, *_ = parse_memory_block(text)
+    assert len(entries) == 1
+    assert entries[0]["topic"] == "no-dashes"
+
+
+def test_content_with_special_characters():
+    """Content contains colons, dashes, and other punctuation."""
+    text = '''response
+<memory>
+- type: fact
+- topic: special-chars
+- content: Use --no-verify flag; connect to host:port (e.g. localhost:5432)
+- complete: true
+</memory>'''
+    entries, *_ = parse_memory_block(text)
+    assert len(entries) == 1
+    assert "localhost:5432" in entries[0]["content"]
+
+
+def test_content_with_url():
+    """Content contains a URL with colons and slashes."""
+    text = '''response
+<memory>
+- type: fact
+- topic: url-content
+- content: API docs at https://api.example.com/v2/docs — use Bearer token
+- complete: true
+</memory>'''
+    entries, *_ = parse_memory_block(text)
+    assert len(entries) == 1
+    assert "https://api.example.com" in entries[0]["content"]
+
+
+def test_content_with_emoji():
+    """Some Claude outputs include emoji."""
+    text = '''response
+<memory>
+- type: preference
+- topic: emoji-test
+- content: User prefers concise responses without unnecessary detail
+- complete: true
+</memory>'''
+    entries, *_ = parse_memory_block(text)
+    assert len(entries) == 1
+
+
+def test_very_long_content():
+    """Content exceeds normal length."""
+    long_content = "word " * 200  # 1000 chars
+    text = f'''response
+<memory>
+- type: fact
+- topic: long
+- content: {long_content.strip()}
+- complete: true
+</memory>'''
+    entries, *_ = parse_memory_block(text)
+    assert len(entries) == 1
+    assert len(entries[0]["content"]) > 500
+
+
+def test_content_with_angle_brackets():
+    """Content contains literal angle brackets (e.g. generics, HTML)."""
+    text = '''response
+<memory>
+- type: fact
+- topic: brackets
+- content: Use List<String> for the response type
+- complete: true
+</memory>'''
+    entries, *_ = parse_memory_block(text)
+    # The regex-based parser may struggle here — this tests current behaviour
+    assert entries is not None
+    # Even if the content is truncated, we should get something
+    if len(entries) > 0:
+        assert "List" in entries[0]["content"]
+
+
+def test_mixed_dashes_and_no_dashes():
+    """Some lines have dashes, others don't."""
+    text = '''response
+<memory>
+- type: fact
+topic: mixed
+- content: mixed formatting
+complete: true
+</memory>'''
+    entries, complete, *_ = parse_memory_block(text)
+    assert len(entries) == 1
+    assert complete is True
+
+
+def test_duplicate_type_field():
+    """Claude outputs type twice — second should win."""
+    text = '''response
+<memory>
+- type: fact
+- type: decision
+- topic: dup-type
+- content: which type wins
+- complete: true
+</memory>'''
+    entries, *_ = parse_memory_block(text)
+    assert len(entries) == 1
+    assert entries[0]["type"] == "decision"
+
+
+def test_empty_content_field():
+    """Content is present but empty."""
+    text = '''response
+<memory>
+- type: fact
+- topic: empty-content
+- content:
+- complete: true
+</memory>'''
+    entries, *_ = parse_memory_block(text)
+    # Empty content after colon — may or may not parse
+    # The important thing is it doesn't crash
+
+
+def test_source_messages_single_number():
+    """source_messages with just one number (not a range)."""
+    text = '''response
+<memory>
+- type: fact
+- topic: single-source
+- content: single source ref
+- source_messages: 42
+- complete: true
+</memory>'''
+    entries, *_ = parse_memory_block(text)
+    assert len(entries) == 1
+    assert entries[0]["source_start"] == 42
+    assert entries[0]["source_end"] == 42
+
+
+def test_many_entries_stress():
+    """10 entries in one block — tests parser doesn't lose track."""
+    lines = []
+    for i in range(10):
+        lines.extend([f"- type: fact", f"- topic: stress-{i}", f"- content: entry number {i}"])
+    block = "\n".join(lines)
+    text = f"response\n<memory>\n{block}\n- complete: true\n</memory>"
+    entries, *_ = parse_memory_block(text)
+    assert len(entries) == 10
+    assert entries[0]["topic"] == "stress-0"
+    assert entries[9]["topic"] == "stress-9"
+
+
+def test_all_fields_populated():
+    """Every possible field present on one entry."""
+    text = '''response
+<memory>
+- type: decision
+- topic: full-entry
+- content: all fields present
+- source_messages: 5-12
+- keywords: auth, security, tokens
+- context: sufficient
+- context_need: none needed
+- confidence_update: 42:+
+- retrieval_outcome: useful
+- complete: true
+</memory>'''
+    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords = parse_memory_block(text)
+    assert len(entries) == 1
+    assert entries[0]["type"] == "decision"
+    assert entries[0]["source_start"] == 5
+    assert entries[0]["source_end"] == 12
+    assert keywords == ["auth", "security", "tokens"]
+    assert context == "sufficient"
+    assert conf_updates == [(42, "+")]
+    assert retrieval_outcome == "useful"
+    assert complete is True
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0

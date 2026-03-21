@@ -42,12 +42,20 @@ Thanks for your interest in contributing! Cairn is a young project and contribut
 
 ## Testing
 
-There's no formal test suite yet (contributions welcome). For now:
+134 tests across 8 files. Run with:
 
-1. Run `./install.sh` on a clean setup
-2. Start a Claude Code session and verify the hook fires
-3. Check `/cairn` shows stats
-4. Test context retrieval by asking about a topic from a previous session
+```bash
+python3 -m pytest tests/         # full suite
+python3 tests/test_parser.py     # individual file
+```
+
+No embedding model required — tests use deterministic mock vectors and patched DB paths.
+
+**Before submitting a PR:**
+1. All existing tests must pass
+2. Add tests for new functionality
+3. Run `./install.sh` on a clean setup and verify the hook fires
+4. Check `/cairn` shows stats in a Claude Code session
 
 ## Reporting issues
 
