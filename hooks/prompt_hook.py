@@ -54,39 +54,31 @@ def get_session_project(session_id):
         return None
 
 
-def is_first_prompt(session_id, conn=None):
+def is_first_prompt(session_id):
     """Check if this is the first prompt of the session."""
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     row = conn.execute(
         "SELECT value FROM hook_state WHERE session_id = ? AND key = 'first_prompt_done'",
         (session_id,)
     ).fetchone()
-    if own_conn:
-        conn.close()
+    conn.close()
     return row is None
 
 
-def mark_first_prompt_done(session_id, conn=None):
+def mark_first_prompt_done(session_id):
     """Mark that the first prompt has been processed for this session."""
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     conn.execute(
         "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'first_prompt_done', '1')",
         (session_id,)
     )
     conn.commit()
-    if own_conn:
-        conn.close()
+    conn.close()
 
 
-def load_staged_context(session_id, conn=None):
+def load_staged_context(session_id):
     """Load and consume cross-project context staged by the stop hook."""
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     row = conn.execute(
         "SELECT value FROM hook_state WHERE session_id = ? AND key = 'staged_context'",
         (session_id,)
@@ -97,8 +89,7 @@ def load_staged_context(session_id, conn=None):
             (session_id,)
         )
         conn.commit()
-    if own_conn:
-        conn.close()
+    conn.close()
     return row[0] if row else None
 
 

@@ -36,18 +36,15 @@ def get_conn():
     return conn
 
 
-def record_metric(session_id, event, detail=None, value=None, conn=None):
+def record_metric(session_id, event, detail=None, value=None):
     try:
-        own_conn = conn is None
-        if own_conn:
-            conn = get_conn()
+        conn = get_conn()
         conn.execute(
             "INSERT INTO metrics (event, session_id, detail, value) VALUES (?, ?, ?, ?)",
             (event, session_id, detail, value)
         )
         conn.commit()
-        if own_conn:
-            conn.close()
+        conn.close()
     except Exception:
         pass
 
@@ -160,13 +157,11 @@ from config import (DEDUP_THRESHOLD, MAX_CONTINUATIONS, CONFIDENCE_BOOST, CONFID
                      NEGATION_SIM_FLOOR, WEAK_ENTRY_SCORE_FLOOR)
 
 
-def apply_confidence_updates(updates, session_id=None, conn=None):
+def apply_confidence_updates(updates, session_id=None):
     """Apply confidence adjustments from LLM feedback."""
     if not updates:
         return 0
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     applied = 0
     for memory_id, direction in updates:
         row = conn.execute("SELECT confidence FROM memories WHERE id = ?", (memory_id,)).fetchone()
@@ -184,8 +179,7 @@ def apply_confidence_updates(updates, session_id=None, conn=None):
         log(f"Confidence: memory {memory_id} {current:.2f} → {new:.2f} ({direction})")
         applied += 1
     conn.commit()
-    if own_conn:
-        conn.close()
+    conn.close()
     return applied
 
 
@@ -346,7 +340,7 @@ def _has_negation_mismatch(text_a, text_b):
     return False
 
 
-def insert_memories(entries, session_id=None, conn=None):
+def insert_memories(entries, session_id=None):
     """Insert memory entries, deduplicating via cosine similarity."""
     if not entries:
         return 0
@@ -364,9 +358,7 @@ def insert_memories(entries, session_id=None, conn=None):
         log(f"Write throttle: kept {len(entries)}, dropped {len(dropped)}")
 
     emb = get_embedder()
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     project = get_session_project(conn, session_id)
     inserted = 0
 
@@ -481,22 +473,18 @@ def insert_memories(entries, session_id=None, conn=None):
         inserted += 1
 
     conn.commit()
-    if own_conn:
-        conn.close()
+    conn.close()
     return inserted
 
 
-def register_session(session_id, transcript_path, conn=None):
+def register_session(session_id, transcript_path):
     """Register this session in the sessions table, extracting parent if available."""
     if not session_id:
         return
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     existing = conn.execute("SELECT session_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     if existing:
-        if own_conn:
-            conn.close()
+        conn.close()
         return
 
     # Extract parent session from first user message in transcript
@@ -535,28 +523,24 @@ def register_session(session_id, transcript_path, conn=None):
         (session_id, parent_session_id, project, transcript_path)
     )
     conn.commit()
-    if own_conn:
-        conn.close()
+    conn.close()
     if parent_session_id:
         log(f"Session {session_id[:8]}... parent: {parent_session_id[:8]}... project: {project}")
     else:
         log(f"Session {session_id[:8]}... (root)")
 
 
-def get_adaptive_threshold_boost(conn=None):
+def get_adaptive_threshold_boost():
     """Check recent retrieval outcomes. If harmful/neutral rate is high, boost the similarity floor."""
     try:
-        own_conn = conn is None
-        if own_conn:
-            conn = get_conn()
+        conn = get_conn()
         recent = conn.execute("""
             SELECT event, COUNT(*) FROM metrics
             WHERE event IN ('retrieval_useful', 'retrieval_neutral', 'retrieval_harmful')
             AND created_at > datetime('now', '-7 days')
             GROUP BY event
         """).fetchall()
-        if own_conn:
-            conn.close()
+        conn.close()
 
         counts = {r[0]: r[1] for r in recent}
         total = sum(counts.values())
@@ -573,16 +557,14 @@ def get_adaptive_threshold_boost(conn=None):
         return 0.0
 
 
-def retrieve_context(context_need, session_id=None, conn=None):
+def retrieve_context(context_need, session_id=None):
     """Search the cairn for memories matching the context need. Returns structured XML context.
 
     Uses composite scoring, quality gates, adaptive thresholds, and epistemic qualifiers."""
     import time
     from datetime import datetime as dt
     start = time.time()
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     project = get_session_project(conn, session_id)
 
     emb = get_embedder()
@@ -631,8 +613,7 @@ def retrieve_context(context_need, session_id=None, conn=None):
         except Exception:
             pass
 
-    if own_conn:
-        conn.close()
+    conn.close()
 
     elapsed_ms = (time.time() - start) * 1000
     total = len(project_results) + len(global_results)
@@ -692,7 +673,7 @@ def retrieve_context(context_need, session_id=None, conn=None):
 
 
 
-def layer2_cross_project_search(keywords_list, session_id=None, conn=None):
+def layer2_cross_project_search(keywords_list, session_id=None):
     """Layer 2: Search global memories for cross-project relevance using keywords.
     Stages results for the next UserPromptSubmit hook injection."""
     from config import L2_SIM_THRESHOLD, L2_MAX_RESULTS
@@ -704,9 +685,7 @@ def layer2_cross_project_search(keywords_list, session_id=None, conn=None):
     if not emb:
         return
 
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     project = get_session_project(conn, session_id)
 
     query = " ".join(keywords_list)
@@ -715,8 +694,7 @@ def layer2_cross_project_search(keywords_list, session_id=None, conn=None):
                                    limit=L2_MAX_RESULTS * 2, current_project=project)
     except Exception as e:
         log(f"Layer 2 search error: {e}")
-        if own_conn:
-            conn.close()
+        conn.close()
         return
 
     # Filter: cross-project only, strong match, not current project
@@ -726,8 +704,7 @@ def layer2_cross_project_search(keywords_list, session_id=None, conn=None):
 
     if not cross_project:
         log(f"Layer 2: no cross-project matches for keywords: {query[:50]}")
-        if own_conn:
-            conn.close()
+        conn.close()
         return
 
     # Format as cairn_context XML
@@ -762,8 +739,7 @@ def layer2_cross_project_search(keywords_list, session_id=None, conn=None):
         (session_id, staged_xml)
     )
     conn.commit()
-    if own_conn:
-        conn.close()
+    conn.close()
 
     log(f"Layer 2: staged {len(cross_project)} cross-project entries for next prompt")
     record_metric(session_id, "layer2_staged", query[:100], len(cross_project))
@@ -772,17 +748,14 @@ def layer2_cross_project_search(keywords_list, session_id=None, conn=None):
 CONTEXT_CACHE_SIM_THRESHOLD = 0.9  # Semantic similarity threshold for cache hit
 
 
-def load_context_cache(session_id, conn=None):
+def load_context_cache(session_id):
     """Load cached context_need embeddings for this session."""
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     row = conn.execute(
         "SELECT value FROM hook_state WHERE session_id = ? AND key = 'context_cache'",
         (session_id,)
     ).fetchone()
-    if own_conn:
-        conn.close()
+    conn.close()
     if row and row[0]:
         try:
             return json.loads(row[0])
@@ -791,18 +764,15 @@ def load_context_cache(session_id, conn=None):
     return []
 
 
-def save_context_cache(session_id, served_needs, conn=None):
+def save_context_cache(session_id, served_needs):
     """Save context_need embeddings for this session."""
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     conn.execute(
         "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'context_cache', ?)",
         (session_id, json.dumps(served_needs))
     )
     conn.commit()
-    if own_conn:
-        conn.close()
+    conn.close()
 
 
 def is_context_cached(context_need, served_needs, emb):
@@ -837,75 +807,61 @@ def add_to_context_cache(context_need, served_needs, emb):
     return served_needs
 
 
-def get_continuation_count(session_id, conn=None):
+def get_continuation_count(session_id):
     """Get how many times we've re-prompted this session."""
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     row = conn.execute(
         "SELECT value FROM hook_state WHERE session_id = ? AND key = 'continuation_count'",
         (session_id,)
     ).fetchone()
-    if own_conn:
-        conn.close()
+    conn.close()
     return int(row[0]) if row and row[0] else 0
 
 
-def increment_continuation(session_id, conn=None):
+def increment_continuation(session_id):
     """Increment and return the continuation count."""
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
-    current = get_continuation_count(session_id, conn=conn)
+    conn = get_conn()
+    current = get_continuation_count(session_id)
     new_count = current + 1
     conn.execute(
         "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'continuation_count', ?)",
         (session_id, str(new_count))
     )
     conn.commit()
-    if own_conn:
-        conn.close()
+    conn.close()
     return new_count
 
 
-def reset_continuation(session_id, conn=None):
+def reset_continuation(session_id):
     """Reset continuation count (called when a response completes normally)."""
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     conn.execute(
         "DELETE FROM hook_state WHERE session_id = ? AND key = 'continuation_count'",
         (session_id,)
     )
     conn.commit()
-    if own_conn:
-        conn.close()
+    conn.close()
 
 
-def auto_label_project(session_id, cwd, conn=None):
+def auto_label_project(session_id, cwd):
     """Heuristically label a session's project based on the working directory."""
     if not session_id or not cwd:
         return
-    own_conn = conn is None
-    if own_conn:
-        conn = get_conn()
+    conn = get_conn()
     row = conn.execute("SELECT project FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     if row and row[0]:
-        if own_conn:
-            conn.close()
+        conn.close()
         return  # Already labelled
 
     # Derive project name from directory (lowercase for consistency)
     project_name = os.path.basename(cwd.rstrip("/")).lower()
     if not project_name or project_name in (".", "/", "home"):
-        if own_conn:
-            conn.close()
+        conn.close()
         return
 
     conn.execute("UPDATE sessions SET project = ? WHERE session_id = ?", (project_name, session_id))
     conn.commit()
-    if own_conn:
-        conn.close()
+    conn.close()
     log(f"Auto-labelled project: {project_name} (from cwd: {cwd})")
 
 
@@ -950,23 +906,19 @@ def main():
     session_id = hook_input.get("session_id", "")
     cwd = hook_input.get("cwd", "")
 
-    # Single shared connection for the entire hook invocation
-    conn = get_conn()
-
     # Register session and track parent chain
-    register_session(session_id, transcript_path, conn=conn)
+    register_session(session_id, transcript_path)
 
     # Auto-label project from working directory
-    auto_label_project(session_id, cwd, conn=conn)
+    auto_label_project(session_id, cwd)
 
     # Check continuation cap
     if is_continuation:
         count = get_continuation_count(session_id)
         if count >= MAX_CONTINUATIONS:
             log(f"Continuation cap reached ({count}/{MAX_CONTINUATIONS}) — forcing stop")
-            record_metric(session_id, "continuation_cap_hit", None, count, conn=conn)
+            record_metric(session_id, "continuation_cap_hit", None, count)
             reset_continuation(session_id)
-            conn.close()
             sys.exit(0)
 
     # Use last_assistant_message — this is the current response
@@ -974,7 +926,6 @@ def main():
 
     if not text:
         log("No text found, allowing stop")
-        conn.close()
         sys.exit(0)
 
     log(f"Text length: {len(text)}, has <memory>: {'<memory>' in text}, continuation: {is_continuation}")
@@ -984,11 +935,10 @@ def main():
 
     # No memory block found
     if entries is None and complete is None:
-        record_metric(session_id, "missing_memory_block", None, 1 if is_continuation else 0, conn=conn)
+        record_metric(session_id, "missing_memory_block", None, 1 if is_continuation else 0)
         if is_continuation:
             log("Missing memory block on continuation — allowing stop to prevent loop")
             reset_continuation(session_id)
-            conn.close()
             sys.exit(0)
         increment_continuation(session_id)
 
@@ -996,7 +946,7 @@ def main():
         has_open_tag = "<memory>" in text
         has_close_tag = "</memory>" in text
         if has_open_tag:
-            record_metric(session_id, "malformed_memory_block", conn=conn)
+            record_metric(session_id, "malformed_memory_block")
             hint = "Your <memory> block could not be parsed. "
             if not has_close_tag:
                 hint += "Missing closing </memory> tag. "
@@ -1007,7 +957,6 @@ def main():
                 "decision": "block",
                 "reason": "Response missing required <memory> block. Add a <memory> block with at least complete: true before finishing."
             }
-        conn.close()
         print(json.dumps(result))
         sys.exit(0)
 
@@ -1015,26 +964,26 @@ def main():
 
     # Apply confidence updates
     if confidence_updates:
-        applied = apply_confidence_updates(confidence_updates, session_id=session_id, conn=conn)
-        record_metric(session_id, "confidence_updates", None, applied, conn=conn)
+        applied = apply_confidence_updates(confidence_updates, session_id=session_id)
+        record_metric(session_id, "confidence_updates", None, applied)
 
     # Record retrieval outcome (system-level learning signal)
     if retrieval_outcome:
-        record_metric(session_id, f"retrieval_{retrieval_outcome}", context_need[:100] if context_need else None, conn=conn)
+        record_metric(session_id, f"retrieval_{retrieval_outcome}", context_need[:100] if context_need else None)
         log(f"Retrieval outcome: {retrieval_outcome}")
 
     # Insert memories into DB
     if entries:
-        count = insert_memories(entries, session_id=session_id, conn=conn)
-        record_metric(session_id, "memories_stored", None, count, conn=conn)
+        count = insert_memories(entries, session_id=session_id)
+        record_metric(session_id, "memories_stored", None, count)
         log(f"Stored {count} memories (session: {session_id[:8]}...)" if session_id else f"Stored {count} memories")
 
     # Record dedup stats
-    record_metric(session_id, "hook_fired", f"entries={len(entries) if entries else 0}", conn=conn)
+    record_metric(session_id, "hook_fired", f"entries={len(entries) if entries else 0}")
 
     # Layer 2: cross-project keyword search (stages for next prompt, doesn't block)
     if keywords and not is_continuation:
-        layer2_cross_project_search(keywords, session_id=session_id, conn=conn)
+        layer2_cross_project_search(keywords, session_id=session_id)
 
     # Check context sufficiency — retrieve and inject if insufficient
     LOW_INFO_STOPLIST = {"help", "continue", "more", "yes", "no", "ok", "thanks", "done", "info", "more info"}
@@ -1043,13 +992,13 @@ def main():
         need_words = set(context_need.lower().split())
         if len(context_need) < 8 or need_words <= LOW_INFO_STOPLIST:
             log(f"Pre-filter: skipping low-info context_need: {context_need}")
-            record_metric(session_id, "context_prefiltered", context_need[:100], conn=conn)
+            record_metric(session_id, "context_prefiltered", context_need[:100])
         else:
-            record_metric(session_id, "context_requested", context_need[:100], conn=conn)
+            record_metric(session_id, "context_requested", context_need[:100])
             emb = get_embedder()
             served = load_context_cache(session_id)
             if not is_context_cached(context_need, served, emb):
-                retrieved = retrieve_context(context_need, session_id=session_id, conn=conn)
+                retrieved = retrieve_context(context_need, session_id=session_id)
                 if retrieved:
                     # Weak-entry suppression: don't inject if top result is unreliable
                     # Parse the first score from the XML to check reliability
@@ -1058,14 +1007,13 @@ def main():
                     top_score = float(score_match.group(1)) if score_match else 1.0
                     if top_score < WEAK_ENTRY_SCORE_FLOOR:
                         log(f"Weak-entry suppression: top score {top_score:.2f} — skipping injection")
-                        record_metric(session_id, "context_weak_suppressed", context_need[:100], conn=conn)
+                        record_metric(session_id, "context_weak_suppressed", context_need[:100])
                     else:
                         served = add_to_context_cache(context_need, served, emb)
                         save_context_cache(session_id, served)
-                        record_metric(session_id, "context_served", context_need[:100], conn=conn)
+                        record_metric(session_id, "context_served", context_need[:100])
                         log(f"Context retrieval for: {context_need[:50]}...")
                         increment_continuation(session_id)
-                        conn.close()
                         result = {
                             "decision": "block",
                             "reason": f"CAIRN CONTEXT:\n{retrieved}"
@@ -1075,7 +1023,7 @@ def main():
                 else:
                     log(f"No context found for: {context_need}")
             else:
-                record_metric(session_id, "context_cache_hit", context_need[:100], conn=conn)
+                record_metric(session_id, "context_cache_hit", context_need[:100])
                 log(f"Context already served (semantic match) for: {context_need[:50]}... — skipping")
 
     # Check completeness
@@ -1083,13 +1031,11 @@ def main():
         count = get_continuation_count(session_id)
         if count >= MAX_CONTINUATIONS:
             log(f"Completeness re-prompt cap reached ({count}/{MAX_CONTINUATIONS}) — forcing stop")
-            record_metric(session_id, "completeness_cap_hit", remaining, count, conn=conn)
+            record_metric(session_id, "completeness_cap_hit", remaining, count)
             reset_continuation(session_id)
-            conn.close()
             sys.exit(0)
         increment_continuation(session_id)
         llm_reason = f"Response marked incomplete. Continue with: {remaining}" if remaining else "Response marked incomplete. Continue."
-        conn.close()
         result = {
             "decision": "block",
             "reason": llm_reason
@@ -1104,9 +1050,8 @@ def main():
         intent_result = check_trailing_intent(text)
         if intent_result:
             log(f"Trailing intent detected: {intent_result}")
-            record_metric(session_id, "trailing_intent_blocked", intent_result, conn=conn)
+            record_metric(session_id, "trailing_intent_blocked", intent_result)
             increment_continuation(session_id)
-            conn.close()
             result = {
                 "decision": "block",
                 "reason": (
@@ -1120,7 +1065,6 @@ def main():
 
     # All good — reset continuation counter and allow stop
     reset_continuation(session_id)
-    conn.close()
     sys.exit(0)
 
 
