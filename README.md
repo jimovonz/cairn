@@ -238,7 +238,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test 
 
 ## Testing
 
-156 tests across 9 test files. No embedding model required — tests use mock vectors and patched DB paths.
+171 tests across 10 test files. No embedding model required — tests use mock vectors and patched DB paths.
 
 ```bash
 cd ~/cairn
@@ -256,6 +256,7 @@ python3 -m pytest tests/     # or run individually: python3 tests/test_parser.py
 | `test_daemon_and_cache.py` | 16 | Daemon fallback, context cache, loop protection, fail-open, metrics |
 | `test_query_cli.py` | 12 | CLI commands: search, stats, review, delete, history, compact, projects |
 | `test_retrieval_pipeline.py` | 22 | Retrieval pipeline: find_nearest, insert dedup/contradiction/variant paths, retrieve_context XML, adaptive thresholds, Layer 2 cross-project, session registration, auto-labelling edge cases, negation dampening |
+| `test_enforcement_loop.py` | 15 | Two-pass enforcement loop, continuation cap, malformed blocks, low-info pre-filter, retrieval outcomes, context cache hit, write throttle + confidence updates through main() |
 
 ## License
 
