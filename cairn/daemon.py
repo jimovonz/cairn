@@ -89,7 +89,7 @@ def run_server():
     server.listen(5)
 
     # Write PID
-    with open(PID_PATH, "w") as f:
+    with open(PID_PATH, "w", encoding="utf-8") as f:
         f.write(str(os.getpid()))
 
     def shutdown(signum, frame):
@@ -149,7 +149,7 @@ def is_running():
     if not os.path.exists(PID_PATH):
         return False
     try:
-        with open(PID_PATH) as f:
+        with open(PID_PATH, encoding="utf-8") as f:
             pid = int(f.read().strip())
         os.kill(pid, 0)
         return True
@@ -196,7 +196,7 @@ if __name__ == "__main__":
         if not is_running():
             print("Daemon not running.")
             sys.exit(0)
-        with open(PID_PATH) as f:
+        with open(PID_PATH, encoding="utf-8") as f:
             pid = int(f.read().strip())
         os.kill(pid, signal.SIGTERM)
         print("Daemon stopped.")

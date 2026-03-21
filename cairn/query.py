@@ -172,7 +172,7 @@ def show_context(memory_id, margin=3):
         import json as _json
         keywords = row[3].lower().split()[:3]
         msg_num = 0
-        with open(transcript_path) as f:
+        with open(transcript_path, encoding="utf-8") as f:
             for line in f:
                 try:
                     entry = _json.loads(line.strip())
@@ -264,7 +264,7 @@ def verify_sources():
         # Load transcript messages if not cached
         if transcript_path not in transcripts:
             messages = []
-            with open(transcript_path) as f:
+            with open(transcript_path, encoding="utf-8") as f:
                 for line in f:
                     try:
                         entry = _json.loads(line.strip())

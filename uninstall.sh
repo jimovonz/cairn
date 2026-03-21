@@ -69,6 +69,14 @@ sys.exit(0 if changed else 1)
 " 2>/dev/null && echo "Removed hooks from settings.json." || echo "No cairn hooks found in settings.json."
 fi
 
+# --- Clean up runtime state files ---
+for f in ".context_cache" ".staged_context" ".first_prompt_done" ".continuation_count"; do
+    if [ -f "$CAIRN_HOME/cairn/$f" ]; then
+        rm "$CAIRN_HOME/cairn/$f"
+    fi
+done
+echo "Cleaned up runtime state files."
+
 echo ""
 echo "=== Cairn uninstalled ==="
 echo ""

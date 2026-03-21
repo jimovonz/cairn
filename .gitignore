@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 cairn/cairn.db
+cairn/cairn.db-shm
+cairn/cairn.db-wal
 cairn/hook.log
 cairn/.daemon.sock
 cairn/.daemon.pid

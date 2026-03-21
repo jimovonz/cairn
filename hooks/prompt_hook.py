@@ -25,7 +25,7 @@ sys.path.insert(0, CAIRN_DIR)
 
 
 def log(msg):
-    with open(LOG_PATH, "a") as f:
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(f"[prompt] {msg}\n")
 
 
@@ -52,7 +52,7 @@ def get_session_project(session_id):
 def is_first_prompt(session_id):
     """Check if this is the first prompt of the session."""
     try:
-        with open(FIRST_PROMPT_PATH, "r") as f:
+        with open(FIRST_PROMPT_PATH, "r", encoding="utf-8") as f:
             done = json.load(f)
         return session_id not in done
     except (FileNotFoundError, json.JSONDecodeError):
@@ -62,23 +62,23 @@ def is_first_prompt(session_id):
 def mark_first_prompt_done(session_id):
     """Mark that the first prompt has been processed for this session."""
     try:
-        with open(FIRST_PROMPT_PATH, "r") as f:
+        with open(FIRST_PROMPT_PATH, "r", encoding="utf-8") as f:
             done = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         done = {}
     done[session_id] = True
-    with open(FIRST_PROMPT_PATH, "w") as f:
+    with open(FIRST_PROMPT_PATH, "w", encoding="utf-8") as f:
         json.dump(done, f)
 
 
 def load_staged_context(session_id):
     """Load cross-project context staged by the stop hook."""
     try:
-        with open(STAGED_PATH, "r") as f:
+        with open(STAGED_PATH, "r", encoding="utf-8") as f:
             staged = json.load(f)
         data = staged.pop(session_id, None)
         # Clean up consumed data
-        with open(STAGED_PATH, "w") as f:
+        with open(STAGED_PATH, "w", encoding="utf-8") as f:
             json.dump(staged, f)
         return data
     except (FileNotFoundError, json.JSONDecodeError):
