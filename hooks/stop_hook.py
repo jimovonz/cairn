@@ -63,13 +63,13 @@ def parse_memory_block(text):
             matches = [unclosed.group(1)]
             log("Warning: unclosed <memory> tag — parsed anyway")
         else:
-            return None, None, None, None, None, [], None, []
+            return None, None, None, None, None, [], None, [], None
 
     block = matches[-1].strip()
 
     # Check for no-op block
     if block in ("complete: true", "- complete: true"):
-        return [], True, None, "sufficient", None, [], None, []
+        return [], True, None, "sufficient", None, [], None, [], None
 
     # Parse entries
     entries = []
@@ -81,6 +81,7 @@ def parse_memory_block(text):
     retrieval_outcome = None  # useful | neutral | harmful
     keywords = []  # topic keywords for Layer 2 cross-project search
     confidence_updates = []  # list of (memory_id, direction)
+    intent = None  # "resolved" when LLM confirms no further action needed
 
     for line in block.split("\n"):
         line = line.strip()
@@ -112,6 +113,8 @@ def parse_memory_block(text):
             retrieval_outcome = value.lower()
         elif key == "keywords":
             keywords = [k.strip() for k in value.split(",") if k.strip()]
+        elif key == "intent":
+            intent = value.lower()
         elif key == "source_messages":
             # Parse "12-18" or "5" into start, end
             try:
@@ -137,7 +140,7 @@ def parse_memory_block(text):
         current.setdefault("content", current.get("topic", ""))
         entries.append(current.copy())
 
-    return entries, complete, remaining, context, context_need, confidence_updates, retrieval_outcome, keywords
+    return entries, complete, remaining, context, context_need, confidence_updates, retrieval_outcome, keywords, intent
 
 
 from config import (DEDUP_THRESHOLD, MAX_CONTINUATIONS, CONFIDENCE_BOOST, CONFIDENCE_PENALTY,
@@ -189,6 +192,83 @@ def get_session_project(conn, session_id):
         return None
     row = conn.execute("SELECT project FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     return row[0] if row else None
+
+
+TRAILING_INTENT_REFS = [
+    "let me test that now",
+    "let me check that",
+    "let me investigate",
+    "let me run the tests",
+    "let me look into this",
+    "let me fix that",
+    "I'll check this next",
+    "I'll investigate that",
+    "I'll run the tests now",
+    "I'll look into it",
+    "I'm going to test this",
+    "I'm going to check",
+    "want me to build it",
+    "want me to fix that",
+    "shall I implement this",
+]
+
+_intent_embeddings = None
+
+
+def _get_intent_embeddings():
+    """Lazy-load and cache reference intent embeddings."""
+    global _intent_embeddings
+    if _intent_embeddings is not None:
+        return _intent_embeddings
+    emb = get_embedder()
+    if not emb:
+        return None
+    _intent_embeddings = [(ref, emb.embed(ref, allow_slow=False)) for ref in TRAILING_INTENT_REFS]
+    _intent_embeddings = [(ref, vec) for ref, vec in _intent_embeddings if vec is not None]
+    return _intent_embeddings if _intent_embeddings else None
+
+
+def _extract_last_sentence(text):
+    """Extract the last non-empty, non-memory-block sentence from the response."""
+    # Strip memory block
+    cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
+    # Strip trailing whitespace and markdown
+    cleaned = re.sub(r"\s*```\s*$", "", cleaned).strip()
+    # Split into sentences and take the last non-empty one
+    sentences = re.split(r"[.!?\n]", cleaned)
+    sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
+    return sentences[-1] if sentences else None
+
+
+def check_trailing_intent(text):
+    """Check if response ends with unfulfilled action intent.
+
+    Returns the matched trailing sentence if intent detected, None otherwise.
+    """
+    last = _extract_last_sentence(text)
+    if not last:
+        return None
+
+    refs = _get_intent_embeddings()
+    if not refs:
+        return None
+
+    emb = get_embedder()
+    last_vec = emb.embed(last, allow_slow=False)
+    if last_vec is None:
+        return None
+
+    max_sim = 0.0
+    for ref_text, ref_vec in refs:
+        sim = emb.cosine_similarity(last_vec, ref_vec)
+        if sim > max_sim:
+            max_sim = sim
+
+    if max_sim > 0.65:
+        log(f"Trailing intent match: sim={max_sim:.3f} last='{last[:60]}'")
+        return last[:100]
+
+    return None
 
 
 NEGATION_PATTERNS = {"not", "never", "no longer", "isn't", "aren't", "shouldn't",
@@ -801,7 +881,7 @@ def main():
     log(f"Text length: {len(text)}, has <memory>: {'<memory>' in text}, continuation: {is_continuation}")
 
     # Parse memory block
-    entries, complete, remaining, context, context_need, confidence_updates, retrieval_outcome, keywords = parse_memory_block(text)
+    entries, complete, remaining, context, context_need, confidence_updates, retrieval_outcome, keywords, intent = parse_memory_block(text)
 
     # No memory block found
     if entries is None and complete is None:
@@ -912,6 +992,26 @@ def main():
         }
         print(json.dumps(result))
         sys.exit(0)
+
+    # Trailing intent detection — block if response ends with unfulfilled action intent
+    if intent == "resolved":
+        log("Intent explicitly resolved via memory block — skipping trailing intent check")
+    elif not is_continuation:
+        intent_result = check_trailing_intent(text)
+        if intent_result:
+            log(f"Trailing intent detected: {intent_result}")
+            record_metric(session_id, "trailing_intent_blocked", intent_result)
+            increment_continuation(session_id)
+            result = {
+                "decision": "block",
+                "reason": (
+                    f"Your response ends with a stated intent to act: \"{intent_result}\". "
+                    "Either follow through now, or remove the promise. "
+                    "If you genuinely have nothing more to do, add '- intent: resolved' to your <memory> block."
+                )
+            }
+            print(json.dumps(result))
+            sys.exit(0)
 
     # All good — reset continuation counter and allow stop
     reset_continuation(session_id)

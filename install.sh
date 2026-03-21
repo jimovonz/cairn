@@ -36,22 +36,13 @@ echo "Installing dependencies..."
 echo "Initializing database..."
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/init_db.py"
 
-# --- Global CLAUDE.md ---
+# --- Directories ---
 mkdir -p "$CLAUDE_DIR" "$CLAUDE_DIR/rules" "$CLAUDE_DIR/commands"
 
-if [ -f "$CLAUDE_DIR/CLAUDE.md" ]; then
-    if grep -q "Cairn" "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null; then
-        echo "Global CLAUDE.md already configured."
-    else
-        echo ""
-        echo "WARNING: ~/.claude/CLAUDE.md already exists and does not contain Cairn config."
-        echo "You may need to merge manually. Cairn template saved to:"
-        echo "  $CAIRN_HOME/templates/global-claude.md"
-        echo ""
-    fi
-else
-    sed "s|{{CAIRN_HOME}}|$CAIRN_HOME|g" "$CAIRN_HOME/templates/global-claude.md" > "$CLAUDE_DIR/CLAUDE.md"
-    echo "Installed global CLAUDE.md"
+# --- Clean up legacy CLAUDE.md if we installed it previously ---
+if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && grep -q "Cairn — Global Memory" "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null; then
+    rm "$CLAUDE_DIR/CLAUDE.md"
+    echo "Removed legacy global CLAUDE.md (instructions moved to rules file)."
 fi
 
 # --- Global rules ---

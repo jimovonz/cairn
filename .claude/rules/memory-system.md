@@ -1,6 +1,8 @@
 # Cairn Memory System
 
-You are connected to a persistent memory system called Cairn. This document explains how it works and how you should interact with it.
+You are connected to a persistent memory system called Cairn. Every response you generate is processed by a Stop hook that captures memories and enforces completeness.
+
+CRITICAL: You have NO visibility into what other sessions have stored. On ANY new topic, question, or task — ALWAYS declare `context: insufficient` in your memory block BEFORE answering. The cairn may contain relevant information you cannot see. NEVER assume a topic has no data. Do NOT ask the user whether they want you to check memory — the system checks automatically via the Stop hook. Just declare `context: insufficient` and the system handles the rest.
 
 ## How It Works
 
@@ -14,7 +16,7 @@ You do not need to call any tools to persist memories. The hook handles it mecha
 
 ## Memory Block Format
 
-Every response MUST end with a `<memory>` block. No exceptions.
+Every response MUST end with a `<memory>` block. No exceptions. This is enforced by the Stop hook.
 
 ```
 <memory>
@@ -26,6 +28,7 @@ Every response MUST end with a `<memory>` block. No exceptions.
 - context: [sufficient|insufficient]
 - context_need: [what context is missing, if insufficient]
 - confidence_update: [memory_id]:[+|-]
+- intent: [resolved — only when re-prompted for trailing intent and you have nothing more to do]
 - keywords: [comma-separated topic keywords for cross-project discovery]
 - source_messages: [start-end message range where this knowledge was discussed, e.g. 5-12]
 </memory>
@@ -133,20 +136,20 @@ This is a system-level learning signal — it helps tune retrieval quality over 
 
 ## Database
 
-Memories are stored in `./cairn/cairn.db`. You can query it directly:
+Memories are stored in `$CAIRN_HOME/cairn/cairn.db`. You can query it directly:
 
-- `python3 ./cairn/query.py <search>` — full-text search
-- `python3 ./cairn/query.py --semantic <query>` — semantic similarity search
-- `python3 ./cairn/query.py --recent` — list recent memories
-- `python3 ./cairn/query.py --type <type>` — filter by type
-- `python3 ./cairn/query.py --session <id>` — filter by session
-- `python3 ./cairn/query.py --chain <id>` — show session chain
-- `python3 ./cairn/query.py --project <name>` — list memories for a project
-- `python3 ./cairn/query.py --projects` — list all projects
-- `python3 ./cairn/query.py --label <session_id> <name>` — label a session chain
-- `python3 ./cairn/query.py --history <id>` — show version history
-- `python3 ./cairn/query.py --delete <id>` — delete a memory
-- `python3 ./cairn/query.py --stats` — database statistics
+- `python3 $CAIRN_HOME/cairn/query.py <search>` — full-text search
+- `python3 $CAIRN_HOME/cairn/query.py --semantic <query>` — semantic similarity search
+- `python3 $CAIRN_HOME/cairn/query.py --recent` — list recent memories
+- `python3 $CAIRN_HOME/cairn/query.py --type <type>` — filter by type
+- `python3 $CAIRN_HOME/cairn/query.py --session <id>` — filter by session
+- `python3 $CAIRN_HOME/cairn/query.py --chain <id>` — show session chain
+- `python3 $CAIRN_HOME/cairn/query.py --project <name>` — list memories for a project
+- `python3 $CAIRN_HOME/cairn/query.py --projects` — list all projects
+- `python3 $CAIRN_HOME/cairn/query.py --label <session_id> <name>` — label a session chain
+- `python3 $CAIRN_HOME/cairn/query.py --history <id>` — show version history
+- `python3 $CAIRN_HOME/cairn/query.py --delete <id>` — delete a memory
+- `python3 $CAIRN_HOME/cairn/query.py --stats` — database statistics
 
 ## Organisation
 

@@ -11,7 +11,7 @@ from stop_hook import parse_memory_block
 
 def test_valid_single_entry():
     text = 'response\n<memory>\n- type: fact\n- topic: test\n- content: hello world\n- complete: true\n</memory>'
-    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords = parse_memory_block(text)
+    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parse_memory_block(text)
     assert len(entries) == 1
     assert entries[0]["type"] == "fact"
     assert entries[0]["topic"] == "test"
@@ -123,7 +123,7 @@ def test_keywords():
 - keywords: auth, JWT, session tokens
 - complete: true
 </memory>'''
-    *_, keywords = parse_memory_block(text)
+    *_, keywords, intent = parse_memory_block(text)
     assert keywords == ["auth", "JWT", "session tokens"]
 
 
@@ -161,7 +161,7 @@ def test_retrieval_outcome():
 - retrieval_outcome: harmful
 - complete: true
 </memory>'''
-    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords = parse_memory_block(text)
+    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parse_memory_block(text)
     assert retrieval_outcome == "harmful"
 
 
@@ -443,7 +443,7 @@ def test_all_fields_populated():
 - retrieval_outcome: useful
 - complete: true
 </memory>'''
-    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords = parse_memory_block(text)
+    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parse_memory_block(text)
     assert len(entries) == 1
     assert entries[0]["type"] == "decision"
     assert entries[0]["source_start"] == 5

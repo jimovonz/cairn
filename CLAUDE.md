@@ -1,36 +1,6 @@
 # Cairn — Persistent Memory System
 
-## Memory Output Requirement
-
-Every response MUST end with a <memory> block. No exceptions. This is a mechanical requirement, not a judgment call.
-
-Format:
-```
-<memory>
-- type: [decision|preference|fact|correction|person|project|skill|workflow]
-- topic: [short key]
-- content: [single line description]
-- complete: [true|false]
-- remaining: [what still needs doing, if complete is false]
-</memory>
-```
-
-Types:
-- decision: Architectural or design choices made with rationale
-- preference: User likes, dislikes, working style
-- fact: Verified information about systems, tools, environment
-- correction: Mistakes made and lessons learned
-- person: People mentioned — roles, relationships, contact context
-- project: Ongoing work, goals, deadlines, status
-- skill: Reusable techniques, commands, or patterns that worked
-- workflow: Recurring processes, automation, standard operating procedures
-
-Rules:
-- Every response gets a memory block, even if the only entry is a no-op
-- If nothing new was learned: `<memory>complete: true</memory>`
-- Each entry is one line of content — no multi-line values
-- complete: false will cause the system to re-prompt you to continue
-- Never narrate a future action without executing it — if you say "let me do X", do X in the same response via a tool call
+This is the Cairn project — a persistent AI memory system using SQLite, Claude Code hooks, and structured self-assessment.
 
 ## Cairn Database
 
@@ -46,8 +16,11 @@ Query commands:
 - `python3 ./cairn/query.py --delete <id>` — delete a memory
 - `python3 ./cairn/query.py --stats` — database statistics
 
-At the start of a conversation, query the cairn for context relevant to the user's first message.
+## Memory system instructions
 
-## Project
+The memory block format, context retrieval, confidence system, and all LLM behavioral rules are defined in the global rules file deployed by `install.sh`:
 
-This is the Cairn project — a persistent AI memory system using SQLite, Claude Code hooks, and structured self-assessment.
+- `~/.claude/CLAUDE.md` — compact memory block format and critical rules
+- `~/.claude/rules/memory-system.md` — full system documentation
+
+The project-local `.claude/rules/memory-system.md` is the source for the global copy. Edit it here, then run `./install.sh` to deploy.

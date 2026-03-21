@@ -345,7 +345,7 @@ def test_parse_store_retrieve_roundtrip():
 - complete: true
 </memory>"""
 
-    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords = parse_memory_block(text)
+    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parse_memory_block(text)
 
     assert len(entries) == 1
     assert entries[0]["type"] == "decision"
@@ -409,7 +409,7 @@ def test_confidence_updates_applied():
 - complete: true
 </memory>"""
 
-    *_, conf_updates, _, _ = parse_memory_block(text)
+    *_, conf_updates, _, _, _ = parse_memory_block(text)
     assert len(conf_updates) == 2
     assert conf_updates[0] == (id1, "+")
     assert conf_updates[1] == (id2, "-")
