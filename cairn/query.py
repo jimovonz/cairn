@@ -9,7 +9,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 
 
 def search(query, limit=10):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
         SELECT m.id, m.type, m.topic, m.content, m.updated_at
@@ -24,7 +24,7 @@ def search(query, limit=10):
 
 
 def list_by_type(memory_type, limit=20):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
         SELECT id, type, topic, content, updated_at
@@ -36,7 +36,7 @@ def list_by_type(memory_type, limit=20):
 
 
 def list_recent(limit=20):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
         SELECT id, type, topic, content, updated_at
@@ -49,7 +49,7 @@ def list_recent(limit=20):
 def semantic_search(query, limit=10, threshold=0.5):
     try:
         import embeddings as emb
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
         results = emb.find_similar(conn, query, threshold=threshold, limit=limit)
         conn.close()
         return results
@@ -59,7 +59,7 @@ def semantic_search(query, limit=10, threshold=0.5):
 
 
 def list_by_session(session_id, limit=50):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
         SELECT id, type, topic, content, updated_at
@@ -72,7 +72,7 @@ def list_by_session(session_id, limit=50):
 
 def show_context(memory_id, margin=3):
     """Show the conversation context around where a memory was recorded."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     row = conn.execute(
         "SELECT id, type, topic, content, session_id, source_start, source_end FROM memories WHERE id = ?",
         (memory_id,)
@@ -178,7 +178,7 @@ def verify_sources():
     """Analyse accuracy of LLM source_messages estimates against actual transcript content."""
     import json as _json
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     memories = conn.execute("""
         SELECT m.id, m.type, m.topic, m.content, m.session_id, m.source_start, m.source_end
         FROM memories m
@@ -294,7 +294,7 @@ def verify_sources():
 
 
 def show_history(memory_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     current = conn.execute(
         "SELECT id, type, topic, content, session_id, updated_at FROM memories WHERE id = ?",
@@ -322,7 +322,7 @@ def show_history(memory_id):
 
 
 def delete_memory(memory_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     existing = conn.execute("SELECT id, type, topic, content FROM memories WHERE id = ?", (memory_id,)).fetchone()
     if not existing:
         print(f"No memory with id {memory_id}")
@@ -336,7 +336,7 @@ def delete_memory(memory_id):
 
 def show_session_chain(session_id):
     """Show a session and all linked sessions (parent/child chain)."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
 
     # Walk up to find root
@@ -386,7 +386,7 @@ def show_session_chain(session_id):
 
 
 def stats():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
     with_emb = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL").fetchone()[0]
     history_count = conn.execute("SELECT COUNT(*) FROM memory_history").fetchone()[0]
@@ -459,7 +459,7 @@ def stats():
 
 def review(threshold_low=0.3, threshold_high=0.6):
     """Surface memories with low or uncertain confidence for user inspection."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     # Below retrieval threshold — effectively suppressed
     suppressed = conn.execute("""
         SELECT id, type, topic, content, confidence, updated_at, project
@@ -496,7 +496,7 @@ def review(threshold_low=0.3, threshold_high=0.6):
 
 def compact(project_name=None, limit=100):
     """Produce a dense brain dump suitable for LLM ingestion at session start."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     if project_name:
         rows = conn.execute("""
             SELECT type, topic, content, updated_at FROM memories
@@ -534,7 +534,7 @@ def backfill_embeddings():
         print("sentence-transformers not available")
         return
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     rows = conn.execute(
         "SELECT id, type, topic, content, project FROM memories WHERE embedding IS NULL"
     ).fetchall()
@@ -596,7 +596,7 @@ Commands:
 
 def label_project(session_id, project_name):
     """Label all sessions in a chain with a project name."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     # Find root by walking up
     current = session_id
     while True:
@@ -631,7 +631,7 @@ def label_project(session_id, project_name):
 
 
 def list_projects():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     projects = conn.execute("""
         SELECT project, COUNT(*) as memories,
                MIN(created_at) as first_seen,
@@ -654,7 +654,7 @@ def list_projects():
 
 
 def memories_for_project(project_name, limit=50):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
         SELECT id, type, topic, content, updated_at

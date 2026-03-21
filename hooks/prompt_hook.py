@@ -41,7 +41,7 @@ def get_session_project(session_id):
     if not session_id:
         return None
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
         row = conn.execute("SELECT project FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
         conn.close()
         return row[0] if row else None
@@ -118,7 +118,7 @@ def layer1_search(user_message, session_id):
     project = get_session_project(session_id)
 
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
         count = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL").fetchone()[0]
         if count == 0:
             conn.close()

@@ -8,6 +8,9 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 
 def init():
     conn = sqlite3.connect(DB_PATH)
+    # Enable WAL mode for concurrent access (persistent across connections)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS memories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

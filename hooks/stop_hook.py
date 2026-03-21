@@ -16,6 +16,8 @@ import sqlite3
 import sys
 import os
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "cairn.db")
 LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "hook.log")
 CONTEXT_CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".context_cache")
@@ -31,7 +33,7 @@ def log(msg):
 
 def record_metric(session_id, event, detail=None, value=None):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
         conn.execute(
             "INSERT INTO metrics (event, session_id, detail, value) VALUES (?, ?, ?, ?)",
             (event, session_id, detail, value)
@@ -149,7 +151,7 @@ def apply_confidence_updates(updates, session_id=None):
     """Apply confidence adjustments from LLM feedback."""
     if not updates:
         return 0
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     applied = 0
     for memory_id, direction in updates:
         row = conn.execute("SELECT confidence FROM memories WHERE id = ?", (memory_id,)).fetchone()
@@ -238,7 +240,7 @@ def insert_memories(entries, session_id=None):
         log(f"Write throttle: kept {len(entries)}, dropped {len(dropped)}")
 
     emb = get_embedder()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     project = get_session_project(conn, session_id)
     inserted = 0
 
@@ -352,7 +354,7 @@ def register_session(session_id, transcript_path):
     """Register this session in the sessions table, extracting parent if available."""
     if not session_id:
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     existing = conn.execute("SELECT session_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     if existing:
         conn.close()
@@ -404,7 +406,7 @@ def register_session(session_id, transcript_path):
 def get_adaptive_threshold_boost():
     """Check recent retrieval outcomes. If harmful/neutral rate is high, boost the similarity floor."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
         recent = conn.execute("""
             SELECT event, COUNT(*) FROM metrics
             WHERE event IN ('retrieval_useful', 'retrieval_neutral', 'retrieval_harmful')
@@ -435,7 +437,7 @@ def retrieve_context(context_need, session_id=None):
     import time
     from datetime import datetime as dt
     start = time.time()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     project = get_session_project(conn, session_id)
 
     emb = get_embedder()
@@ -555,13 +557,13 @@ def layer2_cross_project_search(keywords_list, session_id=None):
     if not emb:
         return
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     project = get_session_project(conn, session_id)
     conn.close()
 
     query = " ".join(keywords_list)
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
         results = emb.find_similar(conn, query, threshold=L2_SIM_THRESHOLD,
                                    limit=L2_MAX_RESULTS * 2, current_project=project)
         conn.close()
@@ -715,7 +717,7 @@ def auto_label_project(session_id, cwd):
     """Heuristically label a session's project based on the working directory."""
     if not session_id or not cwd:
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     row = conn.execute("SELECT project FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     if row and row[0]:
         conn.close()
