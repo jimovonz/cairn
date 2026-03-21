@@ -2,28 +2,32 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Persistent memory for Claude Code.** Every conversation builds on the last.
+**Every Claude Code response secretly writes structured metadata about itself. The user never sees it. A hook captures it. A database stores it. The next session remembers.**
 
-Engram embeds invisible structured metadata into every LLM response, captures it via Claude Code hooks, and stores it in a local SQLite database with semantic search. The LLM self-assesses what's worth remembering, when it needs past context, and whether retrieved memories are still accurate.
+Engram exploits the gap between Claude Code's raw LLM output and its rendered display. Angle bracket tags in LLM responses are stripped from the terminal — but they're preserved in the hook system. This creates an invisible control plane where the LLM self-annotates every response with structured memory data, and the infrastructure enforces it mechanically.
 
-No cloud services. No API keys. No MCP. Just a local SQLite file and two hooks.
+No cloud. No API keys. No MCP. One SQLite file. Two hooks.
 
 ---
 
-## The problem
+## What makes this different
 
-Claude Code starts from zero in every session. Decisions made yesterday are forgotten today. Preferences explained once need explaining again. Context from one project is invisible to another.
+Most LLM memory systems store conversation logs and retrieve them with RAG. Engram does something fundamentally different:
 
-## The solution
+**The LLM is the memory author.** It distills its own output into one-line structured memories — not raw transcripts, not embeddings of chat logs, but the LLM's own assessment of what matters. A 50,000-token session becomes 10 precise facts.
 
-Engram turns every Claude Code response into a data-producing event. The LLM distills its own output into structured memories — decisions, facts, preferences, corrections — that persist across sessions and projects. When context is needed, the LLM requests it and the system delivers.
+**The metadata is invisible.** The user sees a clean response. The hook infrastructure sees structured XML with type, topic, confidence signals, and retrieval requests. The LLM writes to a channel the user can't see.
+
+**The LLM controls the retrieval loop.** It declares when it lacks context. A Stop hook searches the database, injects results, and re-prompts — all before the response reaches the user. The LLM also rates what it gets back, dynamically adjusting confidence scores that determine what surfaces in future sessions.
+
+**Enforcement is mechanical, not advisory.** A Stop hook fires after every response. No memory block? Blocked and re-prompted. Says it's incomplete? Blocked and continued. Needs context? Blocked, searched, injected, continued. The LLM can't forget to participate.
 
 ```
 You: "what was on my lawn?"
-Claude: (checks engram) "A pukeko — NZ Purple Swamphen. Large blue bird, red beak, big feet."
+Claude: "A pukeko — NZ Purple Swamphen. Large blue bird, red beak, big feet."
 ```
 
-That memory was stored in a completely different session, in a different project directory.
+That memory was stored in a different session, in a different project directory. The user never asked Claude to remember it. The user never asked Claude to look it up. It just knew.
 
 ## Features
 
