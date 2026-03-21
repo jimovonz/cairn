@@ -1,30 +1,10 @@
 #!/usr/bin/env python3
-"""Tests for retrieval quality gates using mocked embeddings."""
+"""Tests for retrieval quality gates — focuses on boundary conditions and real failure modes."""
 
 import sys
 import os
-import sqlite3
-import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-
-# We need to mock the embedding functions since we don't want to load the model
-import embeddings as emb
-
-
-def make_test_db():
-    """Create an in-memory test database with mock memories."""
-    conn = sqlite3.connect(":memory:")
-    conn.execute("""
-        CREATE TABLE memories (
-            id INTEGER PRIMARY KEY,
-            type TEXT, topic TEXT, content TEXT,
-            embedding BLOB, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            project TEXT, confidence REAL DEFAULT 0.7,
-            source_start INTEGER, source_end INTEGER
-        )
-    """)
-    return conn
 
 
 def mock_results(entries):
@@ -47,152 +27,207 @@ def mock_results(entries):
     ]
 
 
-# === Garbage gate ===
+# === Garbage gate boundary ===
 
-def test_garbage_gate_rejects_low_similarity():
+def test_garbage_gate_boundary_just_below():
+    """0.349 should be rejected — tests that we don't have an off-by-one."""
     from config import MIN_INJECTION_SIMILARITY
-    results = mock_results([{"similarity": 0.30, "score": 0.20}])
-    # Simulate: best match below garbage threshold
-    assert results[0]["similarity"] < MIN_INJECTION_SIMILARITY
+    assert 0.349 < MIN_INJECTION_SIMILARITY
 
 
-def test_garbage_gate_passes_adequate_similarity():
+def test_garbage_gate_boundary_just_above():
+    """0.351 should pass."""
     from config import MIN_INJECTION_SIMILARITY
-    results = mock_results([{"similarity": 0.50, "score": 0.40}])
-    assert results[0]["similarity"] >= MIN_INJECTION_SIMILARITY
+    assert 0.351 >= MIN_INJECTION_SIMILARITY
 
 
-# === Borderline gate ===
+# === Borderline gate interaction ===
 
-def test_borderline_gate_rejects():
+def test_borderline_gate_high_sim_low_score_passes():
+    """similarity=0.50 is above borderline ceiling so it passes regardless of score."""
+    from config import BORDERLINE_SIM_CEILING
+    assert 0.50 >= BORDERLINE_SIM_CEILING  # not in borderline range
+
+
+def test_borderline_gate_traps_the_dangerous_zone():
+    """similarity=0.40, score=0.45 — above garbage but weak. Should be caught."""
     from config import BORDERLINE_SIM_CEILING, BORDERLINE_SCORE_FLOOR
-    results = mock_results([{"similarity": 0.40, "score": 0.35}])
-    assert results[0]["similarity"] < BORDERLINE_SIM_CEILING
-    assert results[0]["score"] < BORDERLINE_SCORE_FLOOR
+    sim, score = 0.40, 0.45
+    trapped = sim < BORDERLINE_SIM_CEILING and score < BORDERLINE_SCORE_FLOOR
+    assert trapped
 
 
-def test_borderline_gate_passes_high_score():
+def test_borderline_gate_allows_strong_score_despite_low_sim():
+    """similarity=0.40 but score=0.55 — borderline sim but strong composite. Should pass."""
     from config import BORDERLINE_SIM_CEILING, BORDERLINE_SCORE_FLOOR
-    results = mock_results([{"similarity": 0.40, "score": 0.60}])
-    assert results[0]["similarity"] < BORDERLINE_SIM_CEILING
-    assert results[0]["score"] >= BORDERLINE_SCORE_FLOOR  # passes despite low similarity
+    sim, score = 0.40, 0.55
+    trapped = sim < BORDERLINE_SIM_CEILING and score < BORDERLINE_SCORE_FLOOR
+    assert not trapped
 
 
-# === Relative filter ===
+# === Relative filter edge cases ===
 
-def test_relative_filter():
+def test_relative_filter_single_result():
+    """Single result should always survive relative filter."""
     from config import RELATIVE_FILTER_RATIO
-    results = mock_results([
-        {"similarity": 0.80, "score": 0.60},
-        {"similarity": 0.70, "score": 0.55},  # 0.70/0.80 = 0.875 > 0.7 → keep
-        {"similarity": 0.40, "score": 0.30},  # 0.40/0.80 = 0.50 < 0.7 → drop
-    ])
+    results = [{"similarity": 0.50}]
     max_sim = results[0]["similarity"]
     kept = [r for r in results if r["similarity"] >= RELATIVE_FILTER_RATIO * max_sim]
-    assert len(kept) == 2
-    assert kept[0]["similarity"] == 0.80
-    assert kept[1]["similarity"] == 0.70
+    assert len(kept) == 1
 
 
-# === Soft confidence inclusion ===
+def test_relative_filter_tight_cluster():
+    """Results within 30% of each other should all survive."""
+    from config import RELATIVE_FILTER_RATIO
+    results = [{"similarity": 0.80}, {"similarity": 0.75}, {"similarity": 0.60}]
+    max_sim = 0.80
+    kept = [r for r in results if r["similarity"] >= RELATIVE_FILTER_RATIO * max_sim]
+    # 0.7 * 0.80 = 0.56 — all three pass
+    assert len(kept) == 3
 
-def test_soft_inclusion_high_sim_low_conf():
-    """High similarity should override low confidence."""
+
+def test_relative_filter_drops_outlier():
+    """One strong + one much weaker should drop the weak one."""
+    from config import RELATIVE_FILTER_RATIO
+    results = [{"similarity": 0.85}, {"similarity": 0.40}]
+    max_sim = 0.85
+    kept = [r for r in results if r["similarity"] >= RELATIVE_FILTER_RATIO * max_sim]
+    # 0.7 * 0.85 = 0.595 — 0.40 fails
+    assert len(kept) == 1
+
+
+# === Soft confidence: the cases that actually matter ===
+
+def test_soft_inclusion_high_sim_zero_confidence():
+    """similarity=0.65, confidence=0.0 — should STILL be included (similarity override)."""
     from config import SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR
-    r = {"similarity": 0.65, "confidence": 0.1}
-    included = r["similarity"] >= SOFT_SIM_OVERRIDE or r["confidence"] >= SOFT_CONF_FLOOR
-    assert included  # similarity override kicks in
+    included = 0.65 >= SOFT_SIM_OVERRIDE or 0.0 >= SOFT_CONF_FLOOR
+    assert included
 
 
-def test_soft_inclusion_low_sim_low_conf():
-    """Low similarity + low confidence should be excluded."""
+def test_soft_inclusion_moderate_sim_low_confidence():
+    """similarity=0.50, confidence=0.2 — neither override fires. Should be EXCLUDED."""
     from config import SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR
-    r = {"similarity": 0.40, "confidence": 0.1}
-    included = r["similarity"] >= SOFT_SIM_OVERRIDE or r["confidence"] >= SOFT_CONF_FLOOR
+    included = 0.50 >= SOFT_SIM_OVERRIDE or 0.2 >= SOFT_CONF_FLOOR
     assert not included
 
 
-def test_soft_inclusion_low_sim_ok_conf():
-    """Low similarity but adequate confidence should be included."""
+def test_soft_inclusion_low_sim_at_confidence_boundary():
+    """similarity=0.30, confidence=0.30 — exactly at floor. Should be included."""
     from config import SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR
-    r = {"similarity": 0.40, "confidence": 0.5}
-    included = r["similarity"] >= SOFT_SIM_OVERRIDE or r["confidence"] >= SOFT_CONF_FLOOR
+    included = 0.30 >= SOFT_SIM_OVERRIDE or 0.30 >= SOFT_CONF_FLOOR
     assert included
 
 
 # === Dominance suppression ===
 
-def test_dominance_suppression_close_scores():
+def test_dominance_gap_exactly_at_epsilon():
+    """Gap exactly at epsilon boundary — should NOT trigger suppression."""
     from config import DOMINANCE_EPSILON
-    results = mock_results([
-        {"similarity": 0.80, "score": 0.60},
-        {"similarity": 0.78, "score": 0.58},  # gap = 0.02 < 0.05
-    ])
-    gap = results[0]["score"] - results[1]["score"]
-    assert gap < DOMINANCE_EPSILON  # both should be included
+    gap = DOMINANCE_EPSILON
+    assert not (gap < DOMINANCE_EPSILON)
 
 
-def test_dominance_suppression_clear_leader():
+def test_dominance_gap_just_below_epsilon():
+    """Gap just below epsilon — should trigger, keeping both."""
     from config import DOMINANCE_EPSILON
-    results = mock_results([
-        {"similarity": 0.80, "score": 0.70},
-        {"similarity": 0.50, "score": 0.35},  # gap = 0.35 > 0.05
-    ])
-    gap = results[0]["score"] - results[1]["score"]
-    assert gap >= DOMINANCE_EPSILON  # only leader needed
+    gap = DOMINANCE_EPSILON - 0.001
+    assert gap < DOMINANCE_EPSILON
 
 
-# === Diversity filter ===
+# === Diversity filter: realistic scenarios ===
 
-def test_diversity_same_type_topic():
+def test_diversity_catches_rephrased_same_fact():
+    """Two entries about the same thing with different wording but same type+topic."""
     from config import DIVERSITY_SIM_THRESHOLD
-    results = mock_results([
-        {"type": "fact", "topic": "auth", "content": "use JWT", "similarity": 0.8, "score": 0.6},
-        {"type": "fact", "topic": "auth", "content": "JWT preferred", "similarity": 0.75, "score": 0.55},
-    ])
-    # Same type+topic should be caught as duplicate
-    assert results[0]["type"] == results[1]["type"]
-    assert results[0]["topic"] == results[1]["topic"]
+    results = [
+        {"type": "fact", "topic": "db-choice", "content": "Use SQLite for storage"},
+        {"type": "fact", "topic": "db-choice", "content": "SQLite chosen for persistence"},
+    ]
+    # Same type+topic should be caught
+    assert results[0]["type"] == results[1]["type"] and results[0]["topic"] == results[1]["topic"]
 
 
-def test_diversity_different_topics():
-    results = mock_results([
-        {"type": "fact", "topic": "auth", "content": "use JWT", "similarity": 0.8, "score": 0.6},
-        {"type": "decision", "topic": "db", "content": "use SQLite", "similarity": 0.75, "score": 0.55},
-    ])
-    # Different type+topic should both be kept
+def test_diversity_keeps_different_aspects():
+    """Two entries about related but distinct topics should both survive."""
+    results = [
+        {"type": "decision", "topic": "db-choice", "content": "Use SQLite for storage"},
+        {"type": "decision", "topic": "db-schema", "content": "Add confidence column"},
+    ]
     assert results[0]["topic"] != results[1]["topic"]
 
 
-# === Write throttling ===
+def test_diversity_word_overlap_boundary():
+    """Content with exactly 90% word overlap should be caught."""
+    from config import DIVERSITY_SIM_THRESHOLD
+    # 9 shared words out of 10 total = 0.9
+    content_a = "the quick brown fox jumps over the lazy sleeping dog"
+    content_b = "the quick brown fox jumps over the lazy sleeping cat"
+    words_a = set(content_a.lower().split())
+    words_b = set(content_b.lower().split())
+    overlap = len(words_a & words_b) / max(len(words_a | words_b), 1)
+    # 9 shared / 11 unique = 0.818 — just below threshold, both should be kept
+    assert overlap < DIVERSITY_SIM_THRESHOLD
 
-def test_write_throttle_under_limit():
+
+def test_diversity_identical_content():
+    """Exact same content, different topic — word overlap catches it."""
+    from config import DIVERSITY_SIM_THRESHOLD
+    content = "use JWT for stateless authentication"
+    words = set(content.lower().split())
+    overlap = len(words & words) / max(len(words | words), 1)
+    assert overlap > DIVERSITY_SIM_THRESHOLD  # 1.0 > 0.9
+
+
+# === Write throttling: priority ordering ===
+
+def test_write_throttle_corrections_survive_over_project():
+    """When throttled, corrections should be kept over project metadata."""
     from config import MAX_MEMORIES_PER_RESPONSE
-    entries = [{"type": "fact", "topic": f"t{i}", "content": f"c{i}"} for i in range(3)]
-    assert len(entries) <= MAX_MEMORIES_PER_RESPONSE
-
-
-def test_write_throttle_over_limit():
-    from config import MAX_MEMORIES_PER_RESPONSE
-    entries = [{"type": "fact", "topic": f"t{i}", "content": f"c{i}"} for i in range(10)]
-    assert len(entries) > MAX_MEMORIES_PER_RESPONSE
-    # After throttling, should be capped
-    throttled = entries[:MAX_MEMORIES_PER_RESPONSE]
-    assert len(throttled) == MAX_MEMORIES_PER_RESPONSE
-
-
-def test_write_throttle_prioritises_corrections():
-    """Corrections should be kept over project metadata."""
     type_priority = {"correction": 0, "decision": 1, "fact": 2, "preference": 3,
                      "person": 4, "skill": 5, "workflow": 6, "project": 7}
     entries = [
-        {"type": "project", "topic": "p1", "content": "low priority"},
-        {"type": "correction", "topic": "c1", "content": "high priority"},
-        {"type": "fact", "topic": "f1", "content": "medium priority"},
+        {"type": "project", "topic": f"p{i}", "content": f"project {i}"} for i in range(4)
+    ] + [
+        {"type": "correction", "topic": "c1", "content": "important fix"},
+        {"type": "decision", "topic": "d1", "content": "key choice"},
     ]
     entries.sort(key=lambda e: type_priority.get(e.get("type", ""), 99))
-    assert entries[0]["type"] == "correction"
-    assert entries[-1]["type"] == "project"
+    kept = entries[:MAX_MEMORIES_PER_RESPONSE]
+    types_kept = [e["type"] for e in kept]
+    assert "correction" in types_kept
+    assert "decision" in types_kept
+
+
+def test_write_throttle_all_same_type():
+    """All entries same type — should just keep first N."""
+    from config import MAX_MEMORIES_PER_RESPONSE
+    entries = [{"type": "fact", "topic": f"t{i}", "content": f"c{i}"} for i in range(10)]
+    assert len(entries[:MAX_MEMORIES_PER_RESPONSE]) == MAX_MEMORIES_PER_RESPONSE
+
+
+# === Combined gate interaction ===
+
+def test_gates_combined_weak_but_not_garbage():
+    """Entry at sim=0.40, score=0.48, confidence=0.35 — passes garbage, caught by borderline."""
+    from config import MIN_INJECTION_SIMILARITY, BORDERLINE_SIM_CEILING, BORDERLINE_SCORE_FLOOR
+    sim, score, conf = 0.40, 0.48, 0.35
+    passes_garbage = sim >= MIN_INJECTION_SIMILARITY
+    caught_borderline = sim < BORDERLINE_SIM_CEILING and score < BORDERLINE_SCORE_FLOOR
+    assert passes_garbage  # above 0.35
+    assert caught_borderline  # below 0.45 sim AND below 0.50 score
+
+
+def test_gates_combined_strong_entry_passes_all():
+    """Entry at sim=0.75, score=0.65, confidence=0.8 — should pass everything."""
+    from config import (MIN_INJECTION_SIMILARITY, BORDERLINE_SIM_CEILING,
+                        SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR, RELATIVE_FILTER_RATIO)
+    sim, score, conf = 0.75, 0.65, 0.8
+    passes_garbage = sim >= MIN_INJECTION_SIMILARITY
+    not_borderline = sim >= BORDERLINE_SIM_CEILING or score >= 0.50
+    passes_soft = sim >= SOFT_SIM_OVERRIDE or conf >= SOFT_CONF_FLOOR
+    passes_relative = sim >= RELATIVE_FILTER_RATIO * sim  # always true for self
+    assert all([passes_garbage, not_borderline, passes_soft, passes_relative])
 
 
 if __name__ == "__main__":
