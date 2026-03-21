@@ -203,6 +203,33 @@ All tunable parameters are in `engram/config.py`:
 | **Invisible tags** | User sees clean output; hook infrastructure sees structured metadata — no UX compromise |
 | **sqlite-vec** | Indexed vector KNN search that scales, with transparent brute-force fallback |
 
+## Limitations
+
+**Claude Code only.** Engram is tightly coupled to Claude Code's hook system and tag-stripping behaviour. It will not work with Cursor, VS Code agents, other LLMs, or the Claude web interface. This is by design — the architecture exploits Claude Code's specific capabilities rather than targeting a lowest common denominator.
+
+**LLM cooperation is imperfect.** The system depends on the LLM reliably producing well-formed `<memory>` blocks and accurately declaring when it needs context. In practice, the LLM sometimes answers "I don't know" before the hook can inject memories, or produces generic memories instead of extracting specific facts. Mechanical enforcement (the Stop hook) catches most failures but adds a re-prompt turn when it does.
+
+**Tag invisibility is behaviour-dependent.** The invisible metadata relies on Claude Code stripping angle bracket tags from rendered output. If Anthropic changes this rendering behaviour, memory blocks would become visible to users. The system would still function but the clean UX would degrade.
+
+**Distillation is lossy.** Memories are one-line summaries. The nuance and detail of the original conversation is compressed away. The `--context` command can recover the surrounding transcript, but only if the session's transcript file still exists on disk.
+
+**Early stage.** This project was built and iterated in a single extended session. It has no formal test suite, limited cross-platform testing, and may have edge cases around permissions, venv conflicts, or long-running daemon stability. Bug reports welcome.
+
+## Failure modes
+
+Things that can go wrong and how the system handles them:
+
+| Failure | What happens | Mitigation |
+|---------|-------------|------------|
+| LLM forgets the `<memory>` block | Stop hook blocks the response and re-prompts "add a memory block" | User sees a brief pause; the re-prompt is invisible |
+| LLM answers before checking memory | User sees "I don't know" then a correction after the hook injects context | Layer 1 (first-prompt push) proactively injects on the first message to prevent this |
+| Embedding daemon not running | Memories stored without embeddings; dedup and semantic search degraded | Auto-start attempted; `--backfill` command regenerates missing embeddings |
+| Hook crashes | Fail-open design: crash → exit 0 → response reaches user normally | Crash logged to metrics; no user impact |
+| Retrieval returns irrelevant context | 9 quality gates filter noise; adaptive thresholds tighten if outcomes are poor | LLM can rate retrieval as `harmful`, raising thresholds automatically |
+| Infinite re-prompt loop | Continuation cap (max 3) forces a stop after 3 consecutive re-prompts | Context cache prevents same query being served twice |
+| Contradictory memories | Same type+topic overwrites with confidence suppression; negation heuristics dampen semantic conflicts | Old content preserved in version history |
+| Database grows large | sqlite-vec provides indexed vector search; brute-force fallback for small DBs | All quality gates reduce injected volume regardless of DB size |
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test coverage, and platform compatibility contributions are especially welcome.

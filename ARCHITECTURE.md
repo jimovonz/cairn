@@ -50,6 +50,183 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
 
 ## System Architecture
 
+### Data flow
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        USER PROMPT                               │
+└──────────┬───────────────────────────────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│              UserPromptSubmit Hook (prompt_hook.py)               │
+│                                                                  │
+│  Layer 1: First prompt? ──yes──▶ Search brain ──▶ Inject context │
+│  Layer 2: Staged data?  ──yes──▶ Inject cross-project context    │
+│                                                                  │
+│  Injects via additionalContext (invisible to user)               │
+└──────────┬───────────────────────────────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                    LLM GENERATES RESPONSE                        │
+│                                                                  │
+│  User-visible text + invisible <memory> block                    │
+│  ┌────────────────────────────────────────────────┐              │
+│  │ <memory>                                       │  ◄── hidden  │
+│  │ - type: decision                               │     from     │
+│  │ - topic: auth-approach                         │     user     │
+│  │ - content: Use JWT for stateless auth          │              │
+│  │ - keywords: authentication, JWT                │              │
+│  │ - confidence_update: 42:+                      │              │
+│  │ - context: sufficient                          │              │
+│  │ - complete: true                               │              │
+│  │ </memory>                                      │              │
+│  └────────────────────────────────────────────────┘              │
+└──────────┬───────────────────────────────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                  Stop Hook (stop_hook.py)                         │
+│                                                                  │
+│  1. Register session ──▶ Auto-label project from cwd             │
+│  2. Parse <memory> block                                         │
+│  3. Apply confidence updates (+0.1 saturating / -0.2 scaled)     │
+│  4. Store memories ──▶ Embed ──▶ Dedup ──▶ SQLite + vec index    │
+│  5. Layer 2: Extract keywords ──▶ Search global ──▶ Stage        │
+│  6. Evaluate control flags:                                      │
+│     ├─ No block     → BLOCK, re-prompt "add memory block"        │
+│     ├─ incomplete   → BLOCK, re-prompt with remaining text       │
+│     ├─ need context → BLOCK, search + inject, re-prompt          │
+│     └─ complete     → ALLOW STOP                                 │
+│                                                                  │
+└──────────┬───────────────────────────────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                   USER SEES CLEAN RESPONSE                       │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Three retrieval layers
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    RETRIEVAL LAYERS                      │
+│                                                         │
+│  Layer 1: FIRST-PROMPT PUSH                             │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │ When: First message of session                    │  │
+│  │ How:  Embed user message → search brain           │  │
+│  │ Why:  Eliminate "I don't know" cold start         │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  Layer 2: KEYWORD CROSS-PROJECT                         │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │ When: Between turns (stop hook → next prompt)     │  │
+│  │ How:  Extract keywords → search global → stage    │  │
+│  │ Why:  Surface knowledge LLM doesn't know to ask   │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  Layer 3: PULL-BASED                                    │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │ When: LLM declares context: insufficient          │  │
+│  │ How:  Search brain → inject → re-prompt           │  │
+│  │ Why:  Handle explicit gaps mid-conversation       │  │
+│  └───────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Confidence lifecycle
+
+```
+  NEW MEMORY
+      │
+      ▼
+   ┌─────┐
+   │ 0.7 │  ◄── default
+   └──┬──┘
+      │
+      ├── Retrieved + LLM rates "+" ──▶ +0.1 × (1 - conf)  [saturating]
+      │                                    0.7 → 0.73
+      │                                    0.9 → 0.91
+      │
+      ├── Retrieved + LLM rates "-" ──▶ -0.2 × (1 + conf)  [amplified]
+      │                                    0.7 → 0.36
+      │                                    0.9 → 0.52
+      │
+      ├── Same type+topic, new content ──▶ old → 0.2 (suppressed)
+      │                                    new → 0.7 (fresh)
+      │
+      ├── Negation mismatch detected ──▶ both -0.1
+      │
+      └── Never retrieved ──▶ NO CHANGE (no passive decay)
+
+  RETRIEVAL INCLUSION:
+      similarity ≥ 0.6  → included regardless of confidence
+      confidence ≥ 0.3  → included at normal threshold
+      confidence < 0.3  → only if similarity override
+```
+
+### Quality gate pipeline
+
+```
+  RAW CANDIDATES (from sqlite-vec or brute-force)
+      │
+      ▼
+  ┌─ Low-info pre-filter ──────────┐
+  │  context_need < 8 chars?       │──yes──▶ SKIP RETRIEVAL
+  │  All stopwords?                │
+  └────────────┬───────────────────┘
+               │ no
+               ▼
+  ┌─ Soft confidence inclusion ────┐
+  │  Keep if sim ≥ 0.6             │
+  │  OR confidence ≥ 0.3           │──fail──▶ DROP
+  └────────────┬───────────────────┘
+               │ pass
+               ▼
+  ┌─ Garbage gate ─────────────────┐
+  │  Best similarity < 0.35?      │──yes──▶ RETURN NOTHING
+  └────────────┬───────────────────┘
+               │ no
+               ▼
+  ┌─ Borderline gate ──────────────┐
+  │  Best sim < 0.45               │
+  │  AND best score < 0.50?        │──yes──▶ RETURN NOTHING
+  └────────────┬───────────────────┘
+               │ no
+               ▼
+  ┌─ Adaptive threshold ───────────┐
+  │  Recent harmful/neutral > 30%? │──yes──▶ Boost thresholds +0.05-0.10
+  └────────────┬───────────────────┘
+               │
+               ▼
+  ┌─ Relative filter ──────────────┐
+  │  sim < 0.7 × max_sim?         │──yes──▶ DROP
+  └────────────┬───────────────────┘
+               │ pass
+               ▼
+  ┌─ Dominance suppression ────────┐
+  │  top1 - top2 < 0.05?          │──yes──▶ Include both
+  └────────────┬───────────────────┘
+               │
+               ▼
+  ┌─ Weak-entry suppression ───────┐
+  │  Top score < 0.4?             │──yes──▶ RETURN NOTHING
+  └────────────┬───────────────────┘
+               │ pass
+               ▼
+  ┌─ Hard cap ─────────────────────┐
+  │  Limit to top 5                │
+  └────────────┬───────────────────┘
+               │
+               ▼
+         INJECT INTO LLM
+```
+
+### Legacy text description
+
 Three retrieval layers operate at different points in the conversation lifecycle:
 
 ```
