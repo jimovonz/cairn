@@ -45,8 +45,12 @@ def _daemon_embed(text):
         resp = send_request({"action": "embed", "text": text})
         if resp and "vector" in resp:
             return np.frombuffer(bytes.fromhex(resp["vector"]), dtype=np.float32)
-    except Exception:
+    except (ConnectionError, TimeoutError, OSError, ValueError):
         pass
+    except Exception as e:
+        # Unexpected error — log for debugging but don't crash
+        import sys
+        print(f"[cairn] daemon embed error: {type(e).__name__}: {e}", file=sys.stderr)
     return None
 
 
@@ -92,7 +96,7 @@ def _load_vec(conn):
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
         return True
-    except (ImportError, Exception):
+    except (ImportError, OSError):
         return False
 
 
@@ -104,7 +108,7 @@ def _recency_decay(updated_at_str):
         age_days = (datetime.now() - updated).total_seconds() / 86400
         import math
         return math.exp(-0.693 * age_days / RECENCY_HALF_LIFE_DAYS)  # 0.693 = ln(2)
-    except Exception:
+    except (ValueError, TypeError):
         return 0.5  # Unknown age, neutral
 
 

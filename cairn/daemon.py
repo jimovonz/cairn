@@ -140,7 +140,7 @@ def send_request(request):
             data += chunk
         client.close()
         return json.loads(data.decode())
-    except Exception:
+    except (ConnectionRefusedError, TimeoutError, OSError, json.JSONDecodeError):
         return None
 
 

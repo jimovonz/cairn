@@ -422,8 +422,10 @@ def insert_memories(entries, session_id=None, conn=None):
                         )
                         record_metric(session_id, "negation_contradiction", f"{mem_type}/{topic}")
 
+            except (ConnectionError, TimeoutError, OSError) as e:
+                log(f"Embedding unavailable: {e}")
             except Exception as e:
-                log(f"Embedding error: {e}")
+                log(f"Embedding error ({type(e).__name__}): {e}")
 
         # No semantic match — fall back to exact type+topic check
         same_topic = conn.execute(
@@ -569,7 +571,7 @@ def get_adaptive_threshold_boost(conn=None):
         elif harmful_rate > 0.3:
             return 0.05  # Some noise — tighten slightly
         return 0.0
-    except Exception:
+    except (sqlite3.Error, OSError):
         return 0.0
 
 
@@ -605,8 +607,10 @@ def retrieve_context(context_need, session_id=None, conn=None):
                     project_results.append(r)
                 elif r["similarity"] >= global_threshold:
                     global_results.append(r)
+        except (ConnectionError, TimeoutError, OSError) as e:
+            log(f"Context retrieval embedding unavailable: {e}")
         except Exception as e:
-            log(f"Context retrieval embedding error: {e}")
+            log(f"Context retrieval error ({type(e).__name__}): {e}")
 
     # Fall back to FTS if no embedding results
     if not project_results and not global_results:

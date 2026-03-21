@@ -45,7 +45,7 @@ def get_session_project(session_id):
         row = conn.execute("SELECT project FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
         conn.close()
         return row[0] if row else None
-    except Exception:
+    except (sqlite3.Error, OSError):
         return None
 
 
@@ -97,7 +97,7 @@ def format_entry(r):
     try:
         updated = datetime.strptime(r["updated_at"][:19], "%Y-%m-%d %H:%M:%S")
         days = max(0, (datetime.now() - updated).days)
-    except Exception:
+    except (ValueError, TypeError, KeyError):
         pass
     return (
         f'  <entry id="{r["id"]}" type="{r["type"]}" topic="{r["topic"]}" '
