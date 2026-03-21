@@ -254,7 +254,7 @@ def _get_intent_embeddings():
     emb = get_embedder()
     if not emb:
         return None
-    _intent_embeddings = [(ref, emb.embed(ref, allow_slow=False)) for ref in TRAILING_INTENT_REFS]
+    _intent_embeddings = [(ref, emb.embed(ref)) for ref in TRAILING_INTENT_REFS]
     _intent_embeddings = [(ref, vec) for ref, vec in _intent_embeddings if vec is not None]
     return _intent_embeddings if _intent_embeddings else None
 
@@ -285,7 +285,7 @@ def check_trailing_intent(text):
         return None
 
     emb = get_embedder()
-    last_vec = emb.embed(last, allow_slow=False)
+    last_vec = emb.embed(last)
     if last_vec is None:
         return None
 

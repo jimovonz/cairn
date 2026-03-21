@@ -5,6 +5,11 @@ import sqlite3
 import sys
 import os
 
+# Re-exec under venv python if not already in the venv
+_venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".venv", "bin", "python3")
+if os.path.exists(_venv_python) and sys.prefix == sys.base_prefix:
+    os.execv(_venv_python, [_venv_python] + sys.argv)
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 
 
