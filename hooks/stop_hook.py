@@ -194,6 +194,37 @@ def get_session_project(conn, session_id):
     return row[0] if row else None
 
 
+EMPTY_MEMORY_PATTERNS = [
+    "no context available",
+    "no relevant context",
+    "no technical context",
+    "no information available",
+    "no data available",
+    "nothing to report",
+    "no memories found",
+    "context not available",
+    "unclear what this refers to",
+    "insufficient context",
+    "no prior context",
+    "unable to determine",
+    "not enough information",
+    "no relevant information",
+]
+
+
+def _is_empty_memory(content):
+    """Check if a memory's content is essentially 'I don't know' — no retrievable knowledge.
+
+    Uses substring matching (fast, deterministic) rather than embeddings to avoid
+    interference with mocked embedders in tests and to keep the gate lightweight.
+    """
+    if not content or len(content.strip()) < 10:
+        return True
+
+    content_lower = content.lower()
+    return any(p in content_lower for p in EMPTY_MEMORY_PATTERNS)
+
+
 TRAILING_INTENT_REFS = [
     "let me test that now",
     "let me check that",
@@ -330,6 +361,13 @@ def insert_memories(entries, session_id=None):
         content = entry.get("content", "")
         source_start = entry.get("source_start")
         source_end = entry.get("source_end")
+
+        # Content quality gate: reject memories with no retrievable knowledge
+        if _is_empty_memory(content):
+            log(f"Quality gate: rejected empty memory '{topic}': '{content[:60]}'")
+            record_metric(session_id, "empty_memory_rejected", f"{mem_type}/{topic}")
+            continue
+
         # Augment embedding text with project to push unrelated domains apart in vector space
         project_prefix = f"{project} " if project else ""
         search_text = f"{project_prefix}{mem_type} {topic} {content}"

@@ -279,3 +279,46 @@ class TestTrailingIntentIntegration:
             code, result = run_hook(db_path, payload, cache_path, cont_path, staged_path)
 
         assert result is None, "Clean response should pass through"
+
+
+# --- Content quality gate tests ---
+
+class TestContentQualityGate:
+    def test_rejects_empty_content(self):
+        import stop_hook
+        assert stop_hook._is_empty_memory("") is True
+        assert stop_hook._is_empty_memory("short") is True
+        assert stop_hook._is_empty_memory("   ") is True
+
+    def test_rejects_no_context_patterns(self):
+        import stop_hook
+        assert stop_hook._is_empty_memory("User asked what was on their lawn - no context available") is True
+        assert stop_hook._is_empty_memory("No relevant context for this question") is True
+        assert stop_hook._is_empty_memory("Unable to determine what the user meant") is True
+        assert stop_hook._is_empty_memory("no information available about this topic") is True
+
+    def test_allows_real_content(self):
+        import stop_hook
+        assert stop_hook._is_empty_memory("User observed a pūkeko on their lawn") is False
+        assert stop_hook._is_empty_memory("Changed install.sh to overwrite global CLAUDE.md on re-install") is False
+        assert stop_hook._is_empty_memory("WAL mode enabled for concurrent session safety") is False
+
+    def test_rejects_in_insert(self):
+        """Empty memories should not be inserted into the database."""
+        db_path, conn, cache_path, cont_path, staged_path = fresh_env()
+        conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'P')")
+        conn.commit()
+
+        import stop_hook
+        with patch.object(stop_hook, 'DB_PATH', db_path), \
+             patch.object(stop_hook, 'LOG_PATH', os.path.join(TEST_DIR, 'quality.log')), \
+             patch.object(stop_hook, 'get_embedder', return_value=None):
+            count = stop_hook.insert_memories([
+                {"type": "fact", "topic": "good", "content": "User prefers dark mode in all editors"},
+                {"type": "fact", "topic": "bad", "content": "no context available for this question"},
+                {"type": "fact", "topic": "empty", "content": ""},
+            ], session_id="s1")
+
+        assert count == 1, "Only the good memory should be inserted"
+        row = conn.execute("SELECT topic FROM memories").fetchone()
+        assert row[0] == "good"
