@@ -45,7 +45,7 @@ RECENCY_HALF_LIFE_DAYS = 30        # Days after which recency weight halves
 
 # === Injection quality gates ===
 MIN_INJECTION_SIMILARITY = 0.35    # If max similarity < this, don't inject at all (garbage gate)
-BORDERLINE_SIM_CEILING = 0.45      # If max similarity < this AND top score < BORDERLINE_SCORE_FLOOR, skip
+BORDERLINE_SIM_CEILING = 0.35      # If max similarity < this AND top score < BORDERLINE_SCORE_FLOOR, skip
 BORDERLINE_SCORE_FLOOR = 0.50      # Minimum composite score for borderline similarity entries
 RELATIVE_FILTER_RATIO = 0.7        # Keep only entries where similarity >= ratio * max_similarity
 MAX_INJECTED_ENTRIES = 5            # Hard cap on entries injected per retrieval

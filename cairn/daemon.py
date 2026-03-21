@@ -25,10 +25,8 @@ CAIRN_DIR = os.path.dirname(__file__)
 sys.path.insert(0, CAIRN_DIR)
 
 
-def handle_client(conn, model):
+def handle_client(conn, emb):
     """Handle a single client request."""
-    import embeddings as emb
-
     try:
         data = b""
         while True:
@@ -42,7 +40,9 @@ def handle_client(conn, model):
 
         if action == "embed":
             text = request["text"]
-            vec = emb.embed(text)
+            # Use model directly — do NOT call emb.embed() which would recurse into _daemon_embed
+            model = emb.get_model()
+            vec = model.encode(text, normalize_embeddings=True)
             response = {"vector": emb.to_blob(vec).hex()}
 
         elif action == "similarity":
