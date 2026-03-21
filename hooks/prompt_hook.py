@@ -9,11 +9,14 @@ Handles two retrieval layers:
 Both inject via additionalContext (supported by UserPromptSubmit hooks).
 """
 
+from __future__ import annotations
+
 import json
 import sqlite3
 import sys
 import os
 from datetime import datetime
+from typing import Any, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -21,12 +24,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 from hook_helpers import get_conn, get_embedder, get_session_project, DB_PATH, LOG_PATH
 
 
-def log(msg):
+def log(msg: str) -> None:
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(f"[prompt] {msg}\n")
 
 
-def is_first_prompt(session_id):
+def is_first_prompt(session_id: str) -> bool:
     """Check if this is the first prompt of the session."""
     conn = get_conn()
     row = conn.execute(
@@ -37,7 +40,7 @@ def is_first_prompt(session_id):
     return row is None
 
 
-def mark_first_prompt_done(session_id):
+def mark_first_prompt_done(session_id: str) -> None:
     """Mark that the first prompt has been processed for this session."""
     conn = get_conn()
     conn.execute(
@@ -48,7 +51,7 @@ def mark_first_prompt_done(session_id):
     conn.close()
 
 
-def load_staged_context(session_id):
+def load_staged_context(session_id: str) -> Optional[str]:
     """Load and consume cross-project context staged by the stop hook."""
     conn = get_conn()
     row = conn.execute(
@@ -65,7 +68,7 @@ def load_staged_context(session_id):
     return row[0] if row else None
 
 
-def format_entry(r):
+def format_entry(r: dict[str, Any]) -> str:
     """Format a memory entry for injection."""
     from config import MIN_INJECTION_SIMILARITY
     sim = r.get("similarity", 0)
@@ -87,7 +90,7 @@ def format_entry(r):
     )
 
 
-def layer1_search(user_message, session_id):
+def layer1_search(user_message: str, session_id: str) -> Optional[str]:
     """Layer 1: Search cairn using user's first message."""
     from config import L1_SIM_THRESHOLD, L1_MAX_RESULTS, MIN_INJECTION_SIMILARITY
 
@@ -135,7 +138,7 @@ def layer1_search(user_message, session_id):
     return "\n".join(lines)
 
 
-def main():
+def main() -> None:
     raw = sys.stdin.read()
     hook_input = json.loads(raw)
     session_id = hook_input.get("session_id", "")
@@ -144,7 +147,7 @@ def main():
     if not user_message or len(user_message) < 3:
         sys.exit(0)
 
-    context_parts = []
+    context_parts: list[str] = []
 
     # Layer 1: First-prompt push
     if is_first_prompt(session_id):
@@ -164,7 +167,7 @@ def main():
         sys.exit(0)
 
     combined = "\n\n".join(context_parts)
-    output = {
+    output: dict[str, Any] = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": f"CAIRN CONTEXT (proactive retrieval — interpret per .claude/rules/memory-system.md):\n\n{combined}"

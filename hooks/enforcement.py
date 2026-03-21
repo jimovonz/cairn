@@ -1,14 +1,17 @@
 """Enforcement mechanisms — trailing intent detection and continuation counting."""
 
-import json
+from __future__ import annotations
+
 import re
+from typing import Optional
 
 import hook_helpers
 from hook_helpers import log, get_conn
 from config import TRAILING_INTENT_SIM_THRESHOLD
 
+import numpy as np
 
-TRAILING_INTENT_REFS = [
+TRAILING_INTENT_REFS: list[str] = [
     "let me test that now",
     "let me check that",
     "let me investigate",
@@ -26,10 +29,10 @@ TRAILING_INTENT_REFS = [
     "shall I implement this",
 ]
 
-_intent_embeddings = None
+_intent_embeddings: Optional[list[tuple[str, np.ndarray]]] = None
 
 
-def _get_intent_embeddings():
+def _get_intent_embeddings() -> Optional[list[tuple[str, np.ndarray]]]:
     """Lazy-load and cache reference intent embeddings."""
     global _intent_embeddings
     if _intent_embeddings is not None:
@@ -42,7 +45,7 @@ def _get_intent_embeddings():
     return _intent_embeddings if _intent_embeddings else None
 
 
-def _extract_last_sentence(text):
+def _extract_last_sentence(text: str) -> Optional[str]:
     """Extract the last non-empty, non-memory-block sentence from the response."""
     cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
     cleaned = re.sub(r"\s*```\s*$", "", cleaned).strip()
@@ -51,7 +54,7 @@ def _extract_last_sentence(text):
     return sentences[-1] if sentences else None
 
 
-def check_trailing_intent(text):
+def check_trailing_intent(text: str) -> Optional[str]:
     """Check if response ends with unfulfilled action intent.
 
     Returns the matched trailing sentence if intent detected, None otherwise.
@@ -84,7 +87,7 @@ def check_trailing_intent(text):
 
 # --- Continuation counting (SQLite-backed) ---
 
-def get_continuation_count(session_id):
+def get_continuation_count(session_id: str) -> int:
     """Get how many times we've re-prompted this session."""
     conn = get_conn()
     row = conn.execute(
@@ -95,7 +98,7 @@ def get_continuation_count(session_id):
     return int(row[0]) if row and row[0] else 0
 
 
-def increment_continuation(session_id):
+def increment_continuation(session_id: str) -> int:
     """Increment and return the continuation count."""
     conn = get_conn()
     current = get_continuation_count(session_id)
@@ -109,7 +112,7 @@ def increment_continuation(session_id):
     return new_count
 
 
-def reset_continuation(session_id):
+def reset_continuation(session_id: str) -> None:
     """Reset continuation count (called when a response completes normally)."""
     conn = get_conn()
     conn.execute(

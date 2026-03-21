@@ -1,5 +1,10 @@
 """Memory storage, deduplication, confidence updates, and quality gates."""
 
+from __future__ import annotations
+
+from types import ModuleType
+from typing import Optional
+
 import hook_helpers
 from hook_helpers import log, get_conn, get_session_project, record_metric
 from config import (DEDUP_THRESHOLD, CONFIDENCE_BOOST, CONFIDENCE_PENALTY,
@@ -7,7 +12,7 @@ from config import (DEDUP_THRESHOLD, CONFIDENCE_BOOST, CONFIDENCE_PENALTY,
                      DISTINCT_VARIANT_SIM_THRESHOLD, NEGATION_SIM_FLOOR)
 
 
-EMPTY_MEMORY_PATTERNS = [
+EMPTY_MEMORY_PATTERNS: list[str] = [
     "no context available",
     "no relevant context",
     "no technical context",
@@ -24,11 +29,11 @@ EMPTY_MEMORY_PATTERNS = [
     "no relevant information",
 ]
 
-NEGATION_PATTERNS = {"not", "never", "no longer", "isn't", "aren't", "shouldn't",
+NEGATION_PATTERNS: set[str] = {"not", "never", "no longer", "isn't", "aren't", "shouldn't",
                      "don't", "doesn't", "won't", "can't", "cannot", "without",
                      "instead of", "rather than", "replaced", "removed", "deprecated"}
 
-DIRECTIONAL_PAIRS = [
+DIRECTIONAL_PAIRS: list[tuple[str, str]] = [
     ("increase", "decrease"), ("enable", "disable"), ("add", "remove"),
     ("use", "avoid"), ("prefer", "avoid"), ("include", "exclude"),
     ("allow", "block"), ("accept", "reject"), ("start", "stop"),
@@ -36,7 +41,7 @@ DIRECTIONAL_PAIRS = [
 ]
 
 
-def _is_empty_memory(content):
+def _is_empty_memory(content: Optional[str]) -> bool:
     """Check if a memory's content is essentially 'I don't know' — no retrievable knowledge.
 
     Uses substring matching (fast, deterministic) rather than embeddings to avoid
@@ -49,7 +54,7 @@ def _is_empty_memory(content):
     return any(p in content_lower for p in EMPTY_MEMORY_PATTERNS)
 
 
-def _has_negation_mismatch(text_a, text_b):
+def _has_negation_mismatch(text_a: str, text_b: str) -> bool:
     """Lightweight heuristic: check if one text negates or directionally contradicts the other."""
     words_a = set(text_a.lower().split())
     words_b = set(text_b.lower().split())
@@ -68,7 +73,7 @@ def _has_negation_mismatch(text_a, text_b):
     return False
 
 
-def apply_confidence_updates(updates, session_id=None):
+def apply_confidence_updates(updates: list[tuple[int, str]], session_id: Optional[str] = None) -> int:
     """Apply confidence adjustments from LLM feedback."""
     if not updates:
         return 0
@@ -92,7 +97,7 @@ def apply_confidence_updates(updates, session_id=None):
     return applied
 
 
-def insert_memories(entries, session_id=None):
+def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = None) -> int:
     """Insert memory entries, deduplicating via cosine similarity."""
     if not entries:
         return 0
@@ -101,24 +106,24 @@ def insert_memories(entries, session_id=None):
 
     # Write throttling: cap entries per response, keep highest-value ones
     if len(entries) > MAX_MEMORIES_PER_RESPONSE:
-        type_priority = {"correction": 0, "decision": 1, "fact": 2, "preference": 3,
+        type_priority: dict[str, int] = {"correction": 0, "decision": 1, "fact": 2, "preference": 3,
                          "person": 4, "skill": 5, "workflow": 6, "project": 7}
         entries.sort(key=lambda e: type_priority.get(e.get("type", ""), 99))
         dropped = entries[MAX_MEMORIES_PER_RESPONSE:]
         entries = entries[:MAX_MEMORIES_PER_RESPONSE]
         log(f"Write throttle: kept {len(entries)}, dropped {len(dropped)}")
 
-    emb = hook_helpers.get_embedder()
+    emb: Optional[ModuleType] = hook_helpers.get_embedder()
     conn = get_conn()
-    project = get_session_project(conn, session_id)
-    inserted = 0
+    project: Optional[str] = get_session_project(conn, session_id)
+    inserted: int = 0
 
     for entry in entries:
-        mem_type = entry.get("type", "fact")
-        topic = entry.get("topic", "unknown")
-        content = entry.get("content", "")
-        source_start = entry.get("source_start")
-        source_end = entry.get("source_end")
+        mem_type: str = entry.get("type", "fact")
+        topic: str = entry.get("topic", "unknown")
+        content: str = entry.get("content", "")
+        source_start: Optional[str] = entry.get("source_start")
+        source_end: Optional[str] = entry.get("source_end")
 
         # Content quality gate: reject memories with no retrievable knowledge
         if _is_empty_memory(content):
@@ -127,10 +132,10 @@ def insert_memories(entries, session_id=None):
             continue
 
         # Augment embedding text with project to push unrelated domains apart in vector space
-        project_prefix = f"{project} " if project else ""
-        search_text = f"{project_prefix}{mem_type} {topic} {content}"
+        project_prefix: str = f"{project} " if project else ""
+        search_text: str = f"{project_prefix}{mem_type} {topic} {content}"
 
-        embedding_blob = None
+        embedding_blob: Optional[bytes] = None
         if emb:
             try:
                 vec = emb.embed(search_text, allow_slow=False)
@@ -174,8 +179,8 @@ def insert_memories(entries, session_id=None):
         ).fetchone()
 
         if same_topic:
-            old_content = same_topic[1]
-            old_sim = 0.0
+            old_content: Optional[str] = same_topic[1]
+            old_sim: float = 0.0
             if embedding_blob and emb and old_content:
                 try:
                     old_vec = emb.embed(f"{project or ''} {mem_type} {topic} {old_content}".strip(), allow_slow=False)

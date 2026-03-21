@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """Embedding utilities for Cairn."""
 
+from __future__ import annotations
+
 import numpy as np
 import os
+import sqlite3
 import struct
 from datetime import datetime
+from typing import Any, Optional
 
-_model = None
-
-
-_daemon_start_attempted = False
+_model: Any = None
 
 
-def _daemon_embed(text):
+_daemon_start_attempted: bool = False
+
+
+def _daemon_embed(text: str) -> Optional[np.ndarray]:
     """Try embedding via the daemon. Auto-starts daemon on first failure."""
     global _daemon_start_attempted
     try:
@@ -54,7 +58,7 @@ def _daemon_embed(text):
     return None
 
 
-def get_model():
+def get_model() -> Any:
     global _model
     if _model is None:
         from sentence_transformers import SentenceTransformer
@@ -62,7 +66,7 @@ def get_model():
     return _model
 
 
-def embed(text, allow_slow=True):
+def embed(text: str, allow_slow: bool = True) -> Optional[np.ndarray]:
     """Return embedding vector. Uses daemon if available.
     If allow_slow=False and daemon unavailable, returns None instead of blocking for model load."""
     vec = _daemon_embed(text)
@@ -74,22 +78,22 @@ def embed(text, allow_slow=True):
     return model.encode(text, normalize_embeddings=True)
 
 
-def to_blob(vector):
+def to_blob(vector: np.ndarray) -> bytes:
     """Convert numpy array to bytes for SQLite storage."""
     return vector.astype(np.float32).tobytes()
 
 
-def from_blob(blob):
+def from_blob(blob: bytes) -> np.ndarray:
     """Convert SQLite blob back to numpy array."""
     return np.frombuffer(blob, dtype=np.float32)
 
 
-def cosine_similarity(a, b):
+def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     """Cosine similarity between two vectors. Assumes normalized vectors."""
     return float(np.dot(a, b))
 
 
-def _load_vec(conn):
+def _load_vec(conn: sqlite3.Connection) -> bool:
     """Try to load sqlite-vec extension. Returns True if available."""
     try:
         import sqlite_vec
@@ -100,7 +104,7 @@ def _load_vec(conn):
         return False
 
 
-def _recency_decay(updated_at_str):
+def _recency_decay(updated_at_str: str) -> float:
     """Compute recency decay factor (0-1). Recent = 1, old = approaching 0."""
     from config import RECENCY_HALF_LIFE_DAYS
     try:
@@ -112,14 +116,20 @@ def _recency_decay(updated_at_str):
         return 0.5  # Unknown age, neutral
 
 
-def _scope_weight(project, current_project):
+def _scope_weight(project: Optional[str], current_project: Optional[str]) -> float:
     """Return scope weight: 1.0 for project match, 0.3 for global."""
     if current_project and project == current_project:
         return 1.0
     return 0.3
 
 
-def composite_score(similarity, confidence, updated_at_str=None, project=None, current_project=None):
+def composite_score(
+    similarity: float,
+    confidence: float,
+    updated_at_str: Optional[str] = None,
+    project: Optional[str] = None,
+    current_project: Optional[str] = None,
+) -> float:
     """Compute a single scalar retrieval score combining all signals.
     Reduces cognitive load on the LLM by pre-ranking results."""
     from config import SCORE_W_SIMILARITY, SCORE_W_CONFIDENCE, SCORE_W_RECENCY, SCORE_W_SCOPE
@@ -133,7 +143,12 @@ def composite_score(similarity, confidence, updated_at_str=None, project=None, c
     )
 
 
-def _vec_candidates(conn, query_vec, k, current_project=None):
+def _vec_candidates(
+    conn: sqlite3.Connection,
+    query_vec: np.ndarray,
+    k: int,
+    current_project: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """Get top-k candidates from sqlite-vec index."""
     query_blob = to_blob(query_vec)
     rows = conn.execute("""
@@ -144,7 +159,7 @@ def _vec_candidates(conn, query_vec, k, current_project=None):
           AND k = ?
     """, (query_blob, k)).fetchall()
 
-    results = []
+    results: list[dict[str, Any]] = []
     for row in rows:
         confidence = row[7] if row[7] is not None else 0.7
         l2_dist = row[1]
@@ -165,13 +180,18 @@ def _vec_candidates(conn, query_vec, k, current_project=None):
     return results
 
 
-def _brute_force_candidates(conn, query_vec, k, current_project=None):
+def _brute_force_candidates(
+    conn: sqlite3.Connection,
+    query_vec: np.ndarray,
+    k: int,
+    current_project: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """Get top-k candidates via brute-force scan."""
     rows = conn.execute(
         "SELECT id, type, topic, content, embedding, updated_at, project, confidence, source_start, source_end FROM memories WHERE embedding IS NOT NULL"
     ).fetchall()
 
-    results = []
+    results: list[dict[str, Any]] = []
     for row in rows:
         confidence = row[7] if row[7] is not None else 0.7
         row_vec = from_blob(row[4])
@@ -194,7 +214,7 @@ def _brute_force_candidates(conn, query_vec, k, current_project=None):
     return results[:k]
 
 
-def upsert_vec_index(conn, memory_id, embedding_blob):
+def upsert_vec_index(conn: sqlite3.Connection, memory_id: int, embedding_blob: bytes) -> None:
     """Insert or update a vector in the vec index."""
     try:
         conn.execute("DELETE FROM memories_vec WHERE memory_id = ?", (memory_id,))
@@ -204,7 +224,13 @@ def upsert_vec_index(conn, memory_id, embedding_blob):
         pass  # Vec table may not exist
 
 
-def find_similar(conn, text, threshold=None, limit=None, current_project=None):
+def find_similar(
+    conn: sqlite3.Connection,
+    text: str,
+    threshold: Optional[float] = None,
+    limit: Optional[int] = None,
+    current_project: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """Find memories similar to the given text with full quality filtering.
 
     Applies:
@@ -227,7 +253,7 @@ def find_similar(conn, text, threshold=None, limit=None, current_project=None):
     query_vec = embed(text)
     k = limit * 5  # Over-fetch for post-filtering
 
-    candidates = []
+    candidates: list[dict[str, Any]] = []
     if _load_vec(conn):
         try:
             candidates = _vec_candidates(conn, query_vec, k, current_project)
@@ -270,7 +296,7 @@ def find_similar(conn, text, threshold=None, limit=None, current_project=None):
 
     # Diversity filter: greedily drop near-duplicates from results
     from config import DIVERSITY_SIM_THRESHOLD
-    diverse = []
+    diverse: list[dict[str, Any]] = []
     for r in filtered:
         is_dup = False
         for selected in diverse:
@@ -292,7 +318,7 @@ def find_similar(conn, text, threshold=None, limit=None, current_project=None):
     return diverse[:limit]
 
 
-def find_nearest(conn, text, limit=1):
+def find_nearest(conn: sqlite3.Connection, text: str, limit: int = 1) -> list[dict[str, Any]]:
     """Find the single nearest memory by raw similarity. Used for deduplication.
     Uses vec index if available. No confidence or threshold filtering."""
     query_vec = embed(text)
@@ -311,7 +337,7 @@ def find_nearest(conn, text, limit=1):
         "SELECT id, type, topic, content, embedding, updated_at, project, confidence FROM memories WHERE embedding IS NOT NULL"
     ).fetchall()
 
-    results = []
+    results: list[dict[str, Any]] = []
     for row in rows:
         row_vec = from_blob(row[4])
         sim = cosine_similarity(query_vec, row_vec)

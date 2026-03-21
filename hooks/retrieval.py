@@ -1,7 +1,10 @@
 """Context retrieval — Layer 2 (cross-project) and Layer 3 (on-demand pull)."""
 
+from __future__ import annotations
+
 import json
 import sqlite3
+from typing import Any, Optional
 
 import hook_helpers
 from hook_helpers import log, get_conn, get_session_project, record_metric
@@ -10,10 +13,10 @@ from config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
                      L3_MAX_GLOBAL_RESULTS, WEAK_ENTRY_SCORE_FLOOR)
 
 
-CONTEXT_CACHE_SIM_THRESHOLD = 0.9
+CONTEXT_CACHE_SIM_THRESHOLD: float = 0.9
 
 
-def get_adaptive_threshold_boost():
+def get_adaptive_threshold_boost() -> float:
     """Check recent retrieval outcomes. If harmful/neutral rate is high, boost the similarity floor."""
     try:
         conn = get_conn()
@@ -40,7 +43,7 @@ def get_adaptive_threshold_boost():
         return 0.0
 
 
-def retrieve_context(context_need, session_id=None):
+def retrieve_context(context_need: str, session_id: Optional[str] = None) -> Optional[str]:
     """Search the cairn for memories matching the context need. Returns structured XML context."""
     import time
     from datetime import datetime as dt
@@ -49,8 +52,8 @@ def retrieve_context(context_need, session_id=None):
     project = get_session_project(conn, session_id)
 
     emb = hook_helpers.get_embedder()
-    project_results = []
-    global_results = []
+    project_results: list[dict[str, Any]] = []
+    global_results: list[dict[str, Any]] = []
 
     threshold_boost = get_adaptive_threshold_boost()
     if threshold_boost > 0:
@@ -59,8 +62,8 @@ def retrieve_context(context_need, session_id=None):
     if emb:
         try:
             all_results = emb.find_similar(conn, context_need, current_project=project)
-            global_threshold = (L3_GLOBAL_SIM_WITH_PROJECT if project else L3_GLOBAL_SIM_WITHOUT_PROJECT) + threshold_boost
-            project_threshold = L3_PROJECT_SIM_THRESHOLD + threshold_boost
+            global_threshold: float = (L3_GLOBAL_SIM_WITH_PROJECT if project else L3_GLOBAL_SIM_WITHOUT_PROJECT) + threshold_boost
+            project_threshold: float = L3_PROJECT_SIM_THRESHOLD + threshold_boost
 
             for r in all_results:
                 if project and r.get("project") == project and r["similarity"] >= project_threshold:
@@ -83,7 +86,7 @@ def retrieve_context(context_need, session_id=None):
                 ORDER BY rank LIMIT 15
             """, (context_need,)).fetchall()
             for r in rows:
-                entry = {"id": r[0], "type": r[1], "topic": r[2], "content": r[3],
+                entry: dict[str, Any] = {"id": r[0], "type": r[1], "topic": r[2], "content": r[3],
                          "updated_at": r[4], "project": r[5], "session_id": r[6],
                          "confidence": r[7] or 0.7, "similarity": 0.5, "score": 0.5}
                 if project and r[5] == project:
@@ -95,7 +98,7 @@ def retrieve_context(context_need, session_id=None):
 
     conn.close()
 
-    elapsed_ms = (time.time() - start) * 1000
+    elapsed_ms: float = (time.time() - start) * 1000
     total = len(project_results) + len(global_results)
     record_metric(session_id, "context_retrieval", context_need[:100], total)
     record_metric(session_id, "retrieval_latency_ms", context_need[:50], elapsed_ms)
@@ -105,17 +108,17 @@ def retrieve_context(context_need, session_id=None):
         record_metric(session_id, "context_empty", context_need[:100])
         return None
 
-    def recency_days(updated_at_str):
+    def recency_days(updated_at_str: str) -> int:
         try:
             updated = dt.strptime(updated_at_str[:19], "%Y-%m-%d %H:%M:%S")
             return max(0, (dt.now() - updated).days)
         except Exception:
             return -1
 
-    def reliability(r):
+    def reliability(r: dict[str, Any]) -> float:
         return r.get("score", r.get("confidence", 0.7))
 
-    def format_entry(r):
+    def format_entry(r: dict[str, Any]) -> str:
         rel = reliability(r)
         rel_label = "strong" if rel >= 0.6 else "moderate" if rel >= 0.4 else "weak"
         days = recency_days(r.get("updated_at", ""))
@@ -126,7 +129,7 @@ def retrieve_context(context_need, session_id=None):
             f'{r["content"]}</entry>'
         )
 
-    lines = ['<cairn_context query="{}" current_project="{}">'.format(
+    lines: list[str] = ['<cairn_context query="{}" current_project="{}">'.format(
         context_need.replace('"', '&quot;'),
         project or "none"
     )]
@@ -149,7 +152,7 @@ def retrieve_context(context_need, session_id=None):
     return "\n".join(lines)
 
 
-def layer2_cross_project_search(keywords_list, session_id=None):
+def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[str] = None) -> None:
     """Layer 2: Search global memories for cross-project relevance using keywords.
     Stages results for the next UserPromptSubmit hook injection."""
     from config import L2_SIM_THRESHOLD, L2_MAX_RESULTS
@@ -183,19 +186,19 @@ def layer2_cross_project_search(keywords_list, session_id=None):
         return
 
     from datetime import datetime as dt
-    lines = [f'<cairn_context query="cross-project keywords: {query[:60]}" current_project="{project or "none"}" layer="cross-project">']
+    lines: list[str] = [f'<cairn_context query="cross-project keywords: {query[:60]}" current_project="{project or "none"}" layer="cross-project">']
     lines.append('  <scope level="global" weight="low">')
     for r in cross_project:
-        proj = r.get("project") or "global"
-        conf = r.get("confidence", 0.7)
-        score = r.get("score", conf)
-        days = 0
+        proj: str = r.get("project") or "global"
+        conf: float = r.get("confidence", 0.7)
+        score: float = r.get("score", conf)
+        days: int = 0
         try:
             updated = dt.strptime(r["updated_at"][:19], "%Y-%m-%d %H:%M:%S")
             days = max(0, (dt.now() - updated).days)
         except Exception:
             pass
-        rel = "strong" if score >= 0.6 else "moderate" if score >= 0.4 else "weak"
+        rel: str = "strong" if score >= 0.6 else "moderate" if score >= 0.4 else "weak"
         lines.append(
             f'    <entry id="{r["id"]}" type="{r["type"]}" topic="{r["topic"]}" '
             f'project="{proj}" date="{r["updated_at"]}" confidence="{conf:.2f}" '
@@ -205,7 +208,7 @@ def layer2_cross_project_search(keywords_list, session_id=None):
     lines.append('  </scope>')
     lines.append('</cairn_context>')
 
-    staged_xml = "\n".join(lines)
+    staged_xml: str = "\n".join(lines)
 
     conn.execute(
         "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'staged_context', ?)",
@@ -220,7 +223,7 @@ def layer2_cross_project_search(keywords_list, session_id=None):
 
 # --- Context cache ---
 
-def load_context_cache(session_id):
+def load_context_cache(session_id: str) -> list[dict[str, Any]]:
     conn = get_conn()
     row = conn.execute(
         "SELECT value FROM hook_state WHERE session_id = ? AND key = 'context_cache'",
@@ -235,7 +238,7 @@ def load_context_cache(session_id):
     return []
 
 
-def save_context_cache(session_id, served_needs):
+def save_context_cache(session_id: str, served_needs: list[dict[str, Any]]) -> None:
     conn = get_conn()
     conn.execute(
         "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'context_cache', ?)",
@@ -245,7 +248,7 @@ def save_context_cache(session_id, served_needs):
     conn.close()
 
 
-def is_context_cached(context_need, served_needs, emb):
+def is_context_cached(context_need: str, served_needs: list[dict[str, Any]], emb: Any) -> bool:
     """Check if a semantically similar context_need has already been served."""
     if not emb or not served_needs:
         return any(s.get("text") == context_need for s in served_needs)
@@ -262,9 +265,9 @@ def is_context_cached(context_need, served_needs, emb):
     return False
 
 
-def add_to_context_cache(context_need, served_needs, emb):
+def add_to_context_cache(context_need: str, served_needs: list[dict[str, Any]], emb: Any) -> list[dict[str, Any]]:
     """Add a context_need to the cache with its embedding."""
-    entry = {"text": context_need}
+    entry: dict[str, Any] = {"text": context_need}
     if emb:
         try:
             vec = emb.embed(context_need)

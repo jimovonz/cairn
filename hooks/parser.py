@@ -1,10 +1,32 @@
 """Memory block parser for Cairn stop hook."""
 
+from __future__ import annotations
+
 import re
+from typing import NamedTuple, Optional
+
 from hook_helpers import log
 
 
-def parse_memory_block(text):
+class ParseResult(NamedTuple):
+    """Structured result from parsing a <memory> block."""
+    entries: Optional[list[dict[str, str]]]
+    complete: Optional[bool]
+    remaining: Optional[str]
+    context: Optional[str]
+    context_need: Optional[str]
+    confidence_updates: list[tuple[int, str]]
+    retrieval_outcome: Optional[str]
+    keywords: list[str]
+    intent: Optional[str]
+
+
+# Sentinel for "no memory block found"
+NO_BLOCK = ParseResult(None, None, None, None, None, [], None, [], None)
+NOOP_BLOCK = ParseResult([], True, None, "sufficient", None, [], None, [], None)
+
+
+def parse_memory_block(text: str) -> ParseResult:
     """Extract memory entries, completeness, and context needs from a <memory> block.
 
     Robust parser that handles:
@@ -23,25 +45,25 @@ def parse_memory_block(text):
             matches = [unclosed.group(1)]
             log("Warning: unclosed <memory> tag — parsed anyway")
         else:
-            return None, None, None, None, None, [], None, [], None
+            return NO_BLOCK
 
     block = matches[-1].strip()
 
     # Check for no-op block
     if block in ("complete: true", "- complete: true"):
-        return [], True, None, "sufficient", None, [], None, [], None
+        return NOOP_BLOCK
 
     # Parse entries
-    entries = []
-    current = {}
-    complete = True
-    remaining = None
-    context = "sufficient"
-    context_need = None
-    retrieval_outcome = None  # useful | neutral | harmful
-    keywords = []  # topic keywords for Layer 2 cross-project search
-    confidence_updates = []  # list of (memory_id, direction)
-    intent = None  # "resolved" when LLM confirms no further action needed
+    entries: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    complete: bool = True
+    remaining: Optional[str] = None
+    context: str = "sufficient"
+    context_need: Optional[str] = None
+    retrieval_outcome: Optional[str] = None
+    keywords: list[str] = []
+    confidence_updates: list[tuple[int, str]] = []
+    intent: Optional[str] = None
 
     for line in block.split("\n"):
         line = line.strip()
@@ -76,7 +98,6 @@ def parse_memory_block(text):
         elif key == "intent":
             intent = value.lower()
         elif key == "source_messages":
-            # Parse "12-18" or "5" into start, end
             try:
                 if "-" in value:
                     parts = value.split("-")
@@ -88,16 +109,15 @@ def parse_memory_block(text):
             except (ValueError, IndexError):
                 pass
         elif key in ("type", "topic", "content"):
-            # If starting a new entry (type seen) and current entry is complete, commit it
             if key == "type" and "type" in current and "topic" in current and "content" in current:
                 entries.append(current.copy())
                 current = {}
             current[key] = value
-        # Unknown fields are silently ignored
 
     # Handle partial entry (has type+topic but missing content)
     if current and "type" in current and "topic" in current:
         current.setdefault("content", current.get("topic", ""))
         entries.append(current.copy())
 
-    return entries, complete, remaining, context, context_need, confidence_updates, retrieval_outcome, keywords, intent
+    return ParseResult(entries, complete, remaining, context, context_need,
+                       confidence_updates, retrieval_outcome, keywords, intent)
