@@ -182,6 +182,8 @@ cairn/
 
 **Platform:** Developed and tested on Ubuntu 22.04. Linux and macOS should work. Windows requires WSL — the installer is bash, and the embedding daemon uses Unix sockets. The core hooks work without the daemon (slower embedding, no daemon acceleration) but `install.sh` must run in a Unix shell.
 
+**Concurrency:** Safe for multiple simultaneous Claude Code sessions, cron jobs, and external integrations. SQLite runs in WAL mode with a 5-second busy timeout — concurrent readers with queued writers.
+
 ## Configuration
 
 All tunable parameters are in `cairn/config.py`:
@@ -204,6 +206,7 @@ All tunable parameters are in `cairn/config.py`:
 | **Saturating confidence** | Prevents runaway certainty on frequently retrieved memories without introducing passive forgetting |
 | **Invisible tags** | User sees clean output; hook infrastructure sees structured metadata — no UX compromise |
 | **sqlite-vec** | Indexed vector KNN search that scales, with transparent brute-force fallback |
+| **WAL + busy timeout** | Concurrent sessions, cron, and external integrations without "database locked" errors |
 
 ## Limitations
 

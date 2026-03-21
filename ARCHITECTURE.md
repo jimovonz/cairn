@@ -263,7 +263,8 @@ cairn/
 │   └── rules/
 │       └── memory-system.md           # Full system docs for the LLM (auto-loaded)
 ├── cairn/
-│   ├── cairn.db                   # SQLite database
+│   ├── cairn.db                   # SQLite database (WAL mode for concurrent access)
+│   ├── db.py                          # Shared DB connection helper (WAL + busy timeout)
 │   ├── config.py                      # All tunable parameters (thresholds, weights, limits)
 │   ├── init_db.py                     # Schema and migrations
 │   ├── query.py                       # CLI query tool
@@ -332,6 +333,18 @@ Sessions chain via `parent_session_id`. When Claude Code compacts context and cr
 | created_at | TIMESTAMP | When recorded |
 
 Tracked events: `hook_fired`, `memories_stored`, `missing_memory_block`, `malformed_memory_block`, `context_requested`, `context_served`, `context_empty`, `context_cache_hit`, `context_retrieval`, `retrieval_latency_ms`, `confidence_updates`, `continuation_cap_hit`, `completeness_cap_hit`, `hook_crash`.
+
+## Concurrency
+
+The database uses SQLite in WAL (Write-Ahead Logging) mode with a 5-second busy timeout. This is essential because Cairn operates across concurrent Claude Code sessions, cron jobs, and external integrations (e.g. Telegram).
+
+**WAL mode** allows multiple concurrent readers with one writer. Writers queue rather than failing immediately. This is set once by `init_db.py` and persists in the database file.
+
+**Busy timeout** (5000ms) is set on every connection. If a writer holds the lock, other writers wait up to 5 seconds before failing. Since individual write operations are small (~50ms for an INSERT + embedding), two sessions would need to complete within the same 50ms window to even queue — effectively impossible to deadlock at normal usage.
+
+All connection points (stop hook, prompt hook, query CLI, daemon) apply the busy timeout via `PRAGMA busy_timeout`. The `cairn/db.py` module provides a shared `connect()` helper that applies both WAL and timeout automatically.
+
+**Scaling limit**: WAL SQLite handles tens of concurrent sessions comfortably. At hundreds of concurrent writers, Postgres with connection pooling would be the upgrade path.
 
 ## Stop Hook — the core mechanism
 
@@ -769,6 +782,7 @@ All tunable parameters are centralised in `cairn/config.py`:
 | `SOFT_CONF_FLOOR` | 0.30 | Minimum confidence unless similarity override |
 | `DOMINANCE_EPSILON` | 0.05 | Gap threshold for including runner-up |
 | `MAX_CONTINUATIONS` | 3 | Hard cap on consecutive re-prompts |
+| `DB_BUSY_TIMEOUT_MS` | 5000 | SQLite busy timeout for concurrent access |
 | `L1_*` / `L2_*` / `L3_*` | various | Per-layer retrieval thresholds |
 
 ## Testing
