@@ -101,7 +101,7 @@ def test_many_boosts_approach_but_dont_reach_1():
 # === Negation heuristic ===
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
-from stop_hook import _has_negation_mismatch
+from storage import _has_negation_mismatch
 
 
 def test_negation_detected():

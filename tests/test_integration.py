@@ -332,7 +332,7 @@ def test_write_throttle_caps_entries():
 
 def test_parse_store_retrieve_roundtrip():
     """Parse a memory block, store entries, then retrieve and verify."""
-    from stop_hook import parse_memory_block
+    from parser import parse_memory_block
     db_path, conn = setup_test_db()
 
     text = """Here is my response.
@@ -375,7 +375,7 @@ def test_parse_store_retrieve_roundtrip():
 
 def test_context_insufficient_produces_block():
     """Memory block with context: insufficient should parse correctly for blocking."""
-    from stop_hook import parse_memory_block
+    from parser import parse_memory_block
 
     text = """I need more context.
 <memory>
@@ -396,7 +396,7 @@ def test_context_insufficient_produces_block():
 
 def test_confidence_updates_applied():
     """Parse confidence updates and verify they modify the right memories."""
-    from stop_hook import parse_memory_block
+    from parser import parse_memory_block
     db_path, conn = setup_test_db()
 
     id1 = insert_memory(conn, "fact", "t1", "content 1", confidence=0.7)
@@ -467,7 +467,7 @@ def test_version_history_on_overwrite():
 
 def test_negation_with_realistic_memories():
     """Two plausible memories that contradict should be detected."""
-    from stop_hook import _has_negation_mismatch
+    from storage import _has_negation_mismatch
 
     # Real-world pair from a GNSS project
     assert _has_negation_mismatch(

@@ -61,25 +61,26 @@ def run_hook(db_path, payload):
         exit_code[0] = code
         raise SystemExit(code)
 
+    import hook_helpers
     import stop_hook
-    original_db = stop_hook.DB_PATH
-    original_log = stop_hook.LOG_PATH
+    original_db = hook_helpers.DB_PATH
+    original_log = hook_helpers.LOG_PATH
 
     try:
-        stop_hook.DB_PATH = db_path
-        stop_hook.LOG_PATH = os.path.join(TEST_DIR, 'test.log')
+        hook_helpers.DB_PATH = db_path
+        hook_helpers.LOG_PATH = os.path.join(TEST_DIR, 'test.log')
 
         with patch('sys.stdin', StringIO(payload_json)), \
              patch('sys.stdout', captured_output), \
              patch('sys.exit', mock_exit), \
-             patch.object(stop_hook, 'get_embedder', return_value=None):
+             patch.object(hook_helpers, 'get_embedder', return_value=None):
             try:
                 stop_hook.main()
             except SystemExit:
                 pass
     finally:
-        stop_hook.DB_PATH = original_db
-        stop_hook.LOG_PATH = original_log
+        hook_helpers.DB_PATH = original_db
+        hook_helpers.LOG_PATH = original_log
 
     output = captured_output.getvalue()
     result = json.loads(output) if output.strip() else None

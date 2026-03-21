@@ -6,7 +6,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 
-from stop_hook import parse_memory_block
+from parser import parse_memory_block
 
 
 def test_valid_single_entry():

@@ -14,6 +14,8 @@ from io import StringIO
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
+import hook_helpers
+
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
 
@@ -104,7 +106,7 @@ def test_is_running_stale_pid():
 
 def test_context_cache_exact_string_match():
     """Exact same context_need should be cached."""
-    from stop_hook import is_context_cached, add_to_context_cache
+    from retrieval import is_context_cached, add_to_context_cache
     served = []
     served = add_to_context_cache("what database did we choose", served, None)
     assert is_context_cached("what database did we choose", served, None) is True
@@ -112,7 +114,7 @@ def test_context_cache_exact_string_match():
 
 def test_context_cache_different_string():
     """Different context_need should not be cached (without embeddings)."""
-    from stop_hook import is_context_cached, add_to_context_cache
+    from retrieval import is_context_cached, add_to_context_cache
     served = []
     served = add_to_context_cache("what database did we choose", served, None)
     assert is_context_cached("how does authentication work", served, None) is False
@@ -120,7 +122,7 @@ def test_context_cache_different_string():
 
 def test_context_cache_empty():
     """Empty cache should return False."""
-    from stop_hook import is_context_cached
+    from retrieval import is_context_cached
     assert is_context_cached("anything", [], None) is False
 
 
@@ -142,10 +144,10 @@ def _make_state_db():
 
 
 def test_continuation_counter_increments():
-    from stop_hook import get_continuation_count, increment_continuation
+    from enforcement import get_continuation_count, increment_continuation
     db_path, conn = _make_state_db()
 
-    with patch('stop_hook.DB_PATH', db_path):
+    with patch('hook_helpers.DB_PATH', db_path):
         assert get_continuation_count("sess-1") == 0
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 1
@@ -155,10 +157,10 @@ def test_continuation_counter_increments():
 
 
 def test_continuation_counter_resets():
-    from stop_hook import get_continuation_count, increment_continuation, reset_continuation
+    from enforcement import get_continuation_count, increment_continuation, reset_continuation
     db_path, conn = _make_state_db()
 
-    with patch('stop_hook.DB_PATH', db_path):
+    with patch('hook_helpers.DB_PATH', db_path):
         increment_continuation("sess-1")
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 2
@@ -168,11 +170,11 @@ def test_continuation_counter_resets():
 
 
 def test_continuation_cap_at_three():
-    from stop_hook import get_continuation_count, increment_continuation
+    from enforcement import get_continuation_count, increment_continuation
     from config import MAX_CONTINUATIONS
     db_path, conn = _make_state_db()
 
-    with patch('stop_hook.DB_PATH', db_path):
+    with patch('hook_helpers.DB_PATH', db_path):
         for _ in range(MAX_CONTINUATIONS):
             increment_continuation("sess-1")
         assert get_continuation_count("sess-1") >= MAX_CONTINUATIONS
@@ -180,10 +182,10 @@ def test_continuation_cap_at_three():
 
 
 def test_continuation_isolated_per_session():
-    from stop_hook import get_continuation_count, increment_continuation
+    from enforcement import get_continuation_count, increment_continuation
     db_path, conn = _make_state_db()
 
-    with patch('stop_hook.DB_PATH', db_path):
+    with patch('hook_helpers.DB_PATH', db_path):
         increment_continuation("sess-1")
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 2
@@ -213,11 +215,11 @@ def test_hook_crash_exits_zero():
         raise SystemExit(code)
 
     # Patch DB_PATH to a non-existent path to force a crash inside main
-    with patch.object(stop_hook, 'DB_PATH', '/nonexistent/path/db.sqlite'), \
+    with patch.object(hook_helpers, 'DB_PATH', '/nonexistent/path/db.sqlite'), \
          patch('sys.stdin', StringIO(payload)), \
          patch('sys.stdout', StringIO()), \
          patch('sys.exit', mock_exit), \
-         patch.object(stop_hook, 'LOG_PATH', os.path.join(TEST_DIR, 'crash.log')):
+         patch.object(hook_helpers, 'LOG_PATH', os.path.join(TEST_DIR, 'crash.log')):
         try:
             # The wrapper around main() should catch and exit 0
             try:
@@ -236,10 +238,10 @@ def test_hook_crash_exits_zero():
 # ============================================================
 
 def test_record_metric_stores_event():
-    from stop_hook import record_metric
+    from hook_helpers import record_metric
     db_path, conn = fresh_db()
 
-    with patch('stop_hook.DB_PATH', db_path):
+    with patch('hook_helpers.DB_PATH', db_path):
         record_metric("sess-1", "test_event", "detail", 42.0)
 
     row = conn.execute("SELECT event, detail, value FROM metrics").fetchone()
@@ -252,9 +254,9 @@ def test_record_metric_stores_event():
 
 def test_record_metric_survives_db_error():
     """Metric recording should not crash on DB errors."""
-    from stop_hook import record_metric
+    from hook_helpers import record_metric
     # Non-existent DB path — should silently fail
-    with patch('stop_hook.DB_PATH', '/nonexistent/db.sqlite'):
+    with patch('hook_helpers.DB_PATH', '/nonexistent/db.sqlite'):
         record_metric("sess-1", "test", "detail", 1.0)  # Should not raise
 
 

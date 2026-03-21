@@ -13,6 +13,8 @@ from io import StringIO
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
+import hook_helpers
+
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
 
@@ -78,7 +80,7 @@ def test_first_prompt_detected():
     import prompt_hook
     db_path, conn = fresh_env()
 
-    with patch.object(prompt_hook, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
         assert prompt_hook.is_first_prompt("new-session") is True
     conn.close()
 
@@ -88,7 +90,7 @@ def test_second_prompt_not_first():
     import prompt_hook
     db_path, conn = fresh_env()
 
-    with patch.object(prompt_hook, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
         prompt_hook.mark_first_prompt_done("sess-1")
         assert prompt_hook.is_first_prompt("sess-1") is False
     conn.close()
@@ -99,7 +101,7 @@ def test_different_session_still_first():
     import prompt_hook
     db_path, conn = fresh_env()
 
-    with patch.object(prompt_hook, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
         prompt_hook.mark_first_prompt_done("sess-1")
         assert prompt_hook.is_first_prompt("sess-2") is True
     conn.close()
@@ -121,7 +123,7 @@ def test_staged_context_loaded():
     )
     conn.commit()
 
-    with patch.object(prompt_hook, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
         data = prompt_hook.load_staged_context("sess-1")
     assert data is not None
     assert "test data" in data
@@ -143,7 +145,7 @@ def test_staged_context_consumed():
     )
     conn.commit()
 
-    with patch.object(prompt_hook, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
         prompt_hook.load_staged_context("sess-1")
 
     # sess-1 should be consumed, sess-2 should remain
@@ -163,7 +165,7 @@ def test_no_staged_context():
     import prompt_hook
     db_path, conn = fresh_env()
 
-    with patch.object(prompt_hook, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
         data = prompt_hook.load_staged_context("sess-nonexistent")
     assert data is None
     conn.close()

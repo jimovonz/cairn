@@ -14,6 +14,10 @@ from io import StringIO
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
+import hook_helpers
+import enforcement
+import storage
+
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
 
@@ -61,6 +65,7 @@ def fresh_env():
 
 def run_hook(db_path, payload):
     """Run stop_hook.main() with full patching."""
+    import hook_helpers
     import stop_hook
     captured = StringIO()
     exit_code = [0]
@@ -70,13 +75,13 @@ def run_hook(db_path, payload):
         raise SystemExit(code)
 
     orig = {
-        'DB_PATH': stop_hook.DB_PATH,
-        'LOG_PATH': stop_hook.LOG_PATH,
+        'DB_PATH': hook_helpers.DB_PATH,
+        'LOG_PATH': hook_helpers.LOG_PATH,
     }
 
     try:
-        stop_hook.DB_PATH = db_path
-        stop_hook.LOG_PATH = os.path.join(TEST_DIR, f'intent_{_counter[0]}.log')
+        hook_helpers.DB_PATH = db_path
+        hook_helpers.LOG_PATH = os.path.join(TEST_DIR, f'intent_{_counter[0]}.log')
 
         with patch('sys.stdin', StringIO(json.dumps(payload))), \
              patch('sys.stdout', captured), \
@@ -87,7 +92,7 @@ def run_hook(db_path, payload):
                 pass
     finally:
         for k, v in orig.items():
-            setattr(stop_hook, k, v)
+            setattr(hook_helpers, k, v)
 
     output = captured.getvalue()
     result = json.loads(output) if output.strip() else None
@@ -100,30 +105,30 @@ class TestExtractLastSentence:
     def test_strips_memory_block(self):
         import stop_hook
         text = "Here is my answer.\n<memory>\n- type: fact\n- topic: test\n- content: test\n- complete: true\n</memory>"
-        result = stop_hook._extract_last_sentence(text)
+        result = enforcement._extract_last_sentence(text)
         assert result == "Here is my answer"
 
     def test_strips_trailing_code_fence(self):
         import stop_hook
         text = "Some code here.\n```\ncode block\n```"
-        result = stop_hook._extract_last_sentence(text)
+        result = enforcement._extract_last_sentence(text)
         assert result is not None
         assert "```" not in result
 
     def test_returns_none_for_empty(self):
         import stop_hook
-        assert stop_hook._extract_last_sentence("") is None
-        assert stop_hook._extract_last_sentence("   ") is None
+        assert enforcement._extract_last_sentence("") is None
+        assert enforcement._extract_last_sentence("   ") is None
 
     def test_skips_short_fragments(self):
         import stop_hook
         text = "Done. Ok. Yes."
-        assert stop_hook._extract_last_sentence(text) is None
+        assert enforcement._extract_last_sentence(text) is None
 
     def test_extracts_last_meaningful_sentence(self):
         import stop_hook
         text = "First I did this. Then I checked the logs. Let me investigate the error further."
-        result = stop_hook._extract_last_sentence(text)
+        result = enforcement._extract_last_sentence(text)
         assert "investigate" in result
 
 
@@ -146,9 +151,9 @@ class TestCheckTrailingIntent:
         if emb is None:
             return  # skip if no embedder available
         # Clear cached embeddings so they're recomputed
-        stop_hook._intent_embeddings = None
-        with patch.object(stop_hook, 'get_embedder', return_value=emb):
-            result = stop_hook.check_trailing_intent(
+        enforcement._intent_embeddings = None
+        with patch.object(hook_helpers, 'get_embedder', return_value=emb):
+            result = enforcement.check_trailing_intent(
                 "The config looks fine. Let me run the tests to verify.\n"
                 "<memory>\n- complete: true\n</memory>"
             )
@@ -159,9 +164,9 @@ class TestCheckTrailingIntent:
         emb = self._get_embedder()
         if emb is None:
             return
-        stop_hook._intent_embeddings = None
-        with patch.object(stop_hook, 'get_embedder', return_value=emb):
-            result = stop_hook.check_trailing_intent(
+        enforcement._intent_embeddings = None
+        with patch.object(hook_helpers, 'get_embedder', return_value=emb):
+            result = enforcement.check_trailing_intent(
                 "All 171 tests pass and the refactor is complete.\n"
                 "<memory>\n- complete: true\n</memory>"
             )
@@ -172,9 +177,9 @@ class TestCheckTrailingIntent:
         emb = self._get_embedder()
         if emb is None:
             return
-        stop_hook._intent_embeddings = None
-        with patch.object(stop_hook, 'get_embedder', return_value=emb):
-            result = stop_hook.check_trailing_intent(
+        enforcement._intent_embeddings = None
+        with patch.object(hook_helpers, 'get_embedder', return_value=emb):
+            result = enforcement.check_trailing_intent(
                 "The implementation is done. Do you want me to also update the docs?\n"
                 "<memory>\n- complete: true\n</memory>"
             )
@@ -184,9 +189,9 @@ class TestCheckTrailingIntent:
 
     def test_no_embedder_returns_none(self):
         import stop_hook
-        stop_hook._intent_embeddings = None
-        with patch.object(stop_hook, 'get_embedder', return_value=None):
-            result = stop_hook.check_trailing_intent(
+        enforcement._intent_embeddings = None
+        with patch.object(hook_helpers, 'get_embedder', return_value=None):
+            result = enforcement.check_trailing_intent(
                 "Let me test that now.\n<memory>\n- complete: true\n</memory>"
             )
             assert result is None, "Should gracefully return None without embedder"
@@ -208,7 +213,7 @@ class TestTrailingIntentIntegration:
         mock_emb.cosine_similarity.return_value = 0.9
 
         import stop_hook
-        stop_hook._intent_embeddings = None
+        enforcement._intent_embeddings = None
 
         payload = {
             "session_id": "test-intent-1",
@@ -218,7 +223,7 @@ class TestTrailingIntentIntegration:
             ),
         }
 
-        with patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
+        with patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
             code, result = run_hook(db_path, payload)
 
         assert result is not None, "Should have blocked"
@@ -236,7 +241,7 @@ class TestTrailingIntentIntegration:
         mock_emb.cosine_similarity.return_value = 0.9  # would normally trigger
 
         import stop_hook
-        stop_hook._intent_embeddings = None
+        enforcement._intent_embeddings = None
 
         payload = {
             "session_id": "test-intent-2",
@@ -246,7 +251,7 @@ class TestTrailingIntentIntegration:
             ),
         }
 
-        with patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
+        with patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
             code, result = run_hook(db_path, payload)
 
         assert result is None, "intent: resolved should allow stop"
@@ -261,7 +266,7 @@ class TestTrailingIntentIntegration:
         mock_emb.cosine_similarity.return_value = 0.2  # low similarity
 
         import stop_hook
-        stop_hook._intent_embeddings = None
+        enforcement._intent_embeddings = None
 
         payload = {
             "session_id": "test-intent-3",
@@ -271,7 +276,7 @@ class TestTrailingIntentIntegration:
             ),
         }
 
-        with patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
+        with patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
             code, result = run_hook(db_path, payload)
 
         assert result is None, "Clean response should pass through"
@@ -282,22 +287,22 @@ class TestTrailingIntentIntegration:
 class TestContentQualityGate:
     def test_rejects_empty_content(self):
         import stop_hook
-        assert stop_hook._is_empty_memory("") is True
-        assert stop_hook._is_empty_memory("short") is True
-        assert stop_hook._is_empty_memory("   ") is True
+        assert storage._is_empty_memory("") is True
+        assert storage._is_empty_memory("short") is True
+        assert storage._is_empty_memory("   ") is True
 
     def test_rejects_no_context_patterns(self):
         import stop_hook
-        assert stop_hook._is_empty_memory("User asked what was on their lawn - no context available") is True
-        assert stop_hook._is_empty_memory("No relevant context for this question") is True
-        assert stop_hook._is_empty_memory("Unable to determine what the user meant") is True
-        assert stop_hook._is_empty_memory("no information available about this topic") is True
+        assert storage._is_empty_memory("User asked what was on their lawn - no context available") is True
+        assert storage._is_empty_memory("No relevant context for this question") is True
+        assert storage._is_empty_memory("Unable to determine what the user meant") is True
+        assert storage._is_empty_memory("no information available about this topic") is True
 
     def test_allows_real_content(self):
         import stop_hook
-        assert stop_hook._is_empty_memory("User observed a pūkeko on their lawn") is False
-        assert stop_hook._is_empty_memory("Changed install.sh to overwrite global CLAUDE.md on re-install") is False
-        assert stop_hook._is_empty_memory("WAL mode enabled for concurrent session safety") is False
+        assert storage._is_empty_memory("User observed a pūkeko on their lawn") is False
+        assert storage._is_empty_memory("Changed install.sh to overwrite global CLAUDE.md on re-install") is False
+        assert storage._is_empty_memory("WAL mode enabled for concurrent session safety") is False
 
     def test_rejects_in_insert(self):
         """Empty memories should not be inserted into the database."""
@@ -306,10 +311,10 @@ class TestContentQualityGate:
         conn.commit()
 
         import stop_hook
-        with patch.object(stop_hook, 'DB_PATH', db_path), \
-             patch.object(stop_hook, 'LOG_PATH', os.path.join(TEST_DIR, 'quality.log')), \
-             patch.object(stop_hook, 'get_embedder', return_value=None):
-            count = stop_hook.insert_memories([
+        with patch.object(hook_helpers, 'DB_PATH', db_path), \
+             patch.object(hook_helpers, 'LOG_PATH', os.path.join(TEST_DIR, 'quality.log')), \
+             patch.object(hook_helpers, 'get_embedder', return_value=None):
+            count = storage.insert_memories([
                 {"type": "fact", "topic": "good", "content": "User prefers dark mode in all editors"},
                 {"type": "fact", "topic": "bad", "content": "no context available for this question"},
                 {"type": "fact", "topic": "empty", "content": ""},

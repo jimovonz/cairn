@@ -15,43 +15,15 @@ import sys
 import os
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "cairn.db")
-CAIRN_DIR = os.path.join(os.path.dirname(__file__), "..", "cairn")
-LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "hook.log")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
+sys.path.insert(0, os.path.dirname(__file__))
 
-sys.path.insert(0, CAIRN_DIR)
-
-
-def get_conn():
-    """Create a shared SQLite connection with WAL mode and busy timeout."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
+from hook_helpers import get_conn, get_embedder, get_session_project, DB_PATH, LOG_PATH
 
 
 def log(msg):
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(f"[prompt] {msg}\n")
-
-
-def get_embedder():
-    try:
-        import embeddings
-        return embeddings
-    except ImportError:
-        return None
-
-
-def get_session_project(session_id):
-    if not session_id:
-        return None
-    try:
-        conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
-        row = conn.execute("SELECT project FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-        conn.close()
-        return row[0] if row else None
-    except (sqlite3.Error, OSError):
-        return None
 
 
 def is_first_prompt(session_id):
@@ -123,10 +95,9 @@ def layer1_search(user_message, session_id):
     if not emb:
         return None
 
-    project = get_session_project(session_id)
-
     try:
-        conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
+        conn = get_conn()
+        project = get_session_project(conn, session_id)
         count = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL").fetchone()[0]
         if count == 0:
             conn.close()

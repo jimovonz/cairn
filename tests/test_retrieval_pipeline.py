@@ -18,6 +18,10 @@ from io import StringIO
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
+import hook_helpers
+import storage
+import retrieval
+
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
 
@@ -143,9 +147,9 @@ def test_insert_dedup_near_identical():
     mock_emb.upsert_vec_index = MagicMock()
     mock_emb.cosine_similarity = lambda a, b: float(np.dot(a, b))
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
-        stop_hook.insert_memories([{"type": "fact", "topic": "test", "content": "first version"}], session_id="s1")
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
+        storage.insert_memories([{"type": "fact", "topic": "test", "content": "first version"}], session_id="s1")
 
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
 
@@ -156,9 +160,9 @@ def test_insert_dedup_near_identical():
         "content": existing[3], "similarity": 0.98, "confidence": existing[4]
     }]
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
-        stop_hook.insert_memories([{"type": "fact", "topic": "test", "content": "first version slightly rephrased"}], session_id="s1")
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
+        storage.insert_memories([{"type": "fact", "topic": "test", "content": "first version slightly rephrased"}], session_id="s1")
 
     # Should still be 1 memory (updated, not duplicated)
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
@@ -185,9 +189,9 @@ def test_insert_distinct_variant_preserved():
     mock_emb.cosine_similarity.return_value = 0.3  # Low similarity — distinct variant
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
-        stop_hook.insert_memories([{
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
+        storage.insert_memories([{
             "type": "decision", "topic": "positioning",
             "content": "Use GNSS fallback under canopy"
         }], session_id="s1")
@@ -214,10 +218,10 @@ def test_insert_contradiction_overwrites_with_confidence_drop():
     mock_emb.cosine_similarity.return_value = 0.95  # High similarity — true update, not variant
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'get_embedder', return_value=mock_emb), \
-         patch.object(stop_hook, 'record_metric'):
-        stop_hook.insert_memories([{
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+         patch.object(hook_helpers, 'record_metric'):
+        storage.insert_memories([{
             "type": "decision", "topic": "db",
             "content": "Use SQLite instead"
         }], session_id="s1")
@@ -248,10 +252,10 @@ def test_insert_without_embedding():
     mock_emb = MagicMock()
     mock_emb.embed.return_value = None  # Daemon not available
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'get_embedder', return_value=mock_emb), \
-         patch.object(stop_hook, 'log'):
-        stop_hook.insert_memories([{
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+         patch.object(hook_helpers, 'log'):
+        storage.insert_memories([{
             "type": "fact", "topic": "no-embed",
             "content": "stored without embedding"
         }], session_id="s1")
@@ -281,11 +285,11 @@ def test_retrieve_returns_structured_xml():
         "source_start": 5, "source_end": 10
     }]
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'get_embedder', return_value=mock_emb), \
-         patch.object(stop_hook, 'record_metric'), \
-         patch.object(stop_hook, 'log'):
-        result = stop_hook.retrieve_context("authentication approach", session_id="seed-session")
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+         patch.object(hook_helpers, 'record_metric'), \
+         patch.object(hook_helpers, 'log'):
+        result = retrieval.retrieve_context("authentication approach", session_id="seed-session")
 
     assert result is not None
     assert "<cairn_context" in result
@@ -304,11 +308,11 @@ def test_retrieve_returns_none_when_no_match():
     mock_emb = MagicMock()
     mock_emb.find_similar.return_value = []
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'get_embedder', return_value=mock_emb), \
-         patch.object(stop_hook, 'record_metric'), \
-         patch.object(stop_hook, 'log'):
-        result = stop_hook.retrieve_context("zzz nonexistent topic", session_id="seed-session")
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+         patch.object(hook_helpers, 'record_metric'), \
+         patch.object(hook_helpers, 'log'):
+        result = retrieval.retrieve_context("zzz nonexistent topic", session_id="seed-session")
 
     assert result is None
     conn.close()
@@ -336,11 +340,11 @@ def test_retrieve_separates_project_and_global():
          "source_start": None, "source_end": None},
     ]
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'get_embedder', return_value=mock_emb), \
-         patch.object(stop_hook, 'record_metric'), \
-         patch.object(stop_hook, 'log'):
-        result = stop_hook.retrieve_context("preferences and auth", session_id="seed-session")
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+         patch.object(hook_helpers, 'record_metric'), \
+         patch.object(hook_helpers, 'log'):
+        result = retrieval.retrieve_context("preferences and auth", session_id="seed-session")
 
     assert result is not None
     assert 'level="project"' in result
@@ -357,8 +361,8 @@ def test_adaptive_threshold_no_data():
     import stop_hook
     db_path, conn = fresh_db()
 
-    with patch.object(stop_hook, 'DB_PATH', db_path):
-        boost = stop_hook.get_adaptive_threshold_boost()
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        boost = retrieval.get_adaptive_threshold_boost()
 
     assert boost == 0.0
     conn.close()
@@ -376,8 +380,8 @@ def test_adaptive_threshold_with_harmful_outcomes():
         conn.execute("INSERT INTO metrics (event, session_id) VALUES ('retrieval_useful', 's1')")
     conn.commit()
 
-    with patch.object(stop_hook, 'DB_PATH', db_path):
-        boost = stop_hook.get_adaptive_threshold_boost()
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        boost = retrieval.get_adaptive_threshold_boost()
 
     assert boost > 0, f"Expected positive boost for high harmful rate, got {boost}"
     conn.close()
@@ -394,8 +398,8 @@ def test_adaptive_threshold_with_good_outcomes():
         conn.execute("INSERT INTO metrics (event, session_id) VALUES ('retrieval_neutral', 's1')")
     conn.commit()
 
-    with patch.object(stop_hook, 'DB_PATH', db_path):
-        boost = stop_hook.get_adaptive_threshold_boost()
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        boost = retrieval.get_adaptive_threshold_boost()
 
     assert boost == 0.0
     conn.close()
@@ -423,11 +427,11 @@ def test_layer2_stages_cross_project_results():
         "source_start": None, "source_end": None
     }]
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'get_embedder', return_value=mock_emb), \
-         patch.object(stop_hook, 'record_metric'), \
-         patch.object(stop_hook, 'log'):
-        stop_hook.layer2_cross_project_search(["authentication", "JWT"], session_id="s1")
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+         patch.object(hook_helpers, 'record_metric'), \
+         patch.object(hook_helpers, 'log'):
+        retrieval.layer2_cross_project_search(["authentication", "JWT"], session_id="s1")
 
     # Check staged context in DB
     row = conn.execute(
@@ -457,11 +461,11 @@ def test_layer2_excludes_current_project():
         "source_start": None, "source_end": None
     }]
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'get_embedder', return_value=mock_emb), \
-         patch.object(stop_hook, 'record_metric'), \
-         patch.object(stop_hook, 'log'):
-        stop_hook.layer2_cross_project_search(["some", "keywords"], session_id="s1")
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+         patch.object(hook_helpers, 'record_metric'), \
+         patch.object(hook_helpers, 'log'):
+        retrieval.layer2_cross_project_search(["some", "keywords"], session_id="s1")
 
     # Should NOT stage anything — all results were same project
     row = conn.execute(
@@ -480,8 +484,8 @@ def test_register_session_new():
     import stop_hook
     db_path, conn = fresh_db()
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'log'):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'log'):
         stop_hook.register_session("sess-new", "")
 
     row = conn.execute("SELECT session_id FROM sessions WHERE session_id = 'sess-new'").fetchone()
@@ -494,8 +498,8 @@ def test_register_session_idempotent():
     import stop_hook
     db_path, conn = fresh_db()
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'log'):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'log'):
         stop_hook.register_session("sess-idem", "")
         stop_hook.register_session("sess-idem", "")
 
@@ -515,8 +519,8 @@ def test_auto_label_from_deep_path():
     conn.execute("INSERT INTO sessions (session_id) VALUES ('s-deep')")
     conn.commit()
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'log'):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'log'):
         stop_hook.auto_label_project("s-deep", "/home/user/Projects/robotics/nav-system")
 
     proj = conn.execute("SELECT project FROM sessions WHERE session_id = 's-deep'").fetchone()[0]
@@ -531,8 +535,8 @@ def test_auto_label_skips_root():
     conn.execute("INSERT INTO sessions (session_id) VALUES ('s-root')")
     conn.commit()
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'log'):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'log'):
         stop_hook.auto_label_project("s-root", "/")
 
     proj = conn.execute("SELECT project FROM sessions WHERE session_id = 's-root'").fetchone()[0]
@@ -547,8 +551,8 @@ def test_auto_label_skips_home():
     conn.execute("INSERT INTO sessions (session_id) VALUES ('s-home')")
     conn.commit()
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'log'):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'log'):
         stop_hook.auto_label_project("s-home", "/home")
 
     proj = conn.execute("SELECT project FROM sessions WHERE session_id = 's-home'").fetchone()[0]
@@ -563,8 +567,8 @@ def test_auto_label_does_not_overwrite():
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s-existing', 'AlreadyLabelled')")
     conn.commit()
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'log'):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'log'):
         stop_hook.auto_label_project("s-existing", "/home/user/different-project")
 
     proj = conn.execute("SELECT project FROM sessions WHERE session_id = 's-existing'").fetchone()[0]
@@ -610,11 +614,11 @@ def test_negation_dampening_in_insert():
     mock_emb.cosine_similarity = lambda a, b: 0.75
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'get_embedder', return_value=mock_emb), \
-         patch.object(stop_hook, 'record_metric'), \
-         patch.object(stop_hook, 'log'):
-        stop_hook.insert_memories([{
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+         patch.object(hook_helpers, 'record_metric'), \
+         patch.object(hook_helpers, 'log'):
+        storage.insert_memories([{
             "type": "fact", "topic": "gnss-canopy",
             "content": "GNSS is not reliable under canopy"
         }], session_id="s1")

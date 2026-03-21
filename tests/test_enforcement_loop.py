@@ -74,6 +74,7 @@ def fresh_env():
 
 def run_hook(db_path, payload):
     """Run stop_hook.main() with full patching."""
+    import hook_helpers
     import stop_hook
     captured = StringIO()
     exit_code = [0]
@@ -83,25 +84,25 @@ def run_hook(db_path, payload):
         raise SystemExit(code)
 
     orig = {
-        'DB_PATH': stop_hook.DB_PATH,
-        'LOG_PATH': stop_hook.LOG_PATH,
+        'DB_PATH': hook_helpers.DB_PATH,
+        'LOG_PATH': hook_helpers.LOG_PATH,
     }
 
     try:
-        stop_hook.DB_PATH = db_path
-        stop_hook.LOG_PATH = os.path.join(TEST_DIR, f'loop_{_counter[0]}.log')
+        hook_helpers.DB_PATH = db_path
+        hook_helpers.LOG_PATH = os.path.join(TEST_DIR, f'loop_{_counter[0]}.log')
 
         with patch('sys.stdin', StringIO(json.dumps(payload))), \
              patch('sys.stdout', captured), \
              patch('sys.exit', mock_exit), \
-             patch.object(stop_hook, 'get_embedder', return_value=None):
+             patch.object(hook_helpers, 'get_embedder', return_value=None):
             try:
                 stop_hook.main()
             except SystemExit:
                 pass
     finally:
         for k, v in orig.items():
-            setattr(stop_hook, k, v)
+            setattr(hook_helpers, k, v)
 
     output = captured.getvalue()
     result = json.loads(output) if output.strip() else None
