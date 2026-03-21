@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/james/Projects/openbrain/.venv/bin/python3 /home/james/Projects/openbrain/hooks/prompt_hook.py",
+            "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python3\" \"$CLAUDE_PROJECT_DIR/hooks/prompt_hook.py\"",
             "timeout": 30,
             "statusMessage": "Retrieving context..."
           }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/james/Projects/openbrain/.venv/bin/python3 /home/james/Projects/openbrain/hooks/stop_hook.py",
+            "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python3\" \"$CLAUDE_PROJECT_DIR/hooks/stop_hook.py\"",
             "timeout": 60,
             "statusMessage": "Thinking..."
           }
