@@ -20,8 +20,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "cairn.db")
 LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "hook.log")
-CONTEXT_CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".context_cache")
-CONTINUATION_COUNT_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".continuation_count")
 CAIRN_DIR = os.path.join(os.path.dirname(__file__), "..", "cairn")
 sys.path.insert(0, CAIRN_DIR)
 
@@ -692,7 +690,6 @@ def retrieve_context(context_need, session_id=None, conn=None):
     return "\n".join(lines)
 
 
-STAGED_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".staged_context")
 
 
 def layer2_cross_project_search(keywords_list, session_id=None, conn=None):
@@ -716,10 +713,10 @@ def layer2_cross_project_search(keywords_list, session_id=None, conn=None):
     try:
         results = emb.find_similar(conn, query, threshold=L2_SIM_THRESHOLD,
                                    limit=L2_MAX_RESULTS * 2, current_project=project)
-        if own_conn:
-            conn.close()
     except Exception as e:
         log(f"Layer 2 search error: {e}")
+        if own_conn:
+            conn.close()
         return
 
     # Filter: cross-project only, strong match, not current project
@@ -729,6 +726,8 @@ def layer2_cross_project_search(keywords_list, session_id=None, conn=None):
 
     if not cross_project:
         log(f"Layer 2: no cross-project matches for keywords: {query[:50]}")
+        if own_conn:
+            conn.close()
         return
 
     # Format as cairn_context XML
@@ -757,15 +756,14 @@ def layer2_cross_project_search(keywords_list, session_id=None, conn=None):
 
     staged_xml = "\n".join(lines)
 
-    # Stage for next prompt
-    try:
-        with open(STAGED_PATH, "r", encoding="utf-8") as f:
-            staged = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        staged = {}
-    staged[session_id] = staged_xml
-    with open(STAGED_PATH, "w", encoding="utf-8") as f:
-        json.dump(staged, f)
+    # Stage for next prompt (in SQLite for atomicity)
+    conn.execute(
+        "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'staged_context', ?)",
+        (session_id, staged_xml)
+    )
+    conn.commit()
+    if own_conn:
+        conn.close()
 
     log(f"Layer 2: staged {len(cross_project)} cross-project entries for next prompt")
     record_metric(session_id, "layer2_staged", query[:100], len(cross_project))
@@ -774,26 +772,37 @@ def layer2_cross_project_search(keywords_list, session_id=None, conn=None):
 CONTEXT_CACHE_SIM_THRESHOLD = 0.9  # Semantic similarity threshold for cache hit
 
 
-def load_context_cache(session_id):
+def load_context_cache(session_id, conn=None):
     """Load cached context_need embeddings for this session."""
-    try:
-        with open(CONTEXT_CACHE_PATH, "r", encoding="utf-8") as f:
-            cache = json.load(f)
-        return cache.get(session_id, [])  # List of {"text": str, "embedding_hex": str}
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    row = conn.execute(
+        "SELECT value FROM hook_state WHERE session_id = ? AND key = 'context_cache'",
+        (session_id,)
+    ).fetchone()
+    if own_conn:
+        conn.close()
+    if row and row[0]:
+        try:
+            return json.loads(row[0])
+        except json.JSONDecodeError:
+            return []
+    return []
 
 
-def save_context_cache(session_id, served_needs):
+def save_context_cache(session_id, served_needs, conn=None):
     """Save context_need embeddings for this session."""
-    try:
-        with open(CONTEXT_CACHE_PATH, "r", encoding="utf-8") as f:
-            cache = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        cache = {}
-    cache[session_id] = served_needs
-    with open(CONTEXT_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(cache, f)
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'context_cache', ?)",
+        (session_id, json.dumps(served_needs))
+    )
+    conn.commit()
+    if own_conn:
+        conn.close()
 
 
 def is_context_cached(context_need, served_needs, emb):
@@ -828,40 +837,49 @@ def add_to_context_cache(context_need, served_needs, emb):
     return served_needs
 
 
-def get_continuation_count(session_id):
+def get_continuation_count(session_id, conn=None):
     """Get how many times we've re-prompted this session."""
-    try:
-        with open(CONTINUATION_COUNT_PATH, "r", encoding="utf-8") as f:
-            counts = json.load(f)
-        return counts.get(session_id, 0)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return 0
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    row = conn.execute(
+        "SELECT value FROM hook_state WHERE session_id = ? AND key = 'continuation_count'",
+        (session_id,)
+    ).fetchone()
+    if own_conn:
+        conn.close()
+    return int(row[0]) if row and row[0] else 0
 
 
-def increment_continuation(session_id):
+def increment_continuation(session_id, conn=None):
     """Increment and return the continuation count."""
-    try:
-        with open(CONTINUATION_COUNT_PATH, "r", encoding="utf-8") as f:
-            counts = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        counts = {}
-    counts[session_id] = counts.get(session_id, 0) + 1
-    with open(CONTINUATION_COUNT_PATH, "w", encoding="utf-8") as f:
-        json.dump(counts, f)
-    return counts[session_id]
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    current = get_continuation_count(session_id, conn=conn)
+    new_count = current + 1
+    conn.execute(
+        "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'continuation_count', ?)",
+        (session_id, str(new_count))
+    )
+    conn.commit()
+    if own_conn:
+        conn.close()
+    return new_count
 
 
-def reset_continuation(session_id):
+def reset_continuation(session_id, conn=None):
     """Reset continuation count (called when a response completes normally)."""
-    try:
-        with open(CONTINUATION_COUNT_PATH, "r", encoding="utf-8") as f:
-            counts = json.load(f)
-        if session_id in counts:
-            del counts[session_id]
-            with open(CONTINUATION_COUNT_PATH, "w", encoding="utf-8") as f:
-                json.dump(counts, f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    conn.execute(
+        "DELETE FROM hook_state WHERE session_id = ? AND key = 'continuation_count'",
+        (session_id,)
+    )
+    conn.commit()
+    if own_conn:
+        conn.close()
 
 
 def auto_label_project(session_id, cwd, conn=None):

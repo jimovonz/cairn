@@ -42,21 +42,17 @@ def fresh_db():
     conn.execute("""CREATE TRIGGER memories_version BEFORE UPDATE OF content ON memories BEGIN
         INSERT INTO memory_history (memory_id, content, session_id, changed_at)
         VALUES (old.id, old.content, old.session_id, old.updated_at); END""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS hook_state (
+        session_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (session_id, key))""")
     conn.commit()
     return db_path, conn
 
 
-def run_hook(db_path, payload, cache_path=None, cont_path=None):
+def run_hook(db_path, payload):
     """Run the stop hook main() with patches for DB path and stdin."""
     payload_json = json.dumps(payload)
-
-    # Patch paths
-    patches = {
-        'stop_hook.DB_PATH': db_path,
-        'stop_hook.LOG_PATH': os.path.join(TEST_DIR, 'test.log'),
-        'stop_hook.CONTEXT_CACHE_PATH': cache_path or os.path.join(TEST_DIR, f'.cache_{_db_counter[0]}'),
-        'stop_hook.CONTINUATION_COUNT_PATH': cont_path or os.path.join(TEST_DIR, f'.cont_{_db_counter[0]}'),
-    }
 
     captured_output = StringIO()
     exit_code = [0]
@@ -68,14 +64,10 @@ def run_hook(db_path, payload, cache_path=None, cont_path=None):
     import stop_hook
     original_db = stop_hook.DB_PATH
     original_log = stop_hook.LOG_PATH
-    original_cache = stop_hook.CONTEXT_CACHE_PATH
-    original_cont = stop_hook.CONTINUATION_COUNT_PATH
 
     try:
         stop_hook.DB_PATH = db_path
         stop_hook.LOG_PATH = os.path.join(TEST_DIR, 'test.log')
-        stop_hook.CONTEXT_CACHE_PATH = cache_path or os.path.join(TEST_DIR, f'.cache_{_db_counter[0]}')
-        stop_hook.CONTINUATION_COUNT_PATH = cont_path or os.path.join(TEST_DIR, f'.cont_{_db_counter[0]}')
 
         with patch('sys.stdin', StringIO(payload_json)), \
              patch('sys.stdout', captured_output), \
@@ -88,8 +80,6 @@ def run_hook(db_path, payload, cache_path=None, cont_path=None):
     finally:
         stop_hook.DB_PATH = original_db
         stop_hook.LOG_PATH = original_log
-        stop_hook.CONTEXT_CACHE_PATH = original_cache
-        stop_hook.CONTINUATION_COUNT_PATH = original_cont
 
     output = captured_output.getvalue()
     result = json.loads(output) if output.strip() else None

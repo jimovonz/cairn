@@ -128,50 +128,67 @@ def test_context_cache_empty():
 # Loop protection: continuation counter
 # ============================================================
 
-def test_continuation_counter_increments():
-    from stop_hook import get_continuation_count, increment_continuation, CONTINUATION_COUNT_PATH
-    cont_path = os.path.join(TEST_DIR, f".cont_test_{_counter[0]}")
+def _make_state_db():
+    """Create a temp DB with hook_state table for continuation tests."""
+    _counter[0] += 1
+    db_path = os.path.join(TEST_DIR, f"state_{_counter[0]}.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("""CREATE TABLE hook_state (
+        session_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (session_id, key))""")
+    conn.commit()
+    return db_path, conn
 
-    with patch('stop_hook.CONTINUATION_COUNT_PATH', cont_path):
+
+def test_continuation_counter_increments():
+    from stop_hook import get_continuation_count, increment_continuation
+    db_path, conn = _make_state_db()
+
+    with patch('stop_hook.DB_PATH', db_path):
         assert get_continuation_count("sess-1") == 0
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 1
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 2
+    conn.close()
 
 
 def test_continuation_counter_resets():
     from stop_hook import get_continuation_count, increment_continuation, reset_continuation
-    cont_path = os.path.join(TEST_DIR, f".cont_reset_{_counter[0]}")
+    db_path, conn = _make_state_db()
 
-    with patch('stop_hook.CONTINUATION_COUNT_PATH', cont_path):
+    with patch('stop_hook.DB_PATH', db_path):
         increment_continuation("sess-1")
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 2
         reset_continuation("sess-1")
         assert get_continuation_count("sess-1") == 0
+    conn.close()
 
 
 def test_continuation_cap_at_three():
     from stop_hook import get_continuation_count, increment_continuation
     from config import MAX_CONTINUATIONS
-    cont_path = os.path.join(TEST_DIR, f".cont_cap_{_counter[0]}")
+    db_path, conn = _make_state_db()
 
-    with patch('stop_hook.CONTINUATION_COUNT_PATH', cont_path):
+    with patch('stop_hook.DB_PATH', db_path):
         for _ in range(MAX_CONTINUATIONS):
             increment_continuation("sess-1")
         assert get_continuation_count("sess-1") >= MAX_CONTINUATIONS
+    conn.close()
 
 
 def test_continuation_isolated_per_session():
     from stop_hook import get_continuation_count, increment_continuation
-    cont_path = os.path.join(TEST_DIR, f".cont_iso_{_counter[0]}")
+    db_path, conn = _make_state_db()
 
-    with patch('stop_hook.CONTINUATION_COUNT_PATH', cont_path):
+    with patch('stop_hook.DB_PATH', db_path):
         increment_continuation("sess-1")
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 2
         assert get_continuation_count("sess-2") == 0
+    conn.close()
 
 
 # ============================================================

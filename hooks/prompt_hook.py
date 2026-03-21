@@ -18,10 +18,15 @@ from datetime import datetime
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "cairn.db")
 CAIRN_DIR = os.path.join(os.path.dirname(__file__), "..", "cairn")
 LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", "hook.log")
-STAGED_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".staged_context")
-FIRST_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "..", "cairn", ".first_prompt_done")
 
 sys.path.insert(0, CAIRN_DIR)
+
+
+def get_conn():
+    """Create a shared SQLite connection with WAL mode and busy timeout."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
 
 
 def log(msg):
@@ -49,40 +54,52 @@ def get_session_project(session_id):
         return None
 
 
-def is_first_prompt(session_id):
+def is_first_prompt(session_id, conn=None):
     """Check if this is the first prompt of the session."""
-    try:
-        with open(FIRST_PROMPT_PATH, "r", encoding="utf-8") as f:
-            done = json.load(f)
-        return session_id not in done
-    except (FileNotFoundError, json.JSONDecodeError):
-        return True
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    row = conn.execute(
+        "SELECT value FROM hook_state WHERE session_id = ? AND key = 'first_prompt_done'",
+        (session_id,)
+    ).fetchone()
+    if own_conn:
+        conn.close()
+    return row is None
 
 
-def mark_first_prompt_done(session_id):
+def mark_first_prompt_done(session_id, conn=None):
     """Mark that the first prompt has been processed for this session."""
-    try:
-        with open(FIRST_PROMPT_PATH, "r", encoding="utf-8") as f:
-            done = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        done = {}
-    done[session_id] = True
-    with open(FIRST_PROMPT_PATH, "w", encoding="utf-8") as f:
-        json.dump(done, f)
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'first_prompt_done', '1')",
+        (session_id,)
+    )
+    conn.commit()
+    if own_conn:
+        conn.close()
 
 
-def load_staged_context(session_id):
-    """Load cross-project context staged by the stop hook."""
-    try:
-        with open(STAGED_PATH, "r", encoding="utf-8") as f:
-            staged = json.load(f)
-        data = staged.pop(session_id, None)
-        # Clean up consumed data
-        with open(STAGED_PATH, "w", encoding="utf-8") as f:
-            json.dump(staged, f)
-        return data
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
+def load_staged_context(session_id, conn=None):
+    """Load and consume cross-project context staged by the stop hook."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    row = conn.execute(
+        "SELECT value FROM hook_state WHERE session_id = ? AND key = 'staged_context'",
+        (session_id,)
+    ).fetchone()
+    if row:
+        conn.execute(
+            "DELETE FROM hook_state WHERE session_id = ? AND key = 'staged_context'",
+            (session_id,)
+        )
+        conn.commit()
+    if own_conn:
+        conn.close()
+    return row[0] if row else None
 
 
 def format_entry(r):

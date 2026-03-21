@@ -58,6 +58,10 @@ def fresh_db():
         INSERT INTO memories_fts(rowid, topic, content) VALUES (new.id, new.topic, new.content); END""")
     conn.execute("""CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
         INSERT INTO memories_fts(memories_fts, rowid, topic, content) VALUES ('delete', old.id, old.topic, old.content); END""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS hook_state (
+        session_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (session_id, key))""")
     conn.commit()
     return db_path, conn
 
@@ -410,7 +414,6 @@ def test_layer2_stages_cross_project_results():
                  ("fact", "cross-topic", "Useful cross-project fact", make_blob(100), "ProjectB", 0.8, "s2"))
     conn.commit()
 
-    staged_path = os.path.join(TEST_DIR, f".staged_l2_{_counter[0]}")
     mock_emb = MagicMock()
     mock_emb.find_similar.return_value = [{
         "id": 1, "type": "fact", "topic": "cross-topic",
@@ -421,18 +424,17 @@ def test_layer2_stages_cross_project_results():
     }]
 
     with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'STAGED_PATH', staged_path), \
          patch.object(stop_hook, 'get_embedder', return_value=mock_emb), \
          patch.object(stop_hook, 'record_metric'), \
          patch.object(stop_hook, 'log'):
         stop_hook.layer2_cross_project_search(["authentication", "JWT"], session_id="s1")
 
-    # Check staged file exists and has content
-    assert os.path.exists(staged_path)
-    with open(staged_path) as f:
-        staged = json.load(f)
-    assert "s1" in staged
-    assert "cross-project" in staged["s1"].lower() or "cairn_context" in staged["s1"]
+    # Check staged context in DB
+    row = conn.execute(
+        "SELECT value FROM hook_state WHERE session_id = 's1' AND key = 'staged_context'"
+    ).fetchone()
+    assert row is not None, "Staged context should be in DB"
+    assert "cross-project" in row[0].lower() or "cairn_context" in row[0]
     conn.close()
 
 
@@ -445,7 +447,6 @@ def test_layer2_excludes_current_project():
                  ("fact", "same-proj", "Same project fact", make_blob(100), "ProjectA", 0.8, "s1"))
     conn.commit()
 
-    staged_path = os.path.join(TEST_DIR, f".staged_exclude_{_counter[0]}")
     mock_emb = MagicMock()
     # Return result from same project — should be filtered out
     mock_emb.find_similar.return_value = [{
@@ -457,17 +458,16 @@ def test_layer2_excludes_current_project():
     }]
 
     with patch.object(stop_hook, 'DB_PATH', db_path), \
-         patch.object(stop_hook, 'STAGED_PATH', staged_path), \
          patch.object(stop_hook, 'get_embedder', return_value=mock_emb), \
          patch.object(stop_hook, 'record_metric'), \
          patch.object(stop_hook, 'log'):
         stop_hook.layer2_cross_project_search(["some", "keywords"], session_id="s1")
 
     # Should NOT stage anything — all results were same project
-    if os.path.exists(staged_path):
-        with open(staged_path) as f:
-            staged = json.load(f)
-        assert "s1" not in staged, "Same-project results should not be staged"
+    row = conn.execute(
+        "SELECT value FROM hook_state WHERE session_id = 's1' AND key = 'staged_context'"
+    ).fetchone()
+    assert row is None, "Same-project results should not be staged"
     conn.close()
 
 

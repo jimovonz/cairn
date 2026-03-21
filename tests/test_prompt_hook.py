@@ -20,8 +20,6 @@ _counter = [0]
 def fresh_env():
     _counter[0] += 1
     db_path = os.path.join(TEST_DIR, f"prompt_{_counter[0]}.db")
-    staged_path = os.path.join(TEST_DIR, f".staged_{_counter[0]}")
-    first_path = os.path.join(TEST_DIR, f".first_{_counter[0]}")
     conn = sqlite3.connect(db_path)
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT, topic TEXT, content TEXT, embedding BLOB, session_id TEXT,
@@ -31,19 +29,21 @@ def fresh_env():
     conn.execute("""CREATE TABLE sessions (session_id TEXT PRIMARY KEY,
         parent_session_id TEXT, project TEXT, transcript_path TEXT,
         started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("""CREATE TABLE hook_state (
+        session_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (session_id, key))""")
     conn.commit()
-    return db_path, conn, staged_path, first_path
+    return db_path, conn
 
 
-def run_prompt_hook(db_path, staged_path, first_path, payload):
+def run_prompt_hook(db_path, payload):
     import prompt_hook
     payload_json = json.dumps(payload)
     captured = StringIO()
     exit_code = [0]
 
     orig_db = prompt_hook.DB_PATH
-    orig_staged = prompt_hook.STAGED_PATH
-    orig_first = prompt_hook.FIRST_PROMPT_PATH
     orig_log = prompt_hook.LOG_PATH
 
     def mock_exit(code=0):
@@ -52,8 +52,6 @@ def run_prompt_hook(db_path, staged_path, first_path, payload):
 
     try:
         prompt_hook.DB_PATH = db_path
-        prompt_hook.STAGED_PATH = staged_path
-        prompt_hook.FIRST_PROMPT_PATH = first_path
         prompt_hook.LOG_PATH = os.path.join(TEST_DIR, "prompt.log")
 
         with patch('sys.stdin', StringIO(payload_json)), \
@@ -65,8 +63,6 @@ def run_prompt_hook(db_path, staged_path, first_path, payload):
                 pass
     finally:
         prompt_hook.DB_PATH = orig_db
-        prompt_hook.STAGED_PATH = orig_staged
-        prompt_hook.FIRST_PROMPT_PATH = orig_first
         prompt_hook.LOG_PATH = orig_log
 
     output = captured.getvalue()
@@ -80,30 +76,33 @@ def run_prompt_hook(db_path, staged_path, first_path, payload):
 def test_first_prompt_detected():
     """First prompt for a session should be detected."""
     import prompt_hook
-    db_path, conn, staged_path, first_path = fresh_env()
+    db_path, conn = fresh_env()
 
-    with patch.object(prompt_hook, 'FIRST_PROMPT_PATH', first_path):
+    with patch.object(prompt_hook, 'DB_PATH', db_path):
         assert prompt_hook.is_first_prompt("new-session") is True
+    conn.close()
 
 
 def test_second_prompt_not_first():
     """After marking done, second prompt should not be first."""
     import prompt_hook
-    db_path, conn, staged_path, first_path = fresh_env()
+    db_path, conn = fresh_env()
 
-    with patch.object(prompt_hook, 'FIRST_PROMPT_PATH', first_path):
+    with patch.object(prompt_hook, 'DB_PATH', db_path):
         prompt_hook.mark_first_prompt_done("sess-1")
         assert prompt_hook.is_first_prompt("sess-1") is False
+    conn.close()
 
 
 def test_different_session_still_first():
     """Marking one session done should not affect another."""
     import prompt_hook
-    db_path, conn, staged_path, first_path = fresh_env()
+    db_path, conn = fresh_env()
 
-    with patch.object(prompt_hook, 'FIRST_PROMPT_PATH', first_path):
+    with patch.object(prompt_hook, 'DB_PATH', db_path):
         prompt_hook.mark_first_prompt_done("sess-1")
         assert prompt_hook.is_first_prompt("sess-2") is True
+    conn.close()
 
 
 # ============================================================
@@ -113,44 +112,61 @@ def test_different_session_still_first():
 def test_staged_context_loaded():
     """Staged context should be loaded and consumed."""
     import prompt_hook
-    db_path, conn, staged_path, first_path = fresh_env()
+    db_path, conn = fresh_env()
 
-    staged_data = {"sess-1": "<cairn_context>test data</cairn_context>"}
-    with open(staged_path, "w") as f:
-        json.dump(staged_data, f)
+    # Stage via DB (as stop_hook would)
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value) VALUES (?, 'staged_context', ?)",
+        ("sess-1", "<cairn_context>test data</cairn_context>")
+    )
+    conn.commit()
 
-    with patch.object(prompt_hook, 'STAGED_PATH', staged_path):
+    with patch.object(prompt_hook, 'DB_PATH', db_path):
         data = prompt_hook.load_staged_context("sess-1")
     assert data is not None
     assert "test data" in data
+    conn.close()
 
 
 def test_staged_context_consumed():
     """After loading, staged context should be removed for that session."""
     import prompt_hook
-    db_path, conn, staged_path, first_path = fresh_env()
+    db_path, conn = fresh_env()
 
-    staged_data = {"sess-1": "data1", "sess-2": "data2"}
-    with open(staged_path, "w") as f:
-        json.dump(staged_data, f)
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value) VALUES (?, 'staged_context', ?)",
+        ("sess-1", "data1")
+    )
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value) VALUES (?, 'staged_context', ?)",
+        ("sess-2", "data2")
+    )
+    conn.commit()
 
-    with patch.object(prompt_hook, 'STAGED_PATH', staged_path):
+    with patch.object(prompt_hook, 'DB_PATH', db_path):
         prompt_hook.load_staged_context("sess-1")
 
-    with open(staged_path) as f:
-        remaining = json.load(f)
-    assert "sess-1" not in remaining
-    assert "sess-2" in remaining
+    # sess-1 should be consumed, sess-2 should remain
+    row1 = conn.execute(
+        "SELECT value FROM hook_state WHERE session_id = 'sess-1' AND key = 'staged_context'"
+    ).fetchone()
+    row2 = conn.execute(
+        "SELECT value FROM hook_state WHERE session_id = 'sess-2' AND key = 'staged_context'"
+    ).fetchone()
+    assert row1 is None, "sess-1 staged context should be consumed"
+    assert row2 is not None, "sess-2 staged context should remain"
+    conn.close()
 
 
 def test_no_staged_context():
-    """Missing staged file should return None gracefully."""
+    """Missing staged data should return None gracefully."""
     import prompt_hook
-    db_path, conn, staged_path, first_path = fresh_env()
+    db_path, conn = fresh_env()
 
-    with patch.object(prompt_hook, 'STAGED_PATH', staged_path):
+    with patch.object(prompt_hook, 'DB_PATH', db_path):
         data = prompt_hook.load_staged_context("sess-nonexistent")
     assert data is None
+    conn.close()
 
 
 # ============================================================
@@ -159,23 +175,25 @@ def test_no_staged_context():
 
 def test_short_message_skipped():
     """Messages < 3 chars should be skipped."""
-    db_path, conn, staged_path, first_path = fresh_env()
-    result = run_prompt_hook(db_path, staged_path, first_path, {
+    db_path, conn = fresh_env()
+    result = run_prompt_hook(db_path, {
         "session_id": "sess-short",
         "user_message": "hi"
     })
     assert result is None
+    conn.close()
 
 
 def test_empty_db_no_injection():
     """Empty DB should not inject anything."""
-    db_path, conn, staged_path, first_path = fresh_env()
-    result = run_prompt_hook(db_path, staged_path, first_path, {
+    db_path, conn = fresh_env()
+    result = run_prompt_hook(db_path, {
         "session_id": "sess-empty",
         "user_message": "what decisions have we made about the authentication system?"
     })
     # No memories in DB → nothing to inject (Layer 1 finds nothing)
     assert result is None
+    conn.close()
 
 
 def cleanup():

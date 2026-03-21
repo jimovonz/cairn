@@ -71,6 +71,16 @@ def init():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_event ON metrics(event)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_session ON metrics(session_id)")
+    # Hook state — replaces file-based state for atomicity under concurrent access
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hook_state (
+            session_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (session_id, key)
+        )
+    """)
     # Vector search index via sqlite-vec
     try:
         import sqlite_vec

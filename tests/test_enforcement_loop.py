@@ -31,13 +31,16 @@ TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
 
 
+HOOK_STATE_SQL = """CREATE TABLE IF NOT EXISTS hook_state (
+    session_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, key))"""
+
+
 def fresh_env():
     _counter[0] += 1
     n = _counter[0]
     db_path = os.path.join(TEST_DIR, f"loop_{n}.db")
-    cache_path = os.path.join(TEST_DIR, f".cache_{n}")
-    cont_path = os.path.join(TEST_DIR, f".cont_{n}")
-    staged_path = os.path.join(TEST_DIR, f".staged_{n}")
     conn = sqlite3.connect(db_path)
     for sql in [
         """CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,6 +58,7 @@ def fresh_env():
         """CREATE TABLE metrics (id INTEGER PRIMARY KEY AUTOINCREMENT,
             event TEXT, session_id TEXT, detail TEXT, value REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+        HOOK_STATE_SQL,
         """CREATE TRIGGER memories_version BEFORE UPDATE OF content ON memories BEGIN
             INSERT INTO memory_history (memory_id, content, session_id, changed_at)
             VALUES (old.id, old.content, old.session_id, old.updated_at); END""",
@@ -65,10 +69,10 @@ def fresh_env():
     ]:
         conn.execute(sql)
     conn.commit()
-    return db_path, conn, cache_path, cont_path, staged_path
+    return db_path, conn
 
 
-def run_hook(db_path, payload, cache_path, cont_path, staged_path=None):
+def run_hook(db_path, payload):
     """Run stop_hook.main() with full patching."""
     import stop_hook
     captured = StringIO()
@@ -81,19 +85,11 @@ def run_hook(db_path, payload, cache_path, cont_path, staged_path=None):
     orig = {
         'DB_PATH': stop_hook.DB_PATH,
         'LOG_PATH': stop_hook.LOG_PATH,
-        'CONTEXT_CACHE_PATH': stop_hook.CONTEXT_CACHE_PATH,
-        'CONTINUATION_COUNT_PATH': stop_hook.CONTINUATION_COUNT_PATH,
     }
-    if hasattr(stop_hook, 'STAGED_PATH'):
-        orig['STAGED_PATH'] = stop_hook.STAGED_PATH
 
     try:
         stop_hook.DB_PATH = db_path
         stop_hook.LOG_PATH = os.path.join(TEST_DIR, f'loop_{_counter[0]}.log')
-        stop_hook.CONTEXT_CACHE_PATH = cache_path
-        stop_hook.CONTINUATION_COUNT_PATH = cont_path
-        if staged_path and hasattr(stop_hook, 'STAGED_PATH'):
-            stop_hook.STAGED_PATH = staged_path
 
         with patch('sys.stdin', StringIO(json.dumps(payload))), \
              patch('sys.stdout', captured), \
@@ -118,14 +114,14 @@ def run_hook(db_path, payload, cache_path, cont_path, staged_path=None):
 
 def test_two_pass_missing_block_then_complete():
     """Pass 1: no memory block → blocks. Pass 2 (continuation): has block → allows stop."""
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
 
     # Pass 1: no block
     r1, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s1", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "Answer without memory block."
-    }, cache, cont)
+    })
     assert r1 is not None
     assert r1["decision"] == "block"
 
@@ -134,7 +130,7 @@ def test_two_pass_missing_block_then_complete():
         "stop_hook_active": True,
         "session_id": "s1", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "Fixed.\n<memory>\n- type: fact\n- topic: fixed\n- content: now has block\n- complete: true\n</memory>"
-    }, cache, cont)
+    })
     assert r2 is None  # Allowed to stop
 
     # Memory should be stored
@@ -145,14 +141,14 @@ def test_two_pass_missing_block_then_complete():
 
 def test_two_pass_incomplete_then_complete():
     """Pass 1: complete: false → blocks. Pass 2: complete: true → allows stop."""
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
 
     # Pass 1: incomplete
     r1, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s1", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "Working.\n<memory>\n- type: fact\n- topic: partial\n- content: half done\n- complete: false\n- remaining: finish the rest\n</memory>"
-    }, cache, cont)
+    })
     assert r1 is not None
     assert r1["decision"] == "block"
 
@@ -161,7 +157,7 @@ def test_two_pass_incomplete_then_complete():
         "stop_hook_active": True,
         "session_id": "s1", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "Done.\n<memory>\n- type: fact\n- topic: finished\n- content: all done\n- complete: true\n</memory>"
-    }, cache, cont)
+    })
     assert r2 is None  # Allowed to stop
     conn.close()
 
@@ -173,7 +169,7 @@ def test_two_pass_incomplete_then_complete():
 def test_continuation_cap_forces_stop():
     """After MAX_CONTINUATIONS blocks, the hook forces a stop regardless."""
     from config import MAX_CONTINUATIONS
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
 
     # Burn through the cap with incomplete responses
     for i in range(MAX_CONTINUATIONS):
@@ -181,14 +177,14 @@ def test_continuation_cap_forces_stop():
             "stop_hook_active": i > 0,
             "session_id": "s-cap", "transcript_path": "", "cwd": "/tmp",
             "last_assistant_message": f"Still working.\n<memory>\n- complete: false\n- remaining: attempt {i}\n</memory>"
-        }, cache, cont)
+        })
 
     # Next attempt should be forced to stop
     r, _ = run_hook(db_path, {
         "stop_hook_active": True,
         "session_id": "s-cap", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "Yet another incomplete.\n<memory>\n- complete: false\n- remaining: still going\n</memory>"
-    }, cache, cont)
+    })
     assert r is None, "Should force stop after cap reached"
     conn.close()
 
@@ -199,12 +195,12 @@ def test_continuation_cap_forces_stop():
 
 def test_malformed_open_no_close():
     """<memory> tag present but no </memory> — should still parse best-effort."""
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-malformed", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "response\n<memory>\n- type: fact\n- topic: unclosed\n- content: no closing tag"
-    }, cache, cont)
+    })
 
     # Parser should recover via unclosed tag fallback
     row = conn.execute("SELECT content FROM memories WHERE topic = 'unclosed'").fetchone()
@@ -218,12 +214,12 @@ def test_malformed_open_no_close():
 
 def test_low_info_context_need_skipped():
     """context_need='help' should be pre-filtered — no retrieval attempted."""
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-lowinfo", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "need help\n<memory>\n- context: insufficient\n- context_need: help\n- complete: true\n</memory>"
-    }, cache, cont)
+    })
 
     # Should allow stop (pre-filtered, no retrieval)
     assert r is None
@@ -235,12 +231,12 @@ def test_low_info_context_need_skipped():
 
 def test_substantive_context_need_not_filtered():
     """Real context_need should not be pre-filtered (even if retrieval returns nothing)."""
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-real", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "need context\n<memory>\n- context: insufficient\n- context_need: what database architecture decisions were made\n- complete: true\n</memory>"
-    }, cache, cont)
+    })
 
     # Should allow stop (no data found, but retrieval was attempted)
     # Check that context_requested metric exists (not prefiltered)
@@ -255,12 +251,12 @@ def test_substantive_context_need_not_filtered():
 
 def test_retrieval_outcome_recorded():
     """retrieval_outcome: useful should be recorded as a metric."""
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-outcome", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "Got it.\n<memory>\n- retrieval_outcome: useful\n- complete: true\n</memory>"
-    }, cache, cont)
+    })
 
     event = conn.execute("SELECT event FROM metrics WHERE event = 'retrieval_useful'").fetchone()
     assert event is not None, "retrieval_outcome: useful should be recorded"
@@ -268,12 +264,12 @@ def test_retrieval_outcome_recorded():
 
 
 def test_retrieval_outcome_harmful_recorded():
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-harmful", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "Bad context.\n<memory>\n- retrieval_outcome: harmful\n- complete: true\n</memory>"
-    }, cache, cont)
+    })
 
     event = conn.execute("SELECT event FROM metrics WHERE event = 'retrieval_harmful'").fetchone()
     assert event is not None
@@ -286,12 +282,12 @@ def test_retrieval_outcome_harmful_recorded():
 
 def test_keywords_parsed_and_logged():
     """Keywords in memory block should be parsed (Layer 2 runs but finds nothing)."""
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-kw", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "Done.\n<memory>\n- type: fact\n- topic: kw-test\n- content: keyword test\n- keywords: authentication, JWT, tokens\n- complete: true\n</memory>"
-    }, cache, cont, staged)
+    })
 
     # Memory should be stored
     row = conn.execute("SELECT content FROM memories WHERE topic = 'kw-test'").fetchone()
@@ -306,7 +302,7 @@ def test_keywords_parsed_and_logged():
 def test_write_throttle_through_main():
     """8 entries in one block — should be capped at MAX_MEMORIES_PER_RESPONSE."""
     from config import MAX_MEMORIES_PER_RESPONSE
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
 
     entries = ""
     for i in range(8):
@@ -316,7 +312,7 @@ def test_write_throttle_through_main():
         "stop_hook_active": False,
         "session_id": "s-throttle", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": f"Lots.\n<memory>{entries}\n- complete: true\n</memory>"
-    }, cache, cont)
+    })
 
     count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
     assert count <= MAX_MEMORIES_PER_RESPONSE, f"Expected max {MAX_MEMORIES_PER_RESPONSE}, got {count}"
@@ -329,7 +325,7 @@ def test_write_throttle_through_main():
 
 def test_confidence_update_through_main():
     """Confidence updates in memory block should modify DB entries."""
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s-conf', 'P')")
     conn.execute("INSERT INTO memories (type, topic, content, confidence, session_id) VALUES (?,?,?,?,?)",
                  ("fact", "target", "update target", 0.7, "s-conf"))
@@ -340,7 +336,7 @@ def test_confidence_update_through_main():
         "stop_hook_active": False,
         "session_id": "s-conf", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": f"Context was helpful.\n<memory>\n- confidence_update: {mem_id}:+\n- complete: true\n</memory>"
-    }, cache, cont)
+    })
 
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = ?", (mem_id,)).fetchone()[0]
     assert new_conf > 0.7, f"Expected confidence boost, got {new_conf}"
@@ -348,7 +344,7 @@ def test_confidence_update_through_main():
 
 
 def test_confidence_penalty_through_main():
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s-pen', 'P')")
     conn.execute("INSERT INTO memories (type, topic, content, confidence, session_id) VALUES (?,?,?,?,?)",
                  ("fact", "target", "penalty target", 0.7, "s-pen"))
@@ -359,7 +355,7 @@ def test_confidence_penalty_through_main():
         "stop_hook_active": False,
         "session_id": "s-pen", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": f"Wrong info.\n<memory>\n- confidence_update: {mem_id}:-\n- complete: true\n</memory>"
-    }, cache, cont)
+    })
 
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = ?", (mem_id,)).fetchone()[0]
     assert new_conf < 0.7, f"Expected confidence penalty, got {new_conf}"
@@ -371,12 +367,12 @@ def test_confidence_penalty_through_main():
 # ============================================================
 
 def test_source_messages_stored_through_main():
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-src", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "answer\n<memory>\n- type: fact\n- topic: sourced\n- content: has source\n- source_messages: 15-22\n- complete: true\n</memory>"
-    }, cache, cont)
+    })
 
     row = conn.execute("SELECT source_start, source_end FROM memories WHERE topic = 'sourced'").fetchone()
     assert row is not None
@@ -390,12 +386,12 @@ def test_source_messages_stored_through_main():
 # ============================================================
 
 def test_empty_message_allows_stop():
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-empty", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": ""
-    }, cache, cont)
+    })
     assert r is None, "Empty message should allow stop"
     conn.close()
 
@@ -407,19 +403,22 @@ def test_empty_message_allows_stop():
 def test_context_cache_prevents_second_retrieval():
     """Pre-populate cache for a session, then verify second request is a cache hit."""
     import stop_hook
-    db_path, conn, cache, cont, staged = fresh_env()
+    db_path, conn = fresh_env()
 
     # Pre-populate the cache as if a previous retrieval succeeded
-    cache_data = {"s-cache": [{"text": "what architecture decisions exist"}]}
-    with open(cache, "w") as f:
-        json.dump(cache_data, f)
+    cache_data = [{"text": "what architecture decisions exist"}]
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value) VALUES (?, 'context_cache', ?)",
+        ("s-cache", json.dumps(cache_data))
+    )
+    conn.commit()
 
     # Now make a request with the same context_need — should hit cache
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-cache", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "need info\n<memory>\n- context: insufficient\n- context_need: what architecture decisions exist\n- complete: true\n</memory>"
-    }, cache, cont)
+    })
 
     # Should allow stop (cache hit, no re-retrieval)
     assert r is None, f"Expected cache hit to allow stop, got: {r}"

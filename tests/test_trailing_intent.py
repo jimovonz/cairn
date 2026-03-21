@@ -18,13 +18,16 @@ TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
 
 
+HOOK_STATE_SQL = """CREATE TABLE IF NOT EXISTS hook_state (
+    session_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, key))"""
+
+
 def fresh_env():
     _counter[0] += 1
     n = _counter[0]
     db_path = os.path.join(TEST_DIR, f"intent_{n}.db")
-    cache_path = os.path.join(TEST_DIR, f".cache_{n}")
-    cont_path = os.path.join(TEST_DIR, f".cont_{n}")
-    staged_path = os.path.join(TEST_DIR, f".staged_{n}")
     conn = sqlite3.connect(db_path)
     for sql in [
         """CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,6 +45,7 @@ def fresh_env():
         """CREATE TABLE metrics (id INTEGER PRIMARY KEY AUTOINCREMENT,
             event TEXT, session_id TEXT, detail TEXT, value REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+        HOOK_STATE_SQL,
         """CREATE TRIGGER memories_version BEFORE UPDATE OF content ON memories BEGIN
             INSERT INTO memory_history (memory_id, content, session_id, changed_at)
             VALUES (old.id, old.content, old.session_id, old.updated_at); END""",
@@ -52,10 +56,10 @@ def fresh_env():
     ]:
         conn.execute(sql)
     conn.commit()
-    return db_path, conn, cache_path, cont_path, staged_path
+    return db_path, conn
 
 
-def run_hook(db_path, payload, cache_path, cont_path, staged_path=None):
+def run_hook(db_path, payload):
     """Run stop_hook.main() with full patching."""
     import stop_hook
     captured = StringIO()
@@ -68,19 +72,11 @@ def run_hook(db_path, payload, cache_path, cont_path, staged_path=None):
     orig = {
         'DB_PATH': stop_hook.DB_PATH,
         'LOG_PATH': stop_hook.LOG_PATH,
-        'CONTEXT_CACHE_PATH': stop_hook.CONTEXT_CACHE_PATH,
-        'CONTINUATION_COUNT_PATH': stop_hook.CONTINUATION_COUNT_PATH,
     }
-    if hasattr(stop_hook, 'STAGED_PATH'):
-        orig['STAGED_PATH'] = stop_hook.STAGED_PATH
 
     try:
         stop_hook.DB_PATH = db_path
         stop_hook.LOG_PATH = os.path.join(TEST_DIR, f'intent_{_counter[0]}.log')
-        stop_hook.CONTEXT_CACHE_PATH = cache_path
-        stop_hook.CONTINUATION_COUNT_PATH = cont_path
-        if staged_path and hasattr(stop_hook, 'STAGED_PATH'):
-            stop_hook.STAGED_PATH = staged_path
 
         with patch('sys.stdin', StringIO(json.dumps(payload))), \
              patch('sys.stdout', captured), \
@@ -201,7 +197,7 @@ class TestCheckTrailingIntent:
 class TestTrailingIntentIntegration:
     def test_blocks_trailing_intent(self):
         """Response ending with action intent should be blocked."""
-        db_path, conn, cache_path, cont_path, staged_path = fresh_env()
+        db_path, conn = fresh_env()
         conn.close()
 
         # Mock embedder that returns distinguishable vectors
@@ -223,7 +219,7 @@ class TestTrailingIntentIntegration:
         }
 
         with patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
-            code, result = run_hook(db_path, payload, cache_path, cont_path, staged_path)
+            code, result = run_hook(db_path, payload)
 
         assert result is not None, "Should have blocked"
         assert result["decision"] == "block"
@@ -231,7 +227,7 @@ class TestTrailingIntentIntegration:
 
     def test_intent_resolved_allows_stop(self):
         """Memory block with intent: resolved should skip trailing intent check."""
-        db_path, conn, cache_path, cont_path, staged_path = fresh_env()
+        db_path, conn = fresh_env()
         conn.close()
 
         # Even with a mock that would flag intent, resolved should bypass
@@ -251,13 +247,13 @@ class TestTrailingIntentIntegration:
         }
 
         with patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
-            code, result = run_hook(db_path, payload, cache_path, cont_path, staged_path)
+            code, result = run_hook(db_path, payload)
 
         assert result is None, "intent: resolved should allow stop"
 
     def test_clean_response_passes(self):
         """Normal response without trailing intent should pass."""
-        db_path, conn, cache_path, cont_path, staged_path = fresh_env()
+        db_path, conn = fresh_env()
         conn.close()
 
         mock_emb = MagicMock()
@@ -276,7 +272,7 @@ class TestTrailingIntentIntegration:
         }
 
         with patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
-            code, result = run_hook(db_path, payload, cache_path, cont_path, staged_path)
+            code, result = run_hook(db_path, payload)
 
         assert result is None, "Clean response should pass through"
 
@@ -305,7 +301,7 @@ class TestContentQualityGate:
 
     def test_rejects_in_insert(self):
         """Empty memories should not be inserted into the database."""
-        db_path, conn, cache_path, cont_path, staged_path = fresh_env()
+        db_path, conn = fresh_env()
         conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'P')")
         conn.commit()
 
