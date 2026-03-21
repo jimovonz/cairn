@@ -841,8 +841,8 @@ def auto_label_project(session_id, cwd):
         conn.close()
         return  # Already labelled
 
-    # Derive project name from directory
-    project_name = os.path.basename(cwd.rstrip("/"))
+    # Derive project name from directory (lowercase for consistency)
+    project_name = os.path.basename(cwd.rstrip("/")).lower()
     if not project_name or project_name in (".", "/", "home"):
         conn.close()
         return
