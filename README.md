@@ -155,21 +155,27 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical reference (600+ li
 ```
 cairn/
 ├── install.sh              # One-command installer
-├── requirements.txt        # Python dependencies
+├── uninstall.sh            # Clean removal
+├── requirements.txt        # Python dependencies (2 packages)
 ├── CLAUDE.md               # Project-local LLM instructions
 ├── .claude/
 │   ├── settings.json       # Project-local hooks
 │   └── rules/
 │       └── memory-system.md  # Full system rules for the LLM
 ├── cairn/
-│   ├── config.py           # All tunable parameters
+│   ├── config.py           # All tunable parameters (env var overrides)
 │   ├── init_db.py          # Schema and migrations
 │   ├── query.py            # CLI query tool (20+ commands)
 │   ├── embeddings.py       # Embedding with daemon support + composite scoring
 │   └── daemon.py           # Background embedding server (Unix socket)
 ├── hooks/
-│   ├── stop_hook.py        # Core: capture, enforce, retrieve, confidence
-│   └── prompt_hook.py      # Layer 1 + Layer 2 injection
+│   ├── stop_hook.py        # Orchestrator: session, parsing, routing
+│   ├── prompt_hook.py      # Layer 1 + Layer 2 injection
+│   ├── hook_helpers.py     # Shared DB access, logging, metrics
+│   ├── parser.py           # Memory block parsing (ParseResult NamedTuple)
+│   ├── storage.py          # Insert, dedup, confidence, quality gates
+│   ├── enforcement.py      # Trailing intent detection, continuation counting
+│   └── retrieval.py        # Context retrieval, Layer 2, context cache
 └── templates/              # Installer templates for global config
 ```
 
@@ -186,14 +192,14 @@ cairn/
 
 ## Configuration
 
-All tunable parameters are in `cairn/config.py`:
+All tunable parameters are in `cairn/config.py`. Any value can be overridden via environment variable: `CAIRN_<NAME>=value` (e.g. `CAIRN_DEDUP_THRESHOLD=0.90`).
 
 - Retrieval thresholds per layer
 - Composite scoring weights
 - Confidence boost/penalty rates
 - Quality gate thresholds
 - Deduplication sensitivity
-- Daemon idle timeout
+- Trailing intent detection threshold
 - Loop protection limits
 
 ## Key design decisions
@@ -218,7 +224,7 @@ All tunable parameters are in `cairn/config.py`:
 
 **Distillation is lossy.** Memories are one-line summaries. The nuance and detail of the original conversation is compressed away. The `--context` command can recover the surrounding transcript, but only if the session's transcript file still exists on disk.
 
-**Early stage.** This project was built and iterated in a single extended session. It has limited cross-platform testing and may have edge cases around permissions, venv conflicts, or long-running daemon stability. Bug reports welcome.
+**Early stage.** Limited cross-platform testing — may have edge cases around permissions, venv conflicts, or long-running daemon stability. Bug reports welcome.
 
 ## Failure modes
 
@@ -228,7 +234,7 @@ Things that can go wrong and how the system handles them:
 |---------|-------------|------------|
 | LLM forgets the `<memory>` block | Stop hook blocks the response and re-prompts "add a memory block" | User sees a brief pause; the re-prompt is invisible |
 | LLM answers before checking memory | User sees "I don't know" then a correction after the hook injects context | Layer 1 (first-prompt push) proactively injects on the first message to prevent this |
-| Embedding daemon not running | Memories stored without embeddings; dedup and semantic search degraded | Auto-start attempted; `--backfill` command regenerates missing embeddings |
+| Embedding daemon not running | Memories stored without embeddings; dedup and semantic search degraded | Auto-start attempted; background backfill triggers automatically when missing embeddings detected |
 | Hook crashes | Fail-open design: crash → exit 0 → response reaches user normally | Crash logged to metrics; no user impact |
 | Retrieval returns irrelevant context | 9 quality gates filter noise; adaptive thresholds tighten if outcomes are poor | LLM can rate retrieval as `harmful`, raising thresholds automatically |
 | Infinite re-prompt loop | Continuation cap (max 3) forces a stop after 3 consecutive re-prompts | Context cache prevents same query being served twice |
@@ -241,25 +247,26 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test 
 
 ## Testing
 
-171 tests across 10 test files. No embedding model required — tests use mock vectors and patched DB paths.
+185 tests across 11 test files. No embedding model required — tests use mock vectors and patched DB paths.
 
 ```bash
 cd ~/cairn
-python3 -m pytest tests/     # or run individually: python3 tests/test_parser.py
+python3 -m pytest tests/
 ```
 
-| Test file | Count | What it covers |
-|-----------|-------|---------------|
-| `test_parser.py` | 32 | Memory block parsing: valid, malformed, unclosed tags, code fences, special chars, stress |
-| `test_scoring.py` | 18 | Composite scoring, recency decay, saturating confidence, negation heuristics |
-| `test_gates.py` | 21 | All 9 quality gates: boundary conditions, interactions, diversity filter |
-| `test_integration.py` | 14 | Full pipeline with in-memory DB: insert → dedup → retrieve → gate |
-| `test_hook_e2e.py` | 13 | Stop hook main() with patched stdin: storage, blocking, sessions, metrics |
-| `test_prompt_hook.py` | 8 | Layer 1/2: first-prompt detection, staged context, short message handling |
-| `test_daemon_and_cache.py` | 16 | Daemon fallback, context cache, loop protection, fail-open, metrics |
-| `test_query_cli.py` | 12 | CLI commands: search, stats, review, delete, history, compact, projects |
-| `test_retrieval_pipeline.py` | 22 | Retrieval pipeline: find_nearest, insert dedup/contradiction/variant paths, retrieve_context XML, adaptive thresholds, Layer 2 cross-project, session registration, auto-labelling edge cases, negation dampening |
-| `test_enforcement_loop.py` | 15 | Two-pass enforcement loop, continuation cap, malformed blocks, low-info pre-filter, retrieval outcomes, context cache hit, write throttle + confidence updates through main() |
+| Test file | What it covers |
+|-----------|---------------|
+| `test_parser.py` | Memory block parsing: valid, malformed, unclosed tags, code fences, special chars |
+| `test_scoring.py` | Composite scoring, recency decay, confidence dynamics through real DB, negation heuristics |
+| `test_gates.py` | Quality gates through find_similar, garbage/diversity filtering, boundary conditions |
+| `test_integration.py` | Full pipeline with in-memory DB: insert → dedup → retrieve → gate |
+| `test_hook_e2e.py` | Stop hook main() with patched stdin: storage, blocking, sessions, metrics |
+| `test_prompt_hook.py` | Layer 1/2: first-prompt detection, staged context, short message handling |
+| `test_daemon_and_cache.py` | Daemon fallback, context cache, loop protection, fail-open, pre-filter through main() |
+| `test_query_cli.py` | CLI commands: search, stats, review, delete, history, compact, projects |
+| `test_retrieval_pipeline.py` | Retrieval pipeline: dedup, contradictions, variants, adaptive thresholds, Layer 2, auto-backfill |
+| `test_enforcement_loop.py` | Two-pass enforcement loop, continuation cap, context cache, write throttle |
+| `test_trailing_intent.py` | Trailing intent detection, intent: resolved escape, content quality gate |
 
 ## License
 

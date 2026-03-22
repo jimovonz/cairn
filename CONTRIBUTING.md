@@ -18,7 +18,7 @@ Thanks for your interest in contributing! Cairn is a young project and contribut
 **High value:**
 - Bug fixes (especially in hook parsing or retrieval logic)
 - Improved retrieval quality (better scoring, gating, or ranking)
-- Test coverage
+- Test coverage for untested paths
 - Documentation improvements
 - Platform compatibility (macOS, Windows WSL)
 
@@ -36,24 +36,38 @@ Thanks for your interest in contributing! Cairn is a young project and contribut
 ## Code style
 
 - Python 3.10+
-- No type annotations required (keep it simple)
-- Functions should fail gracefully — the stop hook must never block the user
+- Type annotations on all function signatures (`from __future__ import annotations`)
+- Functions should fail gracefully — hooks must never block the user
 - All thresholds and weights belong in `cairn/config.py`
+
+## Project structure
+
+The hook code is split into focused modules:
+
+| Module | Responsibility |
+|--------|---------------|
+| `hook_helpers.py` | Shared DB access, logging, metrics, embedder |
+| `parser.py` | Memory block parsing (`ParseResult` NamedTuple) |
+| `storage.py` | Insert, dedup, confidence updates, quality gates |
+| `enforcement.py` | Trailing intent detection, continuation counting |
+| `retrieval.py` | Context retrieval, Layer 2 cross-project, context cache |
+| `stop_hook.py` | Orchestrator — routes through the above |
+| `prompt_hook.py` | Layer 1 first-prompt push + Layer 2 injection |
 
 ## Testing
 
-134 tests across 8 files. Run with:
+185 tests across 11 files. Run with:
 
 ```bash
 python3 -m pytest tests/         # full suite
-python3 tests/test_parser.py     # individual file
+python3 -m pytest tests/ -k "backfill"  # run specific tests
 ```
 
 No embedding model required — tests use deterministic mock vectors and patched DB paths.
 
 **Before submitting a PR:**
 1. All existing tests must pass
-2. Add tests for new functionality
+2. Add tests for new functionality — test behavior through real code paths, not inline arithmetic
 3. Run `./install.sh` on a clean setup and verify the hook fires
 4. Check `/cairn` shows stats in a Claude Code session
 
