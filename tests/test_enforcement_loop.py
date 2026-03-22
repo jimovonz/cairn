@@ -117,6 +117,11 @@ def test_two_pass_missing_block_then_complete():
     """Pass 1: no memory block → blocks. Pass 2 (continuation): has block → allows stop."""
     db_path, conn = fresh_env()
 
+    # Mark session as instructed (has prior hook activity) so enforcement kicks in
+    conn.execute("INSERT INTO metrics (event, session_id) VALUES ('hook_fired', 's1')")
+    conn.execute("INSERT INTO metrics (event, session_id) VALUES ('hook_fired', 's1')")
+    conn.commit()
+
     # Pass 1: no block
     r1, _ = run_hook(db_path, {
         "stop_hook_active": False,

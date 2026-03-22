@@ -148,6 +148,25 @@ def main() -> None:
             log("Missing memory block on continuation — allowing stop to prevent loop")
             reset_continuation(session_id)
             sys.exit(0)
+
+        # Check if this session has ever produced a memory block. If not, the LLM
+        # likely doesn't have the rules loaded (e.g. hooks activated mid-session
+        # before restart). Fail open rather than enforcing on an uninstructed LLM.
+        conn = get_conn()
+        session_has_memories = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE session_id = ?", (session_id,)
+        ).fetchone()[0] > 0
+        # Also check if we've seen any hook_fired metric for this session
+        session_hook_count = conn.execute(
+            "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'hook_fired'", (session_id,)
+        ).fetchone()[0]
+        conn.close()
+
+        if not session_has_memories and session_hook_count <= 1:
+            log(f"No prior memories for session {session_id[:8]}... — LLM may lack rules, allowing stop")
+            record_metric(session_id, "uninstructed_session_skip")
+            sys.exit(0)
+
         increment_continuation(session_id)
 
         has_open_tag: bool = "<memory>" in text

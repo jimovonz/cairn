@@ -119,6 +119,10 @@ def test_valid_block_stores_memory():
 
 def test_missing_block_triggers_reprompt():
     db_path, conn = fresh_db()
+    # Mark session as instructed so enforcement applies
+    conn.execute("INSERT INTO metrics (event, session_id) VALUES ('hook_fired', 'test-missing')")
+    conn.execute("INSERT INTO metrics (event, session_id) VALUES ('hook_fired', 'test-missing')")
+    conn.commit()
     payload = {
         "stop_hook_active": False,
         "session_id": "test-missing",
