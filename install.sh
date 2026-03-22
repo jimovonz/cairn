@@ -55,15 +55,30 @@ if [ -f "$CLAUDE_DIR/settings.json" ]; then
     if grep -q "stop_hook.py" "$CLAUDE_DIR/settings.json" 2>/dev/null; then
         echo "Global hooks already configured."
     else
-        echo ""
-        echo "WARNING: ~/.claude/settings.json exists but does not contain Cairn hooks."
-        echo "You need to merge the hooks manually from:"
-        echo "  $CAIRN_HOME/templates/global-settings.json"
-        echo ""
-        echo "The hooks to add are:"
-        sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" \
-            "$CAIRN_HOME/templates/global-settings.json" | python3 -m json.tool
-        echo ""
+        echo "Merging Cairn hooks into existing settings.json..."
+        python3 -c "
+import json, sys
+
+cairn_hooks = json.loads('''$(sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" "$CAIRN_HOME/templates/global-settings.json")''')
+
+with open('$CLAUDE_DIR/settings.json') as f:
+    settings = json.load(f)
+
+hooks = settings.setdefault('hooks', {})
+for event, groups in cairn_hooks.get('hooks', {}).items():
+    if event not in hooks:
+        hooks[event] = []
+    hooks[event].extend(groups)
+
+with open('$CLAUDE_DIR/settings.json', 'w') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+" && echo "Merged hooks into settings.json." || {
+            echo ""
+            echo "WARNING: Could not auto-merge hooks. Add them manually from:"
+            echo "  $CAIRN_HOME/templates/global-settings.json"
+            echo ""
+        }
     fi
 else
     sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" \

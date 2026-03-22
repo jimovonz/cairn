@@ -56,7 +56,7 @@ def parse_memory_block(text: str) -> ParseResult:
     # Parse entries
     entries: list[dict[str, str]] = []
     current: dict[str, str] = {}
-    complete: bool = True
+    complete: Optional[bool] = None
     remaining: Optional[str] = None
     context: str = "sufficient"
     context_need: Optional[str] = None

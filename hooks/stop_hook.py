@@ -230,8 +230,9 @@ def main() -> None:
                 record_metric(session_id, "context_cache_hit", context_need[:100])
                 log(f"Context already served (semantic match) for: {context_need[:50]}... — skipping")
 
-    # Check completeness
-    if complete is False:
+    # Check completeness — complete must be explicitly True to pass.
+    # If omitted (None) or False, treat as incomplete.
+    if complete is not True:
         count = get_continuation_count(session_id)
         if count >= MAX_CONTINUATIONS:
             log(f"Completeness re-prompt cap reached ({count}/{MAX_CONTINUATIONS}) — forcing stop")
@@ -239,7 +240,10 @@ def main() -> None:
             reset_continuation(session_id)
             sys.exit(0)
         increment_continuation(session_id)
-        llm_reason: str = f"Response marked incomplete. Continue with: {remaining}" if remaining else "Response marked incomplete. Continue."
+        if complete is None:
+            llm_reason: str = "Memory block is missing 'complete: true'. You must explicitly declare completeness. Add '- complete: true' if you are done, or '- complete: false' with '- remaining: ...' if not."
+        else:
+            llm_reason = f"Response marked incomplete. Continue with: {remaining}" if remaining else "Response marked incomplete. Continue."
         result = {
             "decision": "block",
             "reason": llm_reason

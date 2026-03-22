@@ -196,7 +196,7 @@ def test_empty_block():
     text = 'response\n<memory>\n</memory>'
     entries, complete, *_ = parse_memory_block(text)
     assert entries == []
-    assert complete is True  # default
+    assert complete is None  # omitted complete field defaults to None (incomplete)
 
 
 def test_multiple_memory_blocks_uses_last():
