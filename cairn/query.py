@@ -983,15 +983,15 @@ def audit(session_id=None):
         "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'last_audit_id', ?)",
         (session_id, str(max_id))
     )
-    conn.commit()
-    conn.close()
-
     # Look up project for this session
     project = conn.execute(
         "SELECT project FROM sessions WHERE session_id LIKE ?", (f"{session_id}%",)
     ).fetchone()
     project_name = project[0] if project and project[0] else None
     project_flag = f" --project {project_name}" if project_name else ""
+
+    conn.commit()
+    conn.close()
 
     print(f"--- Audit watermark set to ID {max_id} ---")
     print(f"--- Session: {session_id} ---")
