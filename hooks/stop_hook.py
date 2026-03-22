@@ -236,10 +236,10 @@ def main() -> None:
     else:
         # No entries — check if the response was substantive enough to warrant a memory
         stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
-        if len(stripped) > 500 and not is_continuation:
+        if len(stripped) > 1000 and not is_continuation:
             density_issues.append(
-                "Substantive response with no memory entries. "
-                "Capture what was discussed, decided, or learned — even if minor."
+                "Substantive response (>1000 chars) with no memory entries. "
+                "Capture what was discussed, decided, or learned."
             )
 
     if density_issues and not is_continuation:
