@@ -632,6 +632,84 @@ def test_negation_dampening_in_insert():
     conn.close()
 
 
+# ============================================================
+# Auto-backfill: daemon start + backfill on missing embeddings
+# ============================================================
+
+def test_auto_backfill_triggered_when_embeddings_missing():
+    """Storing a memory without embedding should trigger background backfill."""
+    db_path, conn = fresh_db()
+    conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'P')")
+    conn.commit()
+
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = None  # Daemon unavailable — no embedding
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+         patch.object(hook_helpers, 'log'), \
+         patch.object(storage, '_trigger_background_backfill') as mock_backfill:
+        storage.insert_memories([{
+            "type": "fact", "topic": "test", "content": "stored without embedding"
+        }], session_id="s1")
+
+    mock_backfill.assert_called_once()
+    args = mock_backfill.call_args[0]
+    assert args[0] >= 1, "Should report at least 1 missing embedding"
+    conn.close()
+
+
+def test_no_backfill_when_all_have_embeddings():
+    """When all memories have embeddings, backfill should NOT be triggered."""
+    db_path, conn = fresh_db()
+    conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'P')")
+    conn.commit()
+
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = make_vector(100)
+    mock_emb.to_blob.return_value = make_blob(100)
+    mock_emb.find_nearest.return_value = []
+    mock_emb.upsert_vec_index = MagicMock()
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+         patch.object(storage, '_trigger_background_backfill') as mock_backfill:
+        storage.insert_memories([{
+            "type": "fact", "topic": "test", "content": "stored with embedding"
+        }], session_id="s1")
+
+    mock_backfill.assert_not_called()
+    conn.close()
+
+
+def test_backfill_starts_daemon_before_backfill():
+    """_trigger_background_backfill should start daemon first, then backfill."""
+    import subprocess
+
+    calls = []
+    original_popen = subprocess.Popen
+
+    def tracking_popen(cmd, **kwargs):
+        calls.append(cmd)
+        # Return a mock process
+        mock = MagicMock()
+        mock.pid = 12345
+        return mock
+
+    with patch('subprocess.Popen', side_effect=tracking_popen), \
+         patch.object(hook_helpers, 'log'):
+        storage._trigger_background_backfill(5)
+
+    # Should have 2 Popen calls: daemon start, then backfill
+    assert len(calls) == 2, f"Expected 2 subprocess calls, got {len(calls)}"
+    # First call should be daemon.py start
+    assert any("daemon.py" in str(c) for c in calls[0]), f"First call should start daemon: {calls[0]}"
+    assert any("start" in str(c) for c in calls[0]), f"First call should include 'start': {calls[0]}"
+    # Second call should be query.py --backfill
+    assert any("query.py" in str(c) for c in calls[1]), f"Second call should run backfill: {calls[1]}"
+    assert any("--backfill" in str(c) for c in calls[1]), f"Second call should include '--backfill': {calls[1]}"
+
+
 def cleanup():
     shutil.rmtree(TEST_DIR, ignore_errors=True)
 
