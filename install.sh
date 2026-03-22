@@ -94,11 +94,11 @@ echo "Installed /cairn slash command."
 # --- Pre-download model ---
 echo ""
 echo "Pre-downloading embedding model (one-time)..."
-"$VENV_PYTHON" -c "
+HF_HUB_DISABLE_PROGRESS_BARS=1 CUDA_VISIBLE_DEVICES="" "$VENV_PYTHON" -c "
 from sentence_transformers import SentenceTransformer
 m = SentenceTransformer('all-MiniLM-L6-v2')
 print('Model ready.')
-" 2>&1 | grep -v "^$\|Warning:\|Loading"
+" 2>&1 | grep -v "^$\|Warning:\|Loading\|REPORT\|UNEXPECTED\|Notes:"
 
 # --- Start daemon ---
 echo "Starting embedding daemon..."

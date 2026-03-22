@@ -185,9 +185,16 @@ if __name__ == "__main__":
             start_new_session=True
         )
         import time
-        time.sleep(5)
+        # Wait for daemon to become responsive (model load can take 10s+ on slow machines)
+        for _ in range(20):
+            time.sleep(1)
+            if is_running():
+                resp = send_request({"action": "ping"})
+                if resp and resp.get("status") == "ok":
+                    print("Daemon started.")
+                    sys.exit(0)
         if is_running():
-            print("Daemon started.")
+            print("Daemon started (not yet responding to ping).")
         else:
             print("Daemon starting (model loading)...")
         sys.exit(0)
