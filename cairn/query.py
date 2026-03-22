@@ -392,6 +392,43 @@ def delete_memory(memory_id):
     print(f"Deleted memory {memory_id}: {existing[1]}/{existing[2]}")
 
 
+def add_memory(mem_type, topic, content, project=None, session_id=None):
+    """Manually add a memory entry with proper attribution and embedding."""
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
+
+    # Generate embedding for semantic search
+    embedding_blob = None
+    try:
+        import embeddings as emb
+        project_prefix = f"{project} " if project else ""
+        search_text = f"{project_prefix}{mem_type} {topic} {content}"
+        vec = emb.embed(search_text)
+        if vec is not None:
+            embedding_blob = emb.to_blob(vec)
+    except Exception:
+        pass
+
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, embedding, session_id, project) VALUES (?, ?, ?, ?, ?, ?)",
+        (mem_type, topic, content, embedding_blob, session_id, project)
+    )
+    new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    # Update vec index if embedding was generated
+    if embedding_blob:
+        try:
+            import embeddings as emb
+            emb.upsert_vec_index(conn, new_id, embedding_blob)
+        except Exception:
+            pass
+
+    conn.commit()
+    conn.close()
+    has_emb = "with embedding" if embedding_blob else "without embedding"
+    print(f"Added memory {new_id}: {mem_type}/{topic} ({has_emb})")
+    print(f"  {content}")
+
+
 def archive_memory(memory_id, reason):
     """Archive a memory — sets confidence to 0 and records why.
 
@@ -689,6 +726,7 @@ Commands:
   --label <id> <name>    Label a session's chain as a project
   --context <id>         Show conversation context around where a memory was recorded
   --history <id>         Show version history for a memory
+  --add <type> <topic> <content> [--project <name>] [--session <id>]  Add a memory
   --update <id> <text>   Update a memory's content (preserves history)
   --archive <id> <reason> Archive a memory (confidence=0, reason preserved, stays in DB for learning)
   --delete <id>          Delete a memory and its history
@@ -948,13 +986,21 @@ def audit(session_id=None):
     conn.commit()
     conn.close()
 
+    # Look up project for this session
+    project = conn.execute(
+        "SELECT project FROM sessions WHERE session_id LIKE ?", (f"{session_id}%",)
+    ).fetchone()
+    project_name = project[0] if project and project[0] else None
+    project_flag = f" --project {project_name}" if project_name else ""
+
     print(f"--- Audit watermark set to ID {max_id} ---")
+    print(f"--- Session: {session_id} ---")
     print("Review and ENRICH each memory:")
     print("  - Accurate but thin: --update <id> <richer content with why/alternatives/outcome>")
     print("  - Accurate and complete: confirm")
     print("  - Inaccurate: --update <id> <corrected content>")
     print("  - Superseded/wrong: --archive <id> <reason> (preserves learning trail)")
-    print("  - Missing decisions/facts from conversation: add to your <memory> block")
+    print(f"  - Missing decisions/facts: --add <type> <topic> <content> --session {session_id}{project_flag}")
     print("\nSummary: reviewed, confirmed, enriched, archived, new.")
 
 
@@ -1073,6 +1119,19 @@ if __name__ == "__main__":
         show_context(int(sys.argv[2]))
     elif cmd == "--history" and len(sys.argv) > 2:
         show_history(int(sys.argv[2]))
+    elif cmd == "--add" and len(sys.argv) > 4:
+        project = None
+        session = None
+        args = sys.argv[2:]
+        if "--project" in args:
+            pi = args.index("--project")
+            project = args[pi + 1]
+            args = args[:pi] + args[pi + 2:]
+        if "--session" in args:
+            si = args.index("--session")
+            session = args[si + 1]
+            args = args[:si] + args[si + 2:]
+        add_memory(args[0], args[1], " ".join(args[2:]), project=project, session_id=session)
     elif cmd == "--update" and len(sys.argv) > 3:
         update_memory(int(sys.argv[2]), " ".join(sys.argv[3:]))
     elif cmd == "--archive" and len(sys.argv) > 3:

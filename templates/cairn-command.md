@@ -43,7 +43,7 @@ When the argument is `audit`, run the audit command first, then review the outpu
    - **Superseded**: archive with `--archive <id> <reason>` — e.g. "superseded by decision to use X instead". The learning trail is preserved.
    - **Wrong/misleading**: archive with `--archive <id> <reason>` — e.g. "false — no compaction occurred". Archived memories stay in DB but drop from retrieval.
    - **Duplicate**: archive the worse copy with `--archive <id> duplicate of <other_id>`
-   - **Missing context**: if the conversation covered decisions, reasoning, or facts NOT captured by any memory, store them in your `<memory>` block
+   - **Missing context**: if the conversation covered decisions, reasoning, or facts NOT captured by any memory, add with `--add <type> <topic> <content> [--project <name>]`
 3. After reviewing all memories, provide a summary:
    - Total reviewed
    - Confirmed accurate
