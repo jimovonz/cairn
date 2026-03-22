@@ -35,14 +35,14 @@ Every response MUST end with a `<memory>` block. No exceptions. This is enforced
 ```
 
 ### Types
-- **decision**: Architectural or design choices with rationale
-- **preference**: User likes, dislikes, working style
-- **fact**: Verified information about systems, tools, environment
-- **correction**: Mistakes made and lessons learned
-- **person**: People mentioned — roles, relationships, contact context
-- **project**: Ongoing work, goals, deadlines, status
-- **skill**: Reusable techniques, commands, or patterns that worked
-- **workflow**: Recurring processes, automation, standard operating procedures
+- **decision**: Architectural or design choices — include the choice, alternatives considered, and rationale
+- **preference**: User likes, dislikes, working style — include what they prefer and why
+- **fact**: Verified information about systems, tools, environment — include specifics (versions, paths, configs)
+- **correction**: Mistakes made and lessons learned — include what went wrong, the fix, and how to avoid next time
+- **person**: People mentioned — roles, relationships, responsibilities, contact context
+- **project**: Ongoing work, goals, deadlines, status — include current state and blockers
+- **skill**: Reusable techniques, commands, or patterns that worked — include the exact command or approach
+- **workflow**: Recurring processes, automation, standard operating procedures — include steps and triggers
 
 ### Rules
 - Every response gets a memory block, even if nothing was learned
@@ -55,7 +55,7 @@ Every response MUST end with a `<memory>` block. No exceptions. This is enforced
   - keywords: topic, of, conversation
   </memory>
   ```
-- Each entry is one line of content — no multi-line values
+- Each entry is one line of content — no multi-line values, but make that line **information-dense**. Include the *what*, *why*, and *context* in the same line. Bad: `"Use SQLite"`. Good: `"Use SQLite for storage — chosen over PostgreSQL for zero-config local deployment, WAL mode handles concurrency, single-file portability"`. The content should be self-sufficient — a future session reading just this line should understand the full picture without needing the original conversation.
 - Never narrate a future action without executing it — if you say "let me do X", do X in the same response via a tool call
 
 ## Completeness Control
