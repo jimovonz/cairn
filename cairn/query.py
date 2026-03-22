@@ -857,35 +857,39 @@ def audit(session_id=None):
     """Dump unaudited memories for LLM review.
 
     If session_id is provided, audits that session's chain.
-    Otherwise, audits all memories since the last global audit.
-    Tracks the watermark in hook_state with key 'last_audit_id'."""
+    Otherwise, finds the most recent session and audits it.
+    Watermark is always per-session to prevent cross-session interference."""
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
 
-    # Use a global audit watermark (not per-session) for simplicity
-    audit_key = session_id or "_global"
+    if not session_id:
+        # Find the most recent session with memories
+        row = conn.execute("""
+            SELECT session_id FROM memories
+            GROUP BY session_id
+            ORDER BY MAX(id) DESC LIMIT 1
+        """).fetchone()
+        if not row:
+            print("No sessions with memories found.")
+            conn.close()
+            return
+        session_id = row[0]
+        print(f"Auditing most recent session: {session_id[:12]}...\n")
+
+    # Per-session watermark
     row = conn.execute(
         "SELECT value FROM hook_state WHERE session_id = ? AND key = 'last_audit_id'",
-        (audit_key,)
+        (session_id,)
     ).fetchone()
     last_audit_id = int(row[0]) if row and row[0] else 0
 
-    if session_id:
-        # Audit specific session + its chain
-        memories = conn.execute("""
-            SELECT m.id, m.type, m.topic, m.content, m.confidence, m.created_at, m.session_id
-            FROM memories m
-            JOIN sessions s ON m.session_id = s.session_id
-            WHERE (s.session_id LIKE ? OR s.parent_session_id LIKE ?) AND m.id > ?
-            ORDER BY m.id ASC
-        """, (f"{session_id}%", f"{session_id}%", last_audit_id)).fetchall()
-    else:
-        # Audit all memories since last audit
-        memories = conn.execute("""
-            SELECT id, type, topic, content, confidence, created_at, session_id
-            FROM memories
-            WHERE id > ?
-            ORDER BY id ASC
-        """, (last_audit_id,)).fetchall()
+    # Audit this session + its chain
+    memories = conn.execute("""
+        SELECT m.id, m.type, m.topic, m.content, m.confidence, m.created_at, m.session_id
+        FROM memories m
+        JOIN sessions s ON m.session_id = s.session_id
+        WHERE (s.session_id LIKE ? OR s.parent_session_id LIKE ?) AND m.id > ?
+        ORDER BY m.id ASC
+    """, (f"{session_id}%", f"{session_id}%", last_audit_id)).fetchall()
 
     if not memories:
         print("No unaudited memories.")
