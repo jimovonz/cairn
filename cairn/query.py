@@ -885,18 +885,29 @@ def audit(session_id=None):
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
 
     if not session_id:
-        # Find the most recent session with memories
-        row = conn.execute("""
-            SELECT session_id FROM memories
+        # Find the most recent session with unaudited memories
+        rows = conn.execute("""
+            SELECT session_id, MAX(id) as max_id FROM memories
             GROUP BY session_id
-            ORDER BY MAX(id) DESC LIMIT 1
-        """).fetchone()
-        if not row:
-            print("No sessions with memories found.")
+            ORDER BY max_id DESC
+        """).fetchall()
+        found = None
+        for row in rows:
+            sid = row[0]
+            wm = conn.execute(
+                "SELECT value FROM hook_state WHERE session_id = ? AND key = 'last_audit_id'",
+                (sid,)
+            ).fetchone()
+            last_id = int(wm[0]) if wm and wm[0] else 0
+            if row[1] > last_id:
+                found = sid
+                break
+        if not found:
+            print("No unaudited memories across any session.")
             conn.close()
             return
-        session_id = row[0]
-        print(f"Auditing most recent session: {session_id[:12]}...\n")
+        session_id = found
+        print(f"Auditing session: {session_id[:12]}...\n")
 
     # Per-session watermark
     row = conn.execute(
