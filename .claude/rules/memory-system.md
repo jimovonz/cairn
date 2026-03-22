@@ -106,6 +106,7 @@ When context is retrieved, you receive a `<cairn_context>` XML block. This is **
 - **Score**: Entries are pre-ranked by a composite score combining similarity, confidence, recency, and scope. Higher-scored entries should carry more weight.
 - **Staleness**: If an entry contradicts what you observe in the current codebase or conversation, trust the present. The memory may be outdated.
 - **Conflict**: If retrieved context conflicts with strong prior knowledge, prefer internal reasoning unless multiple high-reliability entries agree.
+- **Archived**: Entries with `archived="true"` are historical — they record rejected approaches, superseded decisions, or corrected mistakes. The `reason` attribute explains why. Use them to understand *what was tried and why it was abandoned*, but do not treat them as current guidance.
 
 If the retrieved context does not answer your need, set `context: sufficient` and proceed with what you have. Do not re-request the same context.
 

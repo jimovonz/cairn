@@ -325,7 +325,31 @@ def find_similar(
         if not is_dup:
             diverse.append(r)
 
-    return diverse[:limit]
+    results = diverse[:limit]
+
+    # Archived memory enrichment: find related archived memories for learning trail
+    if results:
+        try:
+            archived = conn.execute(
+                "SELECT id, type, topic, content, embedding, updated_at, project, confidence, "
+                "source_start, source_end, archived_reason "
+                "FROM memories WHERE archived_reason IS NOT NULL AND embedding IS NOT NULL"
+            ).fetchall()
+            for row in archived:
+                row_vec = from_blob(row[4])
+                sim = cosine_similarity(query_vec, row_vec)
+                if sim >= MIN_INJECTION_SIMILARITY:
+                    results.append({
+                        "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
+                        "similarity": sim, "updated_at": row[5], "project": row[6],
+                        "confidence": row[7], "source_start": row[8], "source_end": row[9],
+                        "score": 0.0,
+                        "archived": True, "archived_reason": row[10]
+                    })
+        except sqlite3.OperationalError:
+            pass  # archived_reason column not yet added
+
+    return results
 
 
 def find_nearest(conn: sqlite3.Connection, text: str, limit: int = 1) -> list[dict[str, Any]]:

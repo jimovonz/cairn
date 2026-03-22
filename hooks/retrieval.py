@@ -124,6 +124,12 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None) -> Opt
         days = recency_days(r.get("updated_at", ""))
         has_source = r.get("source_start") is not None
         source_attr = ' ctx="y"' if has_source else ""
+        if r.get("archived"):
+            reason = r.get("archived_reason", "unknown")
+            return (
+                f'  <entry id="{r["id"]}" archived="true" reason="{reason}" days="{days}">'
+                f'{r["content"]}</entry>'
+            )
         return (
             f'  <entry id="{r["id"]}" reliability="{rel_label}" days="{days}"{source_attr}>'
             f'{r["content"]}</entry>'
