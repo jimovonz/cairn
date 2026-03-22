@@ -19,11 +19,14 @@ class ParseResult(NamedTuple):
     retrieval_outcome: Optional[str]
     keywords: list[str]
     intent: Optional[str]
+    complete_explicit: bool = False   # True if 'complete' was explicitly declared
+    context_explicit: bool = False    # True if 'context' was explicitly declared
+    keywords_explicit: bool = False   # True if 'keywords' was explicitly declared
 
 
 # Sentinel for "no memory block found"
-NO_BLOCK = ParseResult(None, None, None, None, None, [], None, [], None)
-NOOP_BLOCK = ParseResult([], True, None, "sufficient", None, [], None, [], None)
+NO_BLOCK = ParseResult(None, None, None, None, None, [], None, [], None, False, False, False)
+NOOP_BLOCK = ParseResult([], True, None, "sufficient", None, [], None, [], None, True, True, False)
 
 
 def parse_memory_block(text: str) -> ParseResult:
@@ -49,19 +52,21 @@ def parse_memory_block(text: str) -> ParseResult:
 
     block = matches[-1].strip()
 
-    # Check for no-op block
-    if block in ("complete: true", "- complete: true"):
-        return NOOP_BLOCK
+    # Legacy no-op shorthand — parse normally so strict validation can check fields
+    # (Previously returned NOOP_BLOCK which bypassed validation)
 
     # Parse entries
     entries: list[dict[str, str]] = []
     current: dict[str, str] = {}
     complete: Optional[bool] = None
+    complete_set: bool = False
     remaining: Optional[str] = None
     context: str = "sufficient"
+    context_set: bool = False
     context_need: Optional[str] = None
     retrieval_outcome: Optional[str] = None
     keywords: list[str] = []
+    keywords_set: bool = False
     confidence_updates: list[tuple[int, str]] = []
     intent: Optional[str] = None
 
@@ -85,16 +90,19 @@ def parse_memory_block(text: str) -> ParseResult:
 
         if key == "complete":
             complete = value.lower() == "true"
+            complete_set = True
         elif key == "remaining":
             remaining = value
         elif key == "context":
             context = value.lower()
+            context_set = True
         elif key == "context_need":
             context_need = value
         elif key == "retrieval_outcome":
             retrieval_outcome = value.lower()
         elif key == "keywords":
             keywords = [k.strip() for k in value.split(",") if k.strip()]
+            keywords_set = True
         elif key == "intent":
             intent = value.lower()
         elif key == "source_messages":
@@ -120,4 +128,5 @@ def parse_memory_block(text: str) -> ParseResult:
         entries.append(current.copy())
 
     return ParseResult(entries, complete, remaining, context, context_need,
-                       confidence_updates, retrieval_outcome, keywords, intent)
+                       confidence_updates, retrieval_outcome, keywords, intent,
+                       complete_set, context_set, keywords_set)

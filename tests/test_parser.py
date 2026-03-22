@@ -10,8 +10,8 @@ from parser import parse_memory_block
 
 
 def test_valid_single_entry():
-    text = 'response\n<memory>\n- type: fact\n- topic: test\n- content: hello world\n- complete: true\n</memory>'
-    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parse_memory_block(text)
+    text = 'response\n<memory>\n- type: fact\n- topic: test\n- content: hello world\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>'
+    parsed = parse_memory_block(text); entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parsed.entries, parsed.complete, parsed.remaining, parsed.context, parsed.context_need, parsed.confidence_updates, parsed.retrieval_outcome, parsed.keywords, parsed.intent
     assert len(entries) == 1
     assert entries[0]["type"] == "fact"
     assert entries[0]["topic"] == "test"
@@ -51,6 +51,8 @@ def test_multiple_entries():
 - topic: second
 - content: entry two
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, complete, *_ = parse_memory_block(text)
     assert len(entries) == 2
@@ -67,6 +69,8 @@ def test_source_messages_after_content():
 - content: with source
 - source_messages: 42-55
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, complete, *_ = parse_memory_block(text)
     assert len(entries) == 1
@@ -82,6 +86,8 @@ def test_source_messages_before_content():
 - source_messages: 10-20
 - content: with source before
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, complete, *_ = parse_memory_block(text)
     assert len(entries) == 1
@@ -95,6 +101,8 @@ def test_confidence_updates():
 - confidence_update: 42:+
 - confidence_update: 17:-
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, complete, remaining, context, context_need, conf_updates, *_ = parse_memory_block(text)
     assert len(conf_updates) == 2
@@ -107,6 +115,7 @@ def test_context_insufficient():
 <memory>
 - context: insufficient
 - context_need: what decisions were made about auth
+- keywords: auth, decisions
 - complete: true
 </memory>'''
     entries, complete, remaining, context, context_need, *_ = parse_memory_block(text)
@@ -122,9 +131,10 @@ def test_keywords():
 - content: keyword test
 - keywords: auth, JWT, session tokens
 - complete: true
+- context: sufficient
 </memory>'''
-    *_, keywords, intent = parse_memory_block(text)
-    assert keywords == ["auth", "JWT", "session tokens"]
+    parsed = parse_memory_block(text)
+    assert parsed.keywords == ["auth", "JWT", "session tokens"]
 
 
 def test_unknown_type_accepted():
@@ -134,6 +144,8 @@ def test_unknown_type_accepted():
 - topic: test
 - content: unknown type accepted
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, *_ = parse_memory_block(text)
     assert len(entries) == 1
@@ -149,6 +161,8 @@ def test_unknown_fields_ignored():
 - priority: high
 - tags: important
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, complete, *_ = parse_memory_block(text)
     assert len(entries) == 1
@@ -160,8 +174,10 @@ def test_retrieval_outcome():
 <memory>
 - retrieval_outcome: harmful
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
-    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parse_memory_block(text)
+    parsed = parse_memory_block(text); entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parsed.entries, parsed.complete, parsed.remaining, parsed.context, parsed.context_need, parsed.confidence_updates, parsed.retrieval_outcome, parsed.keywords, parsed.intent
     assert retrieval_outcome == "harmful"
 
 
@@ -186,6 +202,8 @@ def test_partial_entry_no_content():
 - type: fact
 - topic: test-topic
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, *_ = parse_memory_block(text)
     assert len(entries) == 1
@@ -206,6 +224,8 @@ def test_multiple_memory_blocks_uses_last():
 - topic: first-block
 - content: should be ignored
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>
 more text
 <memory>
@@ -213,6 +233,8 @@ more text
 - topic: second-block
 - content: should be used
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, *_ = parse_memory_block(text)
     assert len(entries) == 1
@@ -232,6 +254,8 @@ def test_memory_block_inside_markdown_code_fence():
 - topic: fenced
 - content: inside code fence
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>
 ```'''
     entries, complete, *_ = parse_memory_block(text)
@@ -247,6 +271,8 @@ def test_memory_block_with_trailing_text():
 - topic: trailing
 - content: has text after
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>
 
 Let me know if you need anything else!'''
@@ -291,6 +317,8 @@ def test_content_with_special_characters():
 - topic: special-chars
 - content: Use --no-verify flag; connect to host:port (e.g. localhost:5432)
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, *_ = parse_memory_block(text)
     assert len(entries) == 1
@@ -305,6 +333,8 @@ def test_content_with_url():
 - topic: url-content
 - content: API docs at https://api.example.com/v2/docs — use Bearer token
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, *_ = parse_memory_block(text)
     assert len(entries) == 1
@@ -319,6 +349,8 @@ def test_content_with_emoji():
 - topic: emoji-test
 - content: User prefers concise responses without unnecessary detail
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, *_ = parse_memory_block(text)
     assert len(entries) == 1
@@ -333,6 +365,8 @@ def test_very_long_content():
 - topic: long
 - content: {long_content.strip()}
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, *_ = parse_memory_block(text)
     assert len(entries) == 1
@@ -347,6 +381,8 @@ def test_content_with_angle_brackets():
 - topic: brackets
 - content: Use List<String> for the response type
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, *_ = parse_memory_block(text)
     # The regex-based parser may struggle here — this tests current behaviour
@@ -379,6 +415,8 @@ def test_duplicate_type_field():
 - topic: dup-type
 - content: which type wins
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, *_ = parse_memory_block(text)
     assert len(entries) == 1
@@ -393,6 +431,8 @@ def test_empty_content_field():
 - topic: empty-content
 - content:
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, *_ = parse_memory_block(text)
     # Empty content after colon — may or may not parse
@@ -408,6 +448,8 @@ def test_source_messages_single_number():
 - content: single source ref
 - source_messages: 42
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>'''
     entries, *_ = parse_memory_block(text)
     assert len(entries) == 1
@@ -421,7 +463,7 @@ def test_many_entries_stress():
     for i in range(10):
         lines.extend([f"- type: fact", f"- topic: stress-{i}", f"- content: entry number {i}"])
     block = "\n".join(lines)
-    text = f"response\n<memory>\n{block}\n- complete: true\n</memory>"
+    text = f"response\n<memory>\n{block}\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     entries, *_ = parse_memory_block(text)
     assert len(entries) == 10
     assert entries[0]["topic"] == "stress-0"
@@ -443,7 +485,7 @@ def test_all_fields_populated():
 - retrieval_outcome: useful
 - complete: true
 </memory>'''
-    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parse_memory_block(text)
+    parsed = parse_memory_block(text); entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parsed.entries, parsed.complete, parsed.remaining, parsed.context, parsed.context_need, parsed.confidence_updates, parsed.retrieval_outcome, parsed.keywords, parsed.intent
     assert len(entries) == 1
     assert entries[0]["type"] == "decision"
     assert entries[0]["source_start"] == 5

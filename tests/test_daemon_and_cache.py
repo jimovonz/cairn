@@ -285,7 +285,7 @@ def test_low_info_context_need_filtered_through_main():
 
     payload = json.dumps({
         "session_id": "s-prefilter", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "ok\n<memory>\n- context: insufficient\n- context_need: help\n- complete: true\n</memory>"
+        "last_assistant_message": "ok\n<memory>\n- context: insufficient\n- keywords: test\n- context_need: help\n- complete: true\n</memory>"
     })
 
     captured = StringIO()
@@ -334,7 +334,7 @@ def test_substantive_context_need_not_filtered():
 
     payload = json.dumps({
         "session_id": "s-subst", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "ok\n<memory>\n- context: insufficient\n- context_need: what database architecture decisions have we made\n- complete: true\n</memory>"
+        "last_assistant_message": "ok\n<memory>\n- context: insufficient\n- keywords: test\n- context_need: what database architecture decisions have we made\n- complete: true\n</memory>"
     })
 
     captured = StringIO()

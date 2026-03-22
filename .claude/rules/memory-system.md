@@ -45,7 +45,16 @@ Every response MUST end with a `<memory>` block. No exceptions. This is enforced
 - **workflow**: Recurring processes, automation, standard operating procedures
 
 ### Rules
-- Every response gets a memory block, even if nothing was learned: `<memory>complete: true</memory>`
+- Every response gets a memory block, even if nothing was learned
+- **All metadata fields are required** — `complete`, `context`, and `keywords` must be explicitly declared in every block. `remaining` is required when `complete: false`. `context_need` is required when `context: insufficient`. Each entry must have `type`, `topic`, and `content`.
+- Minimum valid block (when nothing was learned):
+  ```
+  <memory>
+  - complete: true
+  - context: sufficient
+  - keywords: topic, of, conversation
+  </memory>
+  ```
 - Each entry is one line of content — no multi-line values
 - Never narrate a future action without executing it — if you say "let me do X", do X in the same response via a tool call
 

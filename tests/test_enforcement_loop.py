@@ -135,7 +135,7 @@ def test_two_pass_missing_block_then_complete():
     r2, _ = run_hook(db_path, {
         "stop_hook_active": True,
         "session_id": "s1", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "Fixed.\n<memory>\n- type: fact\n- topic: fixed\n- content: now has block\n- complete: true\n</memory>"
+        "last_assistant_message": "Fixed.\n<memory>\n- type: fact\n- topic: fixed\n- content: now has block\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     })
     assert r2 is None  # Allowed to stop
 
@@ -162,7 +162,7 @@ def test_two_pass_incomplete_then_complete():
     r2, _ = run_hook(db_path, {
         "stop_hook_active": True,
         "session_id": "s1", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "Done.\n<memory>\n- type: fact\n- topic: finished\n- content: all done\n- complete: true\n</memory>"
+        "last_assistant_message": "Done.\n<memory>\n- type: fact\n- topic: finished\n- content: all done\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     })
     assert r2 is None  # Allowed to stop
     conn.close()
@@ -205,7 +205,7 @@ def test_malformed_open_no_close():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-malformed", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "response\n<memory>\n- type: fact\n- topic: unclosed\n- content: no closing tag"
+        "last_assistant_message": "response\n<memory>\n- type: fact\n- topic: unclosed\n- content: no closing tag\n- complete: true\n- context: sufficient\n- keywords: test"
     })
 
     # Parser should recover via unclosed tag fallback
@@ -224,7 +224,7 @@ def test_low_info_context_need_skipped():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-lowinfo", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "need help\n<memory>\n- context: insufficient\n- context_need: help\n- complete: true\n</memory>"
+        "last_assistant_message": "need help\n<memory>\n- context: insufficient\n- keywords: test\n- context_need: help\n- complete: true\n</memory>"
     })
 
     # Should allow stop (pre-filtered, no retrieval)
@@ -241,7 +241,7 @@ def test_substantive_context_need_not_filtered():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-real", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "need context\n<memory>\n- context: insufficient\n- context_need: what database architecture decisions were made\n- complete: true\n</memory>"
+        "last_assistant_message": "need context\n<memory>\n- context: insufficient\n- keywords: test\n- context_need: what database architecture decisions were made\n- complete: true\n</memory>"
     })
 
     # Should allow stop (no data found, but retrieval was attempted)
@@ -261,7 +261,7 @@ def test_retrieval_outcome_recorded():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-outcome", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "Got it.\n<memory>\n- retrieval_outcome: useful\n- complete: true\n</memory>"
+        "last_assistant_message": "Got it.\n<memory>\n- retrieval_outcome: useful\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     })
 
     event = conn.execute("SELECT event FROM metrics WHERE event = 'retrieval_useful'").fetchone()
@@ -274,7 +274,7 @@ def test_retrieval_outcome_harmful_recorded():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-harmful", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "Bad context.\n<memory>\n- retrieval_outcome: harmful\n- complete: true\n</memory>"
+        "last_assistant_message": "Bad context.\n<memory>\n- retrieval_outcome: harmful\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     })
 
     event = conn.execute("SELECT event FROM metrics WHERE event = 'retrieval_harmful'").fetchone()
@@ -292,7 +292,7 @@ def test_keywords_parsed_and_logged():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-kw", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "Done.\n<memory>\n- type: fact\n- topic: kw-test\n- content: keyword test\n- keywords: authentication, JWT, tokens\n- complete: true\n</memory>"
+        "last_assistant_message": "Done.\n<memory>\n- type: fact\n- topic: kw-test\n- content: keyword test\n- keywords: authentication, JWT, tokens\n- complete: true\n- context: sufficient\n</memory>"
     })
 
     # Memory should be stored
@@ -317,7 +317,7 @@ def test_write_throttle_through_main():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-throttle", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": f"Lots.\n<memory>{entries}\n- complete: true\n</memory>"
+        "last_assistant_message": f"Lots.\n<memory>{entries}\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     })
 
     count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
@@ -341,7 +341,7 @@ def test_confidence_update_through_main():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-conf", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": f"Context was helpful.\n<memory>\n- confidence_update: {mem_id}:+\n- complete: true\n</memory>"
+        "last_assistant_message": f"Context was helpful.\n<memory>\n- confidence_update: {mem_id}:+\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     })
 
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = ?", (mem_id,)).fetchone()[0]
@@ -360,7 +360,7 @@ def test_confidence_penalty_through_main():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-pen", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": f"Wrong info.\n<memory>\n- confidence_update: {mem_id}:-\n- complete: true\n</memory>"
+        "last_assistant_message": f"Wrong info.\n<memory>\n- confidence_update: {mem_id}:-\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     })
 
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = ?", (mem_id,)).fetchone()[0]
@@ -377,7 +377,7 @@ def test_source_messages_stored_through_main():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-src", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "answer\n<memory>\n- type: fact\n- topic: sourced\n- content: has source\n- source_messages: 15-22\n- complete: true\n</memory>"
+        "last_assistant_message": "answer\n<memory>\n- type: fact\n- topic: sourced\n- content: has source\n- source_messages: 15-22\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     })
 
     row = conn.execute("SELECT source_start, source_end FROM memories WHERE topic = 'sourced'").fetchone()
@@ -423,7 +423,7 @@ def test_context_cache_prevents_second_retrieval():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-cache", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "need info\n<memory>\n- context: insufficient\n- context_need: what architecture decisions exist\n- complete: true\n</memory>"
+        "last_assistant_message": "need info\n<memory>\n- context: insufficient\n- keywords: test\n- context_need: what architecture decisions exist\n- complete: true\n</memory>"
     })
 
     # Should allow stop (cache hit, no re-retrieval)

@@ -343,9 +343,10 @@ def test_parse_store_retrieve_roundtrip():
 - keywords: auth, OAuth, PKCE
 - source_messages: 5-10
 - complete: true
+- context: sufficient
 </memory>"""
 
-    entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parse_memory_block(text)
+    parsed = parse_memory_block(text); entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parsed.entries, parsed.complete, parsed.remaining, parsed.context, parsed.context_need, parsed.confidence_updates, parsed.retrieval_outcome, parsed.keywords, parsed.intent
 
     assert len(entries) == 1
     assert entries[0]["type"] == "decision"
@@ -381,6 +382,7 @@ def test_context_insufficient_produces_block():
 <memory>
 - context: insufficient
 - context_need: what database did we choose for the project
+- keywords: database, architecture
 - complete: true
 </memory>"""
 
@@ -407,9 +409,12 @@ def test_confidence_updates_applied():
 - confidence_update: {id1}:+
 - confidence_update: {id2}:-
 - complete: true
+- context: sufficient
+- keywords: test
 </memory>"""
 
-    *_, conf_updates, _, _, _ = parse_memory_block(text)
+    parsed = parse_memory_block(text)
+    conf_updates = parsed.confidence_updates
     assert len(conf_updates) == 2
     assert conf_updates[0] == (id1, "+")
     assert conf_updates[1] == (id2, "-")

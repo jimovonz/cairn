@@ -98,7 +98,7 @@ def test_valid_block_stores_memory():
         "session_id": "test-session",
         "transcript_path": "",
         "cwd": "/tmp/myproject",
-        "last_assistant_message": "Here is my answer.\n<memory>\n- type: fact\n- topic: test-store\n- content: This should be stored\n- complete: true\n</memory>"
+        "last_assistant_message": "Here is my answer.\n<memory>\n- type: fact\n- topic: test-store\n- content: This should be stored\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     }
     result, code = run_hook(db_path, payload)
 
@@ -188,7 +188,7 @@ def test_multiple_entries_stored():
         "session_id": "test-multi",
         "transcript_path": "",
         "cwd": "/tmp",
-        "last_assistant_message": "Done.\n<memory>\n- type: fact\n- topic: multi-1\n- content: first fact\n- type: decision\n- topic: multi-2\n- content: second decision\n- complete: true\n</memory>"
+        "last_assistant_message": "Done.\n<memory>\n- type: fact\n- topic: multi-1\n- content: first fact\n- type: decision\n- topic: multi-2\n- content: second decision\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     }
     result, code = run_hook(db_path, payload)
 
@@ -253,7 +253,7 @@ def test_metrics_recorded():
         "session_id": "sess-metrics",
         "transcript_path": "",
         "cwd": "/tmp",
-        "last_assistant_message": "answer\n<memory>\n- type: fact\n- topic: metric-test\n- content: testing metrics\n- complete: true\n</memory>"
+        "last_assistant_message": "answer\n<memory>\n- type: fact\n- topic: metric-test\n- content: testing metrics\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     }
     result, code = run_hook(db_path, payload)
 
@@ -281,7 +281,7 @@ def test_write_throttle_limits_entries():
         "session_id": "sess-throttle",
         "transcript_path": "",
         "cwd": "/tmp",
-        "last_assistant_message": f"lots of stuff\n<memory>{entries_text}\n- complete: true\n</memory>"
+        "last_assistant_message": f"lots of stuff\n<memory>{entries_text}\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     }
     result, code = run_hook(db_path, payload)
 
@@ -301,7 +301,7 @@ def test_noop_block_no_storage():
         "session_id": "sess-noop",
         "transcript_path": "",
         "cwd": "/tmp",
-        "last_assistant_message": "simple answer\n<memory>\ncomplete: true\n</memory>"
+        "last_assistant_message": "simple answer\n<memory>\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     }
     result, code = run_hook(db_path, payload)
 
@@ -345,7 +345,7 @@ def test_realistic_claude_output_with_extra_text():
         "session_id": "sess-messy",
         "transcript_path": "",
         "cwd": "/tmp",
-        "last_assistant_message": "Here's what I found.\n\nThe authentication system uses JWT.\n\n<memory>\n- type: decision\n- topic: auth\n- content: JWT chosen for stateless auth\n- complete: true\n</memory>\n\nLet me know if you need anything else."
+        "last_assistant_message": "Here's what I found.\n\nThe authentication system uses JWT.\n\n<memory>\n- type: decision\n- topic: auth\n- content: JWT chosen for stateless auth\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>\n\nLet me know if you need anything else."
     }
     result, code = run_hook(db_path, payload)
 
@@ -363,7 +363,7 @@ def test_realistic_claude_markdown_wrapped():
         "session_id": "sess-markdown",
         "transcript_path": "",
         "cwd": "/tmp",
-        "last_assistant_message": "Done.\n```\n<memory>\n- type: fact\n- topic: markdown-test\n- content: wrapped in code fence\n- complete: true\n</memory>\n```"
+        "last_assistant_message": "Done.\n```\n<memory>\n- type: fact\n- topic: markdown-test\n- content: wrapped in code fence\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>\n```"
     }
     result, code = run_hook(db_path, payload)
 

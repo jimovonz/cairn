@@ -139,7 +139,11 @@ def main() -> None:
     log(f"Text length: {len(text)}, has <memory>: {'<memory>' in text}, continuation: {is_continuation}")
 
     # Parse memory block
-    entries, complete, remaining, context, context_need, confidence_updates, retrieval_outcome, keywords, intent = parse_memory_block(text)
+    parsed = parse_memory_block(text)
+    entries, complete, remaining = parsed.entries, parsed.complete, parsed.remaining
+    context, context_need = parsed.context, parsed.context_need
+    confidence_updates, retrieval_outcome = parsed.confidence_updates, parsed.retrieval_outcome
+    keywords, intent = parsed.keywords, parsed.intent
 
     # No memory block found
     if entries is None and complete is None:
@@ -187,6 +191,40 @@ def main() -> None:
         sys.exit(0)
 
     log(f"Parsed: entries={len(entries) if entries else 0}, complete={complete}, remaining={remaining}, context={context}, context_need={context_need}, conf_updates={len(confidence_updates)}")
+
+    # Strict field validation — enforce explicit declaration of all required fields
+    missing_fields: list[str] = []
+    if not parsed.complete_explicit:
+        missing_fields.append("complete: [true|false]")
+    if not parsed.context_explicit:
+        missing_fields.append("context: [sufficient|insufficient]")
+    if not parsed.keywords_explicit:
+        missing_fields.append("keywords: [comma-separated topic keywords]")
+    if complete is False and not remaining:
+        missing_fields.append("remaining: [what still needs doing]")
+    if context == "insufficient" and not context_need:
+        missing_fields.append("context_need: [what context is missing]")
+
+    # Validate entry completeness — every entry needs type, topic, content
+    incomplete_entries: list[str] = []
+    if entries:
+        for i, entry in enumerate(entries):
+            entry_missing = [f for f in ("type", "topic", "content") if f not in entry]
+            if entry_missing:
+                incomplete_entries.append(f"entry {i+1} missing: {', '.join(entry_missing)}")
+
+    if (missing_fields or incomplete_entries) and not is_continuation:
+        hints: list[str] = []
+        if missing_fields:
+            hints.append(f"Memory block is missing: {', '.join(missing_fields)}.")
+        if incomplete_entries:
+            hints.append(f"Incomplete entries: {'; '.join(incomplete_entries)}.")
+        hint_text = " ".join(hints) + " All fields are required. Use this format:\n<memory>\n- type: fact\n- topic: short key\n- content: one line\n- complete: true\n- context: sufficient\n- keywords: relevant, topic, words\n</memory>"
+        log(f"Strict validation failed: {hint_text[:200]}")
+        record_metric(session_id, "strict_validation_failed", hint_text[:100])
+        increment_continuation(session_id)
+        print(json.dumps({"decision": "block", "reason": hint_text}))
+        sys.exit(0)
 
     # Apply confidence updates
     if confidence_updates:

@@ -104,7 +104,7 @@ def run_hook(db_path, payload):
 class TestExtractLastSentence:
     def test_strips_memory_block(self):
         import stop_hook
-        text = "Here is my answer.\n<memory>\n- type: fact\n- topic: test\n- content: test\n- complete: true\n</memory>"
+        text = "Here is my answer.\n<memory>\n- type: fact\n- topic: test\n- content: test\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
         result = enforcement._extract_last_sentence(text)
         assert result == "Here is my answer"
 
@@ -155,7 +155,7 @@ class TestCheckTrailingIntent:
         with patch.object(hook_helpers, 'get_embedder', return_value=emb):
             result = enforcement.check_trailing_intent(
                 "The config looks fine. Let me run the tests to verify.\n"
-                "<memory>\n- complete: true\n</memory>"
+                "<memory>\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
             )
             assert result is not None, "Should detect 'let me run the tests'"
 
@@ -168,7 +168,7 @@ class TestCheckTrailingIntent:
         with patch.object(hook_helpers, 'get_embedder', return_value=emb):
             result = enforcement.check_trailing_intent(
                 "All 171 tests pass and the refactor is complete.\n"
-                "<memory>\n- complete: true\n</memory>"
+                "<memory>\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
             )
             assert result is None, "Should not flag a clean completion statement"
 
@@ -181,7 +181,7 @@ class TestCheckTrailingIntent:
         with patch.object(hook_helpers, 'get_embedder', return_value=emb):
             result = enforcement.check_trailing_intent(
                 "The implementation is done. Do you want me to also update the docs?\n"
-                "<memory>\n- complete: true\n</memory>"
+                "<memory>\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
             )
             # Questions to the user are borderline — the key is we don't
             # false-positive on conversational endings
@@ -192,7 +192,7 @@ class TestCheckTrailingIntent:
         enforcement._intent_embeddings = None
         with patch.object(hook_helpers, 'get_embedder', return_value=None):
             result = enforcement.check_trailing_intent(
-                "Let me test that now.\n<memory>\n- complete: true\n</memory>"
+                "Let me test that now.\n<memory>\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
             )
             assert result is None, "Should gracefully return None without embedder"
 
@@ -219,7 +219,7 @@ class TestTrailingIntentIntegration:
             "session_id": "test-intent-1",
             "last_assistant_message": (
                 "The config looks correct.\nLet me run the tests to check.\n"
-                "<memory>\n- complete: true\n</memory>"
+                "<memory>\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
             ),
         }
 
@@ -247,7 +247,7 @@ class TestTrailingIntentIntegration:
             "session_id": "test-intent-2",
             "last_assistant_message": (
                 "I considered running the tests but they aren't needed here.\n"
-                "<memory>\n- complete: true\n- intent: resolved\n</memory>"
+                "<memory>\n- complete: true\n- context: sufficient\n- keywords: test\n- intent: resolved\n</memory>"
             ),
         }
 
@@ -272,7 +272,7 @@ class TestTrailingIntentIntegration:
             "session_id": "test-intent-3",
             "last_assistant_message": (
                 "All done, the refactor is complete.\n"
-                "<memory>\n- complete: true\n</memory>"
+                "<memory>\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
             ),
         }
 
