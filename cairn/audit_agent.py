@@ -168,6 +168,15 @@ def main():
     cairn_home = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     query_cmd = f"python3 {cairn_home}/cairn/query.py"
 
+    # Look up project for session
+    conn2 = sqlite3.connect(DB_PATH)
+    proj_row = conn2.execute(
+        "SELECT project FROM sessions WHERE session_id LIKE ?", (f"{session_id}%",)
+    ).fetchone()
+    project_name = proj_row[0] if proj_row and proj_row[0] else None
+    conn2.close()
+    project_flag = f" --project {project_name}" if project_name else ""
+
     prompt = f"""You are auditing Cairn memories for accuracy and completeness.
 
 ## Memories to review ({len(memories)} entries)
@@ -180,19 +189,29 @@ def main():
 
 ## Instructions
 
+### Step 1: Review existing memories
 For each memory, cross-check against the transcript:
+- **Accurate but thin**: Run `{query_cmd} --update <id> <richer content>` — add the why, alternatives considered, reasoning, or outcome
+- **Accurate and complete**: Note as confirmed
+- **Inaccurate**: Run `{query_cmd} --update <id> <corrected content>`
+- **Superseded/wrong**: Run `{query_cmd} --archive <id> <reason>` — preserves the learning trail
 
-1. **Accurate but thin**: Run `{query_cmd} --update <id> <richer content>` — add the why, alternatives considered, reasoning, or outcome
-2. **Accurate and complete**: Note as confirmed
-3. **Inaccurate**: Run `{query_cmd} --update <id> <corrected content>`
-4. **Superseded/wrong**: Run `{query_cmd} --archive <id> <reason>` — preserves the learning trail
-5. **Missing**: If the transcript shows decisions, reasoning, or facts NOT captured, note what should be added
+### Step 2: Find gaps (CRITICAL)
+Read through the ENTIRE transcript and identify:
+- Decisions made that have no corresponding memory
+- User corrections or redirections not captured
+- Rejected approaches or failed attempts not recorded
+- Facts discovered (schemas, paths, configs) not stored
+- User preferences expressed but not captured
 
-After reviewing, run:
-`{query_cmd} --audit {session_id}`
-to advance the watermark.
+For each gap, add it:
+`{query_cmd} --add <type> <topic> <content> --session {session_id}{project_flag}`
 
-Provide a summary: reviewed, confirmed, enriched, archived, gaps found."""
+### Step 3: Advance watermark
+Run: `{query_cmd} --audit {session_id}`
+
+### Step 4: Summary
+Report: reviewed, confirmed, enriched, archived, gaps filled (with details of what was added)."""
 
     print(f"Auditing {len(memories)} memories for session {session_id[:12]}...")
     print(f"Transcript: {len(transcript)} chars")

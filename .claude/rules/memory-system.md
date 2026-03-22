@@ -44,6 +44,15 @@ Every response MUST end with a `<memory>` block. No exceptions. This is enforced
 - **skill**: Reusable techniques, commands, or patterns that worked — include the exact command or approach
 - **workflow**: Recurring processes, automation, standard operating procedures — include steps and triggers
 
+### What to capture
+You MUST store a memory when any of these happen:
+- The user corrects you or redirects your approach — store as **correction** with what you got wrong and why
+- A design decision is made — store as **decision** with alternatives rejected and rationale
+- An approach is tried and fails or is rejected — store as **decision** or **correction** including the rejected path
+- A new fact about the system, environment, or user is revealed — store as **fact**
+- The user expresses a preference about how to work — store as **preference**
+- A technique or command proves useful — store as **skill** with the exact command
+
 ### Rules
 - Every response gets a memory block, even if nothing was learned
 - **All metadata fields are required** — `complete`, `context`, and `keywords` must be explicitly declared in every block. `remaining` is required when `complete: false`. `context_need` is required when `context: insufficient`. Each entry must have `type`, `topic`, and `content`.
