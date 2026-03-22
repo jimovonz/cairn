@@ -225,5 +225,30 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
         inserted += 1
 
     conn.commit()
+
+    # Auto-backfill: if any memories lack embeddings, trigger background backfill
+    missing = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NULL").fetchone()[0]
     conn.close()
+    if missing > 0:
+        _trigger_background_backfill(missing)
+
     return inserted
+
+
+def _trigger_background_backfill(missing_count: int) -> None:
+    """Spawn a background backfill process for memories without embeddings."""
+    import subprocess
+    import os as _os
+    cairn_dir = _os.path.join(_os.path.dirname(__file__), "..", "cairn")
+    venv_python = _os.path.join(_os.path.dirname(__file__), "..", ".venv", "bin", "python3")
+    query_py = _os.path.join(cairn_dir, "query.py")
+    if _os.path.exists(venv_python) and _os.path.exists(query_py):
+        log(f"Auto-backfill: {missing_count} memories without embeddings — spawning background job")
+        subprocess.Popen(
+            [venv_python, query_py, "--backfill"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    else:
+        log(f"Auto-backfill: {missing_count} missing but venv/query.py not found")
