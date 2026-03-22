@@ -188,7 +188,7 @@ def test_multiple_entries_stored():
         "session_id": "test-multi",
         "transcript_path": "",
         "cwd": "/tmp",
-        "last_assistant_message": "Done.\n<memory>\n- type: fact\n- topic: multi-1\n- content: first fact\n- type: decision\n- topic: multi-2\n- content: second decision\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
+        "last_assistant_message": "Done.\n<memory>\n- type: fact\n- topic: multi-1\n- content: first fact about the system architecture\n- type: decision\n- topic: multi-2\n- content: second decision about API design choices\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     }
     result, code = run_hook(db_path, payload)
 
@@ -253,7 +253,7 @@ def test_metrics_recorded():
         "session_id": "sess-metrics",
         "transcript_path": "",
         "cwd": "/tmp",
-        "last_assistant_message": "answer\n<memory>\n- type: fact\n- topic: metric-test\n- content: testing metrics\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
+        "last_assistant_message": "answer\n<memory>\n- type: fact\n- topic: metric-test\n- content: testing metrics recording and retrieval\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     }
     result, code = run_hook(db_path, payload)
 
@@ -274,7 +274,7 @@ def test_write_throttle_limits_entries():
     # Build a block with 8 entries (above limit of 5)
     entries_text = ""
     for i in range(8):
-        entries_text += f"\n- type: fact\n- topic: throttle-{i}\n- content: fact number {i}"
+        entries_text += f"\n- type: fact\n- topic: throttle-{i}\n- content: fact number with sufficient detail {i}"
 
     payload = {
         "stop_hook_active": False,

@@ -226,6 +226,30 @@ def main() -> None:
         print(json.dumps({"decision": "block", "reason": hint_text}))
         sys.exit(0)
 
+    # Content density validation — reject lazy/thin entries
+    density_issues: list[str] = []
+    if entries:
+        for i, entry in enumerate(entries):
+            content = entry.get("content", "")
+            if len(content) < 20:
+                density_issues.append(f"entry {i+1} content too short ({len(content)} chars) — be more specific")
+    else:
+        # No entries — check if the response was substantive enough to warrant a memory
+        stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
+        if len(stripped) > 500 and not is_continuation:
+            density_issues.append(
+                "Substantive response with no memory entries. "
+                "Capture what was discussed, decided, or learned — even if minor."
+            )
+
+    if density_issues and not is_continuation:
+        hint_text = " ".join(density_issues)
+        log(f"Content density check failed: {hint_text[:200]}")
+        record_metric(session_id, "content_density_failed", hint_text[:100])
+        increment_continuation(session_id)
+        print(json.dumps({"decision": "block", "reason": hint_text}))
+        sys.exit(0)
+
     # Apply confidence updates
     if confidence_updates:
         applied: int = apply_confidence_updates(confidence_updates, session_id=session_id)

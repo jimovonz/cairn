@@ -135,7 +135,7 @@ def test_two_pass_missing_block_then_complete():
     r2, _ = run_hook(db_path, {
         "stop_hook_active": True,
         "session_id": "s1", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "Fixed.\n<memory>\n- type: fact\n- topic: fixed\n- content: now has block\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
+        "last_assistant_message": "Fixed.\n<memory>\n- type: fact\n- topic: fixed\n- content: response now includes a proper memory block\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     })
     assert r2 is None  # Allowed to stop
 
@@ -205,7 +205,7 @@ def test_malformed_open_no_close():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-malformed", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "response\n<memory>\n- type: fact\n- topic: unclosed\n- content: no closing tag\n- complete: true\n- context: sufficient\n- keywords: test"
+        "last_assistant_message": "response\n<memory>\n- type: fact\n- topic: unclosed\n- content: no closing tag but should still be parsed correctly\n- complete: true\n- context: sufficient\n- keywords: test"
     })
 
     # Parser should recover via unclosed tag fallback
@@ -292,7 +292,7 @@ def test_keywords_parsed_and_logged():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-kw", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "Done.\n<memory>\n- type: fact\n- topic: kw-test\n- content: keyword test\n- keywords: authentication, JWT, tokens\n- complete: true\n- context: sufficient\n</memory>"
+        "last_assistant_message": "Done.\n<memory>\n- type: fact\n- topic: kw-test\n- content: keyword test for cross-project search validation\n- keywords: authentication, JWT, tokens\n- complete: true\n- context: sufficient\n</memory>"
     })
 
     # Memory should be stored
@@ -377,7 +377,7 @@ def test_source_messages_stored_through_main():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-src", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "answer\n<memory>\n- type: fact\n- topic: sourced\n- content: has source\n- source_messages: 15-22\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
+        "last_assistant_message": "answer\n<memory>\n- type: fact\n- topic: sourced\n- content: has source message range for context recovery\n- source_messages: 15-22\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     })
 
     row = conn.execute("SELECT source_start, source_end FROM memories WHERE topic = 'sourced'").fetchone()
