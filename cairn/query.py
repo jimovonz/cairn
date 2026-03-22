@@ -909,7 +909,7 @@ def audit(session_id=None):
     max_id = memories[-1][0]
     conn.execute(
         "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'last_audit_id', ?)",
-        (audit_key, str(max_id))
+        (session_id, str(max_id))
     )
     conn.commit()
     conn.close()
