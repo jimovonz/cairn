@@ -653,6 +653,7 @@ Commands:
   --verify-sources       Analyse accuracy of LLM source_messages estimates
   --backfill             Generate embeddings for memories missing them
   --check                Validate system health (DB, hooks, daemon, embeddings)
+  --audit <session_id>   Dump unaudited memories from session for review
   --stats                Show database statistics"""
 
 
@@ -831,6 +832,73 @@ def check():
     return failed
 
 
+def audit(session_id=None):
+    """Dump unaudited memories for LLM review.
+
+    If session_id is provided, audits that session's chain.
+    Otherwise, audits all memories since the last global audit.
+    Tracks the watermark in hook_state with key 'last_audit_id'."""
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
+
+    # Use a global audit watermark (not per-session) for simplicity
+    audit_key = session_id or "_global"
+    row = conn.execute(
+        "SELECT value FROM hook_state WHERE session_id = ? AND key = 'last_audit_id'",
+        (audit_key,)
+    ).fetchone()
+    last_audit_id = int(row[0]) if row and row[0] else 0
+
+    if session_id:
+        # Audit specific session + its chain
+        memories = conn.execute("""
+            SELECT m.id, m.type, m.topic, m.content, m.confidence, m.created_at, m.session_id
+            FROM memories m
+            JOIN sessions s ON m.session_id = s.session_id
+            WHERE (s.session_id LIKE ? OR s.parent_session_id LIKE ?) AND m.id > ?
+            ORDER BY m.id ASC
+        """, (f"{session_id}%", f"{session_id}%", last_audit_id)).fetchall()
+    else:
+        # Audit all memories since last audit
+        memories = conn.execute("""
+            SELECT id, type, topic, content, confidence, created_at, session_id
+            FROM memories
+            WHERE id > ?
+            ORDER BY id ASC
+        """, (last_audit_id,)).fetchall()
+
+    if not memories:
+        print("No unaudited memories.")
+        conn.close()
+        return
+
+    print(f"=== Audit: {len(memories)} unaudited memories ===")
+    print(f"(since memory ID {last_audit_id})\n")
+
+    for mem in memories:
+        mem_id, mem_type, topic, content, confidence, created_at, sess = mem
+        print(f"[{mem_id}] {mem_type}/{topic} (conf={confidence:.2f}, {created_at})")
+        print(f"    {content}")
+        print()
+
+    # Record the highest ID as the new audit watermark
+    max_id = memories[-1][0]
+    conn.execute(
+        "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'last_audit_id', ?)",
+        (audit_key, str(max_id))
+    )
+    conn.commit()
+    conn.close()
+
+    print(f"--- Audit watermark set to ID {max_id} ---")
+    print("Review each memory above. For each one:")
+    print("  - If accurate: confirm with a brief note")
+    print("  - If inaccurate: delete with --delete <id> and explain why")
+    print("  - If stale: delete with --delete <id>")
+    print("  - If duplicate: delete the worse copy")
+    print("  - If vague: delete and store a better version")
+    print("\nProvide a summary: total reviewed, confirmed, deleted, replaced.")
+
+
 def label_project(session_id, project_name):
     """Label all sessions in a chain with a project name."""
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
@@ -958,6 +1026,18 @@ if __name__ == "__main__":
         backfill_embeddings()
     elif cmd == "--check":
         sys.exit(check())
+    elif cmd == "--audit":
+        if len(sys.argv) > 2:
+            audit(sys.argv[2])
+        else:
+            # Default to most recent session
+            conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
+            row = conn.execute("SELECT session_id FROM sessions ORDER BY started_at DESC LIMIT 1").fetchone()
+            conn.close()
+            if row:
+                audit(row[0])
+            else:
+                print("No sessions found.")
     elif cmd == "--stats":
         stats()
     else:
