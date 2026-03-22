@@ -652,7 +652,183 @@ Commands:
   --review               Surface low-confidence memories for inspection
   --verify-sources       Analyse accuracy of LLM source_messages estimates
   --backfill             Generate embeddings for memories missing them
+  --check                Validate system health (DB, hooks, daemon, embeddings)
   --stats                Show database statistics"""
+
+
+def check():
+    """Validate Cairn system health — DB, hooks, daemon, embeddings."""
+    import glob as _glob
+
+    cairn_dir = os.path.dirname(os.path.abspath(__file__))
+    project_dir = os.path.dirname(cairn_dir)
+    claude_dir = os.path.expanduser("~/.claude")
+    passed = 0
+    failed = 0
+    warnings = 0
+
+    def ok(msg):
+        nonlocal passed
+        passed += 1
+        print(f"  \033[32m✓\033[0m {msg}")
+
+    def fail(msg):
+        nonlocal failed
+        failed += 1
+        print(f"  \033[31m✗\033[0m {msg}")
+
+    def warn(msg):
+        nonlocal warnings
+        warnings += 1
+        print(f"  \033[33m!\033[0m {msg}")
+
+    print("=== Cairn Health Check ===\n")
+
+    # 1. Database
+    print("Database:")
+    if os.path.exists(DB_PATH):
+        ok(f"Found at {DB_PATH}")
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute("PRAGMA busy_timeout=5000")
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()]
+            for t in ["memories", "sessions", "metrics", "hook_state", "memory_history"]:
+                if t in tables:
+                    ok(f"Table '{t}' exists")
+                else:
+                    fail(f"Table '{t}' missing")
+            count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            ok(f"{count} memories stored")
+            missing_emb = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NULL").fetchone()[0]
+            if missing_emb == 0:
+                ok("All memories have embeddings")
+            else:
+                warn(f"{missing_emb} memories without embeddings (run --backfill)")
+            wal = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            if wal == "wal":
+                ok("WAL mode enabled")
+            else:
+                warn(f"Journal mode is '{wal}', expected 'wal'")
+            conn.close()
+        except Exception as e:
+            fail(f"Database error: {e}")
+    else:
+        fail(f"Not found at {DB_PATH}")
+
+    # 2. Hooks
+    print("\nHooks:")
+    settings_path = os.path.join(claude_dir, "settings.json")
+    if os.path.exists(settings_path):
+        try:
+            import json as _json
+            with open(settings_path, encoding="utf-8") as f:
+                settings = _json.load(f)
+            hooks = settings.get("hooks", {})
+            stop_hooks = hooks.get("Stop", [])
+            prompt_hooks = hooks.get("UserPromptSubmit", [])
+            stop_found = any("stop_hook.py" in str(h) for h in stop_hooks)
+            prompt_found = any("prompt_hook.py" in str(h) for h in prompt_hooks)
+            if stop_found:
+                ok("Stop hook registered")
+            else:
+                fail("Stop hook not found in settings.json")
+            if prompt_found:
+                ok("UserPromptSubmit hook registered")
+            else:
+                fail("UserPromptSubmit hook not found in settings.json")
+        except Exception as e:
+            fail(f"Settings parse error: {e}")
+    else:
+        fail("~/.claude/settings.json not found")
+
+    # Check hook files exist
+    for hook_file in ["stop_hook.py", "prompt_hook.py"]:
+        path = os.path.join(project_dir, "hooks", hook_file)
+        if os.path.exists(path):
+            ok(f"hooks/{hook_file} exists")
+        else:
+            fail(f"hooks/{hook_file} missing")
+
+    # 3. Rules
+    print("\nRules:")
+    rules_path = os.path.join(claude_dir, "rules", "memory-system.md")
+    if os.path.exists(rules_path):
+        ok("Global rules file deployed")
+    else:
+        fail("~/.claude/rules/memory-system.md missing (run install.sh)")
+
+    # 4. Daemon
+    print("\nDaemon:")
+    pid_path = os.path.join(cairn_dir, ".daemon.pid")
+    sock_path = os.path.join(cairn_dir, ".daemon.sock")
+    if os.path.exists(pid_path):
+        try:
+            with open(pid_path, encoding="utf-8") as f:
+                pid = int(f.read().strip())
+            os.kill(pid, 0)
+            ok(f"Running (PID {pid})")
+            # Test responsiveness
+            try:
+                from daemon import send_request
+                resp = send_request({"action": "ping"})
+                if resp and resp.get("status") == "ok":
+                    ok("Responding to ping")
+                else:
+                    warn("PID alive but not responding to ping")
+            except Exception:
+                warn("Could not ping daemon")
+        except ProcessLookupError:
+            warn("Stale PID file (daemon not running)")
+        except ValueError:
+            warn("Corrupt PID file")
+    else:
+        warn("Not running (will auto-start on first embed)")
+
+    # 5. Embeddings
+    print("\nEmbeddings:")
+    venv_python = os.path.join(project_dir, ".venv", "bin", "python3")
+    if os.path.exists(venv_python):
+        ok("Virtual environment found")
+    else:
+        fail("Virtual environment missing (run install.sh)")
+
+    try:
+        import embeddings as emb
+        vec = emb.embed("health check test", allow_slow=False)
+        if vec is not None:
+            ok(f"Embedding generated ({len(vec)} dimensions)")
+        else:
+            warn("Daemon unavailable — embeddings will use slow path")
+            try:
+                vec = emb.embed("health check test", allow_slow=True)
+                if vec is not None:
+                    ok(f"Slow-path embedding works ({len(vec)} dimensions)")
+                else:
+                    fail("Embedding failed on both paths")
+            except Exception as e:
+                fail(f"Embedding error: {e}")
+    except ImportError:
+        fail("embeddings module not importable")
+
+    # 6. Slash command
+    print("\nSlash command:")
+    cmd_path = os.path.join(claude_dir, "commands", "cairn.md")
+    if os.path.exists(cmd_path):
+        ok("/cairn command deployed")
+    else:
+        warn("/cairn command missing (run install.sh)")
+
+    # Summary
+    print(f"\n{'='*30}")
+    total = passed + failed + warnings
+    print(f"  {passed}/{total} passed, {failed} failed, {warnings} warnings")
+    if failed == 0:
+        print("  System healthy.")
+    else:
+        print("  Issues found — run ./install.sh to fix.")
+    return failed
 
 
 def label_project(session_id, project_name):
@@ -780,6 +956,8 @@ if __name__ == "__main__":
         verify_sources()
     elif cmd == "--backfill":
         backfill_embeddings()
+    elif cmd == "--check":
+        sys.exit(check())
     elif cmd == "--stats":
         stats()
     else:

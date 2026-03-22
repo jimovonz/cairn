@@ -21,6 +21,7 @@ Map the argument to the appropriate command:
 - `/cairn compact <project>` → `python3 {{CAIRN_HOME}}/cairn/query.py --compact <project>`
 - `/cairn verify` → `python3 {{CAIRN_HOME}}/cairn/query.py --verify-sources`
 - `/cairn backfill` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/query.py --backfill`
+- `/cairn check` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/query.py --check`
 - `/cairn delete <id>` → `python3 {{CAIRN_HOME}}/cairn/query.py --delete <id>`
 - `/cairn daemon start` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/daemon.py start`
 - `/cairn daemon stop` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/daemon.py stop`

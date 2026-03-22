@@ -104,6 +104,10 @@ print('Model ready.')
 echo "Starting embedding daemon..."
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" start
 
+# --- Health check ---
+echo ""
+"$VENV_PYTHON" "$CAIRN_HOME/cairn/query.py" --check
+
 echo ""
 echo "=== Cairn installed successfully ==="
 echo ""
