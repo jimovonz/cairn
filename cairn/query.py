@@ -392,6 +392,26 @@ def delete_memory(memory_id):
     print(f"Deleted memory {memory_id}: {existing[1]}/{existing[2]}")
 
 
+def update_memory(memory_id, new_content):
+    """Update a memory's content in place, preserving history."""
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
+    existing = conn.execute("SELECT id, type, topic, content FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    if not existing:
+        print(f"No memory with id {memory_id}")
+        return
+    old_content = existing[3]
+    # The version trigger fires automatically on UPDATE of content
+    conn.execute(
+        "UPDATE memories SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (new_content, memory_id)
+    )
+    conn.commit()
+    conn.close()
+    print(f"Updated memory {memory_id}: {existing[1]}/{existing[2]}")
+    print(f"  Old: {old_content}")
+    print(f"  New: {new_content}")
+
+
 def show_session_chain(session_id):
     """Show a session and all linked sessions (parent/child chain)."""
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
@@ -647,6 +667,7 @@ Commands:
   --label <id> <name>    Label a session's chain as a project
   --context <id>         Show conversation context around where a memory was recorded
   --history <id>         Show version history for a memory
+  --update <id> <text>   Update a memory's content (preserves history)
   --delete <id>          Delete a memory and its history
   --compact [project]    Dense cairn dump for LLM ingestion
   --review               Surface low-confidence memories for inspection
@@ -891,12 +912,12 @@ def audit(session_id=None):
 
     print(f"--- Audit watermark set to ID {max_id} ---")
     print("Review each memory above. For each one:")
-    print("  - If accurate: confirm with a brief note")
-    print("  - If inaccurate: delete with --delete <id> and explain why")
-    print("  - If stale: delete with --delete <id>")
-    print("  - If duplicate: delete the worse copy")
-    print("  - If vague: delete and store a better version")
-    print("\nProvide a summary: total reviewed, confirmed, deleted, replaced.")
+    print("  - If accurate: confirm")
+    print("  - If inaccurate but correctable: --update <id> <corrected content>")
+    print("  - If unsalvageable: --delete <id>")
+    print("  - If stale/superseded: --delete <id>")
+    print("  - If vague: --update <id> <richer content>")
+    print("\nSummary: total reviewed, confirmed, updated, deleted.")
 
 
 def label_project(session_id, project_name):
@@ -1014,6 +1035,8 @@ if __name__ == "__main__":
         show_context(int(sys.argv[2]))
     elif cmd == "--history" and len(sys.argv) > 2:
         show_history(int(sys.argv[2]))
+    elif cmd == "--update" and len(sys.argv) > 3:
+        update_memory(int(sys.argv[2]), " ".join(sys.argv[3:]))
     elif cmd == "--delete" and len(sys.argv) > 2:
         delete_memory(int(sys.argv[2]))
     elif cmd == "--compact":

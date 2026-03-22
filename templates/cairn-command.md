@@ -37,14 +37,15 @@ When the argument is `audit`, run the audit command first, then review the outpu
 1. Run: `python3 {{CAIRN_HOME}}/cairn/query.py --audit`
 2. For each memory listed in the output, review it against what you know from this conversation:
    - **Accurate**: confirm with ✓
-   - **Inaccurate/false**: delete it with `python3 {{CAIRN_HOME}}/cairn/query.py --delete <id>` and explain why
-   - **Stale/outdated**: delete it
+   - **Inaccurate/correctable**: update with `python3 {{CAIRN_HOME}}/cairn/query.py --update <id> <corrected content>`
+   - **Inaccurate/unsalvageable**: delete with `python3 {{CAIRN_HOME}}/cairn/query.py --delete <id>`
+   - **Stale/superseded**: delete (a newer memory covers it)
    - **Duplicate**: delete the worse copy
-   - **Vague/thin**: delete it and store a better version in your next `<memory>` block
-4. After reviewing all memories, provide a summary:
+   - **Vague/thin**: update with richer content using `--update <id> <better content>`
+3. After reviewing all memories, provide a summary:
    - Total reviewed
    - Confirmed accurate
+   - Updated/corrected (with old → new)
    - Deleted (with reasons)
-   - Replaced/improved
 
 User's argument: $ARGUMENTS
