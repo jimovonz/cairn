@@ -1,28 +1,2 @@
 {
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python3\" \"$CLAUDE_PROJECT_DIR/hooks/prompt_hook.py\"",
-            "timeout": 30,
-            "statusMessage": "Retrieving context..."
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python3\" \"$CLAUDE_PROJECT_DIR/hooks/stop_hook.py\"",
-            "timeout": 60,
-            "statusMessage": "Thinking..."
-          }
-        ]
-      }
-    ]
-  }
 }
