@@ -61,8 +61,18 @@ def _daemon_embed(text: str) -> Optional[np.ndarray]:
 def get_model() -> Any:
     global _model
     if _model is None:
+        import torch
+        # Force CPU if CUDA is available but incompatible (avoids kernel launch failures)
+        device = "cpu"
+        if torch.cuda.is_available():
+            try:
+                # Test with a small tensor to verify CUDA actually works
+                torch.zeros(1, device="cuda")
+                device = "cuda"
+            except RuntimeError:
+                pass  # Incompatible GPU — stay on CPU
         from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
+        _model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
     return _model
 
 
