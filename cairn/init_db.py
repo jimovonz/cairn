@@ -23,7 +23,7 @@ def init():
         )
     """)
     # Migration: add columns to existing DB
-    for col, coltype in [("embedding", "BLOB"), ("session_id", "TEXT"), ("project", "TEXT"), ("confidence", "REAL DEFAULT 0.7"), ("source_start", "INTEGER"), ("source_end", "INTEGER")]:
+    for col, coltype in [("embedding", "BLOB"), ("session_id", "TEXT"), ("project", "TEXT"), ("confidence", "REAL DEFAULT 0.7"), ("source_start", "INTEGER"), ("source_end", "INTEGER"), ("archived_reason", "TEXT")]:
         try:
             conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {coltype}")
         except sqlite3.OperationalError:

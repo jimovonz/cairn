@@ -23,6 +23,7 @@ Map the argument to the appropriate command:
 - `/cairn backfill` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/query.py --backfill`
 - `/cairn check` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/query.py --check`
 - `/cairn audit` → Run `python3 {{CAIRN_HOME}}/cairn/query.py --audit` then follow the audit instructions below
+- `/cairn audit-bg` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/audit_agent.py` (background audit via claude -p agent)
 - `/cairn delete <id>` → `python3 {{CAIRN_HOME}}/cairn/query.py --delete <id>`
 - `/cairn daemon start` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/daemon.py start`
 - `/cairn daemon stop` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/daemon.py stop`
@@ -35,17 +36,19 @@ Run the matching bash command and show the output to the user.
 When the argument is `audit`, run the audit command first, then review the output:
 
 1. Run: `python3 {{CAIRN_HOME}}/cairn/query.py --audit`
-2. For each memory listed in the output, review it against what you know from this conversation:
-   - **Accurate**: confirm with ✓
-   - **Inaccurate/correctable**: update with `python3 {{CAIRN_HOME}}/cairn/query.py --update <id> <corrected content>`
-   - **Inaccurate/unsalvageable**: delete with `python3 {{CAIRN_HOME}}/cairn/query.py --delete <id>`
-   - **Stale/superseded**: delete (a newer memory covers it)
-   - **Duplicate**: delete the worse copy
-   - **Vague/thin**: update with richer content using `--update <id> <better content>`
+2. For each memory listed in the output, review and ENRICH:
+   - **Accurate but thin**: update with `--update <id> <richer content>` — add the *why*, alternatives considered, reasoning, or outcome
+   - **Accurate and complete**: confirm with ✓
+   - **Inaccurate/correctable**: update with `--update <id> <corrected content>`
+   - **Superseded**: archive with `--archive <id> <reason>` — e.g. "superseded by decision to use X instead". The learning trail is preserved.
+   - **Wrong/misleading**: archive with `--archive <id> <reason>` — e.g. "false — no compaction occurred". Archived memories stay in DB but drop from retrieval.
+   - **Duplicate**: archive the worse copy with `--archive <id> duplicate of <other_id>`
+   - **Missing context**: if the conversation covered decisions, reasoning, or facts NOT captured by any memory, store them in your `<memory>` block
 3. After reviewing all memories, provide a summary:
    - Total reviewed
    - Confirmed accurate
-   - Updated/corrected (with old → new)
-   - Deleted (with reasons)
+   - Enriched (old → new)
+   - Archived (with reasons)
+   - New memories added (gaps filled)
 
 User's argument: $ARGUMENTS

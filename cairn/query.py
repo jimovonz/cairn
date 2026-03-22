@@ -392,6 +392,28 @@ def delete_memory(memory_id):
     print(f"Deleted memory {memory_id}: {existing[1]}/{existing[2]}")
 
 
+def archive_memory(memory_id, reason):
+    """Archive a memory — sets confidence to 0 and records why.
+
+    Archived memories stay in the DB for learning but are excluded from
+    retrieval (confidence 0 is below all thresholds). The reason is preserved
+    so future sessions can learn from rejected paths and mistakes."""
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
+    existing = conn.execute("SELECT id, type, topic, content, confidence FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    if not existing:
+        print(f"No memory with id {memory_id}")
+        return
+    conn.execute(
+        "UPDATE memories SET confidence = 0, archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (reason, memory_id)
+    )
+    conn.commit()
+    conn.close()
+    print(f"Archived memory {memory_id}: {existing[1]}/{existing[2]}")
+    print(f"  Content: {existing[3]}")
+    print(f"  Reason: {reason}")
+
+
 def update_memory(memory_id, new_content):
     """Update a memory's content in place, preserving history."""
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
@@ -668,6 +690,7 @@ Commands:
   --context <id>         Show conversation context around where a memory was recorded
   --history <id>         Show version history for a memory
   --update <id> <text>   Update a memory's content (preserves history)
+  --archive <id> <reason> Archive a memory (confidence=0, reason preserved, stays in DB for learning)
   --delete <id>          Delete a memory and its history
   --compact [project]    Dense cairn dump for LLM ingestion
   --review               Surface low-confidence memories for inspection
@@ -915,13 +938,13 @@ def audit(session_id=None):
     conn.close()
 
     print(f"--- Audit watermark set to ID {max_id} ---")
-    print("Review each memory above. For each one:")
-    print("  - If accurate: confirm")
-    print("  - If inaccurate but correctable: --update <id> <corrected content>")
-    print("  - If unsalvageable: --delete <id>")
-    print("  - If stale/superseded: --delete <id>")
-    print("  - If vague: --update <id> <richer content>")
-    print("\nSummary: total reviewed, confirmed, updated, deleted.")
+    print("Review and ENRICH each memory:")
+    print("  - Accurate but thin: --update <id> <richer content with why/alternatives/outcome>")
+    print("  - Accurate and complete: confirm")
+    print("  - Inaccurate: --update <id> <corrected content>")
+    print("  - Superseded/wrong: --archive <id> <reason> (preserves learning trail)")
+    print("  - Missing decisions/facts from conversation: add to your <memory> block")
+    print("\nSummary: reviewed, confirmed, enriched, archived, new.")
 
 
 def label_project(session_id, project_name):
@@ -1041,6 +1064,8 @@ if __name__ == "__main__":
         show_history(int(sys.argv[2]))
     elif cmd == "--update" and len(sys.argv) > 3:
         update_memory(int(sys.argv[2]), " ".join(sys.argv[3:]))
+    elif cmd == "--archive" and len(sys.argv) > 3:
+        archive_memory(int(sys.argv[2]), " ".join(sys.argv[3:]))
     elif cmd == "--delete" and len(sys.argv) > 2:
         delete_memory(int(sys.argv[2]))
     elif cmd == "--compact":
