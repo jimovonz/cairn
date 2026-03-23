@@ -30,7 +30,7 @@ Every response MUST end with a `<memory>` block. No exceptions. This is enforced
 - confidence_update: [memory_id]:[+|-]
 - intent: [resolved — only when re-prompted for trailing intent and you have nothing more to do]
 - keywords: [comma-separated topic keywords for cross-project discovery]
-- source_messages: [start-end message range where this knowledge was discussed, e.g. 5-12]
+- depth: [number of conversation turns back this knowledge was discussed, e.g. 5]
 </memory>
 ```
 
