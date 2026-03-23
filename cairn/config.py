@@ -75,6 +75,9 @@ MAX_MEMORIES_PER_RESPONSE = 5      # Max memory entries stored per LLM response 
 # === Loop protection ===
 MAX_CONTINUATIONS = 3              # Hard cap on consecutive re-prompts per session
 
+# === Staged context ===
+STAGED_CONTEXT_RETENTION_DAYS = 7   # Days to keep staged cross-project context for session resumption
+
 # === Concurrency ===
 DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for lock release
 

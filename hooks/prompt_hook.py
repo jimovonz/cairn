@@ -167,8 +167,10 @@ def main() -> None:
     # Clean up stale staged context (older than 7 days — sessions unlikely to resume)
     try:
         cleanup_conn = get_conn()
+        from config import STAGED_CONTEXT_RETENTION_DAYS
         cleanup_conn.execute(
-            "DELETE FROM hook_state WHERE key = 'staged_context' AND updated_at < datetime('now', '-7 days')"
+            "DELETE FROM hook_state WHERE key = 'staged_context' AND updated_at < datetime('now', ?)",
+            (f"-{STAGED_CONTEXT_RETENTION_DAYS} days",)
         )
         cleanup_conn.commit()
         cleanup_conn.close()
