@@ -38,15 +38,22 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 
 ## Features
 
-- **Cross-session memory** — decisions, preferences, facts, corrections, people, projects
+- **Cross-session memory** — decisions, preferences, facts, corrections, people, projects, skills, workflows
 - **Three-layer retrieval** — proactive first-prompt push, cross-project keyword surfacing, and LLM-requested pull
 - **Dynamic confidence** — saturating model prevents runaway certainty; the LLM rates retrieved memories and bad ones fade
 - **Semantic search** — local embeddings via `all-MiniLM-L6-v2` with sqlite-vec indexed vector search
 - **Project scoping** — memories auto-labelled by working directory, retrievable per-project or globally
 - **Invisible** — metadata tags are stripped from user display; the system operates transparently
-- **Quality gates** — garbage filtering, borderline suppression, relative filtering, dominance control
+- **Quality gates** — 9 configurable filters including garbage, borderline, relative, dominance, and diversity
 - **Contradiction handling** — same-topic updates suppress the old entry; negation heuristics dampen conflicting memories
 - **Self-improving** — retrieval outcome feedback adaptively tightens thresholds when results are poor
+- **Memory audit** — `/cairn audit` reviews session memories for accuracy, enriches thin entries, fills gaps; background agent (`audit_agent.py`) reads transcripts via `claude -p` for automated review
+- **Archive over delete** — superseded and incorrect memories are archived with reasons, preserving the learning trail of rejected approaches and mistakes
+- **Context recovery** — `--context <id>` recovers the full conversation around any memory from the session transcript, with depth-based navigation
+- **Content enforcement** — strict metadata validation, content density checks, trailing intent detection, anti-fabrication rules
+- **Health check** — `--check` validates the full chain (DB, hooks, daemon, embeddings, rules) post-install
+- **Self-healing embeddings** — auto-starts daemon and backfills when memories are stored without embeddings
+- **Env var overrides** — any config value tunable via `CAIRN_<NAME>=value` without editing source
 
 ## Quick start
 
@@ -81,11 +88,14 @@ Every Claude Code response produces invisible metadata that gets captured and st
 | `/cairn project <name>` | All memories for a project |
 | `/cairn search <term>` | Full-text search |
 | `/cairn semantic <query>` | Semantic similarity search |
+| `/cairn audit` | Review session memories — confirm, enrich, archive, fill gaps |
+| `/cairn audit-bg` | Background audit via `claude -p` agent with transcript |
 | `/cairn review` | Surface low-confidence and suppressed memories |
-| `/cairn context <id>` | Show conversation context around where a memory was recorded |
+| `/cairn context <id>` | Recover full conversation around a memory |
 | `/cairn history <id>` | Version history for a memory |
+| `/cairn check` | Validate system health (DB, hooks, daemon, embeddings) |
 | `/cairn compact [project]` | Dense dump suitable for LLM ingestion |
-| `/cairn verify` | Analyse source location accuracy |
+| `/cairn verify` | Source indexing coverage report |
 | `/cairn backfill` | Generate embeddings for memories stored without daemon |
 | `/cairn delete <id>` | Delete a memory |
 | `/cairn daemon start\|stop\|status` | Manage the embedding daemon |
