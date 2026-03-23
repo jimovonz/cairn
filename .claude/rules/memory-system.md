@@ -138,6 +138,8 @@ A memory that names a specific function, file, or flag is a claim that it existe
 
 A memory that summarizes repo state (activity logs, architecture snapshots) is frozen in time. If the user asks about *recent* or *current* state, prefer `git log` or reading the code over recalling the snapshot.
 
+When a retrieved memory will actively inform your next action — writing code, making a recommendation, giving advice — run `python3 $CAIRN_HOME/cairn/query.py --context <memory_id>` first to recover the full conversation that produced it. The one-liner is a summary; the context shows the reasoning, the alternatives discussed, and the nuances that didn't fit in one line.
+
 ## Confidence Feedback
 
 Each retrieved memory entry has an `id` and a `confidence` score (0.0 to 1.0). You can provide feedback on memories you were shown by including `confidence_update` lines in your memory block:
