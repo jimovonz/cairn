@@ -124,8 +124,19 @@ Memories are distilled one-liners. When you need the full detail behind a memory
    - A memory's one-liner is ambiguous and you need the original discussion
    - The user asks "what exactly did we decide about X?" and the memory is too terse
    - You need to verify whether a memory accurately reflects what was discussed
-   - You plan to act on a retrieved memory (make a decision, write code, give advice based on it) — recover the full context first to verify the details
-4. Do NOT use this for passive awareness — only when a memory will actively inform your next action or response
+4. Do NOT use this routinely — only when the distilled memory is genuinely insufficient for the current task
+
+## Before recommending from memory
+
+A memory that names a specific function, file, or flag is a claim that it existed *when the memory was written*. It may have been renamed, removed, or never merged. Before recommending it:
+
+- If the memory names a file path: check the file exists.
+- If the memory names a function or flag: grep for it.
+- If the user is about to act on your recommendation (not just asking about history), verify first.
+
+"The memory says X exists" is not the same as "X exists now."
+
+A memory that summarizes repo state (activity logs, architecture snapshots) is frozen in time. If the user asks about *recent* or *current* state, prefer `git log` or reading the code over recalling the snapshot.
 
 ## Confidence Feedback
 
