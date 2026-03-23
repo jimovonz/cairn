@@ -222,7 +222,7 @@ All tunable parameters are in `cairn/config.py`. Any value can be overridden via
 
 **Tag invisibility is behaviour-dependent.** The invisible metadata relies on Claude Code stripping angle bracket tags from rendered output. If Anthropic changes this rendering behaviour, memory blocks would become visible to users. The system would still function but the clean UX would degrade.
 
-**Distillation is lossy.** Memories are one-line summaries. The nuance and detail of the original conversation is compressed away. The `--context` command can recover the surrounding transcript, but only if the session's transcript file still exists on disk.
+**Distillation is lossy.** Memories are one-line summaries. The `--context` command can recover the full conversation around any memory, but only while Claude Code retains the transcript file. Claude Code's `cleanupPeriodDays` setting (default 30) controls how long transcripts are kept — increase it if you need longer context recovery. After cleanup, the one-line summary persists permanently.
 
 **Early stage.** Limited cross-platform testing — may have edge cases around permissions, venv conflicts, or long-running daemon stability. Bug reports welcome.
 

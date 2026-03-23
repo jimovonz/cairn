@@ -611,30 +611,23 @@ Memories are distilled one-liners — useful for retrieval but lossy. When the f
 
 ### How it works
 
-1. The LLM estimates which conversation turns produced each memory using `source_messages: start-end` in the memory block
-2. The hook stores these as `source_start` and `source_end` on the memory row
-3. The sessions table stores `transcript_path` — the path to the JSONL transcript file
-4. `query.py --context <id>` reads the transcript and shows the conversation excerpt around the source range
+1. Each memory records `created_at` (timestamp) and optionally `depth` (LLM-estimated conversation turns back)
+2. The sessions table stores `transcript_path` — the path to the JSONL transcript file
+3. `query.py --context <id>` uses the timestamp to anchor into the transcript, then shows `depth` turns of surrounding context
+4. Transcripts are filtered to text-bearing messages only (user/assistant text, not tool calls)
 
-### Turn counting
+### Transcript retention
 
-Transcripts contain many entries per conversational exchange (tool calls, tool results, system messages). The context viewer counts only **text-bearing messages** (entries with actual text content), skipping empty tool-use entries. This aligns with the LLM's perception of "message N" — it thinks in conversational turns, not JSONL entries.
-
-For example, a 2000-entry transcript might contain only ~300 text-bearing turns. The LLM's estimate of "messages 42-55" maps to turn 42-55 in this filtered count.
-
-### Accuracy
-
-The LLM's source estimates are approximate. It has a sense of "this was discussed recently" vs "this was discussed early on" but cannot count precise message indices. The `--verify-sources` command measures drift between estimated and actual locations by keyword-matching memory content against the transcript.
+Context recovery depends on Claude Code's transcript files existing on disk. Claude Code's `cleanupPeriodDays` setting (default 30) controls retention. After cleanup, the full conversation is gone — only the memory's one-line summary persists. Users who need longer context recovery should increase this setting.
 
 ### When the LLM uses this
 
-Retrieved memory entries include a `has_context="true"` attribute when source range data is available. The LLM is instructed to use `--context <id>` when:
+The LLM is instructed to use `--context <id>` when:
 
 - A memory's one-liner is ambiguous and the original discussion is needed
 - The user asks "what exactly did we decide about X?"
 - The LLM needs to verify whether a memory accurately reflects what was discussed
-
-It is not used routinely — only when the distilled memory is genuinely insufficient.
+- The LLM plans to act on specific technical claims from a memory (write code, make recommendations)
 
 ## Configuration
 
