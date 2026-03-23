@@ -139,6 +139,7 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None) -> Opt
         context_need.replace('"', '&quot;'),
         project or "none"
     )]
+    lines.append('  <instruction>Before acting on any entry below, run: python3 /home/james/Projects/cairn/cairn/query.py --context &lt;id&gt; to recover the full conversation behind it.</instruction>')
 
     if project_results:
         project_results.sort(key=lambda x: x.get("score", 0), reverse=True)
@@ -193,6 +194,7 @@ def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[s
 
     from datetime import datetime as dt
     lines: list[str] = [f'<cairn_context query="cross-project keywords: {query[:60]}" current_project="{project or "none"}" layer="cross-project">']
+    lines.append('  <instruction>Before acting on any entry below, run: python3 /home/james/Projects/cairn/cairn/query.py --context &lt;id&gt; to recover the full conversation behind it.</instruction>')
     lines.append('  <scope level="global" weight="low">')
     for r in cross_project:
         proj: str = r.get("project") or "global"

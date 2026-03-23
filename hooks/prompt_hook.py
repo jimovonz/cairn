@@ -128,6 +128,7 @@ def layer1_search(user_message: str, session_id: str) -> Optional[str]:
     global_results = [r for r in results if not project or r.get("project") != project]
 
     lines = [f'<cairn_context query="{user_message[:80]}" current_project="{project or "none"}" layer="first-prompt">']
+    lines.append('  <instruction>Before acting on any entry below, run: python3 /home/james/Projects/cairn/cairn/query.py --context &lt;id&gt; to recover the full conversation behind it.</instruction>')
 
     if project_results:
         lines.append(f'  <scope level="project" name="{project}" weight="high">')

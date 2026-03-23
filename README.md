@@ -130,6 +130,7 @@ Every LLM response ends with a `<memory>` block using angle bracket tags. Claude
 | **First-prompt push** | First message of session | Proactively injects relevant context before the LLM starts generating |
 | **Keyword cross-project** | Between turns | Surfaces global knowledge based on topic keywords from the current conversation |
 | **Pull-based** | When LLM identifies a gap | LLM declares `context: insufficient`, hook searches and injects |
+| **Bootstrapping** | Every N turns without pull | Forces a `context: insufficient` declaration to build the habit |
 
 ### Confidence system
 

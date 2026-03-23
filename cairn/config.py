@@ -78,6 +78,11 @@ MAX_CONTINUATIONS = 3              # Hard cap on consecutive re-prompts per sess
 # === Staged context ===
 STAGED_CONTEXT_RETENTION_DAYS = 7   # Days to keep staged cross-project context for session resumption
 
+# === Context bootstrapping ===
+# Force a context: insufficient declaration if the LLM hasn't used layer 3 in N turns.
+# This builds the habit through demonstrated value rather than rules alone.
+CONTEXT_BOOTSTRAP_INTERVAL = 10    # Turns without a layer 3 request before forcing one
+
 # === Concurrency ===
 DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for lock release
 

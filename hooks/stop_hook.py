@@ -29,7 +29,7 @@ from enforcement import check_trailing_intent, get_continuation_count, increment
 from retrieval import (retrieve_context, layer2_cross_project_search,
                         load_context_cache, save_context_cache, is_context_cached, add_to_context_cache,
                         CONTEXT_CACHE_SIM_THRESHOLD)
-from config import MAX_CONTINUATIONS, WEAK_ENTRY_SCORE_FLOOR
+from config import MAX_CONTINUATIONS, WEAK_ENTRY_SCORE_FLOOR, CONTEXT_BOOTSTRAP_INTERVAL
 
 
 def register_session(session_id: str, transcript_path: str) -> None:
@@ -275,6 +275,11 @@ def main() -> None:
 
     # Check context sufficiency — retrieve and inject if insufficient
     LOW_INFO_STOPLIST: set[str] = {"help", "continue", "more", "yes", "no", "ok", "thanks", "done", "info", "more info"}
+    if context == "insufficient" and context_need:
+        # Record that the LLM declared insufficient — resets the bootstrap counter
+        # even on continuations (where the bootstrap forced this declaration)
+        record_metric(session_id, "context_requested", context_need[:100])
+
     if context == "insufficient" and context_need and not is_continuation:
         need_words: set[str] = set(context_need.lower().split())
         if len(context_need) < 8 or need_words <= LOW_INFO_STOPLIST:
@@ -310,6 +315,46 @@ def main() -> None:
             else:
                 record_metric(session_id, "context_cache_hit", context_need[:100])
                 log(f"Context already served (semantic match) for: {context_need[:50]}... — skipping")
+
+    # Context bootstrapping — force a context: insufficient declaration if the LLM
+    # hasn't used layer 3 in CONTEXT_BOOTSTRAP_INTERVAL turns. Builds the habit
+    # through demonstrated value rather than rules alone.
+    if not is_continuation and context != "insufficient" and CONTEXT_BOOTSTRAP_INTERVAL > 0:
+        conn = get_conn()
+        # Count hook firings since last context_requested
+        last_request = conn.execute(
+            "SELECT MAX(created_at) FROM metrics WHERE session_id = ? AND event = 'context_requested'",
+            (session_id,)
+        ).fetchone()[0]
+        if last_request:
+            turns_since = conn.execute(
+                "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'hook_fired' AND created_at > ?",
+                (session_id, last_request)
+            ).fetchone()[0]
+        else:
+            turns_since = conn.execute(
+                "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'hook_fired'",
+                (session_id,)
+            ).fetchone()[0]
+        conn.close()
+
+        if turns_since >= CONTEXT_BOOTSTRAP_INTERVAL:
+            log(f"Context bootstrap: {turns_since} turns without layer 3 — forcing context: insufficient")
+            record_metric(session_id, "context_bootstrap_triggered", None, turns_since)
+            # Record a context_requested to reset the counter — prevents re-triggering
+            # on the continuation before the LLM's declaration reaches the retrieval path
+            record_metric(session_id, "context_requested", "bootstrap_forced")
+            increment_continuation(session_id)
+            result = {
+                "decision": "block",
+                "reason": (
+                    f"You have not checked cairn context in {turns_since} turns. "
+                    "Declare context: insufficient with a context_need relevant to what you are currently discussing. "
+                    "This retrieves targeted memories that may inform your work."
+                )
+            }
+            print(json.dumps(result))
+            sys.exit(0)
 
     # Check completeness — complete must be explicitly True to pass.
     # If omitted (None) or False, treat as incomplete.

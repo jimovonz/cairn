@@ -501,9 +501,26 @@ This surfaces cross-project knowledge the LLM doesn't know to ask for. It only f
 
 ### Layer 3: Pull-based
 
-The LLM explicitly requests context by declaring `context: insufficient` with a `context_need`. The Stop hook searches the cairn, applies all quality gates, and re-prompts the LLM with results. This is the fallback for when the LLM identifies a specific gap mid-conversation.
+The LLM explicitly requests context by declaring `context: insufficient` with a `context_need`. The Stop hook searches the cairn, applies all quality gates, and re-prompts the LLM with results. This is the most precise retrieval layer because the query is a deliberate, targeted description rather than raw user text or extracted keywords.
 
-Pull-based retrieval was retained because:
+### Context bootstrapping
+
+LLMs tend to skip `context: insufficient` declarations despite instructions, defaulting to file reading or answering from training data. The Stop hook enforces usage through a bootstrapping mechanism:
+
+- After `CONTEXT_BOOTSTRAP_INTERVAL` turns (default: 10) without a Layer 3 request, the hook blocks and forces a `context: insufficient` declaration
+- The block message directs the LLM to declare insufficient with a relevant `context_need`
+- A `context_requested` metric is recorded immediately to prevent re-triggering on the continuation
+- The goal is habit formation through demonstrated value — each forced retrieval shows the LLM that Layer 3 returns useful, targeted results
+
+### Inline retrieval instructions
+
+All three retrieval layers inject an `<instruction>` tag inside the `<cairn_context>` XML:
+
+```xml
+<instruction>Before acting on any entry below, run: python3 .../query.py --context <id> to recover the full conversation behind it.</instruction>
+```
+
+This point-of-use instruction is more effective than system prompt rules at driving `--context` usage. The LLM sees the instruction right when it's looking at the memories, not buried thousands of tokens earlier.
 
 ### Retrieval posture
 
@@ -813,7 +830,7 @@ Tests run on every push via GitHub Actions (`.github/workflows/test.yml`).
 
 ## Limitations and Future Work
 
-- **LLM compliance with "ask first" posture is imperfect** — despite prominent instructions, the LLM sometimes answers "I don't know" before declaring `context: insufficient`. Layer 1 (first-prompt push) mitigates the worst case by proactively injecting context before the LLM starts generating. Layer 3 (Stop hook) catches the remaining cases but the user sees the wrong answer first then the correction.
+- **LLM compliance with "ask first" posture is imperfect** — despite prominent instructions, the LLM tends to skip `context: insufficient` declarations and default to file reading or answering from training data. Layer 1 (first-prompt push) mitigates cold-start. Context bootstrapping (every `CONTEXT_BOOTSTRAP_INTERVAL` turns) forces Layer 3 usage to build the habit. Inline `<instruction>` tags in retrieval XML drive `--context` recovery. These mechanisms reduce but don't eliminate compliance gaps.
 - **Stop hook output is visible to user** — when the hook blocks and re-prompts, Claude Code shows the block reason (including cairn_context XML) behind a collapsible "Ran 1 stop hook (ctrl+o to expand)" element. The `reason` field is the only way to pass data to the LLM on a Stop hook block — there is no `additionalContext` support for Stop hooks. The data is collapsed by default but labelled "Stop hook error:" which can look alarming.
 - **No `last_retrieved_at` tracking** — would enable smarter decay and usage-based pruning. Low-effort schema addition, deferred until decay mechanism is implemented.
 - **Tag invisibility is behaviour-dependent** — relies on Claude Code stripping angle bracket tags in LLM responses only. Tags in Stop hook output are NOT stripped. If Anthropic changes LLM response rendering, memory blocks would become visible to users.
