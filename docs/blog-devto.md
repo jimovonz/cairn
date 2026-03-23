@@ -1,82 +1,86 @@
 ---
-title: I built invisible persistent memory for Claude Code
+title: I built "Invisible" Persistent Memory for Claude Code
 published: true
 description: Every Claude Code response secretly writes metadata about itself. A hook captures it. A database stores it. The next session remembers.
 tags: claude, ai, developer-tools, open-source
 cover_image: https://raw.githubusercontent.com/jimovonz/cairn/main/docs/social-preview.png
 ---
 
-## The problem
+## If you use Claude Code heavily, you've hit the wall.
 
-If you use Claude Code heavily, you've hit this: you spend an hour explaining your project's architecture, your preferences, past decisions — and then the session ends. Next time, Claude starts from zero. You explain everything again.
+You spend an hour explaining your project's architecture, your library preferences, and the specific quirks of your legacy code. Then the session ends. The next time you boot up `claude`, it starts from zero. You have to re-explain everything. Even with massive context windows, every new session is a fresh case of amnesia.
 
-Context windows are big now (200K, even 1M tokens). But they don't persist. Every new session is amnesia.
+I built **Cairn** to fix this. It's an open-source persistent memory system that lives entirely on your machine.
 
-## The exploit
+## The "Exploit": The Invisible Control Plane
 
-Claude Code strips angle bracket tags from its rendered output. If Claude writes `<anything>content</anything>` in its response, the user never sees it — but the raw response still contains it.
+I discovered a loophole in how Claude Code renders output.
 
-This is normally just a rendering detail. But Claude Code's hook system has full access to the raw response *before* it's stripped.
+Claude Code automatically strips XML-style tags (like `<example>...</example>`) from its final display. If Claude writes a tag in its response, the user never sees it, but the raw response still contains it.
 
-That gap — between what Claude writes and what you see — is an invisible control plane. And it's enough to build a persistent memory system.
+Claude Code's hook system has access to that raw response *before* it's stripped. I realized this gap—between what Claude writes and what you see—is an **invisible control plane**.
 
-## How Cairn works
+## How Cairn Works
 
-Every Claude Code response ends with a hidden `<memory>` block:
+Every time Claude finishes a thought, Cairn forces it to append a hidden `<memory>` block:
 
-```
+```xml
 Here's the refactored authentication module...
 
 <memory>
 - type: decision
 - topic: auth-approach
 - content: Use JWT for stateless auth — rejected session cookies
-  because the API is consumed by mobile clients that don't persist cookies
-- keywords: authentication, JWT, session
+  because the API is consumed by mobile clients.
 - complete: true
 - context: sufficient
 </memory>
 ```
 
-You see: *"Here's the refactored authentication module..."*
+**You see:** *"Here's the refactored authentication module..."*
+**The Hook sees:** The hidden structured data.
 
-The hook sees everything. It parses the memory block, generates a semantic embedding, deduplicates against existing memories, and stores it in a local SQLite database with confidence scoring.
+Cairn's parser captures that block, generates a semantic embedding using a local model, and stores it in a SQLite database. In your next session—even days later or in a different directory—Cairn searches the database and injects relevant "memories" back into the prompt.
 
-Next session — even in a different project directory — when the topic comes up again, the system searches the database and injects the relevant memories back into context. Claude "remembers" what you decided and why.
+Claude "remembers" your decisions because it wrote them down for itself.
 
-## The pūkeko test
+## Stopping the "I'll do that now..." Lie
 
-Here's the moment I knew it worked.
+We've all seen it: Claude says, *"I'll check the logs for that error,"* and then the terminal prompt just returns. It didn't check the logs. It just... stopped.
 
-**Session 1** — casual conversation in `~/temp`:
-```
-You:    "I see a fairly big mostly blue bird on my lawn. Solid red beak
-         and huge feet"
-Claude: "That's a pūkeko — NZ Purple Swamphen..."
-```
+Cairn solves this using **Mechanical Enforcement**. It acts as an agentic supervisor through a **Dual-Gate Guard**:
 
-**Session 2** — different directory, days later:
-```
-You:    "what was on my lawn?"
-Claude: "A pūkeko — NZ Purple Swamphen. Large blue bird, red beak,
-         big feet."
-```
+**The Structural Gate (`complete: false`):** Inside the hidden memory block, Claude must report its own state. If Claude marks the task as `complete: false`, Cairn blocks the response from reaching you. It silently re-prompts: *"You reported this is incomplete. Continue."*
 
-Nobody asked Claude to remember the bird. Nobody asked it to look anything up. The memory was captured invisibly in session 1 and surfaced automatically in session 2.
+**The Semantic Gate (Trailing Intent):** Cairn analyzes the end of every response. If Claude states an intent to act (e.g., *"I will run the tests"*) but the memory block claims completion, Cairn detects the contradiction. It knows Claude is "ghosting" the task and forces it to actually execute the command.
 
-## What makes this different
+## The "Pūkeko" Test
 
-Most LLM memory systems store conversation logs and retrieve them with RAG. Cairn does something fundamentally different:
+Here is how I knew the retrieval was working.
 
-**The LLM is the memory author.** It distills its own output into structured one-line summaries — not raw transcripts, not embeddings of chat logs, but the LLM's own assessment of what matters. A 50,000-token session becomes 10 precise facts.
+**Session 1** (in `~/temp`): I mentioned I saw a "big blue bird with a red beak" on my lawn. Claude identified it as a Pūkeko. I didn't save any files or notes.
 
-**Enforcement is mechanical.** A stop hook fires after every response. No memory block? Blocked and re-prompted. Says it's incomplete? Continued automatically. Needs past context? Searched, injected, and re-prompted — all before the response reaches you.
+**Session 2** (Three days later, in `~/projects`): I simply asked, *"What was on my lawn?"*
 
-**Quality is actively managed.** Memories start at 0.7 confidence. The LLM rates what it retrieves — bad memories fade. 9 quality gates filter noise. Contradictions are detected. Archived memories preserve the learning trail of rejected approaches.
+**The Result:** Claude answered instantly: *"A pūkeko — NZ Purple Swamphen."*
 
-**It's fully local.** No cloud. No API keys. No MCP. One SQLite file, two hooks, and a lightweight embedding model (~80MB). Your memories stay on your machine.
+It didn't search my files. It didn't look at chat logs. It retrieved its own distilled memory from the SQLite database.
 
-## Quick start
+## Why this is different from "Standard RAG"
+
+Most LLM memory systems just dump your chat logs into a vector DB. Cairn is built for the high-pressure environment of a coding agent:
+
+**The LLM is the Memory Author:** Cairn doesn't store raw transcripts. It forces the LLM to distill facts. A 50,000-token session becomes 10 precise, high-value memories.
+
+**Epistemic Traceability:** One-line summaries are great for context window efficiency, but if you need the "why," Cairn can help. Every memory is a pointer. Using `--context <id>`, you can instantly recover the original multi-turn conversation from your local logs.
+
+**9 Quality Gates:** This isn't just "top-k" search. Cairn uses a sophisticated retrieval pipeline including *Saturating Confidence* (important memories stay relevant; "noise" fades) and *Adaptive Thresholds* (it learns your project's noise floor and tightens retrieval automatically).
+
+**100% Local & Fast:** No extra API keys. No cloud privacy concerns. Cairn runs a lightweight Python daemon in the background to keep the embedding model (~80MB) in RAM, so memory injection happens in milliseconds.
+
+## Quick Start
+
+It takes about a minute to install. The installer sets up a Python venv, initializes the database, deploys the hooks globally, and starts the background daemon.
 
 ```bash
 git clone https://github.com/jimovonz/cairn.git ~/cairn
@@ -84,40 +88,23 @@ cd ~/cairn
 ./install.sh
 ```
 
-Restart Claude Code. It's active in every session from that point.
+Restart Claude Code. It's now active in every session. You'll also get access to new slash commands:
 
-The installer sets up a Python venv, initializes the database, deploys the hooks globally, downloads the embedding model, and starts a background daemon for fast embeddings. Takes about a minute.
+- `/cairn search <query>`: See what Claude knows about a topic.
+- `/cairn audit`: Review, edit, or delete stored memories.
+- `/cairn recent`: See what was captured in the last hour.
 
-## What you get
+## Limitations (Honestly)
 
-- **Cross-session, cross-project memory** — decisions, corrections, preferences, facts persist
-- **Slash commands** — `/cairn search auth`, `/cairn audit`, `/cairn check`, `/cairn recent`
-- **Memory audit system** — review, enrich, archive, and fill gaps in stored memories
-- **Context recovery** — `--context <id>` recovers the full conversation behind any memory
-- **Self-healing** — auto-starts embedding daemon, backfills missing embeddings, fails open on errors
-- **185 tests** across 11 files — the system is mechanically reliable
+- **Claude Code only:** This relies on the specific hook system and tag-stripping behavior of the `claude` CLI.
+- **Early stage:** I've tested this extensively on Ubuntu. It's stable, but edge cases with permissions or venv conflicts might exist.
+- **LLM Cooperation:** While mechanical enforcement catches most failures, Claude is still non-deterministic. Sometimes it needs a nudge to write a good memory.
 
-## The architecture (for the curious)
+## Try it out
 
-The [ARCHITECTURE.md](https://github.com/jimovonz/cairn/blob/main/ARCHITECTURE.md) is 800+ lines if you want the full picture. The highlights:
+I built this because I wanted a coding partner that actually learns my habits and project history. If you're a heavy Claude Code user, I'd love your feedback.
 
-- **Three retrieval layers**: proactive first-prompt push, cross-project keyword surfacing, and on-demand LLM-requested pull
-- **9 quality gates**: garbage filtering, borderline suppression, relative filtering, soft confidence inclusion, dominance control, diversity dedup, adaptive thresholds, weak-entry suppression, hard cap
-- **Saturating confidence model**: boosts diminish as confidence approaches 1.0, penalties scale with overconfidence. No passive decay — important but rarely retrieved memories keep their confidence
-- **Modular codebase**: 7 hook modules (parser, storage, enforcement, retrieval, helpers, orchestrator, prompt hook) with type hints throughout
-
-## Limitations (honestly)
-
-- **Claude Code only.** This exploits Claude Code's specific hook system and tag-stripping behaviour. It won't work with Cursor, VS Code agents, or the Claude web interface.
-- **LLM cooperation is imperfect.** Claude sometimes answers before the hook can inject memories, or produces generic memories instead of extracting specific facts. Mechanical enforcement catches most failures.
-- **Tag invisibility is behaviour-dependent.** If Anthropic changes how angle bracket tags are rendered, the invisible channel breaks. The system would still function but memory blocks would become visible.
-- **Early stage.** Tested on two machines (Ubuntu). May have edge cases with permissions, venv conflicts, or daemon stability.
-
-## Try it
-
-The repo is at [github.com/jimovonz/cairn](https://github.com/jimovonz/cairn). MIT licensed. Bug reports and contributions welcome.
-
-If you're a heavy Claude Code user who's tired of re-explaining context every session, give it a try. The installer makes it painless to experiment, and there's an uninstaller if it's not for you.
+**GitHub Repo:** [https://github.com/jimovonz/cairn](https://github.com/jimovonz/cairn)
 
 ---
 
