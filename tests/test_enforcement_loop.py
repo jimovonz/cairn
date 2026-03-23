@@ -46,7 +46,7 @@ def fresh_env():
         """CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT NOT NULL, topic TEXT NOT NULL, content TEXT NOT NULL,
             embedding BLOB, session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
-            source_start INTEGER, source_end INTEGER,
+            source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
         """CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -372,18 +372,17 @@ def test_confidence_penalty_through_main():
 # SOURCE MESSAGES — stored through main()
 # ============================================================
 
-def test_source_messages_stored_through_main():
+def test_depth_stored_through_main():
     db_path, conn = fresh_env()
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-src", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": "answer\n<memory>\n- type: fact\n- topic: sourced\n- content: has source message range for context recovery\n- source_messages: 15-22\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
+        "last_assistant_message": "answer\n<memory>\n- type: fact\n- topic: sourced\n- content: has depth for context recovery via mechanical anchor\n- depth: 4\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     })
 
-    row = conn.execute("SELECT source_start, source_end FROM memories WHERE topic = 'sourced'").fetchone()
+    row = conn.execute("SELECT depth FROM memories WHERE topic = 'sourced'").fetchone()
     assert row is not None
-    assert row[0] == 15
-    assert row[1] == 22
+    assert row[0] == 4
     conn.close()
 
 

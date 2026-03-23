@@ -37,7 +37,7 @@ def setup_test_db():
             type TEXT NOT NULL, topic TEXT NOT NULL, content TEXT NOT NULL,
             embedding BLOB, session_id TEXT, project TEXT,
             confidence REAL DEFAULT 0.7,
-            source_start INTEGER, source_end INTEGER,
+            source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -341,7 +341,7 @@ def test_parse_store_retrieve_roundtrip():
 - topic: auth-method
 - content: Use OAuth2 with PKCE flow
 - keywords: auth, OAuth, PKCE
-- source_messages: 5-10
+- depth: 3
 - complete: true
 - context: sufficient
 </memory>"""
@@ -350,16 +350,15 @@ def test_parse_store_retrieve_roundtrip():
 
     assert len(entries) == 1
     assert entries[0]["type"] == "decision"
-    assert entries[0]["source_start"] == 5
-    assert entries[0]["source_end"] == 10
+    assert entries[0]["depth"] == 3
     assert keywords == ["auth", "OAuth", "PKCE"]
     assert complete is True
 
     # Store it
     e = entries[0]
     conn.execute(
-        "INSERT INTO memories (type, topic, content, source_start, source_end) VALUES (?, ?, ?, ?, ?)",
-        (e["type"], e["topic"], e["content"], e.get("source_start"), e.get("source_end"))
+        "INSERT INTO memories (type, topic, content, depth) VALUES (?, ?, ?, ?)",
+        (e["type"], e["topic"], e["content"], e.get("depth"))
     )
     conn.commit()
 

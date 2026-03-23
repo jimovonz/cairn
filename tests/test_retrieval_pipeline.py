@@ -41,7 +41,7 @@ def fresh_db():
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT NOT NULL, topic TEXT NOT NULL, content TEXT NOT NULL,
         embedding BLOB, session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
-        source_start INTEGER, source_end INTEGER,
+        source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -282,7 +282,7 @@ def test_retrieve_returns_structured_xml():
         "content": "Use JWT for stateless authentication",
         "similarity": 0.65, "confidence": 0.8, "score": 0.7,
         "updated_at": "2026-03-20 12:00:00", "project": "TestProject",
-        "source_start": 5, "source_end": 10
+        "depth": 3
     }]
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
@@ -333,11 +333,11 @@ def test_retrieve_separates_project_and_global():
         {"id": 1, "type": "decision", "topic": "auth", "content": "JWT auth",
          "similarity": 0.7, "confidence": 0.8, "score": 0.7,
          "updated_at": "2026-03-20 12:00:00", "project": "ProjectA",
-         "source_start": None, "source_end": None},
+         "depth": None},
         {"id": 7, "type": "preference", "topic": "global-pref", "content": "dark mode",
          "similarity": 0.55, "confidence": 0.7, "score": 0.5,
          "updated_at": "2026-03-20 12:00:00", "project": "ProjectB",
-         "source_start": None, "source_end": None},
+         "depth": None},
     ]
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
@@ -424,7 +424,7 @@ def test_layer2_stages_cross_project_results():
         "content": "Useful cross-project fact",
         "similarity": 0.7, "confidence": 0.8, "score": 0.7,
         "updated_at": "2026-03-20 12:00:00", "project": "ProjectB",
-        "source_start": None, "source_end": None
+        "depth": None
     }]
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
@@ -458,7 +458,7 @@ def test_layer2_excludes_current_project():
         "content": "Same project fact",
         "similarity": 0.7, "confidence": 0.8, "score": 0.7,
         "updated_at": "2026-03-20 12:00:00", "project": "ProjectA",
-        "source_start": None, "source_end": None
+        "depth": None
     }]
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \

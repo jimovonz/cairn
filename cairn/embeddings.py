@@ -162,7 +162,7 @@ def _vec_candidates(
     """Get top-k candidates from sqlite-vec index."""
     query_blob = to_blob(query_vec)
     rows = conn.execute("""
-        SELECT v.memory_id, v.distance, m.type, m.topic, m.content, m.updated_at, m.project, m.confidence, m.source_start, m.source_end
+        SELECT v.memory_id, v.distance, m.type, m.topic, m.content, m.updated_at, m.project, m.confidence, m.depth
         FROM memories_vec v
         JOIN memories m ON v.memory_id = m.id
         WHERE v.embedding MATCH ?
@@ -183,8 +183,7 @@ def _vec_candidates(
             "updated_at": row[5],
             "project": row[6],
             "confidence": confidence,
-            "source_start": row[8],
-            "source_end": row[9],
+            "depth": row[8],
             "score": composite_score(sim, confidence, row[5], row[6], current_project)
         })
     return results
@@ -198,7 +197,7 @@ def _brute_force_candidates(
 ) -> list[dict[str, Any]]:
     """Get top-k candidates via brute-force scan."""
     rows = conn.execute(
-        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, source_start, source_end FROM memories WHERE embedding IS NOT NULL"
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, depth FROM memories WHERE embedding IS NOT NULL"
     ).fetchall()
 
     results: list[dict[str, Any]] = []
@@ -215,8 +214,7 @@ def _brute_force_candidates(
             "updated_at": row[5],
             "project": row[6],
             "confidence": confidence,
-            "source_start": row[8],
-            "source_end": row[9],
+            "depth": row[8],
             "score": composite_score(sim, confidence, row[5], row[6], current_project)
         })
 
@@ -332,7 +330,7 @@ def find_similar(
         try:
             archived = conn.execute(
                 "SELECT id, type, topic, content, embedding, updated_at, project, confidence, "
-                "source_start, source_end, archived_reason "
+                "depth, archived_reason "
                 "FROM memories WHERE archived_reason IS NOT NULL AND embedding IS NOT NULL"
             ).fetchall()
             for row in archived:
@@ -342,9 +340,9 @@ def find_similar(
                     results.append({
                         "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
                         "similarity": sim, "updated_at": row[5], "project": row[6],
-                        "confidence": row[7], "source_start": row[8], "source_end": row[9],
+                        "confidence": row[7], "depth": row[8],
                         "score": 0.0,
-                        "archived": True, "archived_reason": row[10]
+                        "archived": True, "archived_reason": row[9]
                     })
         except sqlite3.OperationalError:
             pass  # archived_reason column not yet added

@@ -128,11 +128,15 @@ def list_by_session(session_id, limit=50):
     return rows
 
 
-def show_context(memory_id, margin=3):
-    """Show the conversation context around where a memory was recorded."""
+def show_context(memory_id, margin=5):
+    """Show the conversation context around where a memory was recorded.
+
+    Uses the memory's created_at timestamp to locate the position in the JSONL
+    transcript, then looks back by depth turns (LLM-estimated) or a default margin.
+    """
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     row = conn.execute(
-        "SELECT id, type, topic, content, session_id, source_start, source_end FROM memories WHERE id = ?",
+        "SELECT id, type, topic, content, session_id, created_at, depth FROM memories WHERE id = ?",
         (memory_id,)
     ).fetchone()
     if not row:
@@ -144,8 +148,8 @@ def show_context(memory_id, margin=3):
     print(f"  {row[3]}")
 
     session_id = row[4]
-    source_start = row[5]
-    source_end = row[6]
+    created_at = row[5]
+    depth = row[6]
 
     if not session_id:
         print("  No session ID — cannot locate transcript.")
@@ -166,45 +170,32 @@ def show_context(memory_id, margin=3):
         print(f"  Transcript not found: {transcript_path}")
         return
 
-    if source_start is None:
-        print(f"  No source_messages recorded — showing transcript search instead.")
-        # Fallback: grep transcript for content keywords
-        import json as _json
-        keywords = row[3].lower().split()[:3]
-        msg_num = 0
-        with open(transcript_path, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    entry = _json.loads(line.strip())
-                    msg = entry.get("message", entry)
-                    if msg.get("role") in ("user", "assistant"):
-                        msg_num += 1
-                except Exception:
-                    continue
-        print(f"  Transcript: {transcript_path} ({msg_num} messages)")
-        print(f"  Search for: {row[2]} / {' '.join(keywords)}")
+    import json as _json
+    from datetime import datetime
+
+    # Parse memory timestamp
+    try:
+        mem_time = datetime.strptime(created_at[:19], "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        print(f"  Cannot parse created_at: {created_at}")
         return
 
-    print(f"  Source messages: {source_start}–{source_end} (LLM-estimated)")
+    lookback_turns = depth if depth and depth > 0 else margin
+
+    print(f"  Created: {created_at}, depth: {depth or 'unset'} turns")
     print(f"  Transcript: {transcript_path}")
 
-    # Read transcript and extract message range
-    # Count only text-bearing messages (not tool calls) to align with LLM's perception of "messages"
-    import json as _json
-    show_start = max(1, source_start - margin)
-    show_end = source_end + margin
-    turn_num = 0
-
-    print(f"\n  --- Conversation context (turns {show_start}–{show_end}) ---")
-    with open(transcript_path) as f:
-        for line in f:
+    # Scan transcript — collect text-bearing messages with their timestamps and line numbers
+    messages = []
+    with open(transcript_path, encoding="utf-8") as f:
+        for line_num, line in enumerate(f):
             try:
                 entry = _json.loads(line.strip())
+                ts_str = entry.get("timestamp", "")
                 msg = entry.get("message", entry)
                 role = msg.get("role", "")
                 if role not in ("user", "assistant"):
                     continue
-
                 content = msg.get("content", "")
                 if isinstance(content, list):
                     text_parts = [b.get("text", "") for b in content
@@ -212,30 +203,70 @@ def show_context(memory_id, margin=3):
                     content = " ".join(text_parts)
                 elif not isinstance(content, str):
                     continue
-
-                # Skip empty messages (tool calls with no text)
                 if not content or not content.strip():
                     continue
-
-                turn_num += 1
-                if turn_num < show_start:
-                    continue
-                if turn_num > show_end:
-                    break
-
-                # Truncate long messages
-                display = content[:200] + "..." if len(content) > 200 else content
-
-                marker = " <<<" if source_start <= turn_num <= source_end else ""
-                print(f"  [{turn_num}] {role}: {display}{marker}")
+                # Parse JSONL timestamp (ISO 8601)
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                except (ValueError, AttributeError):
+                    ts = None
+                messages.append({"line": line_num, "role": role, "text": content, "ts": ts})
             except Exception:
                 continue
 
+    if not messages:
+        print("  No text-bearing messages found in transcript.")
+        return
+
+    # Find the anchor — last message at or before the memory's created_at
+    anchor_idx = len(messages) - 1
+    for i, msg in enumerate(messages):
+        if msg["ts"] and msg["ts"] > mem_time:
+            anchor_idx = max(0, i - 1)
+            break
+
+    # Show context: lookback_turns before anchor, plus a few after
+    start_idx = max(0, anchor_idx - lookback_turns)
+    end_idx = min(len(messages), anchor_idx + 3)
+
+    print(f"\n  --- Conversation context (messages {start_idx}–{end_idx} of {len(messages)}) ---")
+    for i in range(start_idx, end_idx):
+        msg = messages[i]
+        display = msg["text"]
+        marker = " <<<" if i == anchor_idx else ""
+        ts_label = msg["ts"].strftime("%H:%M:%S") if msg["ts"] else "?"
+        print(f"  [{ts_label}] {msg['role']}: {display}{marker}")
+
 
 def verify_sources():
-    """Analyse accuracy of LLM source_messages estimates against actual transcript content."""
-    import json as _json
+    """Report source indexing coverage — depth, with/without session, navigable."""
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
+    total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+    with_depth = conn.execute("SELECT COUNT(*) FROM memories WHERE depth IS NOT NULL").fetchone()[0]
+    with_session = conn.execute("SELECT COUNT(*) FROM memories WHERE session_id IS NOT NULL").fetchone()[0]
+    legacy = conn.execute("SELECT COUNT(*) FROM memories WHERE source_start IS NOT NULL").fetchone()[0]
 
+    print(f"=== Source Index Coverage ({total} memories) ===")
+    if total:
+        print(f"  With session (timestamp-navigable): {with_session} ({100*with_session/total:.1f}%)")
+        print(f"  With depth hint: {with_depth} ({100*with_depth/total:.1f}%)")
+        print(f"  Legacy source_start/end (unconverted): {legacy}")
+    else:
+        print("  No memories")
+
+    # Show depth distribution
+    depths = conn.execute("SELECT depth FROM memories WHERE depth IS NOT NULL").fetchall()
+    if depths:
+        vals = [d[0] for d in depths]
+        print(f"\n  Depth distribution: min={min(vals)}, avg={sum(vals)/len(vals):.1f}, max={max(vals)}")
+
+    conn.close()
+
+    if legacy == 0:
+        return
+
+    # Legacy report below
+    import json as _json
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     memories = conn.execute("""
         SELECT m.id, m.type, m.topic, m.content, m.session_id, m.source_start, m.source_end
@@ -244,7 +275,6 @@ def verify_sources():
     """).fetchall()
 
     if not memories:
-        print("No memories with source_messages recorded yet.")
         conn.close()
         return
 

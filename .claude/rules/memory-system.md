@@ -120,7 +120,8 @@ Memories are distilled one-liners. When you need the full detail behind a memory
    - A memory's one-liner is ambiguous and you need the original discussion
    - The user asks "what exactly did we decide about X?" and the memory is too terse
    - You need to verify whether a memory accurately reflects what was discussed
-4. Do NOT use this routinely — only when the distilled memory is genuinely insufficient for the current task
+   - You plan to act on a retrieved memory (make a decision, write code, give advice based on it) — recover the full context first to verify the details
+4. Do NOT use this for passive awareness — only when a memory will actively inform your next action or response
 
 ## Confidence Feedback
 

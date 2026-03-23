@@ -122,8 +122,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
         mem_type: str = entry.get("type", "fact")
         topic: str = entry.get("topic", "unknown")
         content: str = entry.get("content", "")
-        source_start: Optional[str] = entry.get("source_start")
-        source_end: Optional[str] = entry.get("source_end")
+        depth: Optional[int] = entry.get("depth")
 
         # Content quality gate: reject memories with no retrievable knowledge
         if _is_empty_memory(content):
@@ -194,8 +193,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
             if old_content and old_content != content and old_sim < DISTINCT_VARIANT_SIM_THRESHOLD:
                 log(f"Distinct variant: type={mem_type} topic={topic} (sim={old_sim:.2f}) — inserting as new")
                 conn.execute(
-                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, source_start, source_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mem_type, topic, content, embedding_blob, session_id, project, source_start, source_end)
+                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (mem_type, topic, content, embedding_blob, session_id, project, depth)
                 )
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -216,8 +215,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     emb.upsert_vec_index(conn, same_topic[0], embedding_blob)
         else:
             conn.execute(
-                "INSERT INTO memories (type, topic, content, embedding, session_id, project, source_start, source_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (mem_type, topic, content, embedding_blob, session_id, project, source_start, source_end)
+                "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (mem_type, topic, content, embedding_blob, session_id, project, depth)
             )
             if embedding_blob and emb:
                 new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]

@@ -122,7 +122,7 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None) -> Opt
         rel = reliability(r)
         rel_label = "strong" if rel >= 0.6 else "moderate" if rel >= 0.4 else "weak"
         days = recency_days(r.get("updated_at", ""))
-        has_source = r.get("source_start") is not None
+        has_source = r.get("depth") is not None
         source_attr = ' ctx="y"' if has_source else ""
         if r.get("archived"):
             reason = r.get("archived_reason", "unknown")

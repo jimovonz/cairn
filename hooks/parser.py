@@ -105,15 +105,9 @@ def parse_memory_block(text: str) -> ParseResult:
             keywords_set = True
         elif key == "intent":
             intent = value.lower()
-        elif key == "source_messages":
+        elif key == "depth":
             try:
-                if "-" in value:
-                    parts = value.split("-")
-                    current["source_start"] = int(parts[0].strip())
-                    current["source_end"] = int(parts[1].strip())
-                else:
-                    current["source_start"] = int(value.strip())
-                    current["source_end"] = int(value.strip())
+                current["depth"] = int(value.strip())
             except (ValueError, IndexError):
                 pass
         elif key in ("type", "topic", "content"):

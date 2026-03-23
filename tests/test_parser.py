@@ -61,38 +61,36 @@ def test_multiple_entries():
     assert complete is True
 
 
-def test_source_messages_after_content():
+def test_depth_after_content():
     text = '''response
 <memory>
 - type: fact
 - topic: test
-- content: with source
-- source_messages: 42-55
+- content: with depth
+- depth: 3
 - complete: true
 - context: sufficient
 - keywords: test
 </memory>'''
     entries, complete, *_ = parse_memory_block(text)
     assert len(entries) == 1
-    assert entries[0]["source_start"] == 42
-    assert entries[0]["source_end"] == 55
+    assert entries[0]["depth"] == 3
 
 
-def test_source_messages_before_content():
+def test_depth_before_content():
     text = '''response
 <memory>
 - type: fact
 - topic: test
-- source_messages: 10-20
-- content: with source before
+- depth: 5
+- content: with depth before
 - complete: true
 - context: sufficient
 - keywords: test
 </memory>'''
     entries, complete, *_ = parse_memory_block(text)
     assert len(entries) == 1
-    assert entries[0]["source_start"] == 10
-    assert entries[0]["source_end"] == 20
+    assert entries[0]["depth"] == 5
 
 
 def test_confidence_updates():
@@ -439,22 +437,21 @@ def test_empty_content_field():
     # The important thing is it doesn't crash
 
 
-def test_source_messages_single_number():
-    """source_messages with just one number (not a range)."""
+def test_depth_single_turn():
+    """depth with value of 1."""
     text = '''response
 <memory>
 - type: fact
-- topic: single-source
-- content: single source ref
-- source_messages: 42
+- topic: single-depth
+- content: single turn depth
+- depth: 1
 - complete: true
 - context: sufficient
 - keywords: test
 </memory>'''
     entries, *_ = parse_memory_block(text)
     assert len(entries) == 1
-    assert entries[0]["source_start"] == 42
-    assert entries[0]["source_end"] == 42
+    assert entries[0]["depth"] == 1
 
 
 def test_many_entries_stress():
@@ -477,7 +474,7 @@ def test_all_fields_populated():
 - type: decision
 - topic: full-entry
 - content: all fields present
-- source_messages: 5-12
+- depth: 4
 - keywords: auth, security, tokens
 - context: sufficient
 - context_need: none needed
@@ -488,8 +485,7 @@ def test_all_fields_populated():
     parsed = parse_memory_block(text); entries, complete, remaining, context, context_need, conf_updates, retrieval_outcome, keywords, intent = parsed.entries, parsed.complete, parsed.remaining, parsed.context, parsed.context_need, parsed.confidence_updates, parsed.retrieval_outcome, parsed.keywords, parsed.intent
     assert len(entries) == 1
     assert entries[0]["type"] == "decision"
-    assert entries[0]["source_start"] == 5
-    assert entries[0]["source_end"] == 12
+    assert entries[0]["depth"] == 4
     assert keywords == ["auth", "security", "tokens"]
     assert context == "sufficient"
     assert conf_updates == [(42, "+")]

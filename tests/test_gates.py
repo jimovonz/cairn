@@ -19,8 +19,8 @@ def mock_results(entries):
             "updated_at": e.get("updated_at", "2026-03-20 12:00:00"),
             "project": e.get("project"),
             "confidence": e.get("confidence", 0.7),
-            "source_start": e.get("source_start"),
-            "source_end": e.get("source_end"),
+            "depth": e.get("depth"),
+            "depth": e.get("depth"),
             "score": e.get("score", e["similarity"] * 0.7),
         }
         for i, e in enumerate(entries)
@@ -44,7 +44,7 @@ def test_garbage_gate_rejects_weak_results():
     conn = sqlite3.connect(db_path)
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY, type TEXT, topic TEXT,
         content TEXT, embedding BLOB, session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
-        source_start INTEGER, source_end INTEGER,
+        source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     # Insert a memory with a known embedding
     vec = np.random.RandomState(42).randn(384).astype(np.float32)
@@ -80,7 +80,7 @@ def test_diversity_filter_drops_same_type_topic():
     conn = sqlite3.connect(db_path)
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY, type TEXT, topic TEXT,
         content TEXT, embedding BLOB, session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
-        source_start INTEGER, source_end INTEGER,
+        source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     # Two memories with same type+topic but slightly different embeddings
     base = np.random.RandomState(42).randn(384).astype(np.float32)

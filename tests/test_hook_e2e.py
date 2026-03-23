@@ -28,7 +28,7 @@ def fresh_db():
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT, topic TEXT, content TEXT, embedding BLOB, session_id TEXT,
         project TEXT, confidence REAL DEFAULT 0.7, source_start INTEGER,
-        source_end INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        source_end INTEGER, anchor_line INTEGER, depth INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id INTEGER, content TEXT, session_id TEXT,
