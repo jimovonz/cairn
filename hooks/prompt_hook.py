@@ -164,6 +164,17 @@ def main() -> None:
             context_parts.append(l1_context)
             log(f"Layer 1: injected context for: {user_message[:50]}...")
 
+    # Clean up stale staged context (older than 7 days — sessions unlikely to resume)
+    try:
+        cleanup_conn = get_conn()
+        cleanup_conn.execute(
+            "DELETE FROM hook_state WHERE key = 'staged_context' AND updated_at < datetime('now', '-7 days')"
+        )
+        cleanup_conn.commit()
+        cleanup_conn.close()
+    except Exception:
+        pass
+
     # Layer 2: Staged cross-project context from previous stop hook
     staged = load_staged_context(session_id)
     if staged:
