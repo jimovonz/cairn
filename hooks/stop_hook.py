@@ -389,6 +389,30 @@ def main() -> None:
                 except Exception as e:
                     log(f"Failed to stage bootstrap reminder: {e}")
 
+    # Question-before-cairn enforcement — if the LLM is asking the user a question
+    # but hasn't declared context: insufficient, it should check cairn first.
+    if not is_continuation and context != "insufficient":
+        response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
+        # Strip code blocks to avoid matching questions in code/comments
+        response_no_code = re.sub(r"```[\s\S]*?```", "", response_stripped)
+        # Check last 3 sentences for question marks (directed at user)
+        sentences = [s.strip() for s in re.split(r'[.\n]', response_no_code) if s.strip()]
+        tail = sentences[-3:] if len(sentences) >= 3 else sentences
+        has_question = any("?" in s for s in tail)
+        if has_question:
+            log(f"Question-before-cairn: response asks user a question without checking cairn first")
+            record_metric(session_id, "question_before_cairn")
+            increment_continuation(session_id)
+            print(json.dumps({
+                "decision": "block",
+                "reason": (
+                    "You are about to ask the user a question, but you haven't checked cairn for relevant context. "
+                    "Declare context: insufficient with a context_need matching your question — the cairn may already "
+                    "have the answer from a previous session. Only ask the user if cairn doesn't help."
+                )
+            }))
+            sys.exit(2)
+
     # Contradiction enforcement — check if response contradicts retrieved memories
     # without the LLM annotating them via -!
     if not is_continuation:
