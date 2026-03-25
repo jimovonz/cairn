@@ -163,36 +163,13 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     log(f"No daemon — storing '{topic}' without embedding (will backfill)")
                     raise Exception("daemon_unavailable")
                 embedding_blob = emb.to_blob(vec)
-
-                # Check for semantic duplicates via vec index
-                nearest = emb.find_nearest(conn, search_text, limit=1)
-                if nearest and nearest[0]["similarity"] >= DEDUP_THRESHOLD:
-                    match = nearest[0]
-                    log(f"Dedup: '{content[:50]}' ~= '{match['content'][:50]}' (sim={match['similarity']:.3f})")
-                    conn.execute(
-                        "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (content, embedding_blob, session_id, project, match["id"])
-                    )
-                    emb.upsert_vec_index(conn, match["id"], embedding_blob)
-                    inserted += 1
-                    continue
-                # Negation-based contradiction: annotate old memory as superseded
-                if nearest and nearest[0]["similarity"] >= NEGATION_SIM_FLOOR and nearest[0]["similarity"] < DEDUP_THRESHOLD:
-                    match = nearest[0]
-                    if _has_negation_mismatch(content, match["content"]):
-                        log(f"Negation mismatch: '{content[:40]}' vs '{match['content'][:40]}' — annotating old as superseded")
-                        conn.execute(
-                            "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                            (f"superseded: {content[:200]}", match["id"])
-                        )
-                        record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
-
             except (ConnectionError, TimeoutError, OSError) as e:
                 log(f"Embedding unavailable: {e}")
             except Exception as e:
                 log(f"Embedding error ({type(e).__name__}): {e}")
 
-        # No semantic match — fall back to exact type+topic check
+        # Step 1: Check type+topic match first — catches same-topic contradictions
+        # that embedding nearest-neighbour might miss (if a closer global match exists)
         same_topic = conn.execute(
             "SELECT id, content FROM memories WHERE type = ? AND topic = ?",
             (mem_type, topic)
@@ -212,6 +189,14 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     old_sim = 0.0
 
             if old_content and old_content != content and old_sim < DISTINCT_VARIANT_SIM_THRESHOLD:
+                # Different enough to be a distinct variant — check for negation
+                if _has_negation_mismatch(content, old_content):
+                    log(f"Negation on same topic: '{content[:40]}' vs '{old_content[:40]}' — annotating old as superseded")
+                    conn.execute(
+                        "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (f"superseded: {content[:200]}", same_topic[0])
+                    )
+                    record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
                 log(f"Distinct variant: type={mem_type} topic={topic} (sim={old_sim:.2f}) — inserting as new")
                 conn.execute(
                     "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -222,7 +207,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
             else:
                 if old_content and old_content != content:
-                    # Annotate old content as superseded rather than suppressing
+                    # Annotate old content as superseded
                     conn.execute(
                         "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                         (f"superseded: {content[:200]}", same_topic[0])
@@ -236,13 +221,41 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                 if embedding_blob and emb:
                     emb.upsert_vec_index(conn, same_topic[0], embedding_blob)
         else:
-            conn.execute(
-                "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (mem_type, topic, content, embedding_blob, session_id, project, depth)
-            )
+            # Step 2: No type+topic match — check for semantic near-duplicates and
+            # cross-topic negation via embedding similarity
+            deduped = False
             if embedding_blob and emb:
-                new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                emb.upsert_vec_index(conn, new_id, embedding_blob)
+                try:
+                    nearest = emb.find_nearest(conn, search_text, limit=1)
+                    if nearest and nearest[0]["similarity"] >= DEDUP_THRESHOLD:
+                        match = nearest[0]
+                        log(f"Dedup: '{content[:50]}' ~= '{match['content'][:50]}' (sim={match['similarity']:.3f})")
+                        conn.execute(
+                            "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                            (content, embedding_blob, session_id, project, match["id"])
+                        )
+                        emb.upsert_vec_index(conn, match["id"], embedding_blob)
+                        deduped = True
+                    elif nearest and nearest[0]["similarity"] >= NEGATION_SIM_FLOOR:
+                        match = nearest[0]
+                        if _has_negation_mismatch(content, match["content"]):
+                            log(f"Negation mismatch: '{content[:40]}' vs '{match['content'][:40]}' — annotating old as superseded")
+                            conn.execute(
+                                "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                                (f"superseded: {content[:200]}", match["id"])
+                            )
+                            record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
+                except Exception:
+                    pass  # Embedding issues don't block insertion
+
+            if not deduped:
+                conn.execute(
+                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (mem_type, topic, content, embedding_blob, session_id, project, depth)
+                )
+                if embedding_blob and emb:
+                    new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                    emb.upsert_vec_index(conn, new_id, embedding_blob)
         inserted += 1
 
     conn.commit()
