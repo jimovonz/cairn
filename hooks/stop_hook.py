@@ -136,6 +136,11 @@ def main() -> None:
         log(f"No text found in hook input. Keys: {list(hook_input.keys())}")
         sys.exit(0)
 
+    # Headless assessment sessions (e.g. contradiction scanner) — skip all enforcement
+    if os.environ.get("CAIRN_HEADLESS"):
+        log("Headless mode — skipping enforcement")
+        sys.exit(0)
+
     log(f"Text length: {len(text)}, has <memory>: {'<memory>' in text}, continuation: {is_continuation}")
 
     # Parse memory block
