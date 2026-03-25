@@ -339,22 +339,35 @@ def main() -> None:
         conn.close()
 
         if turns_since >= CONTEXT_BOOTSTRAP_INTERVAL:
-            log(f"Context bootstrap: {turns_since} turns without layer 3 — forcing context: insufficient")
             record_metric(session_id, "context_bootstrap_triggered", None, turns_since)
-            # Record a context_requested to reset the counter — prevents re-triggering
-            # on the continuation before the LLM's declaration reaches the retrieval path
             record_metric(session_id, "context_requested", "bootstrap_forced")
-            increment_continuation(session_id)
-            result = {
-                "decision": "block",
-                "reason": (
-                    f"You have not checked cairn context in {turns_since} turns. "
-                    "Declare context: insufficient with a context_need relevant to what you are currently discussing. "
-                    "This retrieves targeted memories that may inform your work."
-                )
-            }
-            print(json.dumps(result))
-            sys.exit(0)
+
+            bootstrap_reminder = (
+                f"You have not checked cairn context in {turns_since} turns. "
+                "Declare context: insufficient with a context_need relevant to what you are "
+                "currently discussing. This retrieves targeted memories that may inform your work."
+            )
+
+            # Check response length — block immediately if short, defer if substantive
+            response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
+            if len(response_stripped) < 200:
+                # Short/empty response — safe to block now
+                log(f"Context bootstrap: {turns_since} turns without layer 3 — blocking (response {len(response_stripped)} chars)")
+                increment_continuation(session_id)
+                print(json.dumps({"decision": "block", "reason": bootstrap_reminder}))
+                sys.exit(2)
+            else:
+                # Substantive response — defer to next turn to avoid eating it
+                log(f"Context bootstrap: {turns_since} turns without layer 3 — deferring (response {len(response_stripped)} chars)")
+                try:
+                    staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+                    os.makedirs(staged_dir, exist_ok=True)
+                    staged_file = os.path.join(staged_dir, f"{session_id}_bootstrap.txt")
+                    with open(staged_file, "w") as f:
+                        f.write(bootstrap_reminder)
+                    log(f"Bootstrap reminder staged for next prompt")
+                except Exception as e:
+                    log(f"Failed to stage bootstrap reminder: {e}")
 
     # Check completeness — complete must be explicitly True to pass.
     # If omitted (None) or False, treat as incomplete.

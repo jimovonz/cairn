@@ -184,6 +184,20 @@ def main() -> None:
         context_parts.append(staged)
         log(f"Layer 2: injected staged cross-project context")
 
+    # Bootstrap reminder (deferred from previous stop hook — non-blocking)
+    staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+    bootstrap_file = os.path.join(staged_dir, f"{session_id}_bootstrap.txt")
+    if os.path.exists(bootstrap_file):
+        try:
+            with open(bootstrap_file, "r") as f:
+                bootstrap_text = f.read().strip()
+            os.remove(bootstrap_file)
+            if bootstrap_text:
+                context_parts.append(bootstrap_text)
+                log(f"Bootstrap reminder injected (deferred)")
+        except Exception as e:
+            log(f"Failed to load bootstrap reminder: {e}")
+
     if not context_parts:
         sys.exit(0)
 

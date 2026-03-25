@@ -507,8 +507,8 @@ The LLM explicitly requests context by declaring `context: insufficient` with a 
 
 LLMs tend to skip `context: insufficient` declarations despite instructions, defaulting to file reading or answering from training data. The Stop hook enforces usage through a bootstrapping mechanism:
 
-- After `CONTEXT_BOOTSTRAP_INTERVAL` turns (default: 10) without a Layer 3 request, the hook blocks and forces a `context: insufficient` declaration
-- The block message directs the LLM to declare insufficient with a relevant `context_need`
+- After `CONTEXT_BOOTSTRAP_INTERVAL` turns (default: 10) without a Layer 3 request, the hook triggers enforcement
+- **Hybrid blocking**: if the stripped response is under 200 chars (short/empty), the hook blocks immediately and forces a `context: insufficient` declaration. If the response is substantive (≥200 chars), the reminder is deferred — staged to a file and injected by the prompt hook on the next turn. This prevents bootstrap from eating user-facing responses while maintaining strong enforcement on low-value turns.
 - A `context_requested` metric is recorded immediately to prevent re-triggering on the continuation
 - The goal is habit formation through demonstrated value — each forced retrieval shows the LLM that Layer 3 returns useful, targeted results
 

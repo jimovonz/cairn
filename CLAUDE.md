@@ -28,6 +28,16 @@ Query commands:
 - `python3 ./cairn/query.py --backfill` — generate missing embeddings
 - `python3 ./cairn/query.py --stats` — database statistics
 
+## Git workflow
+
+All changes MUST be made on feature branches, not main. Branch naming: `feature/<short-description>` or `fix/<short-description>`. Merge to main only after testing.
+
+Before tagging a release on main:
+1. Docs are up to date (README.md, ARCHITECTURE.md)
+2. `install.sh` and `uninstall.sh` are verified (syntax check + review for unintended changes)
+3. All tests pass (`python3 -m pytest tests/`)
+4. Tag with semver: `git tag -a v0.X.Y -m "description"`
+
 ## Memory system instructions
 
 The memory block format, context retrieval, confidence system, and all LLM behavioral rules are defined in the global rules file deployed by `install.sh`:
