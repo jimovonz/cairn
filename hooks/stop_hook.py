@@ -133,7 +133,7 @@ def main() -> None:
     text: str = hook_input.get("last_assistant_message", "")
 
     if not text:
-        log("No text found, allowing stop")
+        log(f"No text found in hook input. Keys: {list(hook_input.keys())}")
         sys.exit(0)
 
     log(f"Text length: {len(text)}, has <memory>: {'<memory>' in text}, continuation: {is_continuation}")

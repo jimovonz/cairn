@@ -154,6 +154,8 @@ def main() -> None:
     user_message = hook_input.get("user_message") or hook_input.get("prompt", "")
 
     if not user_message or len(user_message) < 3:
+        if not user_message:
+            log(f"No user message found in hook input. Keys: {list(hook_input.keys())}")
         sys.exit(0)
 
     context_parts: list[str] = []
