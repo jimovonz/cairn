@@ -41,7 +41,7 @@ def fresh_db():
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT NOT NULL, topic TEXT NOT NULL, content TEXT NOT NULL,
         embedding BLOB, session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
-        source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER,
+        source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -623,9 +623,11 @@ def test_negation_dampening_in_insert():
             "content": "GNSS is not reliable under canopy"
         }], session_id="s1")
 
-    # Original memory should have reduced confidence (negation detected)
-    old_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
-    assert old_conf < 0.8, f"Expected confidence drop from negation, got {old_conf}"
+    # Original memory should be annotated as superseded (negation detected)
+    row = conn.execute("SELECT confidence, archived_reason FROM memories WHERE id = 1").fetchone()
+    assert row[0] == 0.8, "Confidence should be unchanged — negation annotates, not penalises"
+    assert row[1] is not None, "Expected archived_reason annotation from negation detection"
+    assert "superseded" in row[1], f"Expected 'superseded' in annotation, got: {row[1]}"
     # New memory should also be inserted
     count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
     assert count == 2

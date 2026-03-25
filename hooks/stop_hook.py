@@ -303,6 +303,20 @@ def main() -> None:
                         save_context_cache(session_id, served)
                         record_metric(session_id, "context_served", context_need[:100])
                         log(f"Context retrieval for: {context_need[:50]}...")
+
+                        # Track injected IDs for contradiction enforcement
+                        injected_ids = _re.findall(r'id="(\d+)"', retrieved)
+                        if injected_ids:
+                            conn2 = get_conn()
+                            import json as _json
+                            conn2.execute(
+                                "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP) "
+                                "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+                                (session_id, _json.dumps([int(i) for i in injected_ids]))
+                            )
+                            conn2.commit()
+                            conn2.close()
+
                         increment_continuation(session_id)
                         result = {
                             "decision": "block",
@@ -368,6 +382,57 @@ def main() -> None:
                     log(f"Bootstrap reminder staged for next prompt")
                 except Exception as e:
                     log(f"Failed to stage bootstrap reminder: {e}")
+
+    # Contradiction enforcement — check if response contradicts retrieved memories
+    # without the LLM annotating them via -!
+    if not is_continuation:
+        try:
+            conn3 = get_conn()
+            ids_row = conn3.execute(
+                "SELECT value FROM hook_state WHERE session_id = ? AND key = 'retrieved_ids'",
+                (session_id,)
+            ).fetchone()
+            if ids_row:
+                import json as _json2
+                retrieved_ids = _json2.loads(ids_row[0])
+                # IDs that were annotated via -! in this response
+                annotated_ids = {mid for mid, d, _ in confidence_updates if d == "-!"}
+
+                emb2 = get_embedder()
+                if emb2 and retrieved_ids:
+                    response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
+                    if len(response_stripped) > 50:  # Only check substantive responses
+                        response_vec = emb2.embed(response_stripped[:2000], allow_slow=False)
+                        if response_vec is not None:
+                            from storage import _has_negation_mismatch
+                            for mid in retrieved_ids:
+                                if mid in annotated_ids:
+                                    continue
+                                row = conn3.execute(
+                                    "SELECT content, embedding FROM memories WHERE id = ?", (mid,)
+                                ).fetchone()
+                                if not row or not row[1]:
+                                    continue
+                                mem_content, mem_embedding = row[0], row[1]
+                                mem_vec = emb2.from_blob(mem_embedding)
+                                sim = emb2.cosine_similarity(response_vec, mem_vec)
+                                if sim >= 0.4 and _has_negation_mismatch(response_stripped, mem_content):
+                                    log(f"Contradiction enforcement: response contradicts memory {mid} (sim={sim:.2f})")
+                                    record_metric(session_id, "contradiction_unaddressed", f"{mid}")
+                                    increment_continuation(session_id)
+                                    print(json.dumps({
+                                        "decision": "block",
+                                        "reason": (
+                                            f"Your response appears to contradict retrieved memory #{mid}: "
+                                            f'"{mem_content[:150]}". '
+                                            f"If this memory is wrong or superseded, annotate it with: "
+                                            f"- confidence_update: {mid}:-! <reason>"
+                                        )
+                                    }))
+                                    sys.exit(2)
+            conn3.close()
+        except Exception as e:
+            log(f"Contradiction enforcement error: {e}")
 
     # Check completeness — complete must be explicitly True to pass.
     # If omitted (None) or False, treat as incomplete.

@@ -15,7 +15,7 @@ class ParseResult(NamedTuple):
     remaining: Optional[str]
     context: Optional[str]
     context_need: Optional[str]
-    confidence_updates: list[tuple[int, str]]
+    confidence_updates: list[tuple[int, str, Optional[str]]]  # (id, direction, reason)
     retrieval_outcome: Optional[str]
     keywords: list[str]
     intent: Optional[str]
@@ -67,7 +67,7 @@ def parse_memory_block(text: str) -> ParseResult:
     retrieval_outcome: Optional[str] = None
     keywords: list[str] = []
     keywords_set: bool = False
-    confidence_updates: list[tuple[int, str]] = []
+    confidence_updates: list[tuple[int, str, Optional[str]]] = []
     intent: Optional[str] = None
 
     for line in block.split("\n"):
@@ -75,10 +75,12 @@ def parse_memory_block(text: str) -> ParseResult:
         if not line or line == "-":
             continue
 
-        # Parse confidence_update: <id>:+ or <id>:-
-        conf_match = re.match(r"^-?\s*confidence_update:\s*(\d+)\s*:\s*([+-])", line)
+        # Parse confidence_update: <id>:+ or <id>:- or <id>:-! reason
+        conf_match = re.match(r"^-?\s*confidence_update:\s*(\d+)\s*:\s*(-!|[+-])\s*(.*)?$", line)
         if conf_match:
-            confidence_updates.append((int(conf_match.group(1)), conf_match.group(2)))
+            direction = conf_match.group(2)
+            reason = conf_match.group(3).strip() if conf_match.group(3) else None
+            confidence_updates.append((int(conf_match.group(1)), direction, reason))
             continue
 
         # Parse any "- key: value" or "key: value" pattern

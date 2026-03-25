@@ -12,6 +12,7 @@ Both inject via additionalContext (supported by UserPromptSubmit hooks).
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import sys
 import os
@@ -202,6 +203,22 @@ def main() -> None:
         sys.exit(0)
 
     combined = "\n\n".join(context_parts)
+
+    # Track which memory IDs were injected — stop hook uses this for contradiction enforcement
+    injected_ids = re.findall(r'id="(\d+)"', combined)
+    if injected_ids:
+        try:
+            state_conn = get_conn()
+            state_conn.execute(
+                "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+                (session_id, json.dumps([int(i) for i in injected_ids]))
+            )
+            state_conn.commit()
+            state_conn.close()
+        except Exception as e:
+            log(f"Failed to store retrieved IDs: {e}")
+
     output: dict[str, Any] = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",

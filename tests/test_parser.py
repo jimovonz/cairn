@@ -104,8 +104,8 @@ def test_confidence_updates():
 </memory>'''
     entries, complete, remaining, context, context_need, conf_updates, *_ = parse_memory_block(text)
     assert len(conf_updates) == 2
-    assert conf_updates[0] == (42, "+")
-    assert conf_updates[1] == (17, "-")
+    assert conf_updates[0] == (42, "+", None)
+    assert conf_updates[1] == (17, "-", None)
 
 
 def test_context_insufficient():
@@ -488,7 +488,7 @@ def test_all_fields_populated():
     assert entries[0]["depth"] == 4
     assert keywords == ["auth", "security", "tokens"]
     assert context == "sufficient"
-    assert conf_updates == [(42, "+")]
+    assert conf_updates == [(42, "+", None)]
     assert retrieval_outcome == "useful"
     assert complete is True
 

@@ -37,7 +37,7 @@ def setup_test_db():
             type TEXT NOT NULL, topic TEXT NOT NULL, content TEXT NOT NULL,
             embedding BLOB, session_id TEXT, project TEXT,
             confidence REAL DEFAULT 0.7,
-            source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER,
+            source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -415,11 +415,11 @@ def test_confidence_updates_applied():
     parsed = parse_memory_block(text)
     conf_updates = parsed.confidence_updates
     assert len(conf_updates) == 2
-    assert conf_updates[0] == (id1, "+")
-    assert conf_updates[1] == (id2, "-")
+    assert conf_updates[0] == (id1, "+", None)
+    assert conf_updates[1] == (id2, "-", None)
 
     # Apply updates manually (as stop_hook would)
-    for memory_id, direction in conf_updates:
+    for memory_id, direction, _reason in conf_updates:
         current = conn.execute("SELECT confidence FROM memories WHERE id = ?", (memory_id,)).fetchone()[0]
         if direction == "+":
             new = min(current + 0.1 * (1 - current), 1.0)

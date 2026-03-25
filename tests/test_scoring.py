@@ -67,7 +67,7 @@ def _confidence_db():
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT, topic TEXT, content TEXT, embedding BLOB, session_id TEXT,
         project TEXT, confidence REAL DEFAULT 0.7, source_start INTEGER,
-        source_end INTEGER, anchor_line INTEGER, depth INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id INTEGER, content TEXT, session_id TEXT,
@@ -91,7 +91,7 @@ def test_boost_at_high_confidence_is_tiny():
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.9)")
     conn.commit()
     with patch.object(hook_helpers, 'DB_PATH', db_path):
-        apply_confidence_updates([(1, "+")], session_id="s1")
+        apply_confidence_updates([(1, "+", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
     assert new_conf > 0.9, "Should increase"
     assert new_conf < 0.92, f"At 0.9, boost should be tiny — got {new_conf}"
@@ -107,7 +107,7 @@ def test_boost_at_low_confidence_is_meaningful():
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.3)")
     conn.commit()
     with patch.object(hook_helpers, 'DB_PATH', db_path):
-        apply_confidence_updates([(1, "+")], session_id="s1")
+        apply_confidence_updates([(1, "+", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
     boost = new_conf - 0.3
     assert boost > 0.05, f"At 0.3, boost should be meaningful — got {boost:.3f}"
@@ -123,7 +123,7 @@ def test_penalty_at_high_confidence_is_severe():
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.9)")
     conn.commit()
     with patch.object(hook_helpers, 'DB_PATH', db_path):
-        apply_confidence_updates([(1, "-")], session_id="s1")
+        apply_confidence_updates([(1, "-", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
     drop = 0.9 - new_conf
     assert drop > 0.3, f"At 0.9, penalty should be severe — dropped only {drop:.3f}"
@@ -139,7 +139,7 @@ def test_penalty_at_low_confidence_is_moderate():
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.3)")
     conn.commit()
     with patch.object(hook_helpers, 'DB_PATH', db_path):
-        apply_confidence_updates([(1, "-")], session_id="s1")
+        apply_confidence_updates([(1, "-", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
     drop = 0.3 - new_conf
     assert drop < 0.3, f"At 0.3, penalty should be moderate — dropped {drop:.3f}"
