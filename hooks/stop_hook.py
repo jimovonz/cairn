@@ -363,8 +363,9 @@ def main() -> None:
 
             bootstrap_reminder = (
                 f"You have not checked cairn context in {turns_since} turns. "
-                "Declare context: insufficient with a context_need relevant to what you are "
-                "currently discussing. This retrieves targeted memories that may inform your work."
+                "In your memory block, declare context: insufficient with a context_need relevant to what you are "
+                "currently discussing. Answer the user's question normally — the context declaration goes in "
+                "the memory block only, not in place of your response."
             )
 
             # Check response length — block immediately if short, defer if substantive
