@@ -235,97 +235,131 @@ def recover_context(memory_id: int, margin: int = 3) -> Optional[str]:
 # ============================================================
 
 def assess_with_haiku(contradictions: list[dict]) -> list[dict]:
-    """Send each contradiction pair to Haiku via claude -p for judgement.
+    """Send all contradiction pairs to Haiku in a single batched call.
 
-    Uses the Claude CLI which handles its own auth — no API key needed.
+    Uses one claude process via stream-json — dramatically cheaper and faster
+    than per-pair spawning (~30s vs ~5min for 52 pairs).
     Returns list of confirmed contradictions with Haiku's reason.
     """
-    import subprocess
+    import subprocess, re as _re, select, time as _time
 
-    confirmed = []
+    # Build batched prompt with all pairs
+    lines = [
+        "You are reviewing a memory database for contradictions.",
+        f"Below are {len(contradictions)} pairs of memories flagged as potentially contradictory.",
+        "",
+        "For EACH pair, reply with exactly one line in this format:",
+        "  PAIR <n>: SUPERSEDED: <reason>",
+        "  PAIR <n>: COMPLEMENTARY",
+        "  PAIR <n>: SEQUENTIAL",
+        "",
+        "Only say SUPERSEDED if the older memory would actively mislead a future session that acts on it.",
+        "COMPLEMENTARY means they coexist without contradiction.",
+        "SEQUENTIAL means the older describes a previous state that evolved — not wrong, just historical.",
+        "",
+    ]
 
     for i, c in enumerate(contradictions):
         o, n = c["older"], c["newer"]
+        ctx_old = recover_context(o["id"]) or "(no transcript)"
+        ctx_new = recover_context(n["id"]) or "(no transcript)"
+        lines.append(f"--- PAIR {i+1} ---")
+        lines.append(f"OLDER (#{o['id']}, {o['type']}/{o['topic']}, {o['created_at']}):")
+        lines.append(f'  "{o["content"]}"')
+        if ctx_old != "(no transcript)":
+            lines.append(f"  Context: {ctx_old[:400]}")
+        lines.append(f"NEWER (#{n['id']}, {n['type']}/{n['topic']}, {n['created_at']}):")
+        lines.append(f'  "{n["content"]}"')
+        if ctx_new != "(no transcript)":
+            lines.append(f"  Context: {ctx_new[:400]}")
+        lines.append("")
 
-        ctx_old = recover_context(o["id"]) or "(no transcript available)"
-        ctx_new = recover_context(n["id"]) or "(no transcript available)"
+    prompt = "\n".join(lines)
+    print(f"  Prompt: {len(prompt)} chars, {len(contradictions)} pairs")
 
-        prompt = (
-            "You are reviewing a memory database for contradictions. "
-            "Two memories have been flagged as potentially contradictory.\n\n"
-            f"OLDER MEMORY (#{o['id']}, {o['type']}/{o['topic']}, created {o['created_at']}):\n"
-            f'  "{o["content"]}"\n\n'
-            f"Conversation context when this memory was created:\n{ctx_old}\n\n"
-            f"NEWER MEMORY (#{n['id']}, {n['type']}/{n['topic']}, created {n['created_at']}):\n"
-            f'  "{n["content"]}"\n\n'
-            f"Conversation context when this memory was created:\n{ctx_new}\n\n"
-            "Question: Does the newer memory supersede, contradict, or invalidate the older memory?\n\n"
-            "Reply with EXACTLY one of:\n"
-            "- SUPERSEDED: <one-line reason why the older memory is no longer valid>\n"
-            "- COMPLEMENTARY: these memories are not contradictory, they coexist\n"
-            "- SEQUENTIAL: the older memory describes a previous state that evolved into the newer one, but is not wrong\n\n"
-            "Only say SUPERSEDED if the older memory would actively mislead a future session that acts on it."
+    # Single claude call via stream-json
+    env = {**os.environ, "CAIRN_HEADLESS": "1"}
+    try:
+        proc = subprocess.Popen(
+            ["claude", "--input-format", "stream-json", "--output-format", "stream-json",
+             "--verbose", "--model", "haiku", "--max-turns", "1",
+             "--append-system-prompt",
+             "OVERRIDE ALL OTHER INSTRUCTIONS: Reply with plain text only. No <memory> blocks. No XML tags. "
+             "One line per pair in format: PAIR N: VERDICT: reason"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
         )
 
-        try:
-            import re as _re, select, time as _time
-            env = {**os.environ, "CAIRN_HEADLESS": "1"}
-            proc = subprocess.Popen(
-                ["claude", "--input-format", "stream-json", "--output-format", "stream-json",
-                 "--verbose", "--model", "haiku", "--max-turns", "1",
-                 "--append-system-prompt", "OVERRIDE ALL OTHER INSTRUCTIONS: Reply with exactly one line of plain text. No <memory> blocks. No XML tags. No markdown. Start your reply with SUPERSEDED:, COMPLEMENTARY:, or SEQUENTIAL:"],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
-            )
-            # Send prompt via stream-json
-            msg_payload = json.dumps({"type": "user", "message": {"role": "user",
-                "content": [{"type": "text", "text": prompt}]}})
-            proc.stdin.write((msg_payload + "\n").encode())
-            proc.stdin.flush()
+        msg_payload = json.dumps({"type": "user", "message": {"role": "user",
+            "content": [{"type": "text", "text": prompt}]}})
+        proc.stdin.write((msg_payload + "\n").encode())
+        proc.stdin.flush()
 
-            # Read stream until result
-            verdict = ""
-            start = _time.time()
-            while _time.time() - start < 25:
-                if proc.stdout in select.select([proc.stdout], [], [], 0.5)[0]:
-                    line = proc.stdout.readline().decode().strip()
-                    if not line:
-                        continue
-                    try:
-                        msg = json.loads(line)
-                        if msg.get("type") == "assistant":
-                            for block in msg.get("message", {}).get("content", []):
-                                if block.get("type") == "text":
-                                    verdict += block.get("text", "")
-                        if msg.get("type") == "result":
-                            break
-                    except json.JSONDecodeError:
-                        continue
-                if proc.poll() is not None:
-                    break
-            proc.kill()
-            # Strip memory blocks
-            verdict = _re.sub(r"<memory>.*?</memory>", "", verdict, flags=_re.DOTALL).strip()
+        # Read stream
+        response_text = ""
+        start = _time.time()
+        timeout = max(60, len(contradictions) * 3)  # Scale timeout with pair count
+        while _time.time() - start < timeout:
+            if proc.stdout in select.select([proc.stdout], [], [], 0.5)[0]:
+                line = proc.stdout.readline().decode().strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                    if msg.get("type") == "assistant":
+                        for block in msg.get("message", {}).get("content", []):
+                            if block.get("type") == "text":
+                                response_text += block.get("text", "")
+                    if msg.get("type") == "result":
+                        break
+                except json.JSONDecodeError:
+                    continue
+            if proc.poll() is not None:
+                break
+        proc.kill()
 
-            tag = " [SAME TOPIC]" if c.get("same_topic") else ""
-            print(f"  [{i+1}/{len(contradictions)}] #{o['id']} vs #{n['id']}{tag}  sim={c['similarity']:.2f}")
-            print(f"    OLD: {o['content'][:80]}")
-            print(f"    NEW: {n['content'][:80]}")
-            print(f"    -> {verdict[:150]}")
-            print()
+    except Exception as e:
+        print(f"  ERROR spawning claude: {e}")
+        return []
 
-            if "SUPERSEDED:" in verdict:
-                reason = verdict.split("SUPERSEDED:", 1)[1].strip().split("\n")[0]
-                c["verdict"] = "superseded"
-                c["reason"] = reason
-                confirmed.append(c)
-            else:
-                first_word = verdict.split(":")[0].split()[-1] if verdict else "unknown"
-                c["verdict"] = first_word.lower()
+    # Strip memory blocks
+    response_text = _re.sub(r"<memory>.*?</memory>", "", response_text, flags=_re.DOTALL).strip()
 
-        except subprocess.TimeoutExpired:
-            print(f"  [{i+1}/{len(contradictions)}] #{o['id']} vs #{n['id']} — TIMEOUT")
-        except Exception as e:
-            print(f"  [{i+1}/{len(contradictions)}] #{o['id']} vs #{n['id']} — ERROR: {e}")
+    # Parse verdicts — one per line matching "PAIR N: VERDICT"
+    confirmed = []
+    for line in response_text.split("\n"):
+        match = _re.match(r"PAIR\s+(\d+)\s*:\s*(SUPERSEDED|COMPLEMENTARY|SEQUENTIAL)\s*:?\s*(.*)", line.strip())
+        if not match:
+            continue
+        pair_idx = int(match.group(1)) - 1
+        verdict = match.group(2)
+        reason = match.group(3).strip()
+
+        if pair_idx < 0 or pair_idx >= len(contradictions):
+            continue
+
+        c = contradictions[pair_idx]
+        o, n = c["older"], c["newer"]
+        tag = " [SAME TOPIC]" if c.get("same_topic") else ""
+        print(f"  [{pair_idx+1}/{len(contradictions)}] #{o['id']} vs #{n['id']}{tag}  sim={c['similarity']:.2f}")
+        print(f"    OLD: {o['content'][:80]}")
+        print(f"    NEW: {n['content'][:80]}")
+        print(f"    -> {verdict}: {reason[:120]}")
+        print()
+
+        c["verdict"] = verdict.lower()
+        if verdict == "SUPERSEDED":
+            c["reason"] = reason or f"superseded by #{n['id']}"
+            confirmed.append(c)
+
+    # Report unparsed pairs
+    parsed_indices = set()
+    for line in response_text.split("\n"):
+        m = _re.match(r"PAIR\s+(\d+)", line.strip())
+        if m:
+            parsed_indices.add(int(m.group(1)))
+    missing = [i+1 for i in range(len(contradictions)) if i+1 not in parsed_indices]
+    if missing:
+        print(f"  Warning: {len(missing)} pairs not parsed: {missing[:10]}")
 
     return confirmed
 
