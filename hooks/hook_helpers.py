@@ -10,7 +10,7 @@ from types import ModuleType
 from typing import Optional
 
 CAIRN_DIR = os.path.join(os.path.dirname(__file__), "..", "cairn")
-DB_PATH = os.path.join(CAIRN_DIR, "cairn.db")
+DB_PATH = os.environ.get("CAIRN_DB_PATH", os.path.join(CAIRN_DIR, "cairn.db"))
 LOG_PATH = os.path.join(CAIRN_DIR, "hook.log")
 
 sys.path.insert(0, CAIRN_DIR)
@@ -44,6 +44,8 @@ def record_metric(session_id: str, event: str, detail: Optional[str] = None,
 
 def get_embedder() -> Optional[ModuleType]:
     """Lazy-load the embeddings module."""
+    if os.environ.get("CAIRN_SKIP_EMBEDDER"):
+        return None
     try:
         import embeddings
         return embeddings

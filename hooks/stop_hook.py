@@ -391,9 +391,10 @@ def main() -> None:
 
     # Question-before-cairn enforcement — if the LLM is asking the user a question
     # but hasn't declared context: insufficient, it should check cairn first.
-    # Skip if context was explicitly declared (sufficient or insufficient) — the LLM
-    # has consciously considered cairn. Only fire when context wasn't thought about.
-    if not is_continuation and context != "insufficient" and not parsed.context_explicit:
+    # Skip on continuations (prevent loops). Skip if context: insufficient was declared
+    # (already checking cairn). The LLM can bypass by declaring context: insufficient
+    # with a relevant context_need — if cairn has no answer, it proceeds normally.
+    if not is_continuation and context != "insufficient":
         response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
         # Strip code blocks and quoted strings to avoid false positives
         response_no_code = re.sub(r"```[\s\S]*?```", "", response_stripped)
@@ -417,69 +418,12 @@ def main() -> None:
             }))
             sys.exit(2)
 
-    # Contradiction enforcement — check if response contradicts retrieved memories
-    # without the LLM annotating them via -!
-    if not is_continuation:
-        try:
-            conn3 = get_conn()
-            ids_row = conn3.execute(
-                "SELECT value FROM hook_state WHERE session_id = ? AND key = 'retrieved_ids'",
-                (session_id,)
-            ).fetchone()
-            if ids_row:
-                import json as _json2
-                retrieved_ids = _json2.loads(ids_row[0])
-                # IDs that were annotated via -! in this response
-                annotated_ids = {mid for mid, d, _ in confidence_updates if d == "-!"}
-
-                emb2 = get_embedder()
-                if emb2 and retrieved_ids:
-                    response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
-                    if len(response_stripped) > 50:  # Only check substantive responses
-                        from storage import _has_negation_mismatch
-                        # Split response into sentences for targeted negation comparison
-                        # Limit to longest sentences (most likely to contain substantive claims)
-                        sentences = [s.strip() for s in re.split(r'[.!?\n]', response_stripped) if len(s.strip()) > 20]
-                        sentences.sort(key=len, reverse=True)
-                        sentences = sentences[:10]
-                        for mid in retrieved_ids:
-                            if mid in annotated_ids:
-                                continue
-                            row = conn3.execute(
-                                "SELECT content, embedding FROM memories WHERE id = ?", (mid,)
-                            ).fetchone()
-                            if not row or not row[1]:
-                                continue
-                            mem_content, mem_embedding = row[0], row[1]
-                            mem_vec = emb2.from_blob(mem_embedding)
-                            # Find the most relevant sentence to compare against the memory
-                            best_sim = 0.0
-                            best_sentence = ""
-                            for sent in sentences:
-                                sent_vec = emb2.embed(sent, allow_slow=False)
-                                if sent_vec is not None:
-                                    sim = emb2.cosine_similarity(sent_vec, mem_vec)
-                                    if sim > best_sim:
-                                        best_sim = sim
-                                        best_sentence = sent
-                            # Only check negation on the most relevant sentence, not the whole response
-                            if best_sim >= 0.5 and _has_negation_mismatch(best_sentence, mem_content):
-                                    log(f"Contradiction enforcement: sentence contradicts memory {mid} (sim={best_sim:.2f}): {best_sentence[:80]}")
-                                    record_metric(session_id, "contradiction_unaddressed", f"{mid}")
-                                    increment_continuation(session_id)
-                                    print(json.dumps({
-                                        "decision": "block",
-                                        "reason": (
-                                            f"Your response appears to contradict retrieved memory #{mid}: "
-                                            f'"{mem_content[:150]}". '
-                                            f"If this memory is wrong or superseded, annotate it with: "
-                                            f"- confidence_update: {mid}:-! <reason>"
-                                        )
-                                    }))
-                                    sys.exit(2)
-            conn3.close()
-        except Exception as e:
-            log(f"Contradiction enforcement error: {e}")
+    # Inline contradiction enforcement — DISABLED
+    # False positive rate too high despite sentence-level fix, quote stripping, threshold tuning.
+    # Causes re-prompt loops that block real work. Voluntary -! annotations plus the offline
+    # contradiction_scan.py provide the same safety net without blocking.
+    # See memories #959, #928, #888, #897 for the full history.
+    # The retrieved_ids tracking is kept for future use if a better heuristic is found.
 
     # Check completeness — complete must be explicitly True to pass.
     # If omitted (None) or False, treat as incomplete.

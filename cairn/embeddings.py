@@ -260,7 +260,9 @@ def find_similar(
     if limit is None:
         limit = MAX_INJECTED_ENTRIES
 
-    query_vec = embed(text)
+    # Prefix query with project to match how stored embeddings are augmented
+    query_text = f"{current_project} {text}" if current_project else text
+    query_vec = embed(query_text)
     k = limit * 5  # Over-fetch for post-filtering
 
     candidates: list[dict[str, Any]] = []
