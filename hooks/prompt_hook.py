@@ -151,7 +151,7 @@ def main() -> None:
     raw = sys.stdin.read()
     hook_input = json.loads(raw)
     session_id = hook_input.get("session_id", "")
-    user_message = hook_input.get("user_message", "")
+    user_message = hook_input.get("user_message") or hook_input.get("prompt", "")
 
     if not user_message or len(user_message) < 3:
         sys.exit(0)
