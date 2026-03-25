@@ -493,6 +493,42 @@ def test_all_fields_populated():
     assert complete is True
 
 
+def test_contradiction_annotation_parsing():
+    """The -! syntax should extract direction and reason as separate fields."""
+    text = '''response
+<memory>
+- confidence_update: 42:-! replaced by GCE edge approach
+- confidence_update: 17:-! no longer valid since migration
+- confidence_update: 5:+
+- complete: true
+- context: sufficient
+- keywords: test
+</memory>'''
+    parsed = parse_memory_block(text)
+    conf_updates = parsed.confidence_updates
+    assert len(conf_updates) == 3
+    assert conf_updates[0] == (42, "-!", "replaced by GCE edge approach")
+    assert conf_updates[1] == (17, "-!", "no longer valid since migration")
+    assert conf_updates[2] == (5, "+", None)
+
+
+def test_contradiction_annotation_without_reason():
+    """-! with no reason should still parse, with None reason."""
+    text = '''response
+<memory>
+- confidence_update: 42:-!
+- complete: true
+- context: sufficient
+- keywords: test
+</memory>'''
+    parsed = parse_memory_block(text)
+    conf_updates = parsed.confidence_updates
+    assert len(conf_updates) == 1
+    assert conf_updates[0][0] == 42
+    assert conf_updates[0][1] == "-!"
+    assert conf_updates[0][2] is None or conf_updates[0][2] == ""
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0

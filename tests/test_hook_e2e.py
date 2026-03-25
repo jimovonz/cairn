@@ -373,6 +373,189 @@ def test_realistic_claude_markdown_wrapped():
 
 
 # ============================================================
+# Contradiction enforcement: blocks when response contradicts
+# a retrieved memory without -! annotation
+# ============================================================
+
+def test_contradiction_enforcement_blocks():
+    """If retrieved memories exist in hook_state and the response negates one,
+    the stop hook should block and request a -! annotation."""
+    import numpy as np
+    db_path, conn = fresh_db()
+
+    # Insert a memory that will be "retrieved"
+    vec = np.random.randn(384).astype(np.float32)
+    vec = vec / np.linalg.norm(vec)
+    blob = vec.tobytes()
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, embedding, session_id, project, confidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("decision", "tunnel-approach", "Use Cloudflare tunnel for public access", blob, "old-sess", "proj", 0.7)
+    )
+    # Simulate prompt hook having recorded this memory as retrieved
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP)",
+        ("sess-contradict", json.dumps([1]))
+    )
+    conn.commit()
+
+    # Response that contradicts the retrieved memory (negation: "not" + "replaced" + "removed")
+    response = (
+        "We replaced the Cloudflare tunnel and removed cloudflared entirely. "
+        "The GCE edge server is not using tunnels anymore.\n"
+        "<memory>\n- type: fact\n- topic: edge-setup\n- content: GCE edge server deployed at conduit.alimento.co.nz replacing cloudflare tunnel\n"
+        "- complete: true\n- context: sufficient\n- keywords: edge, tunnel\n</memory>"
+    )
+
+    # Need a real embedder for similarity comparison — mock it
+    from unittest.mock import MagicMock
+    mock_emb = MagicMock()
+    # Response embedding — just return the same vector (high similarity)
+    mock_emb.embed.return_value = vec
+    mock_emb.from_blob.return_value = vec
+    mock_emb.cosine_similarity.return_value = 0.6  # Above 0.4 threshold
+    mock_emb.to_blob.return_value = blob
+    mock_emb.find_nearest.return_value = []
+    mock_emb.upsert_vec_index = MagicMock()
+
+    payload = {
+        "stop_hook_active": False,
+        "session_id": "sess-contradict",
+        "transcript_path": "",
+        "cwd": "/tmp/proj",
+        "last_assistant_message": response
+    }
+
+    import hook_helpers
+    payload_json = json.dumps(payload)
+    captured_output = StringIO()
+    exit_code = [0]
+
+    def mock_exit(code=0):
+        exit_code[0] = code
+        raise SystemExit(code)
+
+    original_db = hook_helpers.DB_PATH
+    original_log = hook_helpers.LOG_PATH
+
+    try:
+        hook_helpers.DB_PATH = db_path
+        hook_helpers.LOG_PATH = os.path.join(TEST_DIR, 'test.log')
+
+        import stop_hook
+        with patch('sys.stdin', StringIO(payload_json)), \
+             patch('sys.stdout', captured_output), \
+             patch('sys.exit', mock_exit), \
+             patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+             patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
+            try:
+                stop_hook.main()
+            except SystemExit:
+                pass
+    finally:
+        hook_helpers.DB_PATH = original_db
+        hook_helpers.LOG_PATH = original_log
+
+    output = captured_output.getvalue()
+    assert exit_code[0] == 2, f"Should block (exit 2), got exit {exit_code[0]}"
+    result = json.loads(output)
+    assert result["decision"] == "block"
+    assert "contradict" in result["reason"].lower()
+    assert "1" in result["reason"]  # References memory ID 1
+
+    # Verify metric was recorded
+    metric = conn.execute(
+        "SELECT detail FROM metrics WHERE event = 'contradiction_unaddressed'"
+    ).fetchone()
+    assert metric is not None, "Should record contradiction_unaddressed metric"
+    conn.close()
+
+
+def test_contradiction_enforcement_skips_when_annotated():
+    """If the LLM already annotated the contradicted memory with -!, enforcement should not block."""
+    import numpy as np
+    db_path, conn = fresh_db()
+
+    vec = np.random.randn(384).astype(np.float32)
+    vec = vec / np.linalg.norm(vec)
+    blob = vec.tobytes()
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, embedding, session_id, project, confidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("decision", "tunnel-approach", "Use Cloudflare tunnel for public access", blob, "old-sess", "proj", 0.7)
+    )
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP)",
+        ("sess-annotated", json.dumps([1]))
+    )
+    conn.commit()
+
+    # Response contradicts AND includes -! annotation — should pass
+    response = (
+        "We replaced the Cloudflare tunnel with GCE edge.\n"
+        "<memory>\n- type: decision\n- topic: edge-approach\n- content: GCE edge replaces cloudflare tunnel\n"
+        "- confidence_update: 1:-! replaced by GCE edge approach\n"
+        "- complete: true\n- context: sufficient\n- keywords: edge\n</memory>"
+    )
+
+    from unittest.mock import MagicMock
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = vec
+    mock_emb.from_blob.return_value = vec
+    mock_emb.cosine_similarity.return_value = 0.6
+    mock_emb.to_blob.return_value = blob
+    mock_emb.find_nearest.return_value = []
+    mock_emb.upsert_vec_index = MagicMock()
+
+    payload = {
+        "stop_hook_active": False,
+        "session_id": "sess-annotated",
+        "transcript_path": "",
+        "cwd": "/tmp/proj",
+        "last_assistant_message": response
+    }
+
+    import hook_helpers
+    payload_json = json.dumps(payload)
+    captured_output = StringIO()
+    exit_code = [0]
+
+    def mock_exit(code=0):
+        exit_code[0] = code
+        raise SystemExit(code)
+
+    original_db = hook_helpers.DB_PATH
+    original_log = hook_helpers.LOG_PATH
+
+    try:
+        hook_helpers.DB_PATH = db_path
+        hook_helpers.LOG_PATH = os.path.join(TEST_DIR, 'test.log')
+
+        import stop_hook
+        with patch('sys.stdin', StringIO(payload_json)), \
+             patch('sys.stdout', captured_output), \
+             patch('sys.exit', mock_exit), \
+             patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+             patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
+            try:
+                stop_hook.main()
+            except SystemExit:
+                pass
+    finally:
+        hook_helpers.DB_PATH = original_db
+        hook_helpers.LOG_PATH = original_log
+
+    # Should NOT block — the -! annotation was provided
+    assert exit_code[0] == 0, f"Should allow stop (exit 0), got exit {exit_code[0]}"
+
+    # The -! should have written archived_reason
+    row = conn.execute("SELECT archived_reason FROM memories WHERE id = 1").fetchone()
+    assert row[0] is not None, "Should have archived_reason from -! annotation"
+    assert "GCE edge" in row[0]
+    conn.close()
+
+
+# ============================================================
 # Cleanup
 # ============================================================
 
