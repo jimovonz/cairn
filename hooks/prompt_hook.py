@@ -83,11 +83,12 @@ def format_entry(r: dict[str, Any]) -> str:
         days = max(0, (datetime.now() - updated).days)
     except (ValueError, TypeError, KeyError):
         pass
-    if r.get("archived"):
-        reason = r.get("archived_reason", "unknown")
+    reason = r.get("archived_reason")
+    if r.get("archived") or reason:
+        reason = reason or "unknown"
         return (
             f'  <entry id="{r["id"]}" type="{r["type"]}" topic="{r["topic"]}" '
-            f'project="{proj}" archived="true" reason="{reason}" days="{days}">'
+            f'project="{proj}" superseded="true" reason="{reason}" days="{days}">'
             f'{r["content"]}</entry>'
         )
     return (

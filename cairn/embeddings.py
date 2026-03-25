@@ -162,7 +162,7 @@ def _vec_candidates(
     """Get top-k candidates from sqlite-vec index."""
     query_blob = to_blob(query_vec)
     rows = conn.execute("""
-        SELECT v.memory_id, v.distance, m.type, m.topic, m.content, m.updated_at, m.project, m.confidence, m.depth
+        SELECT v.memory_id, v.distance, m.type, m.topic, m.content, m.updated_at, m.project, m.confidence, m.depth, m.archived_reason
         FROM memories_vec v
         JOIN memories m ON v.memory_id = m.id
         WHERE v.embedding MATCH ?
@@ -184,6 +184,7 @@ def _vec_candidates(
             "project": row[6],
             "confidence": confidence,
             "depth": row[8],
+            "archived_reason": row[9],
             "score": composite_score(sim, confidence, row[5], row[6], current_project)
         })
     return results
@@ -197,7 +198,7 @@ def _brute_force_candidates(
 ) -> list[dict[str, Any]]:
     """Get top-k candidates via brute-force scan."""
     rows = conn.execute(
-        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, depth FROM memories WHERE embedding IS NOT NULL"
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, depth, archived_reason FROM memories WHERE embedding IS NOT NULL"
     ).fetchall()
 
     results: list[dict[str, Any]] = []
@@ -215,6 +216,7 @@ def _brute_force_candidates(
             "project": row[6],
             "confidence": confidence,
             "depth": row[8],
+            "archived_reason": row[9],
             "score": composite_score(sim, confidence, row[5], row[6], current_project)
         })
 
