@@ -170,18 +170,21 @@ def test_dedup_same_type_topic_overwrites():
 # Test: Contradiction — same type+topic, different content → confidence drop
 # ============================================================
 
-def test_contradiction_drops_confidence():
-    """Overwriting same type+topic with different content should drop old confidence to 0.2."""
+def test_contradiction_annotates_old_memory():
+    """Overwriting same type+topic with different content should annotate old memory as superseded."""
     db_path, conn = setup_test_db()
     id1 = insert_memory(conn, "decision", "db-choice", "Use PostgreSQL", confidence=0.8, seed=100)
 
-    # Simulate the contradiction handling from stop_hook
+    # Simulate the contradiction handling from storage.py insert_memories
     old_content = conn.execute("SELECT content FROM memories WHERE id = ?", (id1,)).fetchone()[0]
     new_content = "Use SQLite"
     assert old_content != new_content
 
-    # Drop confidence then overwrite (as stop_hook does)
-    conn.execute("UPDATE memories SET confidence = 0.2 WHERE id = ? AND confidence > 0.2", (id1,))
+    # Annotate as superseded then overwrite (as storage.py now does)
+    conn.execute(
+        "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (f"superseded: {new_content[:200]}", id1)
+    )
     conn.execute(
         "UPDATE memories SET content = ?, confidence = 0.7, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         (new_content, id1)
@@ -194,6 +197,11 @@ def test_contradiction_drops_confidence():
     # Old content preserved in history
     old = conn.execute("SELECT content FROM memory_history WHERE memory_id = ?", (id1,)).fetchone()
     assert old[0] == "Use PostgreSQL"
+    # Supersession annotation present
+    reason = conn.execute("SELECT archived_reason FROM memories WHERE id = ?", (id1,)).fetchone()[0]
+    assert reason is not None
+    assert "superseded" in reason
+    assert "SQLite" in reason
     conn.close()
 
 

@@ -407,10 +407,17 @@ def test_contradiction_enforcement_blocks():
         "- complete: true\n- context: sufficient\n- keywords: edge, tunnel\n</memory>"
     )
 
-    # Need a real embedder for similarity comparison — mock it
+    # Verify the negation detection precondition — response text must actually
+    # trigger negation mismatch against the memory content
+    from storage import _has_negation_mismatch
+    response_text = response.split("<memory>")[0].strip()
+    mem_content = "Use Cloudflare tunnel for public access"
+    assert _has_negation_mismatch(response_text, mem_content), \
+        "Test precondition: response must trigger negation detection against the memory"
+
+    # Mock embedder for similarity comparison
     from unittest.mock import MagicMock
     mock_emb = MagicMock()
-    # Response embedding — just return the same vector (high similarity)
     mock_emb.embed.return_value = vec
     mock_emb.from_blob.return_value = vec
     mock_emb.cosine_similarity.return_value = 0.6  # Above 0.4 threshold
