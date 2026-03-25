@@ -198,6 +198,57 @@ def test_empty_db_no_injection():
     conn.close()
 
 
+# ============================================================
+# Retrieved ID tracking for contradiction enforcement
+# ============================================================
+
+def test_injected_ids_stored_in_hook_state():
+    """When context is injected containing entry IDs, prompt hook should
+    write those IDs to hook_state for the stop hook's contradiction enforcement."""
+    import prompt_hook
+    db_path, conn = fresh_env()
+
+    # Stage Layer 2 context containing entry IDs (as stop hook would after keyword search)
+    staged_context = (
+        '<cairn_context query="test" current_project="proj">\n'
+        '  <scope level="global" weight="low">\n'
+        '    <entry id="42" type="fact" topic="auth" reliability="strong" days="2">Use JWT tokens</entry>\n'
+        '    <entry id="17" type="decision" topic="db" reliability="moderate" days="5">PostgreSQL chosen</entry>\n'
+        '  </scope>\n'
+        '</cairn_context>'
+    )
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value) VALUES (?, 'staged_context', ?)",
+        ("sess-ids", staged_context)
+    )
+    # Mark first prompt as done so Layer 1 doesn't run
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value) VALUES (?, 'first_prompt_done', '1')",
+        ("sess-ids",)
+    )
+    conn.commit()
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        result = run_prompt_hook(db_path, {
+            "session_id": "sess-ids",
+            "user_message": "tell me about the auth decisions"
+        })
+
+    # Context should have been injected
+    assert result is not None
+
+    # Retrieved IDs should be stored in hook_state
+    ids_row = conn.execute(
+        "SELECT value FROM hook_state WHERE session_id = 'sess-ids' AND key = 'retrieved_ids'"
+    ).fetchone()
+    assert ids_row is not None, "Expected retrieved_ids in hook_state"
+    ids = json.loads(ids_row[0])
+    assert 42 in ids
+    assert 17 in ids
+    assert len(ids) == 2
+    conn.close()
+
+
 def cleanup():
     shutil.rmtree(TEST_DIR, ignore_errors=True)
 
