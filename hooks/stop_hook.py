@@ -391,7 +391,9 @@ def main() -> None:
 
     # Question-before-cairn enforcement — if the LLM is asking the user a question
     # but hasn't declared context: insufficient, it should check cairn first.
-    if not is_continuation and context != "insufficient":
+    # Skip if context was explicitly declared (sufficient or insufficient) — the LLM
+    # has consciously considered cairn. Only fire when context wasn't thought about.
+    if not is_continuation and context != "insufficient" and not parsed.context_explicit:
         response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
         # Strip code blocks and quoted strings to avoid false positives
         response_no_code = re.sub(r"```[\s\S]*?```", "", response_stripped)
