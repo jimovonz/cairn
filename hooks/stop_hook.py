@@ -407,22 +407,35 @@ def main() -> None:
                 if emb2 and retrieved_ids:
                     response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
                     if len(response_stripped) > 50:  # Only check substantive responses
-                        response_vec = emb2.embed(response_stripped[:2000], allow_slow=False)
-                        if response_vec is not None:
-                            from storage import _has_negation_mismatch
-                            for mid in retrieved_ids:
-                                if mid in annotated_ids:
-                                    continue
-                                row = conn3.execute(
-                                    "SELECT content, embedding FROM memories WHERE id = ?", (mid,)
-                                ).fetchone()
-                                if not row or not row[1]:
-                                    continue
-                                mem_content, mem_embedding = row[0], row[1]
-                                mem_vec = emb2.from_blob(mem_embedding)
-                                sim = emb2.cosine_similarity(response_vec, mem_vec)
-                                if sim >= 0.4 and _has_negation_mismatch(response_stripped, mem_content):
-                                    log(f"Contradiction enforcement: response contradicts memory {mid} (sim={sim:.2f})")
+                        from storage import _has_negation_mismatch
+                        # Split response into sentences for targeted negation comparison
+                        # Limit to longest sentences (most likely to contain substantive claims)
+                        sentences = [s.strip() for s in re.split(r'[.!?\n]', response_stripped) if len(s.strip()) > 20]
+                        sentences.sort(key=len, reverse=True)
+                        sentences = sentences[:10]
+                        for mid in retrieved_ids:
+                            if mid in annotated_ids:
+                                continue
+                            row = conn3.execute(
+                                "SELECT content, embedding FROM memories WHERE id = ?", (mid,)
+                            ).fetchone()
+                            if not row or not row[1]:
+                                continue
+                            mem_content, mem_embedding = row[0], row[1]
+                            mem_vec = emb2.from_blob(mem_embedding)
+                            # Find the most relevant sentence to compare against the memory
+                            best_sim = 0.0
+                            best_sentence = ""
+                            for sent in sentences:
+                                sent_vec = emb2.embed(sent, allow_slow=False)
+                                if sent_vec is not None:
+                                    sim = emb2.cosine_similarity(sent_vec, mem_vec)
+                                    if sim > best_sim:
+                                        best_sim = sim
+                                        best_sentence = sent
+                            # Only check negation on the most relevant sentence, not the whole response
+                            if best_sim >= 0.5 and _has_negation_mismatch(best_sentence, mem_content):
+                                    log(f"Contradiction enforcement: sentence contradicts memory {mid} (sim={best_sim:.2f}): {best_sentence[:80]}")
                                     record_metric(session_id, "contradiction_unaddressed", f"{mid}")
                                     increment_continuation(session_id)
                                     print(json.dumps({
