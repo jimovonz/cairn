@@ -24,9 +24,6 @@ TRAILING_INTENT_REFS: list[str] = [
     "I'll look into it",
     "I'm going to test this",
     "I'm going to check",
-    "want me to build it",
-    "want me to fix that",
-    "shall I implement this",
 ]
 
 _intent_embeddings: Optional[list[tuple[str, np.ndarray]]] = None
