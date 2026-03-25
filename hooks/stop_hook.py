@@ -393,10 +393,12 @@ def main() -> None:
     # but hasn't declared context: insufficient, it should check cairn first.
     if not is_continuation and context != "insufficient":
         response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
-        # Strip code blocks to avoid matching questions in code/comments
+        # Strip code blocks and quoted strings to avoid false positives
         response_no_code = re.sub(r"```[\s\S]*?```", "", response_stripped)
+        response_no_quotes = re.sub(r'"[^"]*\?"', "", response_no_code)
+        response_no_quotes = re.sub(r"'[^']*\?'", "", response_no_quotes)
         # Check last 3 sentences for question marks (directed at user)
-        sentences = [s.strip() for s in re.split(r'[.\n]', response_no_code) if s.strip()]
+        sentences = [s.strip() for s in re.split(r'[.\n]', response_no_quotes) if s.strip()]
         tail = sentences[-3:] if len(sentences) >= 3 else sentences
         has_question = any("?" in s for s in tail)
         if has_question:
