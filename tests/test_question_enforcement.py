@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import pytest
 
 HOOK_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "hooks", "stop_hook.py")
 PROD_DB = os.path.join(os.path.dirname(__file__), "..", "cairn", "cairn.db")
@@ -38,6 +39,16 @@ def teardown():
             if os.path.exists(p):
                 os.unlink(p)
     print("Test DB cleaned up")
+
+
+def setup_module(module):
+    """Pytest hook — ensure DB is set up before any test in this module."""
+    setup()
+
+
+def teardown_module(module):
+    """Pytest hook — clean up after all tests in this module."""
+    teardown()
 
 
 def run_hook(text: str, is_continuation: bool = False, session_id: str = SESSION_ID) -> dict:

@@ -463,18 +463,10 @@ def test_contradiction_enforcement_blocks():
         hook_helpers.DB_PATH = original_db
         hook_helpers.LOG_PATH = original_log
 
-    output = captured_output.getvalue()
-    assert exit_code[0] == 2, f"Should block (exit 2), got exit {exit_code[0]}"
-    result = json.loads(output)
-    assert result["decision"] == "block"
-    assert "contradict" in result["reason"].lower()
-    assert "1" in result["reason"]  # References memory ID 1
-
-    # Verify metric was recorded
-    metric = conn.execute(
-        "SELECT detail FROM metrics WHERE event = 'contradiction_unaddressed'"
-    ).fetchone()
-    assert metric is not None, "Should record contradiction_unaddressed metric"
+    # Inline contradiction enforcement is DISABLED (too many false positives).
+    # Voluntary -! annotations + offline contradiction_scan.py handle this instead.
+    # Test verifies the hook does NOT block on contradictions.
+    assert exit_code[0] == 0, f"Should pass (exit 0) — inline enforcement disabled, got exit {exit_code[0]}"
     conn.close()
 
 
