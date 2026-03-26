@@ -41,7 +41,7 @@ def fresh_db():
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT NOT NULL, topic TEXT NOT NULL, content TEXT NOT NULL,
         embedding BLOB, session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
-        source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER,
+        source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -623,12 +623,69 @@ def test_negation_dampening_in_insert():
             "content": "GNSS is not reliable under canopy"
         }], session_id="s1")
 
-    # Original memory should have reduced confidence (negation detected)
-    old_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
-    assert old_conf < 0.8, f"Expected confidence drop from negation, got {old_conf}"
+    # Original memory should be annotated as superseded (negation detected)
+    row = conn.execute("SELECT confidence, archived_reason FROM memories WHERE id = 1").fetchone()
+    assert row[0] == 0.8, "Confidence should be unchanged — negation annotates, not penalises"
+    assert row[1] is not None, "Expected archived_reason annotation from negation detection"
+    assert "superseded" in row[1], f"Expected 'superseded' in annotation, got: {row[1]}"
     # New memory should also be inserted
     count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
     assert count == 2
+    conn.close()
+
+
+# ============================================================
+# Type+topic contradiction: annotates instead of suppressing
+# ============================================================
+
+def test_type_topic_contradiction_annotates():
+    """When insert_memories finds same type+topic with different content (above
+    DISTINCT_VARIANT_SIM_THRESHOLD), the old memory should get an archived_reason
+    annotation instead of having confidence dropped to 0.2."""
+    db_path, conn = fresh_db()
+    conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'P')")
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, embedding, project, confidence, session_id) VALUES (?,?,?,?,?,?,?)",
+        ("decision", "db-choice", "Use PostgreSQL for the main database", make_blob(100), "P", 0.8, "s1")
+    )
+    conn.commit()
+
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = make_vector(101)
+    mock_emb.to_blob.return_value = make_blob(101)
+    # find_nearest returns nothing — fall through to type+topic exact match
+    mock_emb.find_nearest.return_value = []
+    # Similarity between old and new content is high (same topic, different choice)
+    mock_emb.cosine_similarity = lambda a, b: 0.85  # Above DISTINCT_VARIANT_SIM_THRESHOLD (0.8)
+    mock_emb.upsert_vec_index = MagicMock()
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+         patch.object(storage, 'record_metric') as mock_metric, \
+         patch.object(hook_helpers, 'log'), \
+         patch.object(storage, 'log'):
+        storage.insert_memories([{
+            "type": "decision", "topic": "db-choice",
+            "content": "Use SQLite for zero-config local deployment"
+        }], session_id="s1")
+
+    # Old memory should be annotated as superseded, NOT have confidence dropped
+    row = conn.execute("SELECT content, confidence, archived_reason FROM memories WHERE id = 1").fetchone()
+    # Content is overwritten with the new decision
+    assert row[0] == "Use SQLite for zero-config local deployment"
+    # Confidence is fresh (0.7 default), not 0.2
+    assert row[1] == 0.7, f"Expected fresh confidence 0.7, got {row[1]}"
+    # Supersession annotation present
+    assert row[2] is not None, "Expected archived_reason annotation"
+    assert "superseded" in row[2]
+
+    # Old content preserved in history via trigger
+    old = conn.execute("SELECT content FROM memory_history WHERE memory_id = 1").fetchone()
+    assert old is not None, "Old content should be in history"
+    assert "PostgreSQL" in old[0]
+
+    # Contradiction metric recorded
+    mock_metric.assert_any_call("s1", "contradiction_detected", "decision/db-choice")
     conn.close()
 
 

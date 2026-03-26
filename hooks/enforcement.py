@@ -24,9 +24,6 @@ TRAILING_INTENT_REFS: list[str] = [
     "I'll look into it",
     "I'm going to test this",
     "I'm going to check",
-    "want me to build it",
-    "want me to fix that",
-    "shall I implement this",
 ]
 
 _intent_embeddings: Optional[list[tuple[str, np.ndarray]]] = None
@@ -59,6 +56,11 @@ def check_trailing_intent(text: str) -> Optional[str]:
 
     Returns the matched trailing sentence if intent detected, None otherwise.
     """
+    # Questions are not intent — check before extracting
+    cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
+    if cleaned.rstrip().endswith("?"):
+        return None
+
     last = _extract_last_sentence(text)
     if not last:
         return None

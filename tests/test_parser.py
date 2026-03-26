@@ -104,8 +104,8 @@ def test_confidence_updates():
 </memory>'''
     entries, complete, remaining, context, context_need, conf_updates, *_ = parse_memory_block(text)
     assert len(conf_updates) == 2
-    assert conf_updates[0] == (42, "+")
-    assert conf_updates[1] == (17, "-")
+    assert conf_updates[0] == (42, "+", None)
+    assert conf_updates[1] == (17, "-", None)
 
 
 def test_context_insufficient():
@@ -488,9 +488,45 @@ def test_all_fields_populated():
     assert entries[0]["depth"] == 4
     assert keywords == ["auth", "security", "tokens"]
     assert context == "sufficient"
-    assert conf_updates == [(42, "+")]
+    assert conf_updates == [(42, "+", None)]
     assert retrieval_outcome == "useful"
     assert complete is True
+
+
+def test_contradiction_annotation_parsing():
+    """The -! syntax should extract direction and reason as separate fields."""
+    text = '''response
+<memory>
+- confidence_update: 42:-! replaced by GCE edge approach
+- confidence_update: 17:-! no longer valid since migration
+- confidence_update: 5:+
+- complete: true
+- context: sufficient
+- keywords: test
+</memory>'''
+    parsed = parse_memory_block(text)
+    conf_updates = parsed.confidence_updates
+    assert len(conf_updates) == 3
+    assert conf_updates[0] == (42, "-!", "replaced by GCE edge approach")
+    assert conf_updates[1] == (17, "-!", "no longer valid since migration")
+    assert conf_updates[2] == (5, "+", None)
+
+
+def test_contradiction_annotation_without_reason():
+    """-! with no reason should still parse, with None reason."""
+    text = '''response
+<memory>
+- confidence_update: 42:-!
+- complete: true
+- context: sufficient
+- keywords: test
+</memory>'''
+    parsed = parse_memory_block(text)
+    conf_updates = parsed.confidence_updates
+    assert len(conf_updates) == 1
+    assert conf_updates[0][0] == 42
+    assert conf_updates[0][1] == "-!"
+    assert conf_updates[0][2] is None or conf_updates[0][2] == ""
 
 
 if __name__ == "__main__":

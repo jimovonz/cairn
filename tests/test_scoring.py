@@ -67,7 +67,7 @@ def _confidence_db():
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT, topic TEXT, content TEXT, embedding BLOB, session_id TEXT,
         project TEXT, confidence REAL DEFAULT 0.7, source_start INTEGER,
-        source_end INTEGER, anchor_line INTEGER, depth INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id INTEGER, content TEXT, session_id TEXT,
@@ -91,7 +91,7 @@ def test_boost_at_high_confidence_is_tiny():
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.9)")
     conn.commit()
     with patch.object(hook_helpers, 'DB_PATH', db_path):
-        apply_confidence_updates([(1, "+")], session_id="s1")
+        apply_confidence_updates([(1, "+", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
     assert new_conf > 0.9, "Should increase"
     assert new_conf < 0.92, f"At 0.9, boost should be tiny — got {new_conf}"
@@ -107,7 +107,7 @@ def test_boost_at_low_confidence_is_meaningful():
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.3)")
     conn.commit()
     with patch.object(hook_helpers, 'DB_PATH', db_path):
-        apply_confidence_updates([(1, "+")], session_id="s1")
+        apply_confidence_updates([(1, "+", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
     boost = new_conf - 0.3
     assert boost > 0.05, f"At 0.3, boost should be meaningful — got {boost:.3f}"
@@ -123,7 +123,7 @@ def test_penalty_at_high_confidence_is_severe():
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.9)")
     conn.commit()
     with patch.object(hook_helpers, 'DB_PATH', db_path):
-        apply_confidence_updates([(1, "-")], session_id="s1")
+        apply_confidence_updates([(1, "-", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
     drop = 0.9 - new_conf
     assert drop > 0.3, f"At 0.9, penalty should be severe — dropped only {drop:.3f}"
@@ -139,7 +139,7 @@ def test_penalty_at_low_confidence_is_moderate():
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.3)")
     conn.commit()
     with patch.object(hook_helpers, 'DB_PATH', db_path):
-        apply_confidence_updates([(1, "-")], session_id="s1")
+        apply_confidence_updates([(1, "-", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
     drop = 0.3 - new_conf
     assert drop < 0.3, f"At 0.3, penalty should be moderate — dropped {drop:.3f}"
@@ -192,6 +192,68 @@ def test_enable_disable():
 
 def test_unrelated_sentences():
     assert not _has_negation_mismatch("the sky is blue", "the database uses SQLite")
+
+
+def test_contradiction_annotation_writes_archived_reason():
+    """The -! feedback should write archived_reason and leave confidence unchanged."""
+    from unittest.mock import patch
+    import hook_helpers
+    from storage import apply_confidence_updates
+    db_path, conn = _confidence_db()
+    conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('decision', 'db-choice', 'Use PostgreSQL', 0.8)")
+    conn.commit()
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        applied = apply_confidence_updates([(1, "-!", "replaced by SQLite for zero-config deployment")], session_id="s1")
+    assert applied == 1
+    row = conn.execute("SELECT confidence, archived_reason FROM memories WHERE id = 1").fetchone()
+    assert row[0] == 0.8, "Confidence should be unchanged by -!"
+    assert row[1] == "replaced by SQLite for zero-config deployment"
+    conn.close()
+
+
+def test_contradiction_annotation_default_reason():
+    """-! with no reason should use a default annotation."""
+    from unittest.mock import patch
+    import hook_helpers
+    from storage import apply_confidence_updates
+    db_path, conn = _confidence_db()
+    conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.7)")
+    conn.commit()
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        apply_confidence_updates([(1, "-!", None)], session_id="s1")
+    row = conn.execute("SELECT archived_reason FROM memories WHERE id = 1").fetchone()
+    assert row[0] is not None, "Should have a default annotation"
+    assert "contradicted" in row[0].lower()
+    conn.close()
+
+
+def test_mixed_feedback_types():
+    """A single response can have +, -, and -! updates applied correctly."""
+    from unittest.mock import patch
+    import hook_helpers
+    from storage import apply_confidence_updates
+    db_path, conn = _confidence_db()
+    conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 'a', 'mem a', 0.7)")
+    conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 'b', 'mem b', 0.7)")
+    conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('decision', 'c', 'mem c', 0.7)")
+    conn.commit()
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        applied = apply_confidence_updates([
+            (1, "+", None),
+            (2, "-", None),
+            (3, "-!", "superseded by new approach"),
+        ], session_id="s1")
+    assert applied == 3
+    r1 = conn.execute("SELECT confidence, archived_reason FROM memories WHERE id = 1").fetchone()
+    r2 = conn.execute("SELECT confidence, archived_reason FROM memories WHERE id = 2").fetchone()
+    r3 = conn.execute("SELECT confidence, archived_reason FROM memories WHERE id = 3").fetchone()
+    assert r1[0] > 0.7, "Boosted"
+    assert r1[1] is None, "Not contradicted"
+    assert r2[0] < 0.7, "Penalised"
+    assert r2[1] is None, "Not contradicted"
+    assert r3[0] == 0.7, "Confidence unchanged by -!"
+    assert r3[1] == "superseded by new approach"
+    conn.close()
 
 
 if __name__ == "__main__":

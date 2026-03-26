@@ -12,6 +12,7 @@ Both inject via additionalContext (supported by UserPromptSubmit hooks).
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import sys
 import os
@@ -82,11 +83,12 @@ def format_entry(r: dict[str, Any]) -> str:
         days = max(0, (datetime.now() - updated).days)
     except (ValueError, TypeError, KeyError):
         pass
-    if r.get("archived"):
-        reason = r.get("archived_reason", "unknown")
+    reason = r.get("archived_reason")
+    if r.get("archived") or reason:
+        reason = reason or "unknown"
         return (
             f'  <entry id="{r["id"]}" type="{r["type"]}" topic="{r["topic"]}" '
-            f'project="{proj}" archived="true" reason="{reason}" days="{days}">'
+            f'project="{proj}" superseded="true" reason="{reason}" days="{days}">'
             f'{r["content"]}</entry>'
         )
     return (
@@ -150,9 +152,11 @@ def main() -> None:
     raw = sys.stdin.read()
     hook_input = json.loads(raw)
     session_id = hook_input.get("session_id", "")
-    user_message = hook_input.get("user_message", "")
+    user_message = hook_input.get("user_message") or hook_input.get("prompt", "")
 
     if not user_message or len(user_message) < 3:
+        if not user_message:
+            log(f"No user message found in hook input. Keys: {list(hook_input.keys())}")
         sys.exit(0)
 
     context_parts: list[str] = []
@@ -202,6 +206,22 @@ def main() -> None:
         sys.exit(0)
 
     combined = "\n\n".join(context_parts)
+
+    # Track which memory IDs were injected — stop hook uses this for contradiction enforcement
+    injected_ids = re.findall(r'id="(\d+)"', combined)
+    if injected_ids:
+        try:
+            state_conn = get_conn()
+            state_conn.execute(
+                "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+                (session_id, json.dumps([int(i) for i in injected_ids]))
+            )
+            state_conn.commit()
+            state_conn.close()
+        except Exception as e:
+            log(f"Failed to store retrieved IDs: {e}")
+
     output: dict[str, Any] = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",

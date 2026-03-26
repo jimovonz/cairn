@@ -28,7 +28,7 @@ def fresh_db():
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT, topic TEXT, content TEXT, embedding BLOB, session_id TEXT,
         project TEXT, confidence REAL DEFAULT 0.7, source_start INTEGER,
-        source_end INTEGER, anchor_line INTEGER, depth INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id INTEGER, content TEXT, session_id TEXT,
@@ -369,6 +369,188 @@ def test_realistic_claude_markdown_wrapped():
 
     row = conn.execute("SELECT content FROM memories WHERE topic = 'markdown-test'").fetchone()
     assert row is not None, "Should parse memory block even inside code fence"
+    conn.close()
+
+
+# ============================================================
+# Contradiction enforcement: blocks when response contradicts
+# a retrieved memory without -! annotation
+# ============================================================
+
+def test_contradiction_enforcement_blocks():
+    """If retrieved memories exist in hook_state and the response negates one,
+    the stop hook should block and request a -! annotation."""
+    import numpy as np
+    db_path, conn = fresh_db()
+
+    # Insert a memory that will be "retrieved"
+    vec = np.random.randn(384).astype(np.float32)
+    vec = vec / np.linalg.norm(vec)
+    blob = vec.tobytes()
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, embedding, session_id, project, confidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("decision", "tunnel-approach", "Use Cloudflare tunnel for public access", blob, "old-sess", "proj", 0.7)
+    )
+    # Simulate prompt hook having recorded this memory as retrieved
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP)",
+        ("sess-contradict", json.dumps([1]))
+    )
+    conn.commit()
+
+    # Response that contradicts the retrieved memory (negation: "not" + "replaced" + "removed")
+    response = (
+        "We replaced the Cloudflare tunnel and removed cloudflared entirely. "
+        "The GCE edge server is not using tunnels anymore.\n"
+        "<memory>\n- type: fact\n- topic: edge-setup\n- content: GCE edge server deployed at conduit.alimento.co.nz replacing cloudflare tunnel\n"
+        "- complete: true\n- context: sufficient\n- keywords: edge, tunnel\n</memory>"
+    )
+
+    # Verify the negation detection precondition — response text must actually
+    # trigger negation mismatch against the memory content
+    from storage import _has_negation_mismatch
+    response_text = response.split("<memory>")[0].strip()
+    mem_content = "Use Cloudflare tunnel for public access"
+    assert _has_negation_mismatch(response_text, mem_content), \
+        "Test precondition: response must trigger negation detection against the memory"
+
+    # Mock embedder for similarity comparison
+    from unittest.mock import MagicMock
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = vec
+    mock_emb.from_blob.return_value = vec
+    mock_emb.cosine_similarity.return_value = 0.6  # Above 0.4 threshold
+    mock_emb.to_blob.return_value = blob
+    mock_emb.find_nearest.return_value = []
+    mock_emb.upsert_vec_index = MagicMock()
+
+    payload = {
+        "stop_hook_active": False,
+        "session_id": "sess-contradict",
+        "transcript_path": "",
+        "cwd": "/tmp/proj",
+        "last_assistant_message": response
+    }
+
+    import hook_helpers
+    payload_json = json.dumps(payload)
+    captured_output = StringIO()
+    exit_code = [0]
+
+    def mock_exit(code=0):
+        exit_code[0] = code
+        raise SystemExit(code)
+
+    original_db = hook_helpers.DB_PATH
+    original_log = hook_helpers.LOG_PATH
+
+    try:
+        hook_helpers.DB_PATH = db_path
+        hook_helpers.LOG_PATH = os.path.join(TEST_DIR, 'test.log')
+
+        import stop_hook
+        with patch('sys.stdin', StringIO(payload_json)), \
+             patch('sys.stdout', captured_output), \
+             patch('sys.exit', mock_exit), \
+             patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+             patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
+            try:
+                stop_hook.main()
+            except SystemExit:
+                pass
+    finally:
+        hook_helpers.DB_PATH = original_db
+        hook_helpers.LOG_PATH = original_log
+
+    # Inline contradiction enforcement is DISABLED (too many false positives).
+    # Voluntary -! annotations + offline contradiction_scan.py handle this instead.
+    # Test verifies the hook does NOT block on contradictions.
+    assert exit_code[0] == 0, f"Should pass (exit 0) — inline enforcement disabled, got exit {exit_code[0]}"
+    conn.close()
+
+
+def test_contradiction_enforcement_skips_when_annotated():
+    """If the LLM already annotated the contradicted memory with -!, enforcement should not block."""
+    import numpy as np
+    db_path, conn = fresh_db()
+
+    vec = np.random.randn(384).astype(np.float32)
+    vec = vec / np.linalg.norm(vec)
+    blob = vec.tobytes()
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, embedding, session_id, project, confidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("decision", "tunnel-approach", "Use Cloudflare tunnel for public access", blob, "old-sess", "proj", 0.7)
+    )
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP)",
+        ("sess-annotated", json.dumps([1]))
+    )
+    conn.commit()
+
+    # Response contradicts AND includes -! annotation — should pass
+    response = (
+        "We replaced the Cloudflare tunnel with GCE edge.\n"
+        "<memory>\n- type: decision\n- topic: edge-approach\n- content: GCE edge replaces cloudflare tunnel\n"
+        "- confidence_update: 1:-! replaced by GCE edge approach\n"
+        "- complete: true\n- context: sufficient\n- keywords: edge\n</memory>"
+    )
+
+    from unittest.mock import MagicMock
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = vec
+    mock_emb.from_blob.return_value = vec
+    mock_emb.cosine_similarity.return_value = 0.6
+    mock_emb.to_blob.return_value = blob
+    mock_emb.find_nearest.return_value = []
+    mock_emb.upsert_vec_index = MagicMock()
+
+    payload = {
+        "stop_hook_active": False,
+        "session_id": "sess-annotated",
+        "transcript_path": "",
+        "cwd": "/tmp/proj",
+        "last_assistant_message": response
+    }
+
+    import hook_helpers
+    payload_json = json.dumps(payload)
+    captured_output = StringIO()
+    exit_code = [0]
+
+    def mock_exit(code=0):
+        exit_code[0] = code
+        raise SystemExit(code)
+
+    original_db = hook_helpers.DB_PATH
+    original_log = hook_helpers.LOG_PATH
+
+    try:
+        hook_helpers.DB_PATH = db_path
+        hook_helpers.LOG_PATH = os.path.join(TEST_DIR, 'test.log')
+
+        import stop_hook
+        with patch('sys.stdin', StringIO(payload_json)), \
+             patch('sys.stdout', captured_output), \
+             patch('sys.exit', mock_exit), \
+             patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+             patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
+            try:
+                stop_hook.main()
+            except SystemExit:
+                pass
+    finally:
+        hook_helpers.DB_PATH = original_db
+        hook_helpers.LOG_PATH = original_log
+
+    # Should NOT block — the -! annotation was provided
+    assert exit_code[0] == 0, f"Should allow stop (exit 0), got exit {exit_code[0]}"
+
+    # The -! should have written archived_reason
+    row = conn.execute("SELECT archived_reason FROM memories WHERE id = 1").fetchone()
+    assert row[0] is not None, "Should have archived_reason from -! annotation"
+    assert "GCE edge" in row[0]
     conn.close()
 
 

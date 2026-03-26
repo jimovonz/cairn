@@ -37,7 +37,7 @@ def setup_test_db():
             type TEXT NOT NULL, topic TEXT NOT NULL, content TEXT NOT NULL,
             embedding BLOB, session_id TEXT, project TEXT,
             confidence REAL DEFAULT 0.7,
-            source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER,
+            source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -170,18 +170,21 @@ def test_dedup_same_type_topic_overwrites():
 # Test: Contradiction — same type+topic, different content → confidence drop
 # ============================================================
 
-def test_contradiction_drops_confidence():
-    """Overwriting same type+topic with different content should drop old confidence to 0.2."""
+def test_contradiction_annotates_old_memory():
+    """Overwriting same type+topic with different content should annotate old memory as superseded."""
     db_path, conn = setup_test_db()
     id1 = insert_memory(conn, "decision", "db-choice", "Use PostgreSQL", confidence=0.8, seed=100)
 
-    # Simulate the contradiction handling from stop_hook
+    # Simulate the contradiction handling from storage.py insert_memories
     old_content = conn.execute("SELECT content FROM memories WHERE id = ?", (id1,)).fetchone()[0]
     new_content = "Use SQLite"
     assert old_content != new_content
 
-    # Drop confidence then overwrite (as stop_hook does)
-    conn.execute("UPDATE memories SET confidence = 0.2 WHERE id = ? AND confidence > 0.2", (id1,))
+    # Annotate as superseded then overwrite (as storage.py now does)
+    conn.execute(
+        "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (f"superseded: {new_content[:200]}", id1)
+    )
     conn.execute(
         "UPDATE memories SET content = ?, confidence = 0.7, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         (new_content, id1)
@@ -194,6 +197,11 @@ def test_contradiction_drops_confidence():
     # Old content preserved in history
     old = conn.execute("SELECT content FROM memory_history WHERE memory_id = ?", (id1,)).fetchone()
     assert old[0] == "Use PostgreSQL"
+    # Supersession annotation present
+    reason = conn.execute("SELECT archived_reason FROM memories WHERE id = ?", (id1,)).fetchone()[0]
+    assert reason is not None
+    assert "superseded" in reason
+    assert "SQLite" in reason
     conn.close()
 
 
@@ -415,11 +423,11 @@ def test_confidence_updates_applied():
     parsed = parse_memory_block(text)
     conf_updates = parsed.confidence_updates
     assert len(conf_updates) == 2
-    assert conf_updates[0] == (id1, "+")
-    assert conf_updates[1] == (id2, "-")
+    assert conf_updates[0] == (id1, "+", None)
+    assert conf_updates[1] == (id2, "-", None)
 
     # Apply updates manually (as stop_hook would)
-    for memory_id, direction in conf_updates:
+    for memory_id, direction, _reason in conf_updates:
         current = conn.execute("SELECT confidence FROM memories WHERE id = ?", (memory_id,)).fetchone()[0]
         if direction == "+":
             new = min(current + 0.1 * (1 - current), 1.0)

@@ -133,7 +133,12 @@ def main() -> None:
     text: str = hook_input.get("last_assistant_message", "")
 
     if not text:
-        log("No text found, allowing stop")
+        log(f"No text found in hook input. Keys: {list(hook_input.keys())}")
+        sys.exit(0)
+
+    # Headless assessment sessions (e.g. contradiction scanner) — skip all enforcement
+    if os.environ.get("CAIRN_HEADLESS"):
+        log("Headless mode — skipping enforcement")
         sys.exit(0)
 
     log(f"Text length: {len(text)}, has <memory>: {'<memory>' in text}, continuation: {is_continuation}")
@@ -303,6 +308,20 @@ def main() -> None:
                         save_context_cache(session_id, served)
                         record_metric(session_id, "context_served", context_need[:100])
                         log(f"Context retrieval for: {context_need[:50]}...")
+
+                        # Track injected IDs for contradiction enforcement
+                        injected_ids = _re.findall(r'id="(\d+)"', retrieved)
+                        if injected_ids:
+                            conn2 = get_conn()
+                            import json as _json
+                            conn2.execute(
+                                "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP) "
+                                "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+                                (session_id, _json.dumps([int(i) for i in injected_ids]))
+                            )
+                            conn2.commit()
+                            conn2.close()
+
                         increment_continuation(session_id)
                         result = {
                             "decision": "block",
@@ -344,8 +363,9 @@ def main() -> None:
 
             bootstrap_reminder = (
                 f"You have not checked cairn context in {turns_since} turns. "
-                "Declare context: insufficient with a context_need relevant to what you are "
-                "currently discussing. This retrieves targeted memories that may inform your work."
+                "In your memory block, declare context: insufficient with a context_need relevant to what you are "
+                "currently discussing. Answer the user's question normally — the context declaration goes in "
+                "the memory block only, not in place of your response."
             )
 
             # Check response length — block immediately if short, defer if substantive
@@ -368,6 +388,43 @@ def main() -> None:
                     log(f"Bootstrap reminder staged for next prompt")
                 except Exception as e:
                     log(f"Failed to stage bootstrap reminder: {e}")
+
+    # Question-before-cairn enforcement — if the LLM is asking the user a question
+    # but hasn't declared context: insufficient, it should check cairn first.
+    # Skip on continuations (prevent loops). Skip if context: insufficient was declared
+    # (already checking cairn). The LLM can bypass by declaring context: insufficient
+    # with a relevant context_need — if cairn has no answer, it proceeds normally.
+    if not is_continuation and context != "insufficient":
+        response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
+        # Strip code blocks and quoted strings to avoid false positives
+        response_no_code = re.sub(r"```[\s\S]*?```", "", response_stripped)
+        response_no_quotes = re.sub(r'"[^"]*\?"', "", response_no_code)
+        response_no_quotes = re.sub(r"'[^']*\?'", "", response_no_quotes)
+        # Check last 3 sentences for question marks (directed at user)
+        sentences = [s.strip() for s in re.split(r'[.\n]', response_no_quotes) if s.strip()]
+        tail = sentences[-3:] if len(sentences) >= 3 else sentences
+        has_question = any("?" in s for s in tail)
+        if has_question:
+            log(f"Question-before-cairn: response asks user a question without checking cairn first")
+            record_metric(session_id, "question_before_cairn")
+            increment_continuation(session_id)
+            print(json.dumps({
+                "decision": "block",
+                "reason": (
+                    "You are about to ask the user a question, but you haven't checked cairn for relevant context. "
+                    "Declare context: insufficient with a context_need matching your question — the cairn may already "
+                    "have the answer from a previous session. Only ask the user if cairn doesn't help. "
+                    "IMPORTANT: Restate your full answer to the user — your previous response was not delivered."
+                )
+            }))
+            sys.exit(2)
+
+    # Inline contradiction enforcement — DISABLED
+    # False positive rate too high despite sentence-level fix, quote stripping, threshold tuning.
+    # Causes re-prompt loops that block real work. Voluntary -! annotations plus the offline
+    # contradiction_scan.py provide the same safety net without blocking.
+    # See memories #959, #928, #888, #897 for the full history.
+    # The retrieved_ids tracking is kept for future use if a better heuristic is found.
 
     # Check completeness — complete must be explicitly True to pass.
     # If omitted (None) or False, treat as incomplete.
