@@ -142,18 +142,18 @@ When a retrieved memory will actively inform your next action — writing code, 
 
 ## Confidence Feedback
 
-Each retrieved memory entry has an `id` and a `confidence` score (0.0 to 1.0). You can provide feedback on memories you were shown by including `confidence_update` lines in your memory block:
+Each retrieved memory entry has an `id` and a `confidence` score (0.0 to 1.0). Confidence represents **veracity** — how well-corroborated a memory is across sessions. It does NOT influence retrieval ranking (similarity, recency, and scope handle that). You can provide feedback on memories you were shown by including `confidence_update` lines in your memory block:
 
 ```
-- confidence_update: 42:+     (memory 42 was useful/accurate — boosts confidence)
-- confidence_update: 17:-     (memory 17 was not useful here — mild confidence penalty)
+- confidence_update: 42:+     (memory 42 is consistent with what I'm seeing — corroboration)
+- confidence_update: 17:-     (memory 17 was not relevant here — no confidence change)
 - confidence_update: 17:-! replaced by GCE edge approach    (memory 17 is WRONG — annotate with reason)
 ```
 
 Rules:
 - Only update memories that were retrieved and shown to you in `<cairn_context>` — use the `id` attribute
-- `+` boosts confidence (saturating: harder to boost high-confidence memories)
-- `-` mild confidence penalty (the memory may be fine, just not relevant here)
+- `+` **corroboration** — the memory is consistent with current observations. Boosts veracity (saturating). Multiple corroborations across sessions build accumulated evidence that the memory is true.
+- `-` **irrelevant** — the memory wasn't useful for this query. No effect on confidence. Irrelevance is not evidence against truth — a memory can be useless in one context and valuable in another.
 - `-!` **contradiction annotation** — the memory is factually wrong or superseded. The reason string is stored as an annotation and the memory remains retrievable with the annotation visible to future sessions. This is the most important feedback signal — it preserves the knowledge that "we tried X and it was wrong because Y"
 - **When you see a retrieved memory that contradicts what you now know, you MUST use `-!` with a reason.** The system will enforce this — if your response contradicts a retrieved memory without a `-!` annotation, you will be re-prompted.
 - Multiple `confidence_update` lines are allowed in a single block
