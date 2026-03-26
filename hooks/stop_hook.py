@@ -413,7 +413,8 @@ def main() -> None:
                 "reason": (
                     "You are about to ask the user a question, but you haven't checked cairn for relevant context. "
                     "Declare context: insufficient with a context_need matching your question — the cairn may already "
-                    "have the answer from a previous session. Only ask the user if cairn doesn't help."
+                    "have the answer from a previous session. Only ask the user if cairn doesn't help. "
+                    "IMPORTANT: Restate your full answer to the user — your previous response was not delivered."
                 )
             }))
             sys.exit(2)
