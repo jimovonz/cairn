@@ -275,10 +275,8 @@ def find_similar(
     if not candidates:
         candidates = _brute_force_candidates(conn, query_vec, k, current_project)
 
-    # Soft confidence inclusion: keep if high similarity OR adequate confidence
-    filtered = [r for r in candidates
-                if r["similarity"] >= threshold
-                and (r["similarity"] >= SOFT_SIM_OVERRIDE or r["confidence"] >= SOFT_CONF_FLOOR)]
+    # Filter by similarity threshold only — confidence no longer gates retrieval
+    filtered = [r for r in candidates if r["similarity"] >= threshold]
 
     if not filtered:
         return []

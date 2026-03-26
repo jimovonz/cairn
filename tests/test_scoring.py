@@ -15,12 +15,11 @@ def test_composite_score_similarity_dominant():
     assert s1 > s2
 
 
-def test_composite_score_confidence_nonlinear():
-    """Confidence squared means 0.9 confidence contributes much more than 0.4."""
+def test_composite_score_confidence_has_no_effect():
+    """Confidence is zeroed in scoring — different confidence should produce same score."""
     s_high = composite_score(0.5, 0.9, "2026-03-20 12:00:00")
     s_low = composite_score(0.5, 0.4, "2026-03-20 12:00:00")
-    # With confidence^2: 0.9^2=0.81 vs 0.4^2=0.16, gap should be significant
-    assert (s_high - s_low) > 0.1
+    assert abs(s_high - s_low) < 0.01, f"Confidence should not affect score: {s_high} vs {s_low}"
 
 
 def test_composite_score_project_scope_boost():
@@ -114,8 +113,8 @@ def test_boost_at_low_confidence_is_meaningful():
     conn.close()
 
 
-def test_penalty_at_high_confidence_is_severe():
-    """Scaled penalty: at 0.9 confidence, penalty should be harsh."""
+def test_irrelevant_does_not_change_confidence():
+    """- (irrelevant) should not adjust confidence at all."""
     from unittest.mock import patch
     import hook_helpers
     from storage import apply_confidence_updates
@@ -125,13 +124,12 @@ def test_penalty_at_high_confidence_is_severe():
     with patch.object(hook_helpers, 'DB_PATH', db_path):
         apply_confidence_updates([(1, "-", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
-    drop = 0.9 - new_conf
-    assert drop > 0.3, f"At 0.9, penalty should be severe — dropped only {drop:.3f}"
+    assert new_conf == 0.9, f"- should not change confidence, got {new_conf}"
     conn.close()
 
 
-def test_penalty_at_low_confidence_is_moderate():
-    """Scaled penalty: at 0.3 confidence, penalty should be smaller."""
+def test_irrelevant_at_low_confidence_unchanged():
+    """- (irrelevant) should not adjust confidence even at low values."""
     from unittest.mock import patch
     import hook_helpers
     from storage import apply_confidence_updates
@@ -141,8 +139,7 @@ def test_penalty_at_low_confidence_is_moderate():
     with patch.object(hook_helpers, 'DB_PATH', db_path):
         apply_confidence_updates([(1, "-", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
-    drop = 0.3 - new_conf
-    assert drop < 0.3, f"At 0.3, penalty should be moderate — dropped {drop:.3f}"
+    assert new_conf == 0.3, f"- should not change confidence, got {new_conf}"
     conn.close()
 
 
@@ -247,9 +244,9 @@ def test_mixed_feedback_types():
     r1 = conn.execute("SELECT confidence, archived_reason FROM memories WHERE id = 1").fetchone()
     r2 = conn.execute("SELECT confidence, archived_reason FROM memories WHERE id = 2").fetchone()
     r3 = conn.execute("SELECT confidence, archived_reason FROM memories WHERE id = 3").fetchone()
-    assert r1[0] > 0.7, "Boosted"
+    assert r1[0] > 0.7, "Boosted (corroborated)"
     assert r1[1] is None, "Not contradicted"
-    assert r2[0] < 0.7, "Penalised"
+    assert r2[0] == 0.7, "- (irrelevant) should not change confidence"
     assert r2[1] is None, "Not contradicted"
     assert r3[0] == 0.7, "Confidence unchanged by -!"
     assert r3[1] == "superseded by new approach"

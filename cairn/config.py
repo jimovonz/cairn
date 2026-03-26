@@ -8,15 +8,14 @@ confidence dynamics, and injection behaviour.
 # === Deduplication ===
 DEDUP_THRESHOLD = 0.95          # Cosine similarity above which entries are considered near-identical
 
-# === Confidence ===
-# Saturating model: boost = BASE * (1 - current), penalty = BASE * (1 + current)
-# This prevents runaway confidence inflation without introducing forgetting.
-# At confidence 0.7: boost = 0.03, penalty = 0.34
-# At confidence 0.9: boost = 0.01, penalty = 0.38
-# At confidence 0.3: boost = 0.07, penalty = 0.26
-CONFIDENCE_DEFAULT = 0.7        # Starting confidence for new memories
+# === Veracity (confidence reframed) ===
+# Confidence now represents accumulated veracity — how well-corroborated a memory is.
+# + means "consistent with what I'm seeing" (corroboration signal)
+# - means "not relevant here" (no effect on confidence — irrelevance is not evidence against truth)
+# -! means "proven wrong" (contradiction annotation with reason)
+# Confidence is NOT used in retrieval scoring — similarity, recency, and scope handle ranking.
+CONFIDENCE_DEFAULT = 0.7        # Starting confidence for new memories (unverified)
 CONFIDENCE_BOOST = 0.1          # Base boost (actual: BOOST * (1 - confidence))
-CONFIDENCE_PENALTY = 0.2        # Base penalty (actual: PENALTY * (1 + confidence))
 CONFIDENCE_MIN = 0.0
 CONFIDENCE_MAX = 1.0
 
@@ -36,9 +35,11 @@ L1_SIM_THRESHOLD = 0.30            # Same as L3 project threshold
 L1_MAX_RESULTS = 7
 
 # === Composite scoring ===
-# score = w_similarity * similarity + w_confidence * confidence + w_recency * recency_decay + w_scope * scope_weight
+# score = w_similarity * similarity + w_recency * recency_decay + w_scope * scope_weight
+# Confidence removed from scoring — it represents veracity (corroboration), not query relevance.
+# Similarity handles per-query relevance, recency proxies staleness, scope prioritises project-local.
 SCORE_W_SIMILARITY = 0.50
-SCORE_W_CONFIDENCE = 0.30
+SCORE_W_CONFIDENCE = 0.0        # Disabled — veracity is not a ranking signal
 SCORE_W_RECENCY = 0.15
 SCORE_W_SCOPE = 0.05
 RECENCY_HALF_LIFE_DAYS = 30        # Days after which recency weight halves
@@ -50,10 +51,11 @@ BORDERLINE_SCORE_FLOOR = 0.50      # Minimum composite score for borderline simi
 RELATIVE_FILTER_RATIO = 0.7        # Keep only entries where similarity >= ratio * max_similarity
 MAX_INJECTED_ENTRIES = 5            # Hard cap on entries injected per retrieval
 
-# === Soft confidence inclusion ===
-# Entries are included if: similarity >= SOFT_SIM_OVERRIDE OR confidence >= SOFT_CONF_FLOOR
-SOFT_SIM_OVERRIDE = 0.60           # High similarity overrides low confidence
-SOFT_CONF_FLOOR = 0.30             # Minimum confidence unless similarity override applies
+# === Soft confidence inclusion (DISABLED) ===
+# Confidence no longer gates retrieval. All memories are retrievable regardless of confidence.
+# Confidence represents veracity/corroboration, not retrieval eligibility.
+SOFT_SIM_OVERRIDE = 0.0            # Disabled — no confidence-based filtering
+SOFT_CONF_FLOOR = 0.0              # Disabled — no confidence floor
 
 # === Dominance suppression ===
 DOMINANCE_EPSILON = 0.05           # If gap between top1 and top2 < epsilon, include both
