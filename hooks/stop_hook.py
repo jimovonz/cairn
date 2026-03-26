@@ -391,9 +391,9 @@ def main() -> None:
 
     # Question-before-cairn enforcement — if the LLM is asking the user a question
     # but hasn't declared context: insufficient, it should check cairn first.
-    # Skip on continuations (prevent loops). Skip if context: insufficient was declared
-    # (already checking cairn). The LLM can bypass by declaring context: insufficient
-    # with a relevant context_need — if cairn has no answer, it proceeds normally.
+    # Deferred (not blocking) to avoid response double-up — the user already sees
+    # the response before the stop hook fires, so blocking + "restate" causes duplicates.
+    # Instead, stage a reminder for the next prompt, same pattern as bootstrap.
     if not is_continuation and context != "insufficient":
         response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
         # Strip code blocks and quoted strings to avoid false positives
@@ -405,19 +405,23 @@ def main() -> None:
         tail = sentences[-3:] if len(sentences) >= 3 else sentences
         has_question = any("?" in s for s in tail)
         if has_question:
-            log(f"Question-before-cairn: response asks user a question without checking cairn first")
+            log(f"Question-before-cairn: deferring reminder to next prompt (avoiding response double-up)")
             record_metric(session_id, "question_before_cairn")
-            increment_continuation(session_id)
-            print(json.dumps({
-                "decision": "block",
-                "reason": (
-                    "You are about to ask the user a question, but you haven't checked cairn for relevant context. "
-                    "Declare context: insufficient with a context_need matching your question — the cairn may already "
-                    "have the answer from a previous session. Only ask the user if cairn doesn't help. "
-                    "IMPORTANT: Restate your full answer to the user — your previous response was not delivered."
-                )
-            }))
-            sys.exit(2)
+            try:
+                staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+                os.makedirs(staged_dir, exist_ok=True)
+                staged_file = os.path.join(staged_dir, f"{session_id}_question_cairn.txt")
+                with open(staged_file, "w") as f:
+                    f.write(
+                        "You asked the user a question without checking cairn for relevant context. "
+                        "In your memory block, declare context: insufficient with a context_need matching "
+                        "your question — the cairn may already have the answer from a previous session. "
+                        "Answer the user's question normally — the context declaration goes in the memory block "
+                        "only, not in place of your response."
+                    )
+                log(f"Question-before-cairn reminder staged for next prompt")
+            except Exception as e:
+                log(f"Failed to stage question-before-cairn reminder: {e}")
 
     # Inline contradiction enforcement — DISABLED
     # False positive rate too high despite sentence-level fix, quote stripping, threshold tuning.
