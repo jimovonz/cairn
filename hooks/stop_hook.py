@@ -309,15 +309,22 @@ def main() -> None:
                         record_metric(session_id, "context_served", context_need[:100])
                         log(f"Context retrieval for: {context_need[:50]}...")
 
-                        # Track injected IDs for contradiction enforcement
+                        # Track injected IDs — accumulate across retrievals for
+                        # contradiction enforcement and per-memory dedup
                         injected_ids = _re.findall(r'id="(\d+)"', retrieved)
                         if injected_ids:
                             conn2 = get_conn()
                             import json as _json
+                            existing_row = conn2.execute(
+                                "SELECT value FROM hook_state WHERE session_id = ? AND key = 'retrieved_ids'",
+                                (session_id,)
+                            ).fetchone()
+                            existing_ids = _json.loads(existing_row[0]) if existing_row and existing_row[0] else []
+                            merged = list(set(existing_ids + [int(i) for i in injected_ids]))
                             conn2.execute(
                                 "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP) "
                                 "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
-                                (session_id, _json.dumps([int(i) for i in injected_ids]))
+                                (session_id, _json.dumps(merged))
                             )
                             conn2.commit()
                             conn2.close()

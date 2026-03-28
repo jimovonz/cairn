@@ -207,15 +207,22 @@ def main() -> None:
 
     combined = "\n\n".join(context_parts)
 
-    # Track which memory IDs were injected — stop hook uses this for contradiction enforcement
+    # Track which memory IDs were injected — accumulate across retrievals for
+    # contradiction enforcement and per-memory dedup
     injected_ids = re.findall(r'id="(\d+)"', combined)
     if injected_ids:
         try:
             state_conn = get_conn()
+            existing_row = state_conn.execute(
+                "SELECT value FROM hook_state WHERE session_id = ? AND key = 'retrieved_ids'",
+                (session_id,)
+            ).fetchone()
+            existing_ids = json.loads(existing_row[0]) if existing_row and existing_row[0] else []
+            merged = list(set(existing_ids + [int(i) for i in injected_ids]))
             state_conn.execute(
                 "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP) "
                 "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
-                (session_id, json.dumps([int(i) for i in injected_ids]))
+                (session_id, json.dumps(merged))
             )
             state_conn.commit()
             state_conn.close()
