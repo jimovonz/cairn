@@ -23,8 +23,9 @@ CONFIDENCE_MAX = 1.0
 L3_PROJECT_SIM_THRESHOLD = 0.25     # Minimum similarity for project-scoped results
 L3_GLOBAL_SIM_WITH_PROJECT = 0.50   # Global threshold when project results exist
 L3_GLOBAL_SIM_WITHOUT_PROJECT = 0.25  # Global threshold when no project results
+L3_PROJECT_QUALITY_FLOOR = 0.45       # Project results below this don't raise the global threshold
 L3_MAX_PROJECT_RESULTS = 7
-L3_MAX_GLOBAL_RESULTS = 5
+L3_MAX_GLOBAL_RESULTS = 7
 
 # === Retrieval — Layer 2 (keyword cross-project, unsolicited) ===
 L2_SIM_THRESHOLD = 0.60            # Must be a strong match to justify unsolicited injection

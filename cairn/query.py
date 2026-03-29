@@ -6,9 +6,10 @@ import sys
 import os
 
 # Re-exec under venv python if not already in the venv
-_venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".venv", "bin", "python3")
-if os.path.exists(_venv_python) and sys.prefix == sys.base_prefix:
-    os.execv(_venv_python, [_venv_python] + sys.argv)
+if __name__ == "__main__":
+    _venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".venv", "bin", "python3")
+    if os.path.exists(_venv_python) and sys.prefix == sys.base_prefix:
+        os.execv(_venv_python, [_venv_python] + sys.argv)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 
@@ -70,21 +71,24 @@ def _parse_date(date_str):
     """
     from datetime import datetime, timedelta
     date_str = date_str.strip().lower()
+    now = datetime.utcnow()
     if date_str == "today":
-        return datetime.now().strftime("%Y-%m-%d")
+        return now.strftime("%Y-%m-%d")
     if date_str == "yesterday":
-        return (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    # Relative: 3d, 2w, 1m
+        return (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    # Relative: 2h, 3d, 2w, 1m
     import re
-    rel = re.match(r"^(\d+)([dwm])$", date_str)
+    rel = re.match(r"^(\d+)([hdwm])$", date_str)
     if rel:
         n, unit = int(rel.group(1)), rel.group(2)
-        if unit == "d":
-            return (datetime.now() - timedelta(days=n)).strftime("%Y-%m-%d")
+        if unit == "h":
+            return (now - timedelta(hours=n)).strftime("%Y-%m-%d %H:%M:%S")
+        elif unit == "d":
+            return (now - timedelta(days=n)).strftime("%Y-%m-%d")
         elif unit == "w":
-            return (datetime.now() - timedelta(weeks=n)).strftime("%Y-%m-%d")
+            return (now - timedelta(weeks=n)).strftime("%Y-%m-%d")
         elif unit == "m":
-            return (datetime.now() - timedelta(days=n * 30)).strftime("%Y-%m-%d")
+            return (now - timedelta(days=n * 30)).strftime("%Y-%m-%d")
     # Assume ISO format
     return date_str
 

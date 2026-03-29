@@ -27,8 +27,10 @@ from storage import _has_negation_mismatch
 
 
 def parse_since(value: str) -> datetime:
-    now = datetime.now()
-    if value.endswith("d"):
+    now = datetime.utcnow()
+    if value.endswith("h"):
+        return now - timedelta(hours=int(value[:-1]))
+    elif value.endswith("d"):
         return now - timedelta(days=int(value[:-1]))
     elif value.endswith("w"):
         return now - timedelta(weeks=int(value[:-1]))
@@ -48,19 +50,28 @@ def scan(since: str | None = None, annotate: bool = False) -> list[dict]:
     conn.execute("PRAGMA busy_timeout = 5000")
 
     # Load all active memories with embeddings
-    where = "WHERE embedding IS NOT NULL AND archived_reason IS NULL"
-    params: tuple = ()
-    if since:
-        since_dt = parse_since(since)
-        where += " AND created_at >= ?"
-        params = (since_dt.strftime("%Y-%m-%d %H:%M:%S"),)
+    base_where = "WHERE embedding IS NOT NULL AND archived_reason IS NULL"
 
     rows = conn.execute(
-        f"SELECT id, type, topic, content, embedding, created_at FROM memories {where} ORDER BY id",
-        params
+        f"SELECT id, type, topic, content, embedding, created_at FROM memories {base_where} ORDER BY id"
     ).fetchall()
 
-    print(f"Scanning {len(rows)} active memories...")
+    # When --since is used, determine which memory IDs are "recent" so we only
+    # form pairs where at least one member is recent (incremental scan).
+    recent_ids: set | None = None
+    if since:
+        since_dt = parse_since(since)
+        since_str = since_dt.strftime("%Y-%m-%d %H:%M:%S")
+        recent_ids = {
+            r[0] for r in conn.execute(
+                f"SELECT id FROM memories {base_where} AND created_at >= ?",
+                (since_str,)
+            ).fetchall()
+        }
+        print(f"Scanning {len(rows)} active memories ({len(recent_ids)} recent since {since_str})..."
+        )
+    else:
+        print(f"Scanning {len(rows)} active memories...")
 
     # Build vectors
     memories = []
@@ -83,6 +94,12 @@ def scan(since: str | None = None, annotate: bool = False) -> list[dict]:
         key = (m["type"], m["topic"])
         by_topic.setdefault(key, []).append(i)
 
+    def _is_recent_pair(m1, m2) -> bool:
+        """When doing incremental scan, at least one member must be recent."""
+        if recent_ids is None:
+            return True
+        return m1["id"] in recent_ids or m2["id"] in recent_ids
+
     # Tier 1: Same type+topic pairs
     for key, indices in by_topic.items():
         if len(indices) < 2:
@@ -90,6 +107,8 @@ def scan(since: str | None = None, annotate: bool = False) -> list[dict]:
         for a in range(len(indices)):
             for b in range(a + 1, len(indices)):
                 m1, m2 = memories[indices[a]], memories[indices[b]]
+                if not _is_recent_pair(m1, m2):
+                    continue
                 sim = float(emb.cosine_similarity(m1["vec"], m2["vec"]))
                 if sim >= 0.50 and _has_negation_mismatch(m1["content"], m2["content"]):
                     older, newer = (m1, m2) if m1["id"] < m2["id"] else (m2, m1)
@@ -105,6 +124,8 @@ def scan(since: str | None = None, annotate: bool = False) -> list[dict]:
     for i, m1 in enumerate(memories):
         for j, m2 in enumerate(memories):
             if j <= i:
+                continue
+            if not _is_recent_pair(m1, m2):
                 continue
             if m1["type"] == m2["type"] and m1["topic"] == m2["topic"]:
                 continue  # Already handled in tier 1
