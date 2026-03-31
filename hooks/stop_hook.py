@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from hook_helpers import log, get_conn, record_metric, get_embedder, get_session_project, DB_PATH
 from parser import parse_memory_block
+from hash_verify import compute_response_hash
 from storage import apply_confidence_updates, insert_memories
 from enforcement import check_trailing_intent, get_continuation_count, increment_continuation, reset_continuation
 from retrieval import (retrieve_context, layer2_cross_project_search,
@@ -149,6 +150,7 @@ def main() -> None:
     context, context_need = parsed.context, parsed.context_need
     confidence_updates, retrieval_outcome = parsed.confidence_updates, parsed.retrieval_outcome
     keywords, intent = parsed.keywords, parsed.intent
+    hash_claimed = parsed.hash_claimed
 
     # No memory block found
     if entries is None and complete is None:
@@ -199,16 +201,22 @@ def main() -> None:
 
     # Strict field validation — enforce explicit declaration of all required fields
     missing_fields: list[str] = []
-    if not parsed.complete_explicit:
-        missing_fields.append("complete: [true|false]")
-    if not parsed.context_explicit:
-        missing_fields.append("context: [sufficient|insufficient]")
-    if not parsed.keywords_explicit:
-        missing_fields.append("keywords: [comma-separated topic keywords]")
+    if not parsed.is_compact:
+        # Verbose format: require explicit complete, context, keywords
+        if not parsed.complete_explicit:
+            missing_fields.append("complete: [true|false]")
+        if not parsed.context_explicit:
+            missing_fields.append("context: [sufficient|insufficient]")
+        if not parsed.keywords_explicit:
+            missing_fields.append("keywords: [comma-separated topic keywords]")
+    else:
+        # Compact format: keywords required on entries via [k: ...], not on no-ops
+        if entries and not parsed.keywords_explicit:
+            missing_fields.append("[k: keywords] on entry line")
     if complete is False and not remaining:
-        missing_fields.append("remaining: [what still needs doing]")
+        missing_fields.append("remaining: [what still needs doing]" if not parsed.is_compact else "- :what still needs doing")
     if context == "insufficient" and not context_need:
-        missing_fields.append("context_need: [what context is missing]")
+        missing_fields.append("context_need: [what context is missing]" if not parsed.is_compact else "c?:what context is missing")
 
     # Validate entry completeness — every entry needs type, topic, content
     incomplete_entries: list[str] = []
@@ -224,12 +232,26 @@ def main() -> None:
             hints.append(f"Memory block is missing: {', '.join(missing_fields)}.")
         if incomplete_entries:
             hints.append(f"Incomplete entries: {'; '.join(incomplete_entries)}.")
-        hint_text = " ".join(hints) + " All fields are required. Use this format:\n<memory>\n- type: fact\n- topic: short key\n- content: one line\n- complete: true\n- context: sufficient\n- keywords: relevant, topic, words\n</memory>"
+        if parsed.is_compact:
+            hint_text = " ".join(hints) + " Use this format:\n<memory>\ntype/topic: content [k: keyword1, keyword2]\n+ c h:NNN\n</memory>"
+        else:
+            hint_text = " ".join(hints) + " All fields are required. Use this format:\n<memory>\n- type: fact\n- topic: short key\n- content: one line\n- complete: true\n- context: sufficient\n- keywords: relevant, topic, words\n</memory>"
         log(f"Strict validation failed: {hint_text[:200]}")
         record_metric(session_id, "strict_validation_failed", hint_text[:100])
         increment_continuation(session_id)
         print(json.dumps({"decision": "block", "reason": hint_text}))
         sys.exit(0)
+
+    # Hash verification — optional, log-only (not blocking)
+    if hash_claimed is not None:
+        from hash_verify import verify_hash
+        match, actual = verify_hash(text, hash_claimed)
+        if match:
+            log(f"Hash verified: {actual:X}")
+            record_metric(session_id, "hash_verified", None, actual)
+        else:
+            log(f"Hash mismatch (non-blocking): claimed={hash_claimed:X}, actual={actual:X}")
+            record_metric(session_id, "hash_mismatch", f"claimed={hash_claimed:X} actual={actual:X}")
 
     # Content density validation — reject lazy/thin entries
     density_issues: list[str] = []
@@ -295,7 +317,22 @@ def main() -> None:
             emb = get_embedder()
             served: list = load_context_cache(session_id)
             if not is_context_cached(context_need, served, emb):
-                retrieved: Optional[str] = retrieve_context(context_need, session_id=session_id)
+                # Check if this retrieval was triggered by bootstrap — apply tighter cap
+                _is_bootstrap = False
+                try:
+                    _bc = get_conn()
+                    _brow = _bc.execute(
+                        "SELECT value FROM metrics WHERE session_id = ? AND event = 'context_bootstrap_triggered' "
+                        "ORDER BY created_at DESC LIMIT 1", (session_id,)
+                    ).fetchone()
+                    _bc.close()
+                    if _brow:
+                        _is_bootstrap = True
+                except Exception:
+                    pass
+                from config import BOOTSTRAP_MAX_PER_SCOPE
+                _max_scope = BOOTSTRAP_MAX_PER_SCOPE if _is_bootstrap else None
+                retrieved: Optional[str] = retrieve_context(context_need, session_id=session_id, max_per_scope=_max_scope)
                 if retrieved:
                     import re as _re
                     score_match: Optional[re.Match[str]] = _re.search(r'score="([0-9.]+)"', retrieved)
@@ -448,7 +485,12 @@ def main() -> None:
             sys.exit(0)
         increment_continuation(session_id)
         if complete is None:
-            llm_reason: str = "Memory block is missing 'complete: true'. You must explicitly declare completeness. Add '- complete: true' if you are done, or '- complete: false' with '- remaining: ...' if not."
+            llm_reason: str = (
+                "Memory block is missing completeness declaration. "
+                "Compact format: add a control line '+ c h:NNN' (where NNN is your response hash). "
+                "Verbose format: add '- complete: true'. "
+                "See the Response Hash section in your rules for how to compute h:NNN."
+            )
         else:
             llm_reason = f"Response marked incomplete. Continue with: {remaining}" if remaining else "Response marked incomplete. Continue."
         result = {
@@ -472,7 +514,7 @@ def main() -> None:
                 "reason": (
                     f"Your response ends with a stated intent to act: \"{intent_result}\". "
                     "Either follow through now, or remove the promise. "
-                    "If you genuinely have nothing more to do, add '- intent: resolved' to your <memory> block."
+                    "If you genuinely have nothing more to do, add 'intent: resolved' to your <memory> block."
                 )
             }
             print(json.dumps(result))

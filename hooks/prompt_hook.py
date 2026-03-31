@@ -168,6 +168,10 @@ def main() -> None:
         if l1_context:
             context_parts.append(l1_context)
             log(f"Layer 1: injected context for: {user_message[:50]}...")
+        # Memory block reminder on first prompt
+        context_parts.append(
+            "MEMORY BLOCK: End every response with a <memory> block — entries, control signals, and confidence feedback."
+        )
 
     # Clean up stale staged context (older than 7 days — sessions unlikely to resume)
     try:

@@ -529,6 +529,234 @@ def test_contradiction_annotation_without_reason():
     assert conf_updates[0][2] is None or conf_updates[0][2] == ""
 
 
+# ============================================================
+# Compact format tests
+# ============================================================
+
+def test_compact_single_entry():
+    text = 'Some response.\n<memory>\nfact/test-topic: This is the content [k: testing, parser]\n+ c h:34\n</memory>'
+    parsed = parse_memory_block(text)
+    assert parsed.is_compact is True
+    assert len(parsed.entries) == 1
+    assert parsed.entries[0]["type"] == "fact"
+    assert parsed.entries[0]["topic"] == "test-topic"
+    assert parsed.entries[0]["content"] == "This is the content"
+    assert parsed.keywords == ["testing", "parser"]
+    assert parsed.complete is True
+    assert parsed.context == "sufficient"
+    assert parsed.hash_claimed == 0x34  # hex parsed
+
+
+def test_compact_noop():
+    text = 'Merged to main. Deployment triggered.\n<memory>\n. h:11\n</memory>'
+    parsed = parse_memory_block(text)
+    assert parsed.is_compact is True
+    assert parsed.entries == []
+    assert parsed.complete is True
+    assert parsed.hash_claimed == 0x11  # hex 11 = decimal 17
+
+
+def test_compact_noop_bare():
+    text = 'Done.\n<memory>\n.\n</memory>'
+    parsed = parse_memory_block(text)
+    assert parsed.is_compact is True
+    assert parsed.entries == []
+    assert parsed.complete is True
+    assert parsed.hash_claimed is None
+
+
+def test_compact_incomplete():
+    text = 'Found the bug.\n<memory>\nfact/redis-oom: Redis container OOM from leaked connection pools [k: testing, redis]\n- :fix test fixture teardown\nh:2E\n</memory>'
+    parsed = parse_memory_block(text)
+    assert parsed.is_compact is True
+    assert len(parsed.entries) == 1
+    assert parsed.complete is False
+    assert parsed.remaining == "fix test fixture teardown"
+    assert parsed.hash_claimed == 0x2E  # hex 2E = decimal 46
+
+
+def test_compact_context_insufficient():
+    text = 'Need more info.\n<memory>\n.\nc?:what was decided about auth middleware\nh:E\n</memory>'
+    parsed = parse_memory_block(text)
+    assert parsed.is_compact is True
+    assert parsed.context == "insufficient"
+    assert parsed.context_need == "what was decided about auth middleware"
+    assert parsed.hash_claimed == 0xE  # hex E = decimal 14
+
+
+def test_compact_confidence_updates():
+    text = 'Response.\n<memory>\nfact/test: Some fact [k: test]\nconfidence_update: 42:+\nconfidence_update: 17:-! no longer valid\n+ c h:12\n</memory>'
+    parsed = parse_memory_block(text)
+    assert parsed.is_compact is True
+    assert len(parsed.confidence_updates) == 2
+    assert parsed.confidence_updates[0] == (42, "+", None)
+    assert parsed.confidence_updates[1] == (17, "-!", "no longer valid")
+
+
+def test_compact_multiple_entries():
+    text = '''Response text.
+<memory>
+fact/first-thing: This is the first entry [k: one]
+decision/second-thing: This is the second entry [k: two]
++ c h:12
+</memory>'''
+    parsed = parse_memory_block(text)
+    assert parsed.is_compact is True
+    assert len(parsed.entries) == 2
+    assert parsed.entries[0]["type"] == "fact"
+    assert parsed.entries[0]["topic"] == "first-thing"
+    assert parsed.entries[1]["type"] == "decision"
+    assert parsed.entries[1]["topic"] == "second-thing"
+
+
+def test_compact_with_retrieval_outcome():
+    text = 'Response.\n<memory>\nfact/test: Content [k: test]\nretrieval_outcome: useful\n+ c h:12\n</memory>'
+    parsed = parse_memory_block(text)
+    assert parsed.is_compact is True
+    assert parsed.retrieval_outcome == "useful"
+
+
+def test_compact_with_intent():
+    text = 'Response.\n<memory>\nfact/test: Content [k: test]\nintent: resolved\n+ c h:12\n</memory>'
+    parsed = parse_memory_block(text)
+    assert parsed.is_compact is True
+    assert parsed.intent == "resolved"
+
+
+def test_compact_content_with_colons():
+    """Compact content containing colons should not break parsing."""
+    text = 'Response.\n<memory>\nfact/api-endpoint: Connect to host:5432 using SSL [k: database]\n+ c h:12\n</memory>'
+    parsed = parse_memory_block(text)
+    assert len(parsed.entries) == 1
+    assert "host:5432" in parsed.entries[0]["content"]
+
+
+def test_compact_content_with_url():
+    """Compact content containing URL with slashes."""
+    text = 'Response.\n<memory>\nfact/docs: API at https://api.example.com/v2 [k: api]\n+ c h:12\n</memory>'
+    parsed = parse_memory_block(text)
+    assert len(parsed.entries) == 1
+    assert "https://api.example.com/v2" in parsed.entries[0]["content"]
+
+
+def test_compact_context_insufficient_on_control_line():
+    """Context insufficient declared on the control line."""
+    text = 'Response.\n<memory>\nfact/test: Content [k: test]\n+ c?:auth decisions h:12\n</memory>'
+    parsed = parse_memory_block(text)
+    assert parsed.context == "insufficient"
+    assert parsed.context_need == "auth decisions"
+    assert parsed.hash_claimed == 0x12  # hex 12 = decimal 18
+
+
+def test_verbose_format_unchanged():
+    """Verbose format should still work exactly as before."""
+    text = '''response
+<memory>
+- type: fact
+- topic: test
+- content: verbose still works
+- complete: true
+- context: sufficient
+- keywords: backwards, compat
+</memory>'''
+    parsed = parse_memory_block(text)
+    assert parsed.is_compact is False
+    assert len(parsed.entries) == 1
+    assert parsed.entries[0]["content"] == "verbose still works"
+    assert parsed.keywords == ["backwards", "compat"]
+    assert parsed.hash_claimed is None
+
+
+def test_compact_no_keywords():
+    """Compact entry without [k: ...] suffix."""
+    text = 'Response.\n<memory>\nfact/test: Content without keywords\n+ c h:12\n</memory>'
+    parsed = parse_memory_block(text)
+    assert len(parsed.entries) == 1
+    assert parsed.entries[0]["content"] == "Content without keywords"
+    assert parsed.keywords == []
+    assert parsed.keywords_explicit is False
+
+
+# ============================================================
+# Hash computation tests
+# ============================================================
+
+from hash_verify import compute_response_hash, verify_hash
+
+
+def test_hash_simple_response():
+    """Hash of a simple multi-sentence response."""
+    text = "The fix is ready. Tests pass."
+    # t=20, t=20 → 40
+    assert compute_response_hash(text) == 40
+
+
+def test_hash_strips_memory_block():
+    """Memory block should be excluded from hash."""
+    text = "Found it. Applied the fix.\n<memory>\nfact/fix: details [k: test]\n+ c h:15\n</memory>"
+    # f=6, a=1 → 7 (memory block stripped)
+    assert compute_response_hash(text) == 7
+
+
+def test_hash_strips_code_blocks():
+    """Fenced code blocks should be excluded."""
+    text = "Here's the change:\n\n```python\ndef foo():\n    pass\n```\n\nThis should work."
+    # h=8, t=20 → 28
+    h = compute_response_hash(text)
+    assert h == 28
+
+
+def test_hash_paragraph_breaks():
+    """Double newlines treated as sentence boundaries."""
+    text = "First paragraph here.\n\nSecond paragraph starts."
+    # f=6, s=19 → 25
+    assert compute_response_hash(text) == 25
+
+
+def test_hash_empty_response():
+    """Empty response returns 0."""
+    assert compute_response_hash("") == 0
+    assert compute_response_hash("<memory>\n.\n</memory>") == 0
+
+
+def test_hash_single_sentence():
+    """Single sentence response."""
+    text = "Done."
+    # d=4
+    assert compute_response_hash(text) == 4
+
+
+def test_hash_verify_match():
+    """Verify returns True on correct hash."""
+    text = "The fix is ready. Tests pass.\n<memory>\n. h:28\n</memory>"
+    match, actual = verify_hash(text, 40)  # 40 decimal, 0x28 hex
+    assert match is True
+    assert actual == 40
+
+
+def test_hash_verify_mismatch():
+    """Verify returns False on incorrect hash."""
+    text = "The fix is ready. Tests pass.\n<memory>\n. h:63\n</memory>"
+    match, actual = verify_hash(text, 99)  # 99 decimal, 0x63 hex
+    assert match is False
+    assert actual == 40
+
+
+def test_hash_exclamation_and_question():
+    """Sentences ending with ! and ? are boundaries too."""
+    text = "What happened? Something broke! Fix it now."
+    # w=23, s=19, f=6 → 48
+    assert compute_response_hash(text) == 48
+
+
+def test_hash_multiline_code_block_boundary():
+    """Code block boundaries act as sentence breaks."""
+    text = "Before code.\n\n```js\nconsole.log('hi')\n```\n\nAfter code."
+    # b=2, a=1 → 3
+    h = compute_response_hash(text)
+    assert h == 3
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0

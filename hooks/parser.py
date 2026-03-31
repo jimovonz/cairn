@@ -22,11 +22,13 @@ class ParseResult(NamedTuple):
     complete_explicit: bool = False   # True if 'complete' was explicitly declared
     context_explicit: bool = False    # True if 'context' was explicitly declared
     keywords_explicit: bool = False   # True if 'keywords' was explicitly declared
+    hash_claimed: Optional[int] = None  # Claimed response hash (h:NNN)
+    is_compact: bool = False         # True if compact format was used
 
 
 # Sentinel for "no memory block found"
-NO_BLOCK = ParseResult(None, None, None, None, None, [], None, [], None, False, False, False)
-NOOP_BLOCK = ParseResult([], True, None, "sufficient", None, [], None, [], None, True, True, False)
+NO_BLOCK = ParseResult(None, None, None, None, None, [], None, [], None, False, False, False, None, False)
+NOOP_BLOCK = ParseResult([], True, None, "sufficient", None, [], None, [], None, True, True, False, None, False)
 
 
 def parse_memory_block(text: str) -> ParseResult:
@@ -52,10 +54,145 @@ def parse_memory_block(text: str) -> ParseResult:
 
     block = matches[-1].strip()
 
-    # Legacy no-op shorthand — parse normally so strict validation can check fields
-    # (Previously returned NOOP_BLOCK which bypassed validation)
+    # Detect compact format: contains type/topic: entry, or starts with "." no-op,
+    # or has standalone h:NNN line, or compact control line (+ c or - c with h:)
+    is_compact = (bool(re.search(r'^\w+/[^:]+:', block, re.MULTILINE))
+                  or block.startswith(".")
+                  or bool(re.search(r'^h:[0-9A-Fa-f]+$', block, re.MULTILINE))
+                  or bool(re.search(r'^[+-] c[? ]', block, re.MULTILINE))
+                  or bool(re.search(r'^[+-] c$', block, re.MULTILINE)))
 
-    # Parse entries
+    if is_compact:
+        return _parse_compact(block)
+    else:
+        return _parse_verbose(block)
+
+
+def _parse_compact(block: str) -> ParseResult:
+    """Parse compact memory format.
+
+    Compact format examples:
+        fact/topic: content [k: kw1, kw2]
+        + c h:52
+
+        .
+        h:24
+
+        fact/topic: content [k: kw1]
+        - :still need to finish
+        c?:what was decided about X
+        h:46
+    """
+    entries: list[dict[str, str]] = []
+    complete: Optional[bool] = True  # Default true in compact format
+    complete_set: bool = True
+    remaining: Optional[str] = None
+    context: str = "sufficient"
+    context_set: bool = True
+    context_need: Optional[str] = None
+    retrieval_outcome: Optional[str] = None
+    keywords: list[str] = []
+    keywords_set: bool = False
+    confidence_updates: list[tuple[int, str, Optional[str]]] = []
+    intent: Optional[str] = None
+    hash_claimed: Optional[int] = None
+    noop: bool = False
+
+    for line in block.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+
+        # No-op line: "." or ". h:NNN"
+        if line.startswith("."):
+            noop = True
+            hm = re.search(r'h:([0-9A-Fa-f]+)', line)
+            if hm:
+                hash_claimed = int(hm.group(1), 16)
+            continue
+
+        # Compact entry: type/topic: content [k: keywords]
+        entry_match = re.match(r'^(\w+)/([^:]+):\s*(.+)$', line)
+        if entry_match:
+            entry_type = entry_match.group(1)
+            topic = entry_match.group(2).strip()
+            content = entry_match.group(3).strip()
+            # Extract [k: ...] keywords suffix
+            km = re.search(r'\[k:\s*([^\]]+)\]', content)
+            if km:
+                keywords = [k.strip() for k in km.group(1).split(",") if k.strip()]
+                keywords_set = True
+                content = re.sub(r'\s*\[k:[^\]]+\]', '', content).strip()
+            entries.append({"type": entry_type, "topic": topic, "content": content})
+            continue
+
+        # Standalone incomplete: - :remaining text or -:remaining text
+        # Must check before control line since both start with -
+        inc_match = re.match(r'^-\s*:\s*(.+)$', line)
+        if inc_match:
+            complete = False
+            complete_set = True
+            remaining = inc_match.group(1).strip()
+            continue
+
+        # Control line: + c h:NNN or variants
+        # Complete flag: + or -
+        ctrl_match = re.match(r'^([+-])\s+', line)
+        if ctrl_match:
+            complete = ctrl_match.group(1) == "+"
+            complete_set = True
+            # Context: c or c?
+            if 'c?' in line:
+                context = "insufficient"
+                cn = re.search(r'c\?:(\S.*?)(?=\s+h:|\s*$)', line)
+                if cn:
+                    context_need = cn.group(1).strip()
+            # Hash
+            hm = re.search(r'h:([0-9A-Fa-f]+)', line)
+            if hm:
+                hash_claimed = int(hm.group(1), 16)
+            continue
+
+        # Standalone context need: c?:text
+        if line.startswith("c?:"):
+            context = "insufficient"
+            context_set = True
+            context_need = line[3:].strip()
+            continue
+
+        # Standalone hash: h:NNN
+        hm = re.match(r'^h:([0-9A-Fa-f]+)$', line)
+        if hm:
+            hash_claimed = int(hm.group(1), 16)
+            continue
+
+        # Confidence updates: same format as verbose
+        conf_match = re.match(r"^-?\s*confidence_update:\s*(\d+)\s*:\s*(-!|[+-])\s*(.*)?$", line)
+        if conf_match:
+            direction = conf_match.group(2)
+            reason = conf_match.group(3).strip() if conf_match.group(3) else None
+            confidence_updates.append((int(conf_match.group(1)), direction, reason))
+            continue
+
+        # Retrieval outcome
+        ro_match = re.match(r'^retrieval_outcome:\s*(\w+)', line)
+        if ro_match:
+            retrieval_outcome = ro_match.group(1).lower()
+            continue
+
+        # Intent
+        intent_match = re.match(r'^intent:\s*(\w+)', line)
+        if intent_match:
+            intent = intent_match.group(1).lower()
+            continue
+
+    return ParseResult(entries, complete, remaining, context, context_need,
+                       confidence_updates, retrieval_outcome, keywords, intent,
+                       complete_set, context_set, keywords_set, hash_claimed, True)
+
+
+def _parse_verbose(block: str) -> ParseResult:
+    """Parse verbose (current/legacy) memory format."""
     entries: list[dict[str, str]] = []
     current: dict[str, str] = {}
     complete: Optional[bool] = None
@@ -69,6 +206,7 @@ def parse_memory_block(text: str) -> ParseResult:
     keywords_set: bool = False
     confidence_updates: list[tuple[int, str, Optional[str]]] = []
     intent: Optional[str] = None
+    hash_claimed: Optional[int] = None
 
     for line in block.split("\n"):
         line = line.strip()
@@ -125,4 +263,4 @@ def parse_memory_block(text: str) -> ParseResult:
 
     return ParseResult(entries, complete, remaining, context, context_need,
                        confidence_updates, retrieval_outcome, keywords, intent,
-                       complete_set, context_set, keywords_set)
+                       complete_set, context_set, keywords_set, hash_claimed, False)
