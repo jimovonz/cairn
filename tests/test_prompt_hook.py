@@ -75,6 +75,7 @@ def run_prompt_hook(db_path, payload):
 # Layer 1: First-prompt detection
 # ============================================================
 
+# Verifies: new session is detected as first prompt
 def test_first_prompt_detected():
     """First prompt for a session should be detected."""
     import prompt_hook
@@ -85,6 +86,7 @@ def test_first_prompt_detected():
     conn.close()
 
 
+# Verifies: second prompt after mark_done is not treated as first
 def test_second_prompt_not_first():
     """After marking done, second prompt should not be first."""
     import prompt_hook
@@ -96,6 +98,7 @@ def test_second_prompt_not_first():
     conn.close()
 
 
+# Verifies: first-prompt state is isolated per session
 def test_different_session_still_first():
     """Marking one session done should not affect another."""
     import prompt_hook
@@ -111,6 +114,7 @@ def test_different_session_still_first():
 # Layer 2: Staged context
 # ============================================================
 
+# Verifies: staged context is loaded from hook_state DB
 def test_staged_context_loaded():
     """Staged context should be loaded and consumed."""
     import prompt_hook
@@ -125,11 +129,11 @@ def test_staged_context_loaded():
 
     with patch.object(hook_helpers, 'DB_PATH', db_path):
         data = prompt_hook.load_staged_context("sess-1")
-    assert data is not None
     assert "test data" in data
     conn.close()
 
 
+# Verifies: loaded staged context is deleted, other sessions untouched
 def test_staged_context_consumed():
     """After loading, staged context should be removed for that session."""
     import prompt_hook
@@ -160,6 +164,7 @@ def test_staged_context_consumed():
     conn.close()
 
 
+# Verifies: missing staged context returns None without error
 def test_no_staged_context():
     """Missing staged data should return None gracefully."""
     import prompt_hook
@@ -175,6 +180,7 @@ def test_no_staged_context():
 # Short message handling
 # ============================================================
 
+# Verifies: very short messages are skipped (no injection)
 def test_short_message_skipped():
     """Messages < 3 chars should be skipped."""
     db_path, conn = fresh_env()
@@ -186,6 +192,7 @@ def test_short_message_skipped():
     conn.close()
 
 
+# Verifies: empty database produces no context injection
 def test_empty_db_no_injection():
     """Empty DB should not inject anything."""
     db_path, conn = fresh_env()
@@ -202,6 +209,7 @@ def test_empty_db_no_injection():
 # Retrieved ID tracking for contradiction enforcement
 # ============================================================
 
+# Verifies: injected entry IDs are stored for contradiction enforcement
 def test_injected_ids_stored_in_hook_state():
     """When context is injected containing entry IDs, prompt hook should
     write those IDs to hook_state for the stop hook's contradiction enforcement."""
@@ -234,8 +242,8 @@ def test_injected_ids_stored_in_hook_state():
             "user_message": "tell me about the auth decisions"
         })
 
-    # Context should have been injected
-    assert result is not None
+    # Context should have been injected — result is a dict with hookSpecificOutput
+    assert isinstance(result, dict) and "hookSpecificOutput" in result
 
     # Retrieved IDs should be stored in hook_state
     ids_row = conn.execute(

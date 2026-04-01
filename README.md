@@ -267,7 +267,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test 
 
 ## Testing
 
-318 tests across 14 test files. No embedding model required — tests use mock vectors and patched DB paths.
+430 tests across 19 test files. No embedding model required — tests use mock vectors and patched DB paths.
 
 ```bash
 cd ~/cairn

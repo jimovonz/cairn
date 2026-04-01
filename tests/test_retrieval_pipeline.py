@@ -95,6 +95,7 @@ def seed_memories(conn, project="TestProject"):
 # find_nearest — used for dedup
 # ============================================================
 
+# Verifies: exact vector match returns similarity ~1.0
 def test_find_nearest_exact_match():
     """find_nearest with same vector should return similarity ~1.0."""
     import embeddings as emb
@@ -112,6 +113,7 @@ def test_find_nearest_exact_match():
     conn.close()
 
 
+# Verifies: unrelated vector still returns results with low similarity
 def test_find_nearest_no_match():
     """find_nearest with unrelated vector should still return something (no filtering)."""
     import embeddings as emb
@@ -132,6 +134,7 @@ def test_find_nearest_no_match():
 # insert_memories — dedup path
 # ============================================================
 
+# Verifies: near-identical content deduplicates (updates, not inserts)
 def test_insert_dedup_near_identical():
     """Inserting near-identical content should update, not create new entry."""
     import stop_hook
@@ -169,6 +172,7 @@ def test_insert_dedup_near_identical():
     conn.close()
 
 
+# Verifies: same type+topic with low similarity creates new entry
 def test_insert_distinct_variant_preserved():
     """Same type+topic but low similarity should create a new entry (distinct variant)."""
     import stop_hook
@@ -202,6 +206,7 @@ def test_insert_distinct_variant_preserved():
     conn.close()
 
 
+# Verifies: contradiction overwrites content and resets confidence
 def test_insert_contradiction_overwrites_with_confidence_drop():
     """Same type+topic, different content, high similarity → contradiction overwrite."""
     import stop_hook
@@ -242,6 +247,7 @@ def test_insert_contradiction_overwrites_with_confidence_drop():
 # insert_memories — no embedding (daemon down)
 # ============================================================
 
+# Verifies: memory stored with null embedding when daemon unavailable
 def test_insert_without_embedding():
     """When embed returns None (daemon down), memory stored without embedding."""
     import stop_hook
@@ -270,6 +276,7 @@ def test_insert_without_embedding():
 # retrieve_context — full pipeline with quality gates
 # ============================================================
 
+# Verifies: retrieve_context returns well-formed cairn_context XML
 def test_retrieve_returns_structured_xml():
     """retrieve_context should return well-formed cairn_context XML."""
     import stop_hook
@@ -291,14 +298,15 @@ def test_retrieve_returns_structured_xml():
          patch.object(hook_helpers, 'log'):
         result = retrieval.retrieve_context("authentication approach", session_id="seed-session")
 
-    assert result is not None
-    assert "<cairn_context" in result
-    assert "JWT" in result
-    assert 'reliability=' in result
-    assert 'id="1"' in result
+    assert isinstance(result, str) and len(result) > 0
+    assert result.count("<cairn_context") == 1
+    assert result.count("JWT") >= 1
+    assert result.count('reliability=') >= 1
+    assert result.count('id="1"') >= 1
     conn.close()
 
 
+# Verifies: retrieve_context returns None when no memories match
 def test_retrieve_returns_none_when_no_match():
     """retrieve_context should return None when nothing matches."""
     import stop_hook
@@ -318,6 +326,7 @@ def test_retrieve_returns_none_when_no_match():
     conn.close()
 
 
+# Verifies: results split into project and global scopes in XML
 def test_retrieve_separates_project_and_global():
     """Project memories should be in project scope, others in global."""
     import stop_hook
@@ -346,9 +355,9 @@ def test_retrieve_separates_project_and_global():
          patch.object(hook_helpers, 'log'):
         result = retrieval.retrieve_context("preferences and auth", session_id="seed-session")
 
-    assert result is not None
-    assert 'level="project"' in result
-    assert 'level="global"' in result
+    assert isinstance(result, str) and len(result) > 0
+    assert result.count('level="project"') >= 1
+    assert result.count('level="global"') >= 1
     conn.close()
 
 
@@ -356,6 +365,7 @@ def test_retrieve_separates_project_and_global():
 # get_adaptive_threshold_boost
 # ============================================================
 
+# Verifies: no metrics data produces zero threshold boost
 def test_adaptive_threshold_no_data():
     """No recent metrics → no boost."""
     import stop_hook
@@ -368,6 +378,7 @@ def test_adaptive_threshold_no_data():
     conn.close()
 
 
+# Verifies: high harmful retrieval rate produces positive boost
 def test_adaptive_threshold_with_harmful_outcomes():
     """High rate of harmful outcomes → positive boost."""
     import stop_hook
@@ -387,6 +398,7 @@ def test_adaptive_threshold_with_harmful_outcomes():
     conn.close()
 
 
+# Verifies: mostly useful outcomes produce no threshold boost
 def test_adaptive_threshold_with_good_outcomes():
     """Mostly useful outcomes → no boost."""
     import stop_hook
@@ -409,6 +421,7 @@ def test_adaptive_threshold_with_good_outcomes():
 # layer2_cross_project_search
 # ============================================================
 
+# Verifies: layer2 stages cross-project results in hook_state
 def test_layer2_stages_cross_project_results():
     """Layer 2 should find and stage results from OTHER projects only."""
     import stop_hook
@@ -437,11 +450,12 @@ def test_layer2_stages_cross_project_results():
     row = conn.execute(
         "SELECT value FROM hook_state WHERE session_id = 's1' AND key = 'staged_context'"
     ).fetchone()
-    assert row is not None, "Staged context should be in DB"
-    assert "cross-project" in row[0].lower() or "cairn_context" in row[0]
+    assert row is not None and len(row) >= 1, "Staged context should be in DB"
+    assert "cross-project" in row[0].lower() or row[0].count("cairn_context") >= 1
     conn.close()
 
 
+# Verifies: layer2 filters out same-project results
 def test_layer2_excludes_current_project():
     """Layer 2 should NOT stage results from the CURRENT project."""
     import stop_hook
@@ -479,6 +493,7 @@ def test_layer2_excludes_current_project():
 # register_session — parent chain
 # ============================================================
 
+# Verifies: new session gets registered in sessions table
 def test_register_session_new():
     """New session should be registered with project from cwd."""
     import stop_hook
@@ -489,10 +504,11 @@ def test_register_session_new():
         stop_hook.register_session("sess-new", "")
 
     row = conn.execute("SELECT session_id FROM sessions WHERE session_id = 'sess-new'").fetchone()
-    assert row is not None
+    assert row is not None and row[0] == "sess-new"
     conn.close()
 
 
+# Verifies: duplicate session registration is idempotent
 def test_register_session_idempotent():
     """Registering same session twice should not create duplicates."""
     import stop_hook
@@ -512,6 +528,7 @@ def test_register_session_idempotent():
 # auto_label_project — edge cases
 # ============================================================
 
+# Verifies: project name extracted from deeply nested cwd path
 def test_auto_label_from_deep_path():
     """Should extract project name from deeply nested path."""
     import stop_hook
@@ -528,6 +545,7 @@ def test_auto_label_from_deep_path():
     conn.close()
 
 
+# Verifies: root path does not produce a project label
 def test_auto_label_skips_root():
     """Should not label with '/' or empty path."""
     import stop_hook
@@ -544,6 +562,7 @@ def test_auto_label_skips_root():
     conn.close()
 
 
+# Verifies: /home path does not produce a project label
 def test_auto_label_skips_home():
     """Should not label with 'home'."""
     import stop_hook
@@ -560,6 +579,7 @@ def test_auto_label_skips_home():
     conn.close()
 
 
+# Verifies: existing project label is not overwritten by auto-label
 def test_auto_label_does_not_overwrite():
     """Should not overwrite an existing project label."""
     import stop_hook
@@ -580,6 +600,7 @@ def test_auto_label_does_not_overwrite():
 # upsert_vec_index
 # ============================================================
 
+# Verifies: upsert_vec_index gracefully handles missing vec table
 def test_upsert_vec_index_no_crash_without_table():
     """upsert_vec_index should silently fail if vec table doesn't exist."""
     import embeddings as emb
@@ -593,6 +614,7 @@ def test_upsert_vec_index_no_crash_without_table():
 # Negation heuristic in insert pipeline
 # ============================================================
 
+# Verifies: negation mismatch archives old memory and inserts new
 def test_negation_dampening_in_insert():
     """Similar memories with negation mismatch should have confidence reduced."""
     import stop_hook
@@ -626,8 +648,7 @@ def test_negation_dampening_in_insert():
     # Original memory should be annotated as superseded (negation detected)
     row = conn.execute("SELECT confidence, archived_reason FROM memories WHERE id = 1").fetchone()
     assert row[0] == 0.8, "Confidence should be unchanged — negation annotates, not penalises"
-    assert row[1] is not None, "Expected archived_reason annotation from negation detection"
-    assert "superseded" in row[1], f"Expected 'superseded' in annotation, got: {row[1]}"
+    assert isinstance(row[1], str) and "superseded" in row[1], f"Expected 'superseded' in archived_reason, got: {row[1]}"
     # New memory should also be inserted
     count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
     assert count == 2
@@ -638,6 +659,7 @@ def test_negation_dampening_in_insert():
 # Type+topic contradiction: annotates instead of suppressing
 # ============================================================
 
+# Verifies: type+topic contradiction annotates and overwrites old memory
 def test_type_topic_contradiction_annotates():
     """When insert_memories finds same type+topic with different content (above
     DISTINCT_VARIANT_SIM_THRESHOLD), the old memory should get an archived_reason
@@ -676,13 +698,11 @@ def test_type_topic_contradiction_annotates():
     # Confidence is fresh (0.7 default), not 0.2
     assert row[1] == 0.7, f"Expected fresh confidence 0.7, got {row[1]}"
     # Supersession annotation present
-    assert row[2] is not None, "Expected archived_reason annotation"
-    assert "superseded" in row[2]
+    assert isinstance(row[2], str) and "superseded" in row[2], "Expected 'superseded' in archived_reason"
 
     # Old content preserved in history via trigger
     old = conn.execute("SELECT content FROM memory_history WHERE memory_id = 1").fetchone()
-    assert old is not None, "Old content should be in history"
-    assert "PostgreSQL" in old[0]
+    assert old is not None and old[0] == "Use PostgreSQL for the main database", "Old content should be preserved in history"
 
     # Contradiction metric recorded
     mock_metric.assert_any_call("s1", "contradiction_detected", "decision/db-choice")
@@ -693,6 +713,7 @@ def test_type_topic_contradiction_annotates():
 # Auto-backfill: daemon start + backfill on missing embeddings
 # ============================================================
 
+# Verifies: missing embedding triggers background backfill
 def test_auto_backfill_triggered_when_embeddings_missing():
     """Storing a memory without embedding should trigger background backfill."""
     db_path, conn = fresh_db()
@@ -716,6 +737,7 @@ def test_auto_backfill_triggered_when_embeddings_missing():
     conn.close()
 
 
+# Verifies: no backfill triggered when all memories have embeddings
 def test_no_backfill_when_all_have_embeddings():
     """When all memories have embeddings, backfill should NOT be triggered."""
     db_path, conn = fresh_db()
@@ -739,6 +761,7 @@ def test_no_backfill_when_all_have_embeddings():
     conn.close()
 
 
+# Verifies: backfill starts daemon first, then runs backfill
 def test_backfill_starts_daemon_before_backfill():
     """_trigger_background_backfill should start daemon first, then backfill."""
     import subprocess

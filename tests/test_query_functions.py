@@ -90,7 +90,7 @@ def _make_transcript(messages, path):
 # search
 # ============================================================
 
-#TAG: [QF01]
+#TAG: [A624] 2026-04-02
 # Verifies: search returns correct count of FTS matches with valid row fields
 def test_search_behavioural():
     db, c = fresh_db(); seed(c)
@@ -101,7 +101,7 @@ def test_search_behavioural():
     c.close()
 
 
-#TAG: [QF02]
+#TAG: [903B] 2026-04-02
 # Verifies: search returns zero-length list when query has no matches in populated DB
 def test_search_edge():
     db, c = fresh_db(); seed(c)
@@ -111,7 +111,7 @@ def test_search_edge():
     c.close()
 
 
-#TAG: [QF03]
+#TAG: [A9D5] 2026-04-02
 # Verifies: search returns empty list on empty database without raising exception
 def test_search_error():
     db, c = fresh_db()
@@ -121,7 +121,7 @@ def test_search_error():
     c.close()
 
 
-#TAG: [QF04]
+#TAG: [DF71] 2026-04-02
 # Verifies: search limit parameter constrains result count below total matches
 def test_search_adversarial():
     db, c = fresh_db(); seed(c)
@@ -137,7 +137,7 @@ def test_search_adversarial():
 # list_by_type
 # ============================================================
 
-#TAG: [QG01]
+#TAG: [468D] 2026-04-02
 # Verifies: list_by_type returns only rows with the requested type field
 def test_list_by_type_behavioural():
     db, c = fresh_db(); seed(c, 10)
@@ -148,7 +148,7 @@ def test_list_by_type_behavioural():
     c.close()
 
 
-#TAG: [QG02]
+#TAG: [8704] 2026-04-02
 # Verifies: list_by_type returns empty list for nonexistent type string
 def test_list_by_type_edge():
     db, c = fresh_db(); seed(c)
@@ -158,7 +158,7 @@ def test_list_by_type_edge():
     c.close()
 
 
-#TAG: [QG03]
+#TAG: [B298] 2026-04-02
 # Verifies: list_by_type returns empty list on empty database
 def test_list_by_type_error():
     db, c = fresh_db()
@@ -168,7 +168,7 @@ def test_list_by_type_error():
     c.close()
 
 
-#TAG: [QG04]
+#TAG: [C602] 2026-04-02
 # Verifies: list_by_type safely handles SQL injection characters in type parameter
 def test_list_by_type_adversarial():
     db, c = fresh_db(); seed(c)
@@ -183,7 +183,7 @@ def test_list_by_type_adversarial():
 # list_recent
 # ============================================================
 
-#TAG: [QH01]
+#TAG: [3608] 2026-04-02
 # Verifies: list_recent returns rows in descending updated_at order respecting limit
 def test_list_recent_behavioural():
     db, c = fresh_db(); seed(c)
@@ -195,7 +195,7 @@ def test_list_recent_behavioural():
     c.close()
 
 
-#TAG: [QH02]
+#TAG: [5825] 2026-04-02
 # Verifies: list_recent on empty database returns zero-length list
 def test_list_recent_edge():
     db, c = fresh_db()
@@ -205,7 +205,7 @@ def test_list_recent_edge():
     c.close()
 
 
-#TAG: [QH03]
+#TAG: [9E58] 2026-04-02
 # Verifies: list_recent with limit=1 returns exactly the most recent row
 def test_list_recent_error():
     db, c = fresh_db(); seed(c)
@@ -216,7 +216,7 @@ def test_list_recent_error():
     c.close()
 
 
-#TAG: [QH04]
+#TAG: [1B56] 2026-04-02
 # Verifies: list_recent with limit exceeding row count returns all available rows
 def test_list_recent_adversarial():
     db, c = fresh_db(); seed(c)
@@ -230,7 +230,7 @@ def test_list_recent_adversarial():
 # list_by_date
 # ============================================================
 
-#TAG: [QI01]
+#TAG: [EDA4] 2026-04-02
 # Verifies: list_by_date with since and until returns only rows within date range
 def test_list_by_date_behavioural():
     db, c = fresh_db(); seed(c)
@@ -242,7 +242,7 @@ def test_list_by_date_behavioural():
     c.close()
 
 
-#TAG: [QI02]
+#TAG: [8B8E] 2026-04-02
 # Verifies: list_by_date with no filters returns all memories up to limit
 def test_list_by_date_edge():
     db, c = fresh_db(); seed(c)
@@ -252,7 +252,7 @@ def test_list_by_date_edge():
     c.close()
 
 
-#TAG: [QI03]
+#TAG: [E241] 2026-04-02
 # Verifies: list_by_date with reversed range where since > until returns empty
 def test_list_by_date_error():
     db, c = fresh_db(); seed(c)
@@ -262,7 +262,7 @@ def test_list_by_date_error():
     c.close()
 
 
-#TAG: [QI04]
+#TAG: [4C8E] 2026-04-02
 # Verifies: list_by_date with relative "3d" format computes correct date via _parse_date
 def test_list_by_date_adversarial():
     db, c = fresh_db()
@@ -281,7 +281,7 @@ def test_list_by_date_adversarial():
 # list_by_session
 # ============================================================
 
-#TAG: [QJ01]
+#TAG: [7B34] 2026-04-02
 # Verifies: list_by_session returns memories matching session prefix only
 def test_list_by_session_behavioural():
     db, c = fresh_db(); seed(c)
@@ -293,7 +293,7 @@ def test_list_by_session_behavioural():
     c.close()
 
 
-#TAG: [QJ02]
+#TAG: [5E34] 2026-04-02
 # Verifies: list_by_session returns empty for nonexistent session prefix
 def test_list_by_session_edge():
     db, c = fresh_db(); seed(c)
@@ -303,7 +303,7 @@ def test_list_by_session_edge():
     c.close()
 
 
-#TAG: [QJ03]
+#TAG: [EC90] 2026-04-02
 # Verifies: list_by_session on empty database returns empty list
 def test_list_by_session_error():
     db, c = fresh_db()
@@ -313,7 +313,7 @@ def test_list_by_session_error():
     c.close()
 
 
-#TAG: [QJ04]
+#TAG: [53D0] 2026-04-02
 # Verifies: list_by_session correctly isolates by exact prefix, not matching other sessions
 def test_list_by_session_adversarial():
     db, c = fresh_db()
@@ -331,7 +331,7 @@ def test_list_by_session_adversarial():
 # show_context — NON-TRIVIAL
 # ============================================================
 
-#TAG: [QC01]
+#TAG: [384F] 2026-04-02
 # Verifies: show_context displays conversation anchor marker and context around memory timestamp
 def test_show_context_behavioural():
     db, c = fresh_db()
@@ -357,7 +357,7 @@ def test_show_context_behavioural():
     c.close()
 
 
-#TAG: [QC02]
+#TAG: [3A4B] 2026-04-02
 # Verifies: show_context prints no-session message when memory has NULL session_id
 def test_show_context_edge():
     db, c = fresh_db()
@@ -371,7 +371,7 @@ def test_show_context_edge():
     c.close()
 
 
-#TAG: [QC03]
+#TAG: [F951] 2026-04-02
 # Verifies: show_context prints descriptive error for nonexistent memory ID
 def test_show_context_error():
     db, c = fresh_db()
@@ -381,7 +381,7 @@ def test_show_context_error():
     c.close()
 
 
-#TAG: [QC04]
+#TAG: [DB00] 2026-04-02
 # Verifies: show_context handles corrupt created_at without crashing and prints parse error
 def test_show_context_adversarial():
     db, c = fresh_db()
@@ -403,7 +403,7 @@ def test_show_context_adversarial():
 # verify_sources — NON-TRIVIAL
 # ============================================================
 
-#TAG: [QB01]
+#TAG: [18D9] 2026-04-02
 # Verifies: verify_sources reports correct coverage percentages for memories with depth and session
 def test_verify_sources_behavioural():
     db, c = fresh_db()
@@ -418,7 +418,7 @@ def test_verify_sources_behavioural():
     c.close()
 
 
-#TAG: [QB02]
+#TAG: [67AF] 2026-04-02
 # Verifies: verify_sources reports No memories for empty database
 def test_verify_sources_edge():
     db, c = fresh_db()
@@ -430,7 +430,7 @@ def test_verify_sources_edge():
     c.close()
 
 
-#TAG: [QB03]
+#TAG: [BD57] 2026-04-02
 # Verifies: verify_sources skips legacy drift when transcript file is missing
 def test_verify_sources_error():
     db, c = fresh_db()
@@ -446,7 +446,7 @@ def test_verify_sources_error():
     c.close()
 
 
-#TAG: [QB04]
+#TAG: [5934] 2026-04-02
 # Verifies: verify_sources recovers from malformed JSONL lines in transcript without crash
 def test_verify_sources_adversarial():
     db, c = fresh_db()
@@ -470,7 +470,7 @@ def test_verify_sources_adversarial():
 # stats — NON-TRIVIAL
 # ============================================================
 
-#TAG: [QD01]
+#TAG: [92A3] 2026-04-02
 # Verifies: stats reports correct total, type breakdown, and latency from metrics table
 def test_stats_behavioural():
     db, c = fresh_db(); seed(c)
@@ -483,7 +483,7 @@ def test_stats_behavioural():
     c.close()
 
 
-#TAG: [QD02]
+#TAG: [33E5] 2026-04-02
 # Verifies: stats on empty DB reports zero for all counts without errors
 def test_stats_edge():
     db, c = fresh_db()
@@ -495,7 +495,7 @@ def test_stats_edge():
     c.close()
 
 
-#TAG: [QD03]
+#TAG: [8DD4] 2026-04-02
 # Verifies: stats handles missing metrics table gracefully via try/except
 def test_stats_error():
     db, c = fresh_db(); seed(c)
@@ -509,7 +509,7 @@ def test_stats_error():
     c.close()
 
 
-#TAG: [QD04]
+#TAG: [780D] 2026-04-02
 # Verifies: stats handles NULL confidence values in distribution calculation
 def test_stats_adversarial():
     db, c = fresh_db()
@@ -527,7 +527,7 @@ def test_stats_adversarial():
 # add_memory — NON-TRIVIAL
 # ============================================================
 
-#TAG: [QE01]
+#TAG: [6788] 2026-04-02
 # Verifies: add_memory inserts row with correct type, topic, content, project, session_id
 def test_add_memory_behavioural():
     db, c = fresh_db()
@@ -541,7 +541,7 @@ def test_add_memory_behavioural():
     c.close()
 
 
-#TAG: [QE02]
+#TAG: [B81C] 2026-04-02
 # Verifies: add_memory accepts empty string content and stores it correctly
 def test_add_memory_edge():
     db, c = fresh_db()
@@ -553,7 +553,7 @@ def test_add_memory_edge():
     c.close()
 
 
-#TAG: [QE03]
+#TAG: [637D] 2026-04-02
 # Verifies: add_memory works without embeddings module reporting without embedding
 def test_add_memory_error():
     db, c = fresh_db()
@@ -566,7 +566,7 @@ def test_add_memory_error():
     c.close()
 
 
-#TAG: [QE04]
+#TAG: [B8FA] 2026-04-02
 # Verifies: add_memory safely stores SQL injection payload without executing it
 def test_add_memory_adversarial():
     db, c = fresh_db()
@@ -584,7 +584,7 @@ def test_add_memory_adversarial():
 # check — NON-TRIVIAL
 # ============================================================
 
-#TAG: [QA01]
+#TAG: [0644] 2026-04-02
 # Verifies: check returns integer failure count and reports memory count for healthy DB
 def test_check_behavioural():
     db, c = fresh_db(); seed(c); c.close()
@@ -597,7 +597,7 @@ def test_check_behavioural():
     assert any("5 memories stored" in line for line in lines)
 
 
-#TAG: [QA02]
+#TAG: [C113] 2026-04-02
 # Verifies: check reports zero memories for empty DB without errors
 def test_check_edge():
     db, c = fresh_db(); c.close()
@@ -608,7 +608,7 @@ def test_check_edge():
     assert any("0 memories stored" in line for line in out.strip().split('\n'))
 
 
-#TAG: [QA03]
+#TAG: [7FE1] 2026-04-02
 # Verifies: check returns nonzero failure count when DB file does not exist
 def test_check_error():
     missing = os.path.join(TEST_DIR, "nonexistent.db")
@@ -619,7 +619,7 @@ def test_check_error():
     assert isinstance(result, int)
 
 
-#TAG: [QA04]
+#TAG: [078C] 2026-04-02
 # Verifies: check handles corrupt settings.json without crashing
 def test_check_adversarial():
     db, c = fresh_db(); c.close()
@@ -639,7 +639,7 @@ def test_check_adversarial():
 # show_history
 # ============================================================
 
-#TAG: [QN01]
+#TAG: [57A4] 2026-04-02
 # Verifies: show_history displays current content and prior version count after update
 def test_show_history_behavioural():
     db, c = fresh_db()
@@ -655,7 +655,7 @@ def test_show_history_behavioural():
     c.close()
 
 
-#TAG: [QN02]
+#TAG: [1B58] 2026-04-02
 # Verifies: show_history reports No memory for nonexistent ID
 def test_show_history_edge():
     db, c = fresh_db()
@@ -665,7 +665,7 @@ def test_show_history_edge():
     c.close()
 
 
-#TAG: [QN03]
+#TAG: [D7D8] 2026-04-02
 # Verifies: show_history shows No prior versions for memory never updated
 def test_show_history_error():
     db, c = fresh_db()
@@ -679,7 +679,7 @@ def test_show_history_error():
     c.close()
 
 
-#TAG: [QN04]
+#TAG: [2903] 2026-04-02
 # Verifies: show_history displays all prior versions after multiple sequential updates
 def test_show_history_adversarial():
     db, c = fresh_db()
@@ -701,7 +701,7 @@ def test_show_history_adversarial():
 # delete_memory
 # ============================================================
 
-#TAG: [QK01]
+#TAG: [2D25] 2026-04-02
 # Verifies: delete_memory removes the row and its history entries from the database
 def test_delete_memory_behavioural():
     db, c = fresh_db()
@@ -717,7 +717,7 @@ def test_delete_memory_behavioural():
     c.close()
 
 
-#TAG: [QK02]
+#TAG: [122A] 2026-04-02
 # Verifies: delete_memory reports No memory for nonexistent ID
 def test_delete_memory_edge():
     db, c = fresh_db()
@@ -727,7 +727,7 @@ def test_delete_memory_edge():
     c.close()
 
 
-#TAG: [QK03]
+#TAG: [BE05] 2026-04-02
 # Verifies: delete_memory second call on same ID reports No memory after prior delete
 def test_delete_memory_error():
     db, c = fresh_db()
@@ -740,7 +740,7 @@ def test_delete_memory_error():
     c.close()
 
 
-#TAG: [QK04]
+#TAG: [D6CA] 2026-04-02
 # Verifies: delete_memory also removes FTS index entry so search no longer finds it
 def test_delete_memory_adversarial():
     db, c = fresh_db()
@@ -759,7 +759,7 @@ def test_delete_memory_adversarial():
 # archive_memory
 # ============================================================
 
-#TAG: [QL01]
+#TAG: [CE16] 2026-04-02
 # Verifies: archive_memory sets confidence to 0 and stores reason string in DB
 def test_archive_memory_behavioural():
     db, c = fresh_db()
@@ -773,7 +773,7 @@ def test_archive_memory_behavioural():
     c.close()
 
 
-#TAG: [QL02]
+#TAG: [7D8E] 2026-04-02
 # Verifies: archive_memory reports No memory for nonexistent ID
 def test_archive_memory_edge():
     db, c = fresh_db()
@@ -783,7 +783,7 @@ def test_archive_memory_edge():
     c.close()
 
 
-#TAG: [QL03]
+#TAG: [2EA1] 2026-04-02
 # Verifies: archive_memory on already-archived memory sets confidence to 0 again
 def test_archive_memory_error():
     db, c = fresh_db()
@@ -797,7 +797,7 @@ def test_archive_memory_error():
     c.close()
 
 
-#TAG: [QL04]
+#TAG: [024A] 2026-04-02
 # Verifies: archive_memory safely stores reason with special characters
 def test_archive_memory_adversarial():
     db, c = fresh_db()
@@ -816,7 +816,7 @@ def test_archive_memory_adversarial():
 # update_memory
 # ============================================================
 
-#TAG: [QM01]
+#TAG: [F5CC] 2026-04-02
 # Verifies: update_memory changes content and preserves old value in history via trigger
 def test_update_memory_behavioural():
     db, c = fresh_db()
@@ -831,7 +831,7 @@ def test_update_memory_behavioural():
     c.close()
 
 
-#TAG: [QM02]
+#TAG: [139B] 2026-04-02
 # Verifies: update_memory reports No memory for nonexistent ID
 def test_update_memory_edge():
     db, c = fresh_db()
@@ -841,7 +841,7 @@ def test_update_memory_edge():
     c.close()
 
 
-#TAG: [QM03]
+#TAG: [EB2E] 2026-04-02
 # Verifies: update_memory to same content still creates a history entry via trigger
 def test_update_memory_error():
     db, c = fresh_db()
@@ -854,7 +854,7 @@ def test_update_memory_error():
     c.close()
 
 
-#TAG: [QM04]
+#TAG: [2477] 2026-04-02
 # Verifies: update_memory safely stores SQL injection payload as content
 def test_update_memory_adversarial():
     db, c = fresh_db()
@@ -873,7 +873,7 @@ def test_update_memory_adversarial():
 # show_session_chain
 # ============================================================
 
-#TAG: [QP01]
+#TAG: [8106] 2026-04-02
 # Verifies: show_session_chain displays parent-child chain with memory counts
 def test_show_session_chain_behavioural():
     db, c = fresh_db()
@@ -890,7 +890,7 @@ def test_show_session_chain_behavioural():
     c.close()
 
 
-#TAG: [QP02]
+#TAG: [CC39] 2026-04-02
 # Verifies: show_session_chain reports No session found for nonexistent session
 def test_show_session_chain_edge():
     db, c = fresh_db()
@@ -900,7 +900,7 @@ def test_show_session_chain_edge():
     c.close()
 
 
-#TAG: [QP03]
+#TAG: [F56E] 2026-04-02
 # Verifies: show_session_chain handles single session with no parent or children
 def test_show_session_chain_error():
     db, c = fresh_db()
@@ -914,7 +914,7 @@ def test_show_session_chain_error():
     c.close()
 
 
-#TAG: [QP04]
+#TAG: [CF1D] 2026-04-02
 # Verifies: show_session_chain traverses three-level deep chain correctly
 def test_show_session_chain_adversarial():
     db, c = fresh_db()
@@ -935,7 +935,7 @@ def test_show_session_chain_adversarial():
 # review
 # ============================================================
 
-#TAG: [QQ01]
+#TAG: [A883] 2026-04-02
 # Verifies: review categorizes memories into suppressed, uncertain, and healthy counts
 def test_review_behavioural():
     db, c = fresh_db()
@@ -951,7 +951,7 @@ def test_review_behavioural():
     c.close()
 
 
-#TAG: [QQ02]
+#TAG: [E2FD] 2026-04-02
 # Verifies: review reports all healthy when no low-confidence memories exist
 def test_review_edge():
     db, c = fresh_db()
@@ -965,7 +965,7 @@ def test_review_edge():
     c.close()
 
 
-#TAG: [QQ03]
+#TAG: [70A9] 2026-04-02
 # Verifies: review on empty database reports zero counts
 def test_review_error():
     db, c = fresh_db()
@@ -977,7 +977,7 @@ def test_review_error():
     c.close()
 
 
-#TAG: [QQ04]
+#TAG: [00AC] 2026-04-02
 # Verifies: review correctly classifies memory at exact threshold boundary 0.3
 def test_review_adversarial():
     db, c = fresh_db()
@@ -996,7 +996,7 @@ def test_review_adversarial():
 # format_rows
 # ============================================================
 
-#TAG: [QR01]
+#TAG: [DA61] 2026-04-02
 # Verifies: format_rows prints sqlite3.Row objects with id, type, topic, content fields
 def test_format_rows_behavioural():
     db, c = fresh_db(); seed(c)
@@ -1010,14 +1010,14 @@ def test_format_rows_behavioural():
     c.close()
 
 
-#TAG: [QR02]
+#TAG: [C8AA] 2026-04-02
 # Verifies: format_rows prints No results for empty input list
 def test_format_rows_edge():
     out, _ = capture(query.format_rows, [])
     assert out.strip() == "No results."
 
 
-#TAG: [QR03]
+#TAG: [6953] 2026-04-02
 # Verifies: format_rows prints dict objects with similarity score formatted to 3 decimals
 def test_format_rows_error():
     rows = [{"id": 1, "type": "fact", "topic": "test", "content": "dict content",
@@ -1025,10 +1025,13 @@ def test_format_rows_error():
     out, _ = capture(query.format_rows, rows)
     lines = out.strip().split('\n')
     assert len(lines) == 2
-    assert "sim=0.950" in lines[0]
+    # Extract sim value from formatted output and verify exact value
+    sim_idx = lines[0].index("sim=")
+    sim_str = lines[0][sim_idx:sim_idx+9]
+    assert sim_str == "sim=0.950"
 
 
-#TAG: [QR04]
+#TAG: [E4BF] 2026-04-02
 # Verifies: format_rows handles content with special characters without corruption
 def test_format_rows_adversarial():
     db, c = fresh_db()

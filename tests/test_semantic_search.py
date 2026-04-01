@@ -9,6 +9,8 @@ import numpy as np
 from unittest.mock import patch, MagicMock
 from io import StringIO
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 
 import query
@@ -109,7 +111,7 @@ def capture_stdout(func, *args, **kwargs):
 # semantic_search — 4 categories (behavioural, edge, error, adversarial)
 # ============================================================
 
-#TAG: [S1B0]
+#TAG: [63F3] 2026-04-02
 # Verifies: semantic_search returns similar memories ranked by composite score when embeddings module is available
 def test_semantic_search_behavioural():
     db_path, conn = fresh_db()
@@ -125,7 +127,7 @@ def test_semantic_search_behavioural():
          patch.object(emb, "_load_vec", return_value=False):
         results = query.semantic_search("python setup guide", limit=10, threshold=0.3)
 
-    assert results is not None, "Should return results list, not None"
+    assert isinstance(results, list), "Should return a list"
     assert len(results) >= 1, "Should find at least the similar memory"
     # The similar vector should be the top result
     top = results[0]
@@ -135,7 +137,7 @@ def test_semantic_search_behavioural():
     assert top["score"] > 0, "Composite score should be positive"
 
 
-#TAG: [S1E0]
+#TAG: [699D] 2026-04-02
 # Verifies: semantic_search returns empty list when no memories exceed the similarity threshold
 def test_semantic_search_edge_empty_db():
     db_path, conn = fresh_db()
@@ -148,11 +150,11 @@ def test_semantic_search_edge_empty_db():
          patch.object(emb, "_load_vec", return_value=False):
         results = query.semantic_search("python setup guide", limit=10, threshold=0.5)
 
-    assert results is not None, "Should return list, not None"
+    assert isinstance(results, list), "Should return a list"
     assert len(results) == 0, f"Should return empty list for dissimilar content, got {len(results)} results"
 
 
-#TAG: [S1R0]
+#TAG: [A196] 2026-04-02
 # Verifies: semantic_search returns None and prints fallback message when embeddings module is unavailable
 def test_semantic_search_error_import():
     # Simulate embeddings module not being importable
@@ -173,10 +175,12 @@ def test_semantic_search_error_import():
         output, result = capture_stdout(query.semantic_search, "test query")
 
     assert result is None, "Should return None when embeddings unavailable"
-    assert "falling back to FTS" in output, f"Should print fallback message, got: {output!r}"
+    # Verify fallback message is printed to stdout
+    fallback_idx = output.find("falling back to FTS")
+    assert fallback_idx >= 0, f"Should print fallback message, got: {output!r}"
 
 
-#TAG: [S1A0]
+#TAG: [0E2E] 2026-04-02
 # Verifies: semantic_search handles non-string query input without crashing (adversarial type violation)
 def test_semantic_search_adversarial_bad_query_type():
     db_path, conn = fresh_db()
@@ -202,13 +206,14 @@ def test_semantic_search_adversarial_bad_query_type():
             pass  # Acceptable — propagating type error from embed is fine
 
 
-#TAG: [S1B1]
+#TAG: [1B25] 2026-04-02
 # Verifies: garbage gate rejects results when best similarity is below MIN_INJECTION_SIMILARITY (0.35)
+@pytest.mark.behavioural
 def test_semantic_search_garbage_gate():
     db_path, conn = fresh_db()
     # Insert memory with moderate but sub-threshold similarity
-    # Create a vector that will have ~0.3 cosine sim with VEC_QUERY
-    mixed = VEC_QUERY * 0.3 + VEC_DIFFERENT * 0.7
+    # Create a vector that will have cosine sim below 0.35 with VEC_QUERY
+    mixed = VEC_QUERY * 0.15 + VEC_DIFFERENT * 0.85
     mixed /= np.linalg.norm(mixed)
     mixed = mixed.astype(np.float32)
     insert_memory(conn, "weak-match", "weakly related content", mixed)
@@ -222,12 +227,12 @@ def test_semantic_search_garbage_gate():
     # The garbage gate (MIN_INJECTION_SIMILARITY=0.35) should filter this out
     # The mixed vector has cosine_sim ~0.3 with VEC_QUERY
     sim = float(np.dot(VEC_QUERY, mixed))
-    if sim < 0.35:
-        assert results is not None and len(results) == 0, \
-            f"Garbage gate should reject results with sim={sim:.3f} < 0.35"
+    assert sim < 0.35, f"Test setup: mixed vector similarity should be below 0.35, got {sim:.3f}"
+    assert isinstance(results, list), f"Should return list, got {type(results)}"
+    assert len(results) == 0, f"Garbage gate should reject results with sim={sim:.3f} < 0.35"
 
 
-#TAG: [S1E1]
+#TAG: [E555] 2026-04-02
 # Verifies: semantic_search respects limit parameter and returns at most limit results
 def test_semantic_search_edge_limit():
     db_path, conn = fresh_db()
@@ -247,12 +252,12 @@ def test_semantic_search_edge_limit():
          patch.object(emb, "_load_vec", return_value=False):
         results = query.semantic_search("test query", limit=3, threshold=0.1)
 
-    assert results is not None
+    assert isinstance(results, list), "Should return a list"
     # After diversity filter, could be fewer, but should not exceed limit
     assert len(results) <= 3, f"Should respect limit=3, got {len(results)} results"
 
 
-#TAG: [S1A1]
+#TAG: [3A61] 2026-04-02
 # Verifies: semantic_search handles negative threshold and zero limit without crashing
 def test_semantic_search_adversarial_bad_params():
     db_path, conn = fresh_db()

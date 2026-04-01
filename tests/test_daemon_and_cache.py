@@ -49,6 +49,7 @@ def fresh_db():
 # Daemon: embed() fallback when daemon unavailable
 # ============================================================
 
+# Verifies: embed(allow_slow=False) returns None when daemon is down
 def test_embed_allow_slow_false_returns_none():
     """embed(allow_slow=False) should return None when daemon isn't running."""
     import embeddings as emb
@@ -58,6 +59,7 @@ def test_embed_allow_slow_false_returns_none():
     assert result is None
 
 
+# Verifies: embed(allow_slow=True) falls back to local model loading
 def test_embed_allow_slow_true_loads_model():
     """embed(allow_slow=True) should fall back to model loading."""
     import embeddings as emb
@@ -66,10 +68,10 @@ def test_embed_allow_slow_true_loads_model():
     with patch.object(emb, '_daemon_embed', return_value=None), \
          patch.object(emb, 'get_model', return_value=mock_model):
         result = emb.embed("test text", allow_slow=True)
-    assert result is not None
     assert len(result) == 384
 
 
+# Verifies: daemon response vector is used directly by embed()
 def test_daemon_embed_returns_vector_on_success():
     """When daemon responds, embed should use its vector."""
     import embeddings as emb
@@ -78,7 +80,6 @@ def test_daemon_embed_returns_vector_on_success():
 
     with patch.object(emb, '_daemon_embed', return_value=fake_vec):
         result = emb.embed("test text")
-    assert result is not None
     assert np.allclose(result, fake_vec)
 
 
@@ -86,6 +87,7 @@ def test_daemon_embed_returns_vector_on_success():
 # Daemon: is_running with stale PID
 # ============================================================
 
+# Verifies: stale PID file detected and cleaned up
 def test_is_running_stale_pid():
     """Stale PID file should return False and clean up."""
     from daemon import is_running, PID_PATH
@@ -104,6 +106,7 @@ def test_is_running_stale_pid():
 # Context cache: semantic matching
 # ============================================================
 
+# Verifies: exact context_need string is recognized as cached
 def test_context_cache_exact_string_match():
     """Exact same context_need should be cached."""
     from retrieval import is_context_cached, add_to_context_cache
@@ -112,6 +115,7 @@ def test_context_cache_exact_string_match():
     assert is_context_cached("what database did we choose", served, None) is True
 
 
+# Verifies: different context_need string is not a cache hit
 def test_context_cache_different_string():
     """Different context_need should not be cached (without embeddings)."""
     from retrieval import is_context_cached, add_to_context_cache
@@ -138,6 +142,7 @@ def _make_state_db():
     return db_path, conn
 
 
+# Verifies: continuation counter increments correctly per call
 def test_continuation_counter_increments():
     from enforcement import get_continuation_count, increment_continuation
     db_path, conn = _make_state_db()
@@ -151,6 +156,7 @@ def test_continuation_counter_increments():
     conn.close()
 
 
+# Verifies: continuation counter resets to zero
 def test_continuation_counter_resets():
     from enforcement import get_continuation_count, increment_continuation, reset_continuation
     db_path, conn = _make_state_db()
@@ -164,6 +170,7 @@ def test_continuation_counter_resets():
     conn.close()
 
 
+# Verifies: continuation counter reaches MAX_CONTINUATIONS cap
 def test_continuation_cap_at_three():
     from enforcement import get_continuation_count, increment_continuation
     from config import MAX_CONTINUATIONS
@@ -176,6 +183,7 @@ def test_continuation_cap_at_three():
     conn.close()
 
 
+# Verifies: continuation counters are isolated between sessions
 def test_continuation_isolated_per_session():
     from enforcement import get_continuation_count, increment_continuation
     db_path, conn = _make_state_db()
@@ -192,6 +200,7 @@ def test_continuation_isolated_per_session():
 # Fail-open: hook crash → exit 0
 # ============================================================
 
+# Verifies: hook crash results in exit 0 (fail-open behavior)
 def test_hook_crash_exits_zero():
     """A crash in main() should be caught and exit 0 (fail-open)."""
     import stop_hook
@@ -232,6 +241,7 @@ def test_hook_crash_exits_zero():
 # Metrics: events recorded correctly
 # ============================================================
 
+# Verifies: record_metric persists event, detail, and value to DB
 def test_record_metric_stores_event():
     from hook_helpers import record_metric
     db_path, conn = fresh_db()
@@ -240,13 +250,13 @@ def test_record_metric_stores_event():
         record_metric("sess-1", "test_event", "detail", 42.0)
 
     row = conn.execute("SELECT event, detail, value FROM metrics").fetchone()
-    assert row is not None
     assert row[0] == "test_event"
     assert row[1] == "detail"
     assert row[2] == 42.0
     conn.close()
 
 
+# Verifies: record_metric silently handles DB errors
 def test_record_metric_survives_db_error():
     """Metric recording should not crash on DB errors."""
     from hook_helpers import record_metric
@@ -259,6 +269,7 @@ def test_record_metric_survives_db_error():
 # Low-info pre-filter (through main())
 # ============================================================
 
+# Verifies: low-info context_need 'help' is pre-filtered via main()
 def test_low_info_context_need_filtered_through_main():
     """A context_need of 'help' should be pre-filtered — verified via metric."""
     import stop_hook
@@ -308,6 +319,7 @@ def test_low_info_context_need_filtered_through_main():
     conn.close()
 
 
+# Verifies: substantive context_need passes pre-filter to retrieval
 def test_substantive_context_need_not_filtered():
     """A real question should NOT be pre-filtered."""
     import stop_hook

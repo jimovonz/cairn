@@ -78,6 +78,7 @@ import query
 # --recent
 # ============================================================
 
+# Verifies: --recent returns capped results with expected fields
 def test_list_recent():
     db_path, conn = fresh_db()
     seed_db(conn)
@@ -91,6 +92,7 @@ def test_list_recent():
     conn.close()
 
 
+# Verifies: --recent on empty DB shows "No results"
 def test_list_recent_empty_db():
     db_path, conn = fresh_db()
     with patch.object(query, 'DB_PATH', db_path):
@@ -103,6 +105,7 @@ def test_list_recent_empty_db():
 # --type
 # ============================================================
 
+# Verifies: --type filter returns only memories of that type
 def test_list_by_type():
     db_path, conn = fresh_db()
     seed_db(conn, 10)
@@ -117,6 +120,7 @@ def test_list_by_type():
 # Full-text search
 # ============================================================
 
+# Verifies: full-text search finds matching memories
 def test_fts_search():
     db_path, conn = fresh_db()
     seed_db(conn)
@@ -126,6 +130,7 @@ def test_fts_search():
     conn.close()
 
 
+# Verifies: full-text search returns empty for non-matching query
 def test_fts_search_no_results():
     db_path, conn = fresh_db()
     seed_db(conn)
@@ -139,6 +144,7 @@ def test_fts_search_no_results():
 # --stats
 # ============================================================
 
+# Verifies: --stats outputs total memory count
 def test_stats_output():
     db_path, conn = fresh_db()
     seed_db(conn)
@@ -153,6 +159,7 @@ def test_stats_output():
 # --review
 # ============================================================
 
+# Verifies: --review surfaces low-confidence memories
 def test_review_shows_low_confidence():
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 'low', 'low conf', 0.2)")
@@ -168,6 +175,7 @@ def test_review_shows_low_confidence():
 # --delete
 # ============================================================
 
+# Verifies: --delete removes a memory and decrements count
 def test_delete_memory():
     db_path, conn = fresh_db()
     seed_db(conn)
@@ -179,6 +187,7 @@ def test_delete_memory():
     conn.close()
 
 
+# Verifies: deleting nonexistent ID shows "No memory" message
 def test_delete_nonexistent():
     db_path, conn = fresh_db()
     with patch.object(query, 'DB_PATH', db_path):
@@ -191,6 +200,7 @@ def test_delete_nonexistent():
 # --history
 # ============================================================
 
+# Verifies: --history shows old and current content versions
 def test_show_history_with_versions():
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO memories (type, topic, content) VALUES ('decision', 'db', 'PostgreSQL')")
@@ -208,6 +218,7 @@ def test_show_history_with_versions():
 # --compact
 # ============================================================
 
+# Verifies: --compact outputs project name and memory summary
 def test_compact_output():
     db_path, conn = fresh_db()
     seed_db(conn)
@@ -222,6 +233,7 @@ def test_compact_output():
 # --projects
 # ============================================================
 
+# Verifies: --projects lists all distinct project names
 def test_list_projects():
     db_path, conn = fresh_db()
     seed_db(conn)

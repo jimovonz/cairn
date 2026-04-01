@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 # === Garbage and borderline gates through find_similar ===
 
+# Verifies: find_similar filters out results below MIN_INJECTION_SIMILARITY
 def test_garbage_gate_rejects_weak_results():
     """Results below MIN_INJECTION_SIMILARITY should return empty from find_similar."""
     import sqlite3, tempfile
@@ -69,6 +70,7 @@ def test_garbage_gate_rejects_weak_results():
     conn.close()
 
 
+# Verifies: diversity filter deduplicates entries with identical type+topic pairs
 def test_diversity_filter_drops_same_type_topic():
     """Two results with identical type+topic — diversity filter should keep only one."""
     import sqlite3, tempfile
@@ -104,6 +106,7 @@ def test_diversity_filter_drops_same_type_topic():
 
 # === Relative filter edge cases ===
 
+# Verifies: a single result always passes the relative filter
 def test_relative_filter_single_result():
     """Single result should always survive relative filter."""
     from config import RELATIVE_FILTER_RATIO
@@ -113,6 +116,7 @@ def test_relative_filter_single_result():
     assert len(kept) == 1
 
 
+# Verifies: tightly-clustered similarities all survive the relative filter
 def test_relative_filter_tight_cluster():
     """Results within 30% of each other should all survive."""
     from config import RELATIVE_FILTER_RATIO
@@ -123,6 +127,7 @@ def test_relative_filter_tight_cluster():
     assert len(kept) == 3
 
 
+# Verifies: relative filter drops results far below the top similarity
 def test_relative_filter_drops_outlier():
     """One strong + one much weaker should drop the weak one."""
     from config import RELATIVE_FILTER_RATIO
@@ -135,6 +140,7 @@ def test_relative_filter_drops_outlier():
 
 # === Confidence no longer gates retrieval ===
 
+# Verifies: confidence floor and similarity override are both disabled
 def test_no_confidence_filtering_zero_confidence():
     """similarity=0.50, confidence=0.0 — should be included (confidence doesn't gate retrieval)."""
     # With confidence removed from filtering, only similarity threshold matters
@@ -143,6 +149,7 @@ def test_no_confidence_filtering_zero_confidence():
     assert SOFT_SIM_OVERRIDE == 0.0, "Similarity override for confidence should be disabled"
 
 
+# Verifies: low confidence does not exclude entries above similarity threshold
 def test_no_confidence_filtering_low_confidence():
     """similarity=0.50, confidence=0.2 — should be included (confidence doesn't gate retrieval)."""
     # Previously this was excluded by the confidence floor. Now included.
@@ -151,6 +158,7 @@ def test_no_confidence_filtering_low_confidence():
     assert included
 
 
+# Verifies: zero confidence with moderate similarity still passes
 def test_no_confidence_filtering_at_sim_threshold():
     """similarity=0.30, confidence=0.0 — included based on similarity alone."""
     threshold = 0.15
@@ -160,6 +168,7 @@ def test_no_confidence_filtering_at_sim_threshold():
 
 # === Dominance suppression ===
 
+# Verifies: gap exactly equal to DOMINANCE_EPSILON does not trigger suppression
 def test_dominance_gap_exactly_at_epsilon():
     """Gap exactly at epsilon boundary — should NOT trigger suppression."""
     from config import DOMINANCE_EPSILON
@@ -167,6 +176,7 @@ def test_dominance_gap_exactly_at_epsilon():
     assert not (gap < DOMINANCE_EPSILON)
 
 
+# Verifies: gap just below DOMINANCE_EPSILON triggers suppression
 def test_dominance_gap_just_below_epsilon():
     """Gap just below epsilon — should trigger, keeping both."""
     from config import DOMINANCE_EPSILON
@@ -177,6 +187,7 @@ def test_dominance_gap_just_below_epsilon():
 # === Diversity filter: realistic scenarios ===
 
 
+# Verifies: entries with different topics survive diversity filtering
 def test_diversity_keeps_different_aspects():
     """Two entries about related but distinct topics should both survive."""
     results = [
@@ -186,6 +197,7 @@ def test_diversity_keeps_different_aspects():
     assert results[0]["topic"] != results[1]["topic"]
 
 
+# Verifies: word overlap below DIVERSITY_SIM_THRESHOLD keeps both entries
 def test_diversity_word_overlap_boundary():
     """Content with exactly 90% word overlap should be caught."""
     from config import DIVERSITY_SIM_THRESHOLD
@@ -199,6 +211,7 @@ def test_diversity_word_overlap_boundary():
     assert overlap < DIVERSITY_SIM_THRESHOLD
 
 
+# Verifies: identical content produces word overlap above DIVERSITY_SIM_THRESHOLD
 def test_diversity_identical_content():
     """Exact same content, different topic — word overlap catches it."""
     from config import DIVERSITY_SIM_THRESHOLD
@@ -210,6 +223,7 @@ def test_diversity_identical_content():
 
 # === Write throttling: priority ordering ===
 
+# Verifies: write throttle prioritises corrections and decisions over project entries
 def test_write_throttle_corrections_survive_over_project():
     """When throttled, corrections should be kept over project metadata."""
     from config import MAX_MEMORIES_PER_RESPONSE
@@ -228,6 +242,7 @@ def test_write_throttle_corrections_survive_over_project():
     assert "decision" in types_kept
 
 
+# Verifies: write throttle caps entries at MAX_MEMORIES_PER_RESPONSE
 def test_write_throttle_all_same_type():
     """All entries same type — should just keep first N."""
     from config import MAX_MEMORIES_PER_RESPONSE
@@ -237,6 +252,7 @@ def test_write_throttle_all_same_type():
 
 # === Combined gate interaction ===
 
+# Verifies: borderline entries are caught by either garbage or borderline gate
 def test_gates_combined_weak_but_not_garbage():
     """Entry at garbage floor with low score — when borderline == garbage floor, caught by garbage gate."""
     from config import MIN_INJECTION_SIMILARITY, BORDERLINE_SIM_CEILING, BORDERLINE_SCORE_FLOOR
@@ -249,6 +265,7 @@ def test_gates_combined_weak_but_not_garbage():
     assert caught_garbage or caught_borderline
 
 
+# Verifies: high-quality entry passes all gates (garbage, borderline, soft, relative)
 def test_gates_combined_strong_entry_passes_all():
     """Entry at sim=0.75, score=0.65, confidence=0.8 — should pass everything."""
     from config import (MIN_INJECTION_SIMILARITY, BORDERLINE_SIM_CEILING,

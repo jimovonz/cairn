@@ -91,6 +91,7 @@ def run_hook(db_path, payload):
 # Test: Valid memory block → stores in DB
 # ============================================================
 
+# Verifies: valid memory block is parsed and stored in DB
 def test_valid_block_stores_memory():
     db_path, conn = fresh_db()
     payload = {
@@ -117,6 +118,7 @@ def test_valid_block_stores_memory():
 # Test: Missing block → blocks with re-prompt
 # ============================================================
 
+# Verifies: missing memory block triggers block/re-prompt decision
 def test_missing_block_triggers_reprompt():
     db_path, conn = fresh_db()
     # Mark session as instructed so enforcement applies
@@ -141,6 +143,7 @@ def test_missing_block_triggers_reprompt():
 # Test: Missing block on continuation → allows stop (no loop)
 # ============================================================
 
+# Verifies: missing block on continuation does not loop-block
 def test_missing_block_on_continuation_allows_stop():
     db_path, conn = fresh_db()
     payload = {
@@ -161,6 +164,7 @@ def test_missing_block_on_continuation_allows_stop():
 # Test: complete: false → blocks with remaining text
 # ============================================================
 
+# Verifies: complete:false blocks with remaining text in decision
 def test_incomplete_blocks_with_remaining():
     db_path, conn = fresh_db()
     payload = {
@@ -172,7 +176,6 @@ def test_incomplete_blocks_with_remaining():
     }
     result, code = run_hook(db_path, payload)
 
-    assert result is not None
     assert result["decision"] == "block"
     conn.close()
 
@@ -181,6 +184,7 @@ def test_incomplete_blocks_with_remaining():
 # Test: Multiple entries in one block
 # ============================================================
 
+# Verifies: multiple memory entries in one block are all stored
 def test_multiple_entries_stored():
     db_path, conn = fresh_db()
     payload = {
@@ -205,6 +209,7 @@ def test_multiple_entries_stored():
 # Test: Session auto-registration
 # ============================================================
 
+# Verifies: session is auto-registered with project from cwd
 def test_session_registered():
     db_path, conn = fresh_db()
     payload = {
@@ -226,6 +231,7 @@ def test_session_registered():
 # Test: Auto project labelling from cwd
 # ============================================================
 
+# Verifies: project label derived from cwd directory name
 def test_auto_project_label():
     db_path, conn = fresh_db()
     payload = {
@@ -246,6 +252,7 @@ def test_auto_project_label():
 # Test: Metrics recorded
 # ============================================================
 
+# Verifies: hook_fired and memories_stored metrics are recorded
 def test_metrics_recorded():
     db_path, conn = fresh_db()
     payload = {
@@ -267,6 +274,7 @@ def test_metrics_recorded():
 # Test: Write throttling with too many entries
 # ============================================================
 
+# Verifies: write throttle caps entries at MAX_MEMORIES_PER_RESPONSE
 def test_write_throttle_limits_entries():
     from config import MAX_MEMORIES_PER_RESPONSE
     db_path, conn = fresh_db()
@@ -294,6 +302,7 @@ def test_write_throttle_limits_entries():
 # Test: Noop block (complete: true, no entries) → allow stop, no storage
 # ============================================================
 
+# Verifies: noop block (no entries) allows stop with zero storage
 def test_noop_block_no_storage():
     db_path, conn = fresh_db()
     payload = {
@@ -315,6 +324,7 @@ def test_noop_block_no_storage():
 # Test: Malformed block with open tag but garbage content
 # ============================================================
 
+# Verifies: garbage inside valid tags stores nothing, no crash
 def test_malformed_block_garbage_content():
     db_path, conn = fresh_db()
     payload = {
@@ -337,6 +347,7 @@ def test_malformed_block_garbage_content():
 # Test: Realistic messy Claude output
 # ============================================================
 
+# Verifies: memory block parsed despite trailing commentary text
 def test_realistic_claude_output_with_extra_text():
     """Claude sometimes adds commentary after the memory block."""
     db_path, conn = fresh_db()
@@ -355,6 +366,7 @@ def test_realistic_claude_output_with_extra_text():
     conn.close()
 
 
+# Verifies: memory block parsed inside markdown code fences
 def test_realistic_claude_markdown_wrapped():
     """Claude sometimes wraps the block in markdown code fences."""
     db_path, conn = fresh_db()
@@ -377,6 +389,7 @@ def test_realistic_claude_markdown_wrapped():
 # a retrieved memory without -! annotation
 # ============================================================
 
+# Verifies: inline contradiction enforcement is disabled (no block)
 def test_contradiction_enforcement_blocks():
     """If retrieved memories exist in hook_state and the response negates one,
     the stop hook should block and request a -! annotation."""
@@ -470,6 +483,7 @@ def test_contradiction_enforcement_blocks():
     conn.close()
 
 
+# Verifies: -! annotation writes archived_reason and allows stop
 def test_contradiction_enforcement_skips_when_annotated():
     """If the LLM already annotated the contradicted memory with -!, enforcement should not block."""
     import numpy as np

@@ -54,6 +54,7 @@ def run_claude(prompt, timeout=60):
     return result
 
 
+# Verifies: both hooks fire and read input fields correctly
 def test_hooks_fire_and_fields_valid():
     """Send a prompt through claude -p, verify both hooks fire and read their
     input fields correctly. This catches field name renames in Claude Code updates."""

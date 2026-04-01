@@ -117,6 +117,7 @@ def count_history(conn):
 # Test: Insert and retrieve through find_similar
 # ============================================================
 
+# Verifies: vector similarity search returns the closest match
 def test_insert_and_retrieve():
     """Insert 3 memories with different seeds, query with one seed, verify closest returned."""
     db_path, conn = setup_test_db()
@@ -144,6 +145,7 @@ def test_insert_and_retrieve():
 # Test: Dedup — near-identical entries get merged
 # ============================================================
 
+# Verifies: same type+topic overwrites content and preserves history
 def test_dedup_same_type_topic_overwrites():
     """Insert two memories with same type+topic but different content. Second should overwrite."""
     db_path, conn = setup_test_db()
@@ -170,6 +172,7 @@ def test_dedup_same_type_topic_overwrites():
 # Test: Contradiction — same type+topic, different content → confidence drop
 # ============================================================
 
+# Verifies: contradicting content marks old memory as superseded
 def test_contradiction_annotates_old_memory():
     """Overwriting same type+topic with different content should annotate old memory as superseded."""
     db_path, conn = setup_test_db()
@@ -199,7 +202,6 @@ def test_contradiction_annotates_old_memory():
     assert old[0] == "Use PostgreSQL"
     # Supersession annotation present
     reason = conn.execute("SELECT archived_reason FROM memories WHERE id = ?", (id1,)).fetchone()[0]
-    assert reason is not None
     assert "superseded" in reason
     assert "SQLite" in reason
     conn.close()
@@ -209,6 +211,7 @@ def test_contradiction_annotates_old_memory():
 # Test: Confidence dynamics through multiple updates
 # ============================================================
 
+# Verifies: repeated confidence boosts saturate below 1.0
 def test_confidence_saturating_boost():
     """Multiple boosts should approach but never reach 1.0."""
     db_path, conn = setup_test_db()
@@ -227,6 +230,7 @@ def test_confidence_saturating_boost():
     conn.close()
 
 
+# Verifies: single negative penalty is severe at high confidence
 def test_confidence_single_negative_severe_at_high():
     """A single negative at 0.9 should drop significantly."""
     db_path, conn = setup_test_db()
@@ -244,6 +248,7 @@ def test_confidence_single_negative_severe_at_high():
     conn.close()
 
 
+# Verifies: low-confidence memory recovers with repeated boosts
 def test_confidence_recovery_from_low():
     """A memory at 0.2 should be able to recover with enough positive signals."""
     db_path, conn = setup_test_db()
@@ -265,6 +270,7 @@ def test_confidence_recovery_from_low():
 # Test: Quality gates in sequence (simulated pipeline)
 # ============================================================
 
+# Verifies: quality gates filter out unrelated vector matches
 def test_full_gate_pipeline_rejects_garbage():
     """Insert memories, query with unrelated vector — gates should return nothing."""
     db_path, conn = setup_test_db()
@@ -285,6 +291,7 @@ def test_full_gate_pipeline_rejects_garbage():
     conn.close()
 
 
+# Verifies: exact vector match passes all quality gates
 def test_full_gate_pipeline_passes_strong_match():
     """Query with same vector as a stored memory — should pass all gates."""
     db_path, conn = setup_test_db()
@@ -307,6 +314,7 @@ def test_full_gate_pipeline_passes_strong_match():
 # Test: Write throttling through insert pipeline
 # ============================================================
 
+# Verifies: write throttle caps entries at MAX_MEMORIES_PER_RESPONSE
 def test_write_throttle_caps_entries():
     """More than MAX_MEMORIES_PER_RESPONSE entries should be truncated."""
     from config import MAX_MEMORIES_PER_RESPONSE
@@ -338,6 +346,7 @@ def test_write_throttle_caps_entries():
 # Test: Stop hook parse → store → retrieve round trip
 # ============================================================
 
+# Verifies: parse -> store -> retrieve round trip preserves data
 def test_parse_store_retrieve_roundtrip():
     """Parse a memory block, store entries, then retrieve and verify."""
     from parser import parse_memory_block
@@ -372,7 +381,6 @@ def test_parse_store_retrieve_roundtrip():
 
     # Retrieve and verify
     mem = conn.execute("SELECT * FROM memories WHERE topic = 'auth-method'").fetchone()
-    assert mem is not None
     assert mem[3] == "Use OAuth2 with PKCE flow"  # content
     conn.close()
 
@@ -381,6 +389,7 @@ def test_parse_store_retrieve_roundtrip():
 # Test: Context insufficient → block decision
 # ============================================================
 
+# Verifies: context: insufficient parses correctly for blocking
 def test_context_insufficient_produces_block():
     """Memory block with context: insufficient should parse correctly for blocking."""
     from parser import parse_memory_block
@@ -403,6 +412,7 @@ def test_context_insufficient_produces_block():
 # Test: Confidence updates parse and apply correctly
 # ============================================================
 
+# Verifies: parsed confidence updates boost/penalise correct memories
 def test_confidence_updates_applied():
     """Parse confidence updates and verify they modify the right memories."""
     from parser import parse_memory_block
@@ -447,6 +457,7 @@ def test_confidence_updates_applied():
 # Test: Version history preserved on overwrite
 # ============================================================
 
+# Verifies: content updates create history entries via DB trigger
 def test_version_history_on_overwrite():
     """Overwriting content should create a history entry via trigger."""
     db_path, conn = setup_test_db()
@@ -477,6 +488,7 @@ def test_version_history_on_overwrite():
 # Test: Negation heuristic in realistic context
 # ============================================================
 
+# Verifies: negation heuristic detects contradictory memory pairs
 def test_negation_with_realistic_memories():
     """Two plausible memories that contradict should be detected."""
     from storage import _has_negation_mismatch

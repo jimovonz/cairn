@@ -102,29 +102,34 @@ def run_hook(db_path, payload):
 # --- Unit tests for extraction and detection ---
 
 class TestExtractLastSentence:
+    # Verifies: memory block is stripped before sentence extraction
     def test_strips_memory_block(self):
         import stop_hook
         text = "Here is my answer.\n<memory>\n- type: fact\n- topic: test\n- content: test\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
         result = enforcement._extract_last_sentence(text)
         assert result == "Here is my answer"
 
+    # Verifies: trailing code fences are stripped from extraction
     def test_strips_trailing_code_fence(self):
         import stop_hook
         text = "Some code here.\n```\ncode block\n```"
         result = enforcement._extract_last_sentence(text)
-        assert result is not None
+        assert isinstance(result, str) and len(result) > 0
         assert "```" not in result
 
+    # Verifies: empty/whitespace input returns None
     def test_returns_none_for_empty(self):
         import stop_hook
         assert enforcement._extract_last_sentence("") is None
         assert enforcement._extract_last_sentence("   ") is None
 
+    # Verifies: short fragments are skipped (returns None)
     def test_skips_short_fragments(self):
         import stop_hook
         text = "Done. Ok. Yes."
         assert enforcement._extract_last_sentence(text) is None
 
+    # Verifies: last meaningful sentence is correctly extracted
     def test_extracts_last_meaningful_sentence(self):
         import stop_hook
         text = "First I did this. Then I checked the logs. Let me investigate the error further."
@@ -145,6 +150,7 @@ class TestCheckTrailingIntent:
         except Exception:
             return None
 
+    # Verifies: obvious action intent ("let me run") is detected
     def test_detects_obvious_intent(self):
         import stop_hook
         emb = self._get_embedder()
@@ -159,6 +165,7 @@ class TestCheckTrailingIntent:
             )
             assert result is not None, "Should detect 'let me run the tests'"
 
+    # Verifies: clean completion statement is not flagged as intent
     def test_allows_clean_ending(self):
         import stop_hook
         emb = self._get_embedder()
@@ -172,6 +179,7 @@ class TestCheckTrailingIntent:
             )
             assert result is None, "Should not flag a clean completion statement"
 
+    # Verifies: question to user does not crash intent detection
     def test_allows_question_to_user(self):
         import stop_hook
         emb = self._get_embedder()
@@ -187,6 +195,7 @@ class TestCheckTrailingIntent:
             # false-positive on conversational endings
             # This is acceptable either way, but shouldn't crash
 
+    # Verifies: missing embedder gracefully returns None
     def test_no_embedder_returns_none(self):
         import stop_hook
         enforcement._intent_embeddings = None
@@ -200,6 +209,7 @@ class TestCheckTrailingIntent:
 # --- Integration tests through main() ---
 
 class TestTrailingIntentIntegration:
+    # Verifies: response with trailing action intent is blocked
     def test_blocks_trailing_intent(self):
         """Response ending with action intent should be blocked."""
         db_path, conn = fresh_env()
@@ -230,6 +240,7 @@ class TestTrailingIntentIntegration:
         assert result["decision"] == "block"
         assert "intent: resolved" in result["reason"]
 
+    # Verifies: intent:resolved in memory block bypasses intent check
     def test_intent_resolved_allows_stop(self):
         """Memory block with intent: resolved should skip trailing intent check."""
         db_path, conn = fresh_env()
@@ -256,6 +267,7 @@ class TestTrailingIntentIntegration:
 
         assert result is None, "intent: resolved should allow stop"
 
+    # Verifies: normal response without intent passes through
     def test_clean_response_passes(self):
         """Normal response without trailing intent should pass."""
         db_path, conn = fresh_env()
@@ -285,12 +297,14 @@ class TestTrailingIntentIntegration:
 # --- Content quality gate tests ---
 
 class TestContentQualityGate:
+    # Verifies: empty, short, and whitespace strings are classified as empty memories
     def test_rejects_empty_content(self):
         import stop_hook
         assert storage._is_empty_memory("") is True
         assert storage._is_empty_memory("short") is True
         assert storage._is_empty_memory("   ") is True
 
+    # Verifies: known no-info patterns ("no context available" etc.) are classified as empty
     def test_rejects_no_context_patterns(self):
         import stop_hook
         assert storage._is_empty_memory("User asked what was on their lawn - no context available") is True
@@ -298,12 +312,14 @@ class TestContentQualityGate:
         assert storage._is_empty_memory("Unable to determine what the user meant") is True
         assert storage._is_empty_memory("no information available about this topic") is True
 
+    # Verifies: substantive content strings are correctly classified as non-empty
     def test_allows_real_content(self):
         import stop_hook
         assert storage._is_empty_memory("User observed a pūkeko on their lawn") is False
         assert storage._is_empty_memory("Changed install.sh to overwrite global CLAUDE.md on re-install") is False
         assert storage._is_empty_memory("WAL mode enabled for concurrent session safety") is False
 
+    # Verifies: empty memories are filtered out during insert_memories and not stored in DB
     def test_rejects_in_insert(self):
         """Empty memories should not be inserted into the database."""
         db_path, conn = fresh_env()

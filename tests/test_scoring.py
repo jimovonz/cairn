@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 from embeddings import composite_score, _recency_decay
 
 
+# Verifies: higher similarity produces higher composite score
 def test_composite_score_similarity_dominant():
     """Higher similarity should generally produce higher score."""
     s1 = composite_score(0.8, 0.7, "2026-03-20 12:00:00")
@@ -15,6 +16,7 @@ def test_composite_score_similarity_dominant():
     assert s1 > s2
 
 
+# Verifies: confidence does not affect composite score
 def test_composite_score_confidence_has_no_effect():
     """Confidence is zeroed in scoring — different confidence should produce same score."""
     s_high = composite_score(0.5, 0.9, "2026-03-20 12:00:00")
@@ -22,6 +24,7 @@ def test_composite_score_confidence_has_no_effect():
     assert abs(s_high - s_low) < 0.01, f"Confidence should not affect score: {s_high} vs {s_low}"
 
 
+# Verifies: project-scoped entries score higher than cross-project
 def test_composite_score_project_scope_boost():
     """Project-scoped entries should score higher than global at same similarity."""
     s_proj = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="myproject", current_project="myproject")
@@ -29,6 +32,7 @@ def test_composite_score_project_scope_boost():
     assert s_proj > s_glob
 
 
+# Verifies: very recent entries have decay near 1.0
 def test_recency_decay_recent():
     """Very recent entries should have decay near 1.0."""
     from datetime import datetime
@@ -37,6 +41,7 @@ def test_recency_decay_recent():
     assert decay > 0.95
 
 
+# Verifies: 30-day-old entries decay to ~0.5 (half-life)
 def test_recency_decay_old():
     """30-day old entries should be roughly 0.5 (half-life)."""
     from datetime import datetime, timedelta
@@ -45,6 +50,7 @@ def test_recency_decay_old():
     assert 0.4 < decay < 0.6
 
 
+# Verifies: 90-day-old entries have low decay value
 def test_recency_decay_very_old():
     """90-day old entries should be low."""
     from datetime import datetime, timedelta
@@ -81,6 +87,7 @@ def _confidence_db():
     return db_path, conn
 
 
+# Verifies: corroboration boost saturates at high confidence
 def test_boost_at_high_confidence_is_tiny():
     """Saturating boost: at 0.9 confidence, boost should be minimal."""
     from unittest.mock import patch
@@ -97,6 +104,7 @@ def test_boost_at_high_confidence_is_tiny():
     conn.close()
 
 
+# Verifies: corroboration boost is larger at low confidence
 def test_boost_at_low_confidence_is_meaningful():
     """Saturating boost: at 0.3 confidence, boost should be larger."""
     from unittest.mock import patch
@@ -113,6 +121,7 @@ def test_boost_at_low_confidence_is_meaningful():
     conn.close()
 
 
+# Verifies: irrelevant feedback leaves confidence unchanged
 def test_irrelevant_does_not_change_confidence():
     """- (irrelevant) should not adjust confidence at all."""
     from unittest.mock import patch
@@ -128,6 +137,7 @@ def test_irrelevant_does_not_change_confidence():
     conn.close()
 
 
+# Verifies: irrelevant feedback unchanged even at low confidence
 def test_irrelevant_at_low_confidence_unchanged():
     """- (irrelevant) should not adjust confidence even at low values."""
     from unittest.mock import patch
@@ -143,6 +153,7 @@ def test_irrelevant_at_low_confidence_unchanged():
     conn.close()
 
 
+# Verifies: single negative penalty at 0.9 drops to ~0.52
 def test_single_negative_at_09_drops_significantly():
     """One negative at 0.9 should drop to roughly 0.52."""
     conf = 0.9
@@ -151,6 +162,7 @@ def test_single_negative_at_09_drops_significantly():
     assert 0.5 < new < 0.55
 
 
+# Verifies: repeated boosts approach 1.0 asymptotically
 def test_many_boosts_approach_but_dont_reach_1():
     """Repeated boosts should approach 1.0 but never reach it."""
     conf = 0.7
@@ -167,30 +179,37 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 from storage import _has_negation_mismatch
 
 
+# Verifies: "do not" negation detected between similar statements
 def test_negation_detected():
     assert _has_negation_mismatch("use RTK for positioning", "do not use RTK for positioning")
 
 
+# Verifies: similar non-contradicting statements show no negation
 def test_no_negation():
     assert not _has_negation_mismatch("use RTK for positioning", "use RTK for best accuracy")
 
 
+# Verifies: increase/decrease directional contradiction detected
 def test_directional_contradiction():
     assert _has_negation_mismatch("increase the gain", "decrease the gain")
 
 
+# Verifies: prefer/avoid opposition detected as negation
 def test_preference_opposition():
     assert _has_negation_mismatch("prefer PostgreSQL", "avoid PostgreSQL")
 
 
+# Verifies: enable/disable pair detected as negation
 def test_enable_disable():
     assert _has_negation_mismatch("enable debug logging", "disable debug logging")
 
 
+# Verifies: unrelated sentences do not trigger negation detection
 def test_unrelated_sentences():
     assert not _has_negation_mismatch("the sky is blue", "the database uses SQLite")
 
 
+# Verifies: -! writes archived_reason without changing confidence
 def test_contradiction_annotation_writes_archived_reason():
     """The -! feedback should write archived_reason and leave confidence unchanged."""
     from unittest.mock import patch
@@ -208,6 +227,7 @@ def test_contradiction_annotation_writes_archived_reason():
     conn.close()
 
 
+# Verifies: -! with no reason uses default "contradicted" annotation
 def test_contradiction_annotation_default_reason():
     """-! with no reason should use a default annotation."""
     from unittest.mock import patch
@@ -219,11 +239,11 @@ def test_contradiction_annotation_default_reason():
     with patch.object(hook_helpers, 'DB_PATH', db_path):
         apply_confidence_updates([(1, "-!", None)], session_id="s1")
     row = conn.execute("SELECT archived_reason FROM memories WHERE id = 1").fetchone()
-    assert row[0] is not None, "Should have a default annotation"
-    assert "contradicted" in row[0].lower()
+    assert isinstance(row[0], str) and "contradicted" in row[0].lower(), f"Expected default annotation containing 'contradicted', got: {row[0]}"
     conn.close()
 
 
+# Verifies: mixed +, -, -! feedback applied correctly in one batch
 def test_mixed_feedback_types():
     """A single response can have +, -, and -! updates applied correctly."""
     from unittest.mock import patch

@@ -113,6 +113,7 @@ def run_hook(db_path, payload):
 # TWO-PASS ENFORCEMENT: missing block → re-prompt → complete
 # ============================================================
 
+# Verifies: missing block triggers block, then valid block allows stop
 def test_two_pass_missing_block_then_complete():
     """Pass 1: no memory block → blocks. Pass 2 (continuation): has block → allows stop."""
     db_path, conn = fresh_env()
@@ -128,7 +129,6 @@ def test_two_pass_missing_block_then_complete():
         "session_id": "s1", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "Answer without memory block."
     })
-    assert r1 is not None
     assert r1["decision"] == "block"
 
     # Pass 2: continuation with block
@@ -141,10 +141,11 @@ def test_two_pass_missing_block_then_complete():
 
     # Memory should be stored
     row = conn.execute("SELECT content FROM memories WHERE topic = 'fixed'").fetchone()
-    assert row is not None
+    assert row[0] == "response now includes a proper memory block"
     conn.close()
 
 
+# Verifies: incomplete flag blocks, then complete flag allows stop
 def test_two_pass_incomplete_then_complete():
     """Pass 1: complete: false → blocks. Pass 2: complete: true → allows stop."""
     db_path, conn = fresh_env()
@@ -155,7 +156,6 @@ def test_two_pass_incomplete_then_complete():
         "session_id": "s1", "transcript_path": "", "cwd": "/tmp",
         "last_assistant_message": "Working.\n<memory>\n- type: fact\n- topic: partial\n- content: half done\n- complete: false\n- remaining: finish the rest\n</memory>"
     })
-    assert r1 is not None
     assert r1["decision"] == "block"
 
     # Pass 2: complete
@@ -172,6 +172,7 @@ def test_two_pass_incomplete_then_complete():
 # CONTINUATION CAP — 3 consecutive blocks → forced stop
 # ============================================================
 
+# Verifies: MAX_CONTINUATIONS cap forces stop on repeated incompletes
 def test_continuation_cap_forces_stop():
     """After MAX_CONTINUATIONS blocks, the hook forces a stop regardless."""
     from config import MAX_CONTINUATIONS
@@ -199,6 +200,7 @@ def test_continuation_cap_forces_stop():
 # MALFORMED BLOCK — open tag, no close tag
 # ============================================================
 
+# Verifies: unclosed <memory> tag is parsed via best-effort recovery
 def test_malformed_open_no_close():
     """<memory> tag present but no </memory> — should still parse best-effort."""
     db_path, conn = fresh_env()
@@ -210,7 +212,7 @@ def test_malformed_open_no_close():
 
     # Parser should recover via unclosed tag fallback
     row = conn.execute("SELECT content FROM memories WHERE topic = 'unclosed'").fetchone()
-    assert row is not None, "Should parse memory from unclosed block"
+    assert row[0] == "no closing tag but should still be parsed correctly", "Should parse memory from unclosed block"
     conn.close()
 
 
@@ -218,6 +220,7 @@ def test_malformed_open_no_close():
 # LOW-INFO PRE-FILTER — short/generic context_need skipped
 # ============================================================
 
+# Verifies: short/generic context_need is pre-filtered, not retrieved
 def test_low_info_context_need_skipped():
     """context_need='help' should be pre-filtered — no retrieval attempted."""
     db_path, conn = fresh_env()
@@ -231,10 +234,11 @@ def test_low_info_context_need_skipped():
     assert r is None
     # Check metric was recorded
     event = conn.execute("SELECT event FROM metrics WHERE event = 'context_prefiltered'").fetchone()
-    assert event is not None, "Pre-filter metric should be recorded"
+    assert event[0] == "context_prefiltered", "Pre-filter metric should be recorded"
     conn.close()
 
 
+# Verifies: real context_need reaches retrieval, not pre-filtered
 def test_substantive_context_need_not_filtered():
     """Real context_need should not be pre-filtered (even if retrieval returns nothing)."""
     db_path, conn = fresh_env()
@@ -247,7 +251,7 @@ def test_substantive_context_need_not_filtered():
     # Should allow stop (no data found, but retrieval was attempted)
     # Check that context_requested metric exists (not prefiltered)
     event = conn.execute("SELECT event FROM metrics WHERE event = 'context_requested'").fetchone()
-    assert event is not None, "Substantive query should reach retrieval, not be pre-filtered"
+    assert event[0] == "context_requested", "Substantive query should reach retrieval, not be pre-filtered"
     conn.close()
 
 
@@ -255,6 +259,7 @@ def test_substantive_context_need_not_filtered():
 # RETRIEVAL OUTCOME — recorded in metrics
 # ============================================================
 
+# Verifies: retrieval_outcome: useful is recorded as a metric
 def test_retrieval_outcome_recorded():
     """retrieval_outcome: useful should be recorded as a metric."""
     db_path, conn = fresh_env()
@@ -265,10 +270,11 @@ def test_retrieval_outcome_recorded():
     })
 
     event = conn.execute("SELECT event FROM metrics WHERE event = 'retrieval_useful'").fetchone()
-    assert event is not None, "retrieval_outcome: useful should be recorded"
+    assert event[0] == "retrieval_useful", "retrieval_outcome: useful should be recorded"
     conn.close()
 
 
+# Verifies: retrieval_outcome: harmful is recorded as a metric
 def test_retrieval_outcome_harmful_recorded():
     db_path, conn = fresh_env()
     r, _ = run_hook(db_path, {
@@ -278,7 +284,7 @@ def test_retrieval_outcome_harmful_recorded():
     })
 
     event = conn.execute("SELECT event FROM metrics WHERE event = 'retrieval_harmful'").fetchone()
-    assert event is not None
+    assert event[0] == "retrieval_harmful"
     conn.close()
 
 
@@ -286,6 +292,7 @@ def test_retrieval_outcome_harmful_recorded():
 # KEYWORDS — Layer 2 staging triggered through main()
 # ============================================================
 
+# Verifies: keywords in memory block are parsed and memory stored
 def test_keywords_parsed_and_logged():
     """Keywords in memory block should be parsed (Layer 2 runs but finds nothing)."""
     db_path, conn = fresh_env()
@@ -297,7 +304,7 @@ def test_keywords_parsed_and_logged():
 
     # Memory should be stored
     row = conn.execute("SELECT content FROM memories WHERE topic = 'kw-test'").fetchone()
-    assert row is not None
+    assert row[0] == "keyword test for cross-project search validation"
     conn.close()
 
 
@@ -305,6 +312,7 @@ def test_keywords_parsed_and_logged():
 # WRITE THROTTLE — too many entries through main()
 # ============================================================
 
+# Verifies: entries above MAX_MEMORIES_PER_RESPONSE are throttled
 def test_write_throttle_through_main():
     """8 entries in one block — should be capped at MAX_MEMORIES_PER_RESPONSE."""
     from config import MAX_MEMORIES_PER_RESPONSE
@@ -329,6 +337,7 @@ def test_write_throttle_through_main():
 # CONFIDENCE UPDATES — through main()
 # ============================================================
 
+# Verifies: confidence_update:+ boosts memory confidence in DB
 def test_confidence_update_through_main():
     """Confidence updates in memory block should modify DB entries."""
     db_path, conn = fresh_env()
@@ -349,6 +358,7 @@ def test_confidence_update_through_main():
     conn.close()
 
 
+# Verifies: confidence_update:- (irrelevant) leaves confidence unchanged
 def test_confidence_irrelevant_no_change_through_main():
     """- (irrelevant) should NOT change confidence — irrelevance is not evidence against truth."""
     db_path, conn = fresh_env()
@@ -373,6 +383,7 @@ def test_confidence_irrelevant_no_change_through_main():
 # SOURCE MESSAGES — stored through main()
 # ============================================================
 
+# Verifies: depth field is stored as integer in memories table
 def test_depth_stored_through_main():
     db_path, conn = fresh_env()
     r, _ = run_hook(db_path, {
@@ -382,7 +393,6 @@ def test_depth_stored_through_main():
     })
 
     row = conn.execute("SELECT depth FROM memories WHERE topic = 'sourced'").fetchone()
-    assert row is not None
     assert row[0] == 4
     conn.close()
 
@@ -391,6 +401,7 @@ def test_depth_stored_through_main():
 # EMPTY last_assistant_message — should allow stop
 # ============================================================
 
+# Verifies: empty assistant message allows stop without error
 def test_empty_message_allows_stop():
     db_path, conn = fresh_env()
     r, _ = run_hook(db_path, {
@@ -406,6 +417,7 @@ def test_empty_message_allows_stop():
 # CONTEXT CACHE — second identical request skipped
 # ============================================================
 
+# Verifies: cached context_need is a cache hit, skips re-retrieval
 def test_context_cache_prevents_second_retrieval():
     """Pre-populate cache for a session, then verify second request is a cache hit."""
     import stop_hook

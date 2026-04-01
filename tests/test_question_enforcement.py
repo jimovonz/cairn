@@ -90,6 +90,7 @@ def make_response(body: str, memory_fields: str = "") -> str:
 
 # --- Test Cases ---
 
+# Verifies: question + context:sufficient defers reminder, not blocks
 def test_question_with_sufficient_defers():
     """Question with context: sufficient should defer reminder to next prompt (not block)."""
     text = make_response(
@@ -109,6 +110,7 @@ def test_question_with_sufficient_defers():
     print("PASS: question with context: sufficient defers to next prompt")
 
 
+# Verifies: question + context:insufficient passes (already checking)
 def test_question_with_insufficient_passes():
     """Question with context: insufficient should pass — already checking cairn."""
     text = make_response(
@@ -124,6 +126,7 @@ def test_question_with_insufficient_passes():
     print("PASS: question with context: insufficient passes question enforcement")
 
 
+# Verifies: response without questions does not trigger enforcement
 def test_no_question_passes():
     """Response without questions should pass."""
     text = make_response(
@@ -136,6 +139,7 @@ def test_no_question_passes():
     print("PASS: response without questions passes")
 
 
+# Verifies: questions inside code blocks are ignored
 def test_question_in_code_block_ignored():
     """Questions inside code blocks should not trigger enforcement."""
     text = make_response(
@@ -148,6 +152,7 @@ def test_question_in_code_block_ignored():
     print("PASS: question in code block ignored")
 
 
+# Verifies: questions inside quoted strings are ignored
 def test_question_in_quotes_ignored():
     """Questions inside quoted strings should not trigger enforcement."""
     text = make_response(
@@ -160,6 +165,7 @@ def test_question_in_quotes_ignored():
     print("PASS: question in quotes ignored")
 
 
+# Verifies: questions early in response (outside tail) are ignored
 def test_question_early_in_response_ignored():
     """Questions far from the end (not in last 3 sentences) should not trigger."""
     text = make_response(
@@ -174,6 +180,7 @@ def test_question_early_in_response_ignored():
     print("PASS: question early in response (outside last 3 sentences) ignored")
 
 
+# Verifies: continuation responses skip question enforcement
 def test_continuation_skips_enforcement():
     """Continuation responses should skip question enforcement."""
     text = make_response(
@@ -189,6 +196,7 @@ def test_continuation_skips_enforcement():
     print("PASS: continuation skips question enforcement")
 
 
+# Verifies: multiple tail questions defer a staged reminder
 def test_multiple_questions_in_tail():
     """Multiple questions in the last few sentences should defer reminder."""
     text = make_response(
@@ -205,6 +213,7 @@ def test_multiple_questions_in_tail():
     print("PASS: multiple questions in tail defers reminder")
 
 
+# Verifies: trailing rhetorical question defers reminder
 def test_rhetorical_question_at_end():
     """A rhetorical-style question at the very end should defer reminder."""
     text = make_response(
@@ -221,6 +230,7 @@ def test_rhetorical_question_at_end():
     print("PASS: trailing question defers reminder")
 
 
+# Verifies: question mark in non-question context (regex) handled
 def test_statement_with_embedded_question_mark():
     """Question mark in a non-question context (e.g. URL or regex) should not trigger."""
     text = make_response(
