@@ -24,8 +24,18 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from hook_helpers import log, get_conn, record_metric, get_embedder, get_session_project, DB_PATH
 from parser import parse_memory_block
+from hash_verify import compute_response_hash
 from storage import apply_confidence_updates, insert_memories
 from enforcement import check_trailing_intent, get_continuation_count, increment_continuation, reset_continuation
+
+# Appended to block reasons that are purely about memory format — the user already saw the
+# response in interactive mode, so restating it is wasteful.  Only used for format/density
+# blocks, NOT for behavioural blocks (incomplete work, trailing intent, context retrieval).
+AMEND_ONLY_SUFFIX = (
+    "\n\nIMPORTANT: The user has already seen your previous response. "
+    "Do NOT restate or repeat it. Just output a single short line like "
+    "\"Memory block amended.\" followed by a corrected <memory> block."
+)
 from retrieval import (retrieve_context, layer2_cross_project_search,
                         load_context_cache, save_context_cache, is_context_cached, add_to_context_cache,
                         CONTEXT_CACHE_SIM_THRESHOLD)
@@ -149,6 +159,7 @@ def main() -> None:
     context, context_need = parsed.context, parsed.context_need
     confidence_updates, retrieval_outcome = parsed.confidence_updates, parsed.retrieval_outcome
     keywords, intent = parsed.keywords, parsed.intent
+    hash_claimed = parsed.hash_claimed
 
     # No memory block found
     if entries is None and complete is None:
@@ -186,11 +197,11 @@ def main() -> None:
             if not has_close_tag:
                 hint += "Missing closing </memory> tag. "
             hint += "Use this exact format:\n<memory>\n- type: fact\n- topic: example\n- content: one line description\n- complete: true\n</memory>"
-            result: dict = {"decision": "block", "reason": hint}
+            result: dict = {"decision": "block", "reason": hint + AMEND_ONLY_SUFFIX}
         else:
             result = {
                 "decision": "block",
-                "reason": "Response missing required <memory> block. Add a <memory> block with at least complete: true before finishing."
+                "reason": "Response missing required <memory> block. Add a <memory> block with at least complete: true before finishing." + AMEND_ONLY_SUFFIX
             }
         print(json.dumps(result))
         sys.exit(0)
@@ -199,16 +210,22 @@ def main() -> None:
 
     # Strict field validation — enforce explicit declaration of all required fields
     missing_fields: list[str] = []
-    if not parsed.complete_explicit:
-        missing_fields.append("complete: [true|false]")
-    if not parsed.context_explicit:
-        missing_fields.append("context: [sufficient|insufficient]")
-    if not parsed.keywords_explicit:
-        missing_fields.append("keywords: [comma-separated topic keywords]")
+    if not parsed.is_compact:
+        # Verbose format: require explicit complete, context, keywords
+        if not parsed.complete_explicit:
+            missing_fields.append("complete: [true|false]")
+        if not parsed.context_explicit:
+            missing_fields.append("context: [sufficient|insufficient]")
+        if not parsed.keywords_explicit:
+            missing_fields.append("keywords: [comma-separated topic keywords]")
+    else:
+        # Compact format: keywords required on entries via [k: ...], not on no-ops
+        if entries and not parsed.keywords_explicit:
+            missing_fields.append("[k: keywords] on entry line")
     if complete is False and not remaining:
-        missing_fields.append("remaining: [what still needs doing]")
+        missing_fields.append("remaining: [what still needs doing]" if not parsed.is_compact else "- :what still needs doing")
     if context == "insufficient" and not context_need:
-        missing_fields.append("context_need: [what context is missing]")
+        missing_fields.append("context_need: [what context is missing]" if not parsed.is_compact else "c?:what context is missing")
 
     # Validate entry completeness — every entry needs type, topic, content
     incomplete_entries: list[str] = []
@@ -224,12 +241,26 @@ def main() -> None:
             hints.append(f"Memory block is missing: {', '.join(missing_fields)}.")
         if incomplete_entries:
             hints.append(f"Incomplete entries: {'; '.join(incomplete_entries)}.")
-        hint_text = " ".join(hints) + " All fields are required. Use this format:\n<memory>\n- type: fact\n- topic: short key\n- content: one line\n- complete: true\n- context: sufficient\n- keywords: relevant, topic, words\n</memory>"
+        if parsed.is_compact:
+            hint_text = " ".join(hints) + " Use this format:\n<memory>\ntype/topic: content [k: keyword1, keyword2]\n+ c h:NNN\n</memory>"
+        else:
+            hint_text = " ".join(hints) + " All fields are required. Use this format:\n<memory>\n- type: fact\n- topic: short key\n- content: one line\n- complete: true\n- context: sufficient\n- keywords: relevant, topic, words\n</memory>"
         log(f"Strict validation failed: {hint_text[:200]}")
         record_metric(session_id, "strict_validation_failed", hint_text[:100])
         increment_continuation(session_id)
-        print(json.dumps({"decision": "block", "reason": hint_text}))
+        print(json.dumps({"decision": "block", "reason": hint_text + AMEND_ONLY_SUFFIX}))
         sys.exit(0)
+
+    # Hash verification — optional, log-only (not blocking)
+    if hash_claimed is not None:
+        from hash_verify import verify_hash
+        match, actual = verify_hash(text, hash_claimed)
+        if match:
+            log(f"Hash verified: {actual:X}")
+            record_metric(session_id, "hash_verified", None, actual)
+        else:
+            log(f"Hash mismatch (non-blocking): claimed={hash_claimed:X}, actual={actual:X}")
+            record_metric(session_id, "hash_mismatch", f"claimed={hash_claimed:X} actual={actual:X}")
 
     # Content density validation — reject lazy/thin entries
     density_issues: list[str] = []
@@ -252,7 +283,7 @@ def main() -> None:
         log(f"Content density check failed: {hint_text[:200]}")
         record_metric(session_id, "content_density_failed", hint_text[:100])
         increment_continuation(session_id)
-        print(json.dumps({"decision": "block", "reason": hint_text}))
+        print(json.dumps({"decision": "block", "reason": hint_text + AMEND_ONLY_SUFFIX}))
         sys.exit(0)
 
     # Apply confidence updates
@@ -295,7 +326,22 @@ def main() -> None:
             emb = get_embedder()
             served: list = load_context_cache(session_id)
             if not is_context_cached(context_need, served, emb):
-                retrieved: Optional[str] = retrieve_context(context_need, session_id=session_id)
+                # Check if this retrieval was triggered by bootstrap — apply tighter cap
+                _is_bootstrap = False
+                try:
+                    _bc = get_conn()
+                    _brow = _bc.execute(
+                        "SELECT value FROM metrics WHERE session_id = ? AND event = 'context_bootstrap_triggered' "
+                        "ORDER BY created_at DESC LIMIT 1", (session_id,)
+                    ).fetchone()
+                    _bc.close()
+                    if _brow:
+                        _is_bootstrap = True
+                except Exception:
+                    pass
+                from config import BOOTSTRAP_MAX_PER_SCOPE
+                _max_scope = BOOTSTRAP_MAX_PER_SCOPE if _is_bootstrap else None
+                retrieved: Optional[str] = retrieve_context(context_need, session_id=session_id, max_per_scope=_max_scope)
                 if retrieved:
                     import re as _re
                     score_match: Optional[re.Match[str]] = _re.search(r'score="([0-9.]+)"', retrieved)
@@ -309,15 +355,22 @@ def main() -> None:
                         record_metric(session_id, "context_served", context_need[:100])
                         log(f"Context retrieval for: {context_need[:50]}...")
 
-                        # Track injected IDs for contradiction enforcement
+                        # Track injected IDs — accumulate across retrievals for
+                        # contradiction enforcement and per-memory dedup
                         injected_ids = _re.findall(r'id="(\d+)"', retrieved)
                         if injected_ids:
                             conn2 = get_conn()
                             import json as _json
+                            existing_row = conn2.execute(
+                                "SELECT value FROM hook_state WHERE session_id = ? AND key = 'retrieved_ids'",
+                                (session_id,)
+                            ).fetchone()
+                            existing_ids = _json.loads(existing_row[0]) if existing_row and existing_row[0] else []
+                            merged = list(set(existing_ids + [int(i) for i in injected_ids]))
                             conn2.execute(
                                 "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP) "
                                 "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
-                                (session_id, _json.dumps([int(i) for i in injected_ids]))
+                                (session_id, _json.dumps(merged))
                             )
                             conn2.commit()
                             conn2.close()
@@ -357,7 +410,17 @@ def main() -> None:
             ).fetchone()[0]
         conn.close()
 
-        if turns_since >= CONTEXT_BOOTSTRAP_INTERVAL:
+        # Use shorter interval for first bootstrap in session, then standard interval
+        from config import CONTEXT_BOOTSTRAP_FIRST_INTERVAL
+        conn_check = get_conn()
+        _prior_bootstrap = conn_check.execute(
+            "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'context_bootstrap_triggered'",
+            (session_id,)
+        ).fetchone()[0]
+        conn_check.close()
+        effective_interval = CONTEXT_BOOTSTRAP_FIRST_INTERVAL if _prior_bootstrap == 0 else CONTEXT_BOOTSTRAP_INTERVAL
+
+        if turns_since >= effective_interval:
             record_metric(session_id, "context_bootstrap_triggered", None, turns_since)
             record_metric(session_id, "context_requested", "bootstrap_forced")
 
@@ -391,9 +454,9 @@ def main() -> None:
 
     # Question-before-cairn enforcement — if the LLM is asking the user a question
     # but hasn't declared context: insufficient, it should check cairn first.
-    # Skip on continuations (prevent loops). Skip if context: insufficient was declared
-    # (already checking cairn). The LLM can bypass by declaring context: insufficient
-    # with a relevant context_need — if cairn has no answer, it proceeds normally.
+    # Deferred (not blocking) to avoid response double-up — the user already sees
+    # the response before the stop hook fires, so blocking + "restate" causes duplicates.
+    # Instead, stage a reminder for the next prompt, same pattern as bootstrap.
     if not is_continuation and context != "insufficient":
         response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
         # Strip code blocks and quoted strings to avoid false positives
@@ -405,19 +468,23 @@ def main() -> None:
         tail = sentences[-3:] if len(sentences) >= 3 else sentences
         has_question = any("?" in s for s in tail)
         if has_question:
-            log(f"Question-before-cairn: response asks user a question without checking cairn first")
+            log(f"Question-before-cairn: deferring reminder to next prompt (avoiding response double-up)")
             record_metric(session_id, "question_before_cairn")
-            increment_continuation(session_id)
-            print(json.dumps({
-                "decision": "block",
-                "reason": (
-                    "You are about to ask the user a question, but you haven't checked cairn for relevant context. "
-                    "Declare context: insufficient with a context_need matching your question — the cairn may already "
-                    "have the answer from a previous session. Only ask the user if cairn doesn't help. "
-                    "IMPORTANT: Restate your full answer to the user — your previous response was not delivered."
-                )
-            }))
-            sys.exit(2)
+            try:
+                staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+                os.makedirs(staged_dir, exist_ok=True)
+                staged_file = os.path.join(staged_dir, f"{session_id}_question_cairn.txt")
+                with open(staged_file, "w") as f:
+                    f.write(
+                        "You asked the user a question without checking cairn for relevant context. "
+                        "In your memory block, declare context: insufficient with a context_need matching "
+                        "your question — the cairn may already have the answer from a previous session. "
+                        "Answer the user's question normally — the context declaration goes in the memory block "
+                        "only, not in place of your response."
+                    )
+                log(f"Question-before-cairn reminder staged for next prompt")
+            except Exception as e:
+                log(f"Failed to stage question-before-cairn reminder: {e}")
 
     # Inline contradiction enforcement — DISABLED
     # False positive rate too high despite sentence-level fix, quote stripping, threshold tuning.
@@ -437,7 +504,12 @@ def main() -> None:
             sys.exit(0)
         increment_continuation(session_id)
         if complete is None:
-            llm_reason: str = "Memory block is missing 'complete: true'. You must explicitly declare completeness. Add '- complete: true' if you are done, or '- complete: false' with '- remaining: ...' if not."
+            llm_reason: str = (
+                "Memory block is missing completeness declaration. "
+                "Compact format: add a control line '+ c h:NNN' (where NNN is your response hash). "
+                "Verbose format: add '- complete: true'. "
+                "See the Response Hash section in your rules for how to compute h:NNN."
+            ) + AMEND_ONLY_SUFFIX
         else:
             llm_reason = f"Response marked incomplete. Continue with: {remaining}" if remaining else "Response marked incomplete. Continue."
         result = {
@@ -461,7 +533,7 @@ def main() -> None:
                 "reason": (
                     f"Your response ends with a stated intent to act: \"{intent_result}\". "
                     "Either follow through now, or remove the promise. "
-                    "If you genuinely have nothing more to do, add '- intent: resolved' to your <memory> block."
+                    "If you genuinely have nothing more to do, add 'intent: resolved' to your <memory> block."
                 )
             }
             print(json.dumps(result))

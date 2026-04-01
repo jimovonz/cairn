@@ -162,7 +162,7 @@ def _vec_candidates(
     """Get top-k candidates from sqlite-vec index."""
     query_blob = to_blob(query_vec)
     rows = conn.execute("""
-        SELECT v.memory_id, v.distance, m.type, m.topic, m.content, m.updated_at, m.project, m.confidence, m.depth, m.archived_reason
+        SELECT v.memory_id, v.distance, m.type, m.topic, m.content, m.updated_at, m.project, m.confidence, m.depth, m.archived_reason, m.session_id
         FROM memories_vec v
         JOIN memories m ON v.memory_id = m.id
         WHERE v.embedding MATCH ?
@@ -183,6 +183,7 @@ def _vec_candidates(
             "updated_at": row[5],
             "project": row[6],
             "confidence": confidence,
+            "session_id": row[10],
             "depth": row[8],
             "archived_reason": row[9],
             "score": composite_score(sim, confidence, row[5], row[6], current_project)
@@ -198,7 +199,7 @@ def _brute_force_candidates(
 ) -> list[dict[str, Any]]:
     """Get top-k candidates via brute-force scan."""
     rows = conn.execute(
-        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, depth, archived_reason FROM memories WHERE embedding IS NOT NULL"
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, depth, archived_reason, session_id FROM memories WHERE embedding IS NOT NULL"
     ).fetchall()
 
     results: list[dict[str, Any]] = []
@@ -215,6 +216,7 @@ def _brute_force_candidates(
             "updated_at": row[5],
             "project": row[6],
             "confidence": confidence,
+            "session_id": row[10],
             "depth": row[8],
             "archived_reason": row[9],
             "score": composite_score(sim, confidence, row[5], row[6], current_project)
@@ -275,10 +277,8 @@ def find_similar(
     if not candidates:
         candidates = _brute_force_candidates(conn, query_vec, k, current_project)
 
-    # Soft confidence inclusion: keep if high similarity OR adequate confidence
-    filtered = [r for r in candidates
-                if r["similarity"] >= threshold
-                and (r["similarity"] >= SOFT_SIM_OVERRIDE or r["confidence"] >= SOFT_CONF_FLOOR)]
+    # Filter by similarity threshold only — confidence no longer gates retrieval
+    filtered = [r for r in candidates if r["similarity"] >= threshold]
 
     if not filtered:
         return []

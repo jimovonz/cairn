@@ -133,26 +133,28 @@ def test_relative_filter_drops_outlier():
     assert len(kept) == 1
 
 
-# === Soft confidence: the cases that actually matter ===
+# === Confidence no longer gates retrieval ===
 
-def test_soft_inclusion_high_sim_zero_confidence():
-    """similarity=0.65, confidence=0.0 — should STILL be included (similarity override)."""
+def test_no_confidence_filtering_zero_confidence():
+    """similarity=0.50, confidence=0.0 — should be included (confidence doesn't gate retrieval)."""
+    # With confidence removed from filtering, only similarity threshold matters
     from config import SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR
-    included = 0.65 >= SOFT_SIM_OVERRIDE or 0.0 >= SOFT_CONF_FLOOR
+    assert SOFT_CONF_FLOOR == 0.0, "Confidence floor should be disabled"
+    assert SOFT_SIM_OVERRIDE == 0.0, "Similarity override for confidence should be disabled"
+
+
+def test_no_confidence_filtering_low_confidence():
+    """similarity=0.50, confidence=0.2 — should be included (confidence doesn't gate retrieval)."""
+    # Previously this was excluded by the confidence floor. Now included.
+    threshold = 0.15  # The permissive similarity floor
+    included = 0.50 >= threshold
     assert included
 
 
-def test_soft_inclusion_moderate_sim_low_confidence():
-    """similarity=0.50, confidence=0.2 — neither override fires. Should be EXCLUDED."""
-    from config import SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR
-    included = 0.50 >= SOFT_SIM_OVERRIDE or 0.2 >= SOFT_CONF_FLOOR
-    assert not included
-
-
-def test_soft_inclusion_low_sim_at_confidence_boundary():
-    """similarity=0.30, confidence=0.30 — exactly at floor. Should be included."""
-    from config import SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR
-    included = 0.30 >= SOFT_SIM_OVERRIDE or 0.30 >= SOFT_CONF_FLOOR
+def test_no_confidence_filtering_at_sim_threshold():
+    """similarity=0.30, confidence=0.0 — included based on similarity alone."""
+    threshold = 0.15
+    included = 0.30 >= threshold
     assert included
 
 

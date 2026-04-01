@@ -8,9 +8,12 @@ from typing import Any, Optional
 
 import hook_helpers
 from hook_helpers import log, get_conn, get_session_project, record_metric
+import re
+
 from config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
-                     L3_GLOBAL_SIM_WITHOUT_PROJECT, L3_MAX_PROJECT_RESULTS,
-                     L3_MAX_GLOBAL_RESULTS, WEAK_ENTRY_SCORE_FLOOR)
+                     L3_GLOBAL_SIM_WITHOUT_PROJECT, L3_PROJECT_QUALITY_FLOOR,
+                     L3_MAX_PROJECT_RESULTS, L3_MAX_GLOBAL_RESULTS,
+                     WEAK_ENTRY_SCORE_FLOOR)
 
 
 CONTEXT_CACHE_SIM_THRESHOLD: float = 0.9
@@ -43,8 +46,13 @@ def get_adaptive_threshold_boost() -> float:
         return 0.0
 
 
-def retrieve_context(context_need: str, session_id: Optional[str] = None) -> Optional[str]:
-    """Search the cairn for memories matching the context need. Returns structured XML context."""
+def retrieve_context(context_need: str, session_id: Optional[str] = None, max_per_scope: Optional[int] = None) -> Optional[str]:
+    """Search the cairn for memories matching the context need. Returns structured XML context.
+
+    Args:
+        max_per_scope: Override max results per scope (project/global). Used by bootstrap
+                       to limit noise. If None, uses L3_MAX_PROJECT_RESULTS/L3_MAX_GLOBAL_RESULTS.
+    """
     import time
     from datetime import datetime as dt
     start = time.time()
@@ -59,42 +67,94 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None) -> Opt
     if threshold_boost > 0:
         log(f"Adaptive threshold boost: +{threshold_boost:.2f}")
 
+    seen_ids: set[int] = set()
+
     if emb:
         try:
+            # Primary search: project-prefixed query (biased toward project-local matches)
             all_results = emb.find_similar(conn, context_need, current_project=project)
-            global_threshold: float = (L3_GLOBAL_SIM_WITH_PROJECT if project else L3_GLOBAL_SIM_WITHOUT_PROJECT) + threshold_boost
             project_threshold: float = L3_PROJECT_SIM_THRESHOLD + threshold_boost
 
+            # Collect project-scoped results (exclude same-session memories)
             for r in all_results:
+                if session_id and r.get("session_id") == session_id:
+                    continue
                 if project and r.get("project") == project and r["similarity"] >= project_threshold:
                     project_results.append(r)
-                elif r["similarity"] >= global_threshold:
+                    seen_ids.add(r["id"])
+
+            # Mitigation 2: Only raise global threshold if project results are quality matches
+            quality_project = [r for r in project_results if r["similarity"] >= L3_PROJECT_QUALITY_FLOOR]
+            global_threshold: float = (L3_GLOBAL_SIM_WITH_PROJECT if quality_project
+                                       else L3_GLOBAL_SIM_WITHOUT_PROJECT) + threshold_boost
+
+            # Collect global results from primary search (exclude same-session)
+            for r in all_results:
+                if session_id and r.get("session_id") == session_id:
+                    continue
+                if r["id"] not in seen_ids and r["similarity"] >= global_threshold:
                     global_results.append(r)
+                    seen_ids.add(r["id"])
+
+            # Mitigation 3: Unprefixed search for cross-project matches
+            if project:
+                unprefixed_results = emb.find_similar(conn, context_need, current_project=None)
+                for r in unprefixed_results:
+                    if session_id and r.get("session_id") == session_id:
+                        continue
+                    if r["id"] not in seen_ids and r["similarity"] >= global_threshold:
+                        global_results.append(r)
+                        seen_ids.add(r["id"])
+
         except (ConnectionError, TimeoutError, OSError) as e:
             log(f"Context retrieval embedding unavailable: {e}")
         except Exception as e:
             log(f"Context retrieval error ({type(e).__name__}): {e}")
 
-    # Fall back to FTS if no embedding results
-    if not project_results and not global_results:
-        try:
-            rows = conn.execute("""
-                SELECT m.id, m.type, m.topic, m.content, m.updated_at, m.project, m.session_id, m.confidence
-                FROM memories_fts f
-                JOIN memories m ON f.rowid = m.id
-                WHERE memories_fts MATCH ?
-                ORDER BY rank LIMIT 15
-            """, (context_need,)).fetchall()
-            for r in rows:
+    # Mitigation 1: FTS always runs alongside semantic (not just as fallback)
+    # Catches exact term matches that semantic search misses due to embedding bias
+    _STOPWORDS = frozenset({
+        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "by", "from", "is", "it", "its", "was", "are", "be",
+        "has", "had", "have", "do", "did", "does", "will", "can", "could",
+        "would", "should", "may", "might", "not", "no", "what", "when",
+        "where", "who", "how", "why", "that", "this", "these", "those",
+        "my", "your", "his", "her", "our", "their", "me", "you", "him",
+        "them", "about", "into", "over", "after", "before", "between",
+        "other", "some", "any", "all", "just", "also", "than", "then",
+        "very", "too", "here", "there", "been", "being", "were",
+    })
+    try:
+        # Convert to OR-joined terms, filtering stopwords for precision
+        words = re.findall(r'\w+', context_need.lower())
+        meaningful = [w for w in words if len(w) > 2 and w not in _STOPWORDS]
+        if not meaningful:
+            meaningful = [w for w in words if len(w) > 2]
+        if not meaningful:
+            meaningful = words
+        fts_query = " OR ".join(f'"{w}"' for w in meaningful) if meaningful else context_need
+        rows = conn.execute("""
+            SELECT m.id, m.type, m.topic, m.content, m.updated_at, m.project, m.session_id, m.confidence
+            FROM memories_fts f
+            JOIN memories m ON f.rowid = m.id
+            WHERE memories_fts MATCH ?
+            ORDER BY rank LIMIT 15
+        """, (fts_query,)).fetchall()
+        for r in rows:
+            if r[0] not in seen_ids:
+                # Exclude same-session memories
+                if session_id and r[6] == session_id:
+                    continue
                 entry: dict[str, Any] = {"id": r[0], "type": r[1], "topic": r[2], "content": r[3],
                          "updated_at": r[4], "project": r[5], "session_id": r[6],
-                         "confidence": r[7] or 0.7, "similarity": 0.5, "score": 0.5}
+                         "confidence": r[7] or 0.7, "similarity": 0.35, "score": 0.30}
+                seen_ids.add(r[0])
                 if project and r[5] == project:
                     project_results.append(entry)
                 else:
                     global_results.append(entry)
-        except Exception:
-            pass
+    except Exception as e:
+        log(f"FTS search error: {e}")
 
     conn.close()
 
@@ -141,17 +201,20 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None) -> Opt
     )]
     lines.append('  <instruction>Before acting on any entry below, run: python3 /home/james/Projects/cairn/cairn/query.py --context &lt;id&gt; to recover the full conversation behind it.</instruction>')
 
+    project_cap = max_per_scope if max_per_scope is not None else L3_MAX_PROJECT_RESULTS
+    global_cap = max_per_scope if max_per_scope is not None else L3_MAX_GLOBAL_RESULTS
+
     if project_results:
         project_results.sort(key=lambda x: x.get("score", 0), reverse=True)
         lines.append(f'  <scope level="project" name="{project}" weight="high">')
-        for r in project_results[:L3_MAX_PROJECT_RESULTS]:
+        for r in project_results[:project_cap]:
             lines.append("  " + format_entry(r))
         lines.append("  </scope>")
 
     if global_results:
         global_results.sort(key=lambda x: x.get("score", 0), reverse=True)
         lines.append('  <scope level="global" weight="low">')
-        for r in global_results[:L3_MAX_GLOBAL_RESULTS]:
+        for r in global_results[:global_cap]:
             lines.append("  " + format_entry(r))
         lines.append("  </scope>")
 

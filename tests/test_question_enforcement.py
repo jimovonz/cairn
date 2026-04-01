@@ -90,16 +90,23 @@ def make_response(body: str, memory_fields: str = "") -> str:
 
 # --- Test Cases ---
 
-def test_question_with_sufficient_blocks():
-    """Question with context: sufficient should be blocked — check cairn first."""
+def test_question_with_sufficient_defers():
+    """Question with context: sufficient should defer reminder to next prompt (not block)."""
     text = make_response(
         "I'm not sure about the database schema. What tables are you using?",
         "- complete: true\n- context: sufficient\n- keywords: database, schema"
     )
     result = run_hook(text)
-    assert result.get("decision") == "block", f"Expected block, got: {result}"
-    assert "cairn" in result.get("reason", "").lower(), f"Reason should mention cairn: {result}"
-    print("PASS: question with context: sufficient blocked")
+    # Should NOT block — deferred to avoid response double-up
+    assert result.get("exit_code") == 0, f"Expected pass (deferred), got: {result}"
+    # Check that a staged file was created
+    import glob
+    staged = glob.glob(os.path.join(os.path.dirname(__file__), "..", ".staged_context", "*_question_cairn.txt"))
+    assert len(staged) > 0, "Should stage a question-before-cairn reminder"
+    # Clean up
+    for f in staged:
+        os.unlink(f)
+    print("PASS: question with context: sufficient defers to next prompt")
 
 
 def test_question_with_insufficient_passes():
@@ -183,26 +190,35 @@ def test_continuation_skips_enforcement():
 
 
 def test_multiple_questions_in_tail():
-    """Multiple questions in the last few sentences should trigger."""
+    """Multiple questions in the last few sentences should defer reminder."""
     text = make_response(
         "I found a few issues. Should I fix them all at once? Or do you want to review each one?",
         "- complete: true\n- context: sufficient\n- keywords: issues, review"
     )
     result = run_hook(text)
-    assert result.get("decision") == "block", f"Multiple questions should trigger: {result}"
-    assert "cairn" in result.get("reason", "").lower(), f"Reason should mention cairn: {result}"
-    print("PASS: multiple questions in tail triggers enforcement")
+    assert result.get("exit_code") == 0, f"Should defer (not block): {result}"
+    import glob
+    staged = glob.glob(os.path.join(os.path.dirname(__file__), "..", ".staged_context", "*_question_cairn.txt"))
+    assert len(staged) > 0, "Should stage a reminder"
+    for f in staged:
+        os.unlink(f)
+    print("PASS: multiple questions in tail defers reminder")
 
 
 def test_rhetorical_question_at_end():
-    """A rhetorical-style question at the very end should still trigger."""
+    """A rhetorical-style question at the very end should defer reminder."""
     text = make_response(
         "The deployment pipeline is set up correctly. Want me to proceed with the migration?",
         "- complete: true\n- context: sufficient\n- keywords: deployment, migration"
     )
     result = run_hook(text)
-    assert result.get("decision") == "block", f"Trailing question should trigger: {result}"
-    print("PASS: trailing question triggers enforcement")
+    assert result.get("exit_code") == 0, f"Should defer (not block): {result}"
+    import glob
+    staged = glob.glob(os.path.join(os.path.dirname(__file__), "..", ".staged_context", "*_question_cairn.txt"))
+    assert len(staged) > 0, "Should stage a reminder"
+    for f in staged:
+        os.unlink(f)
+    print("PASS: trailing question defers reminder")
 
 
 def test_statement_with_embedded_question_mark():

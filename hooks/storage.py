@@ -7,7 +7,7 @@ from typing import Optional
 
 import hook_helpers
 from hook_helpers import log, get_conn, get_session_project, record_metric
-from config import (DEDUP_THRESHOLD, CONFIDENCE_BOOST, CONFIDENCE_PENALTY,
+from config import (DEDUP_THRESHOLD, CONFIDENCE_BOOST,
                      CONFIDENCE_MIN, CONFIDENCE_MAX, CONFIDENCE_DEFAULT,
                      DISTINCT_VARIANT_SIM_THRESHOLD, NEGATION_SIM_FLOOR)
 
@@ -77,9 +77,9 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
     """Apply confidence adjustments from LLM feedback.
 
     Directions:
-      +   — boost confidence (saturating)
-      -   — penalise confidence (scaled)
-      -!  — contradict: annotate memory with reason, keep retrievable
+      +   — corroboration: boost confidence (saturating) — memory is consistent with observations
+      -   — irrelevant: no confidence change — irrelevance is not evidence against truth
+      -!  — contradiction: annotate memory with reason, keep retrievable
     """
     if not updates:
         return 0
@@ -105,14 +105,18 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
             applied += 1
             continue
 
-        current = row[0] if row[0] is not None else CONFIDENCE_DEFAULT
         if direction == "+":
+            # Corroboration — boost veracity
+            current = row[0] if row[0] is not None else CONFIDENCE_DEFAULT
             new = min(current + CONFIDENCE_BOOST * (1 - current), CONFIDENCE_MAX)
+            conn.execute("UPDATE memories SET confidence = ? WHERE id = ?", (new, memory_id))
+            log(f"Corroborated: memory {memory_id} {current:.2f} → {new:.2f}")
+            applied += 1
         else:
-            new = max(current - CONFIDENCE_PENALTY * (1 + current), CONFIDENCE_MIN)
-        conn.execute("UPDATE memories SET confidence = ? WHERE id = ?", (new, memory_id))
-        log(f"Confidence: memory {memory_id} {current:.2f} → {new:.2f} ({direction})")
-        applied += 1
+            # Irrelevant (-) — log but don't adjust confidence
+            log(f"Irrelevant: memory {memory_id} — no confidence change")
+            record_metric(session_id, "confidence_irrelevant", f"{memory_id}")
+            applied += 1
     conn.commit()
     conn.close()
     return applied

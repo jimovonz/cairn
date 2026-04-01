@@ -137,23 +137,26 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
 └─────────────────────────────────────────────────────────┘
 ```
 
-### Confidence lifecycle
+### Veracity lifecycle
+
+Confidence represents **veracity** — how well-corroborated a memory is across sessions. It is NOT used in retrieval scoring (similarity, recency, and scope handle ranking).
 
 ```
   NEW MEMORY
       │
       ▼
    ┌─────┐
-   │ 0.7 │  ◄── default
+   │ 0.7 │  ◄── default (unverified)
    └──┬──┘
       │
-      ├── Retrieved + LLM rates "+" ──▶ +0.1 × (1 - conf)  [saturating]
-      │                                    0.7 → 0.73
-      │                                    0.9 → 0.91
+      ├── Retrieved + LLM rates "+" ──▶ +0.1 × (1 - conf)  [saturating corroboration]
+      │     (consistent with current observations)   0.7 → 0.73, 0.9 → 0.91
       │
-      ├── Retrieved + LLM rates "-" ──▶ -0.2 × (1 + conf)  [amplified]
-      │                                    0.7 → 0.36
-      │                                    0.9 → 0.52
+      ├── Retrieved + LLM rates "-" ──▶ NO CHANGE
+      │     (irrelevant to this query — not evidence against truth)
+      │
+      ├── Retrieved + LLM rates "-! reason" ──▶ ANNOTATION
+      │     (proven wrong — reason stored as annotation, visible to future sessions)
       │
       ├── Same type+topic, new content ──▶ old → 0.2 (suppressed)
       │                                    new → 0.7 (fresh)
@@ -163,9 +166,8 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
       └── Never retrieved ──▶ NO CHANGE (no passive decay)
 
   RETRIEVAL INCLUSION:
-      similarity ≥ 0.6  → included regardless of confidence
-      confidence ≥ 0.3  → included at normal threshold
-      confidence < 0.3  → only if similarity override
+      All memories are retrievable regardless of confidence.
+      Confidence is a veracity signal, not a retrieval gate.
 ```
 
 ### Quality gate pipeline
@@ -179,12 +181,6 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
   │  All stopwords?                │
   └────────────┬───────────────────┘
                │ no
-               ▼
-  ┌─ Soft confidence inclusion ────┐
-  │  Keep if sim ≥ 0.6             │
-  │  OR confidence ≥ 0.3           │──fail──▶ DROP
-  └────────────┬───────────────────┘
-               │ pass
                ▼
   ┌─ Garbage gate ─────────────────┐
   │  Best similarity < 0.35?      │──yes──▶ RETURN NOTHING
@@ -272,7 +268,14 @@ cairn/
 │   ├── daemon.py                      # Background embedding server (Unix socket)
 │   └── hook.log                       # Debug log
 ├── hooks/
-│   └── stop_hook.py                   # Main hook — capture, enforce, retrieve, confidence
+│   ├── stop_hook.py                   # Main hook — capture, enforce, retrieve, veracity
+│   ├── prompt_hook.py                 # Layer 1 + Layer 2 injection
+│   ├── hook_helpers.py                # Shared DB access, logging, metrics
+│   ├── parser.py                      # Memory block parsing (verbose + compact formats)
+│   ├── storage.py                     # Insert, dedup, confidence, quality gates
+│   ├── enforcement.py                 # Trailing intent detection, continuation counting
+│   ├── retrieval.py                   # Context retrieval, Layer 2, context cache
+│   └── hash_verify.py                 # Response hash verification (log-only, non-blocking)
 └── .venv/                             # Python venv with sentence-transformers
 ```
 
@@ -361,8 +364,8 @@ All connection points (stop hook, prompt hook, query CLI, daemon) apply the busy
 1. **Session registration** — records the session in the `sessions` table, extracts parent session ID from transcript, inherits project label from parent
 2. **Automatic project labelling** — if the session has no project label, derives one from the working directory basename (e.g. `/home/user/Projects/cairn` → "cairn")
 3. **Continuation cap check** — if this is a re-prompted continuation, checks a per-session counter. After 3 consecutive re-prompts, forces a stop to prevent runaway loops
-4. **Memory block parsing** — robust parser extracts the last `<memory>...</memory>` block (handles unclosed tags, unknown fields, unknown types). Parses key-value pairs for entries, control fields, and confidence updates. If the tag is present but content is unparseable, the hook provides specific syntax correction feedback (including a format example) on re-prompt to help the LLM fix the structure on the next turn
-5. **Confidence updates** — applies `+` (boost 0.1) or `-` (penalise 0.2) adjustments to memories the LLM was shown and rated
+4. **Memory block parsing** — dual-format parser extracts the last `<memory>...</memory>` block. Supports both verbose format (`- type: fact`) and compact format (`fact/topic: content [k: kw1, kw2]`). Handles unclosed tags, unknown fields, unknown types. If unparseable, provides syntax correction feedback with format example on re-prompt. Format re-prompts include an amend-only suffix telling the LLM not to restate the already-displayed response.
+5. **Veracity updates** — applies `+` (saturating boost 0.1) for corroboration, ignores `-` (irrelevance), and stores `-! reason` as contradiction annotations on the memory
 6. **Memory persistence** — for each entry:
    - Generates a 384-dim embedding via `all-MiniLM-L6-v2` (daemon if available, auto-started on first use, direct model fallback)
    - Checks for near-identical duplicates (cosine similarity > 0.95) — updates if found
@@ -371,13 +374,14 @@ All connection points (stop hook, prompt hook, query CLI, daemon) apply the busy
    - Tags with session_id, project, and default confidence (0.7)
 7. **Context retrieval** (if `context: insufficient`):
    - Checks context cache — same `context_need` is only served once per session
-   - Searches project-scoped memories (similarity > 0.25, up to 7 results, confidence > 0.3)
-   - Searches global memories (similarity > 0.50 when project data exists, > 0.25 otherwise, up to 5 results, confidence > 0.3)
+   - Searches project-scoped memories (similarity > 0.25, up to 7 results)
+   - Searches global memories (similarity > 0.50 when project data exists, > 0.25 otherwise, up to 7 results)
    - Falls back to FTS5 keyword search if no embedding results
    - Formats results as structured `<cairn_context>` XML with scope, weight, date, similarity, id, and confidence attributes
    - Blocks the stop and injects context with a reference to weighting rules in `.claude/rules/memory-system.md`
-8. **Completeness check** (if `complete: false`) — blocks stop and re-prompts with `remaining` text (subject to continuation cap)
-9. **Metrics recording** — logs event counts, retrieval latency, cache hits, confidence updates, cap hits
+8. **Hash verification** (optional, log-only) — if the LLM includes a response hash (`h:NNN`), verifies it against a computed hash of the response. Mismatches are logged but never block — this is a diagnostic tool for detecting response corruption, not an enforcement mechanism.
+9. **Completeness check** (if `complete: false`) — blocks stop and re-prompts with `remaining` text (subject to continuation cap)
+10. **Metrics recording** — logs event counts, retrieval latency, cache hits, confidence updates, cap hits
 
 ### Error handling
 
@@ -441,21 +445,21 @@ The dedup threshold was deliberately set high (0.95) to avoid accidentally overw
 
 The `BEFORE UPDATE` trigger on `memories` ensures the old content is preserved in `memory_history` before any overwrite.
 
-## Confidence System
+## Veracity System
 
-Every memory has a `confidence` score (0.0 to 1.0) that dynamically adjusts based on LLM feedback.
+Every memory has a `confidence` score (0.0 to 1.0) that represents **veracity** — how well-corroborated a memory is across sessions. Confidence is deliberately excluded from retrieval scoring; similarity, recency, and scope handle ranking.
 
 ### Lifecycle
 
-1. **New memories** start at **0.7** confidence
+1. **New memories** start at **0.7** confidence (unverified)
 2. When memories are retrieved and shown to the LLM via `<cairn_context>`, each entry includes its `id`, `confidence`, and composite `score`
-3. The LLM can provide per-memory feedback: `confidence_update: 42:+` or `confidence_update: 17:-`
-4. The hook applies **saturating adjustments**:
-   - `+` → `confidence += 0.1 × (1 - confidence)` — diminishing returns as confidence approaches 1.0. At 0.7: +0.03. At 0.9: +0.01.
-   - `-` → `confidence -= 0.2 × (1 + confidence)` — overconfident entries fall harder. At 0.7: -0.34. At 0.9: -0.38.
-5. **Saturating model prevents inflation** — the system is reluctant to become absolutely certain. Reaching 0.95 requires many more positive signals than reaching 0.7. But a single negative signal at 0.95 drops to 0.56. This prevents the dominant failure mode of feedback systems: runaway confidence on frequently retrieved entries.
-6. **No passive decay** — confidence only changes via explicit LLM feedback. Important but infrequently accessed memories retain their confidence indefinitely. This is deliberate: the system should never forget high-value knowledge simply because it hasn't been asked about recently.
-6. **Soft inclusion** — low-confidence entries are ranked lower via composite scoring but not hard-excluded. Entries are included if `similarity >= 0.6 OR confidence >= 0.3`.
+3. The LLM provides per-memory feedback using three signals:
+   - `+` **corroboration** — memory is consistent with current observations. Saturating boost: `confidence += 0.1 × (1 - confidence)`. At 0.7: +0.03. At 0.9: +0.01.
+   - `-` **irrelevant** — memory wasn't useful for this query. **No confidence change.** Irrelevance is not evidence against truth — a memory can be useless in one context and valuable in another.
+   - `-! reason` **contradiction** — memory is factually wrong or superseded. The reason is stored as an annotation on the memory and visible to future sessions. This is the highest-value feedback signal — it preserves the knowledge that "we tried X and it was wrong because Y".
+4. **Saturating model prevents inflation** — reaching 0.95 requires many more positive signals than reaching 0.7.
+5. **No passive decay** — confidence only changes via explicit LLM feedback. Important but infrequently accessed memories retain their confidence indefinitely.
+6. **No confidence gating** — all memories are retrievable regardless of confidence score. Confidence is a veracity signal for the LLM to calibrate trust, not a retrieval filter.
 7. **Negation dampening** — on insert, if a semantically similar entry (0.6+ similarity) has a negation mismatch (e.g. "should" vs "should not"), its confidence is reduced by 0.1. This preserves uncertainty without requiring an NLI classifier.
 8. The LLM is not required to rate every retrieved memory — only when there's a clear signal
 
@@ -469,13 +473,11 @@ In addition to per-memory confidence updates, the LLM can rate the retrieval its
 - retrieval_outcome: harmful   (context was misleading or caused confusion)
 ```
 
-This is a system-level learning signal recorded in the metrics table, distinct from per-memory confidence. It enables tracking retrieval quality over time and can be used to detect degradation patterns (e.g. a rising proportion of "neutral" or "harmful" outcomes).
+This is a system-level learning signal recorded in the metrics table, distinct from per-memory veracity. It enables tracking retrieval quality over time and can be used to detect degradation patterns.
 
-### Why this works
+### Why veracity, not ranking
 
-The LLM is the only entity with enough context to judge whether a retrieved memory was helpful. The user doesn't see the retrieved context (it's injected into the hook's re-prompt), so user feedback isn't practical. The directional signal (`+`/`-`) is simple enough that the LLM can provide it reliably without complex reasoning.
-
-Over time, frequently useful memories rise toward 1.0 while misleading or stale memories are deprioritised by composite scoring — they remain in the database but effectively stop influencing the LLM.
+The original design used confidence as both a veracity signal and a ranking factor. This created a feedback loop: frequently retrieved memories got boosted, which made them rank higher, which got them retrieved more often — regardless of whether they were actually true. Reframing confidence as pure veracity breaks this loop. The LLM sees the confidence score and can calibrate trust (strong corroboration vs. unverified), but retrieval is driven by similarity and recency.
 
 ## Context Retrieval — Three-Layer Design
 
@@ -507,7 +509,7 @@ The LLM explicitly requests context by declaring `context: insufficient` with a 
 
 LLMs tend to skip `context: insufficient` declarations despite instructions, defaulting to file reading or answering from training data. The Stop hook enforces usage through a bootstrapping mechanism:
 
-- After `CONTEXT_BOOTSTRAP_INTERVAL` turns (default: 10) without a Layer 3 request, the hook triggers enforcement
+- The first bootstrap fires after `CONTEXT_BOOTSTRAP_FIRST_INTERVAL` turns (default: 10) to seed context habits early. Subsequent bootstraps use `CONTEXT_BOOTSTRAP_INTERVAL` (default: 20)
 - **Hybrid blocking**: if the stripped response is under 200 chars (short/empty), the hook blocks immediately and forces a `context: insufficient` declaration. If the response is substantive (≥200 chars), the reminder is deferred — staged to a file and injected by the prompt hook on the next turn. This prevents bootstrap from eating user-facing responses while maintaining strong enforcement on low-value turns.
 - A `context_requested` metric is recorded immediately to prevent re-triggering on the continuation
 - The goal is habit formation through demonstrated value — each forced retrieval shows the LLM that Layer 3 returns useful, targeted results
@@ -533,14 +535,15 @@ Critically, the LLM must **never ask the user** whether to check memory. The Sto
 Results are pre-ranked hook-side using a single composite score rather than passing multiple signals for the LLM to combine:
 
 ```
-score = 0.50 * similarity + 0.30 * confidence + 0.15 * recency_decay + 0.05 * scope_weight
+score = 0.50 * similarity + 0.15 * recency_decay + 0.05 * scope_weight
 ```
 
 Where:
 - `similarity` — cosine similarity between query and memory embeddings
-- `confidence` — dynamic confidence score (0.0–1.0)
 - `recency_decay` — exponential decay with 30-day half-life (`e^(-0.693 * age_days / 30)`)
 - `scope_weight` — 1.0 for current project, 0.3 for global
+
+Confidence is deliberately excluded from scoring — it represents veracity (corroboration), not query relevance. A memory can be highly corroborated but irrelevant to the current query, or uncorroborated but exactly what's needed.
 
 All weights are configurable in `cairn/config.py`.
 
@@ -555,7 +558,6 @@ Before injection, results pass through multiple quality filters (all configurabl
 | **Borderline gate** | max_similarity < 0.45 AND top_score < 0.50 → reject | Eliminates weak-but-coherent matches that pass the garbage gate |
 | **Adaptive threshold** | +0.05–0.10 boost if recent retrieval outcomes are poor | Self-tightening based on harmful/neutral rate over last 7 days |
 | **Relative filter** | similarity < 0.7 × max_similarity → drop | Removes tail noise, keeps only the locally relevant cluster |
-| **Soft confidence** | include if similarity ≥ 0.6 OR confidence ≥ 0.3 | High similarity overrides low confidence; prevents blind spots |
 | **Dominance suppression** | if top1 - top2 < 0.05 → include both | Prevents false certainty from weak leaders |
 | **Weak-entry suppression** | top result score < 0.4 → don't inject | Prevents single weak matches from biasing answers |
 | **Hard cap** | max 5 entries | Bounds context window cost |

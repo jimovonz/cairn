@@ -349,7 +349,8 @@ def test_confidence_update_through_main():
     conn.close()
 
 
-def test_confidence_penalty_through_main():
+def test_confidence_irrelevant_no_change_through_main():
+    """- (irrelevant) should NOT change confidence — irrelevance is not evidence against truth."""
     db_path, conn = fresh_env()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s-pen', 'P')")
     conn.execute("INSERT INTO memories (type, topic, content, confidence, session_id) VALUES (?,?,?,?,?)",
@@ -360,11 +361,11 @@ def test_confidence_penalty_through_main():
     r, _ = run_hook(db_path, {
         "stop_hook_active": False,
         "session_id": "s-pen", "transcript_path": "", "cwd": "/tmp",
-        "last_assistant_message": f"Wrong info.\n<memory>\n- confidence_update: {mem_id}:-\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
+        "last_assistant_message": f"Not relevant.\n<memory>\n- confidence_update: {mem_id}:-\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
     })
 
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = ?", (mem_id,)).fetchone()[0]
-    assert new_conf < 0.7, f"Expected confidence penalty, got {new_conf}"
+    assert new_conf == 0.7, f"Expected no confidence change for -, got {new_conf}"
     conn.close()
 
 
