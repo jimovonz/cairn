@@ -27,6 +27,15 @@ from parser import parse_memory_block
 from hash_verify import compute_response_hash
 from storage import apply_confidence_updates, insert_memories
 from enforcement import check_trailing_intent, get_continuation_count, increment_continuation, reset_continuation
+
+# Appended to block reasons that are purely about memory format — the user already saw the
+# response in interactive mode, so restating it is wasteful.  Only used for format/density
+# blocks, NOT for behavioural blocks (incomplete work, trailing intent, context retrieval).
+AMEND_ONLY_SUFFIX = (
+    "\n\nIMPORTANT: The user has already seen your previous response. "
+    "Do NOT restate or repeat it. Just output a single short line like "
+    "\"Memory block amended.\" followed by a corrected <memory> block."
+)
 from retrieval import (retrieve_context, layer2_cross_project_search,
                         load_context_cache, save_context_cache, is_context_cached, add_to_context_cache,
                         CONTEXT_CACHE_SIM_THRESHOLD)
@@ -188,11 +197,11 @@ def main() -> None:
             if not has_close_tag:
                 hint += "Missing closing </memory> tag. "
             hint += "Use this exact format:\n<memory>\n- type: fact\n- topic: example\n- content: one line description\n- complete: true\n</memory>"
-            result: dict = {"decision": "block", "reason": hint}
+            result: dict = {"decision": "block", "reason": hint + AMEND_ONLY_SUFFIX}
         else:
             result = {
                 "decision": "block",
-                "reason": "Response missing required <memory> block. Add a <memory> block with at least complete: true before finishing."
+                "reason": "Response missing required <memory> block. Add a <memory> block with at least complete: true before finishing." + AMEND_ONLY_SUFFIX
             }
         print(json.dumps(result))
         sys.exit(0)
@@ -239,7 +248,7 @@ def main() -> None:
         log(f"Strict validation failed: {hint_text[:200]}")
         record_metric(session_id, "strict_validation_failed", hint_text[:100])
         increment_continuation(session_id)
-        print(json.dumps({"decision": "block", "reason": hint_text}))
+        print(json.dumps({"decision": "block", "reason": hint_text + AMEND_ONLY_SUFFIX}))
         sys.exit(0)
 
     # Hash verification — optional, log-only (not blocking)
@@ -274,7 +283,7 @@ def main() -> None:
         log(f"Content density check failed: {hint_text[:200]}")
         record_metric(session_id, "content_density_failed", hint_text[:100])
         increment_continuation(session_id)
-        print(json.dumps({"decision": "block", "reason": hint_text}))
+        print(json.dumps({"decision": "block", "reason": hint_text + AMEND_ONLY_SUFFIX}))
         sys.exit(0)
 
     # Apply confidence updates
@@ -401,7 +410,17 @@ def main() -> None:
             ).fetchone()[0]
         conn.close()
 
-        if turns_since >= CONTEXT_BOOTSTRAP_INTERVAL:
+        # Use shorter interval for first bootstrap in session, then standard interval
+        from config import CONTEXT_BOOTSTRAP_FIRST_INTERVAL
+        conn_check = get_conn()
+        _prior_bootstrap = conn_check.execute(
+            "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'context_bootstrap_triggered'",
+            (session_id,)
+        ).fetchone()[0]
+        conn_check.close()
+        effective_interval = CONTEXT_BOOTSTRAP_FIRST_INTERVAL if _prior_bootstrap == 0 else CONTEXT_BOOTSTRAP_INTERVAL
+
+        if turns_since >= effective_interval:
             record_metric(session_id, "context_bootstrap_triggered", None, turns_since)
             record_metric(session_id, "context_requested", "bootstrap_forced")
 
@@ -490,7 +509,7 @@ def main() -> None:
                 "Compact format: add a control line '+ c h:NNN' (where NNN is your response hash). "
                 "Verbose format: add '- complete: true'. "
                 "See the Response Hash section in your rules for how to compute h:NNN."
-            )
+            ) + AMEND_ONLY_SUFFIX
         else:
             llm_reason = f"Response marked incomplete. Continue with: {remaining}" if remaining else "Response marked incomplete. Continue."
         result = {

@@ -13,3 +13,7 @@ cairn/.staged_context
 cairn/.first_prompt_done
 cairn/.continuation_count
 .coverage
+logs/
+.staged_context/
+cairn/cairn.db.backup-*
+cairn/cairn.db.test-*

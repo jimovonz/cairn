@@ -85,6 +85,7 @@ STAGED_CONTEXT_RETENTION_DAYS = 7   # Days to keep staged cross-project context 
 # Force a context: insufficient declaration if the LLM hasn't used layer 3 in N turns.
 # This builds the habit through demonstrated value rather than rules alone.
 CONTEXT_BOOTSTRAP_INTERVAL = 20    # Turns without a layer 3 request before forcing one
+CONTEXT_BOOTSTRAP_FIRST_INTERVAL = 10  # First bootstrap fires earlier to seed context sooner
 BOOTSTRAP_MAX_PER_SCOPE = 3        # Cap bootstrap retrieval results per scope (project/global)
 
 # === Concurrency ===
