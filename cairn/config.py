@@ -88,6 +88,14 @@ CONTEXT_BOOTSTRAP_INTERVAL = 20    # Turns without a layer 3 request before forc
 CONTEXT_BOOTSTRAP_FIRST_INTERVAL = 10  # First bootstrap fires earlier to seed context sooner
 BOOTSTRAP_MAX_PER_SCOPE = 3        # Cap bootstrap retrieval results per scope (project/global)
 
+# === Retrieval — Layer 1.5 (per-prompt push, subsequent prompts) ===
+# Semantic search on every user message after the first. Higher threshold than Layer 1
+# to avoid mid-session noise. Skips IDs already injected this session.
+# Set L1_5_ENABLED=False to disable (default off — use Layer 3 pull-based instead).
+L1_5_ENABLED = False               # Off by default — enable via CAIRN_L1_5_ENABLED=1
+L1_5_SIM_THRESHOLD = 0.55          # Stricter than Layer 1 (0.30) — only strong mid-session matches
+L1_5_MAX_RESULTS = 3               # Keep injections tight on subsequent prompts
+
 # === RRF (Reciprocal Rank Fusion) ===
 # Fuses FTS5 keyword search with vector semantic search. Higher k smooths rank differences.
 RRF_K = 60                         # Standard RRF constant — prevents single high rank from dominating
@@ -108,7 +116,9 @@ for _name in list(vars(_this)):
     _val = _os.environ.get(_env)
     if _val is not None:
         _current = getattr(_this, _name)
-        if isinstance(_current, float):
+        if isinstance(_current, bool):
+            setattr(_this, _name, _val.lower() in ("1", "true", "yes"))
+        elif isinstance(_current, float):
             setattr(_this, _name, float(_val))
         elif isinstance(_current, int):
             setattr(_this, _name, int(_val))

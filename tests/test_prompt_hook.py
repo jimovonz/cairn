@@ -257,6 +257,127 @@ def test_injected_ids_stored_in_hook_state():
     conn.close()
 
 
+# ============================================================
+# Layer 1.5: Per-prompt injection
+# ============================================================
+
+# Verifies: Layer 1.5 returns None when disabled (default)
+def test_layer1_5_disabled_by_default():
+    import prompt_hook
+    import config
+    original = config.L1_5_ENABLED
+    try:
+        config.L1_5_ENABLED = False
+        db_path, conn = fresh_env()
+        conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'proj')")
+        conn.commit()
+        with patch.object(hook_helpers, 'DB_PATH', db_path):
+            result = prompt_hook.layer1_5_search("what is the auth approach", "s1")
+        assert result is None
+        conn.close()
+    finally:
+        config.L1_5_ENABLED = original
+
+
+# Verifies: Layer 1.5 fires on subsequent prompts when enabled with matching results
+def test_layer1_5_injects_on_subsequent_prompt():
+    import prompt_hook
+    import config
+    import numpy as np
+    from unittest.mock import MagicMock
+    original = config.L1_5_ENABLED
+    original_thresh = config.L1_5_SIM_THRESHOLD
+    try:
+        config.L1_5_ENABLED = True
+        config.L1_5_SIM_THRESHOLD = 0.50
+        db_path, conn = fresh_env()
+        conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'proj')")
+        conn.execute(
+            "INSERT INTO memories (id, type, topic, content, embedding, project, session_id) VALUES (99, 'decision', 'auth', 'Use JWT', X'00', 'proj', 'other')"
+        )
+        conn.commit()
+
+        mock_emb = MagicMock()
+        mock_emb.find_similar.return_value = [{
+            "id": 99, "type": "decision", "topic": "auth",
+            "content": "Use JWT for stateless auth",
+            "updated_at": "2026-04-01 10:00:00", "project": "proj",
+            "confidence": 0.8, "session_id": "other", "depth": None,
+            "archived_reason": None, "similarity": 0.75, "score": 0.55,
+        }]
+
+        with patch.object(hook_helpers, 'DB_PATH', db_path), \
+             patch('prompt_hook.get_embedder', return_value=mock_emb):
+            result = prompt_hook.layer1_5_search("auth approach JWT", "s1")
+
+        assert result is not None
+        assert "per-prompt" in result
+        assert "JWT" in result
+        conn.close()
+    finally:
+        config.L1_5_ENABLED = original
+        config.L1_5_SIM_THRESHOLD = original_thresh
+
+
+# Verifies: Layer 1.5 skips already-injected IDs
+def test_layer1_5_skips_already_injected():
+    import prompt_hook
+    import config
+    import json as _json
+    from unittest.mock import MagicMock
+    original = config.L1_5_ENABLED
+    original_thresh = config.L1_5_SIM_THRESHOLD
+    try:
+        config.L1_5_ENABLED = True
+        config.L1_5_SIM_THRESHOLD = 0.50
+        db_path, conn = fresh_env()
+        conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'proj')")
+        conn.execute(
+            "INSERT INTO memories (id, type, topic, content, embedding, project, session_id) VALUES (99, 'fact', 'test', 'already seen', X'00', 'proj', 'other')"
+        )
+        # Mark memory 99 as already injected
+        conn.execute(
+            "INSERT INTO hook_state (session_id, key, value) VALUES ('s1', 'retrieved_ids', ?)",
+            (_json.dumps([99]),)
+        )
+        conn.commit()
+
+        mock_emb = MagicMock()
+        mock_emb.find_similar.return_value = [{
+            "id": 99, "type": "fact", "topic": "test",
+            "content": "already seen this",
+            "updated_at": "2026-04-01 10:00:00", "project": "proj",
+            "confidence": 0.8, "session_id": "other", "depth": None,
+            "archived_reason": None, "similarity": 0.80, "score": 0.60,
+        }]
+
+        with patch.object(hook_helpers, 'DB_PATH', db_path), \
+             patch('prompt_hook.get_embedder', return_value=mock_emb):
+            result = prompt_hook.layer1_5_search("some query", "s1")
+
+        assert result is None  # Already injected — should not re-inject
+        conn.close()
+    finally:
+        config.L1_5_ENABLED = original
+        config.L1_5_SIM_THRESHOLD = original_thresh
+
+
+# Verifies: bool config override via environment variable
+def test_l1_5_enabled_env_override():
+    import importlib
+    import os
+    env_backup = os.environ.copy()
+    try:
+        os.environ["CAIRN_L1_5_ENABLED"] = "1"
+        import config
+        importlib.reload(config)
+        assert config.L1_5_ENABLED is True
+    finally:
+        os.environ.clear()
+        os.environ.update(env_backup)
+        importlib.reload(config)
+
+
 def cleanup():
     shutil.rmtree(TEST_DIR, ignore_errors=True)
 
