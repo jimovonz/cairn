@@ -92,7 +92,7 @@ BOOTSTRAP_MAX_PER_SCOPE = 3        # Cap bootstrap retrieval results per scope (
 # Semantic search on every user message after the first. Higher threshold than Layer 1
 # to avoid mid-session noise. Skips IDs already injected this session.
 # Set L1_5_ENABLED=False to disable (default off — use Layer 3 pull-based instead).
-L1_5_ENABLED = False               # Off by default — enable via CAIRN_L1_5_ENABLED=1
+L1_5_ENABLED = True                # Per-prompt semantic injection — disable via CAIRN_L1_5_ENABLED=0
 L1_5_SIM_THRESHOLD = 0.55          # Stricter than Layer 1 (0.30) — only strong mid-session matches
 L1_5_MAX_RESULTS = 3               # Keep injections tight on subsequent prompts
 
