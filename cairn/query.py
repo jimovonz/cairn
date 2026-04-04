@@ -593,6 +593,20 @@ def stats():
         if latency and latency[0] is not None:
             print(f"\n=== Retrieval Latency ===")
             print(f"  Min: {latency[0]:.0f}ms  Avg: {latency[1]:.0f}ms  Max: {latency[2]:.0f}ms")
+
+        # Layer 1.5 monitoring
+        l15_fired = conn.execute(
+            "SELECT COUNT(*) FROM metrics WHERE event IN ('layer1_5_injected','layer1_5_no_match','layer1_5_skipped_all_seen')"
+        ).fetchone()[0]
+        if l15_fired > 0:
+            l15_injected = conn.execute("SELECT COUNT(*), AVG(value) FROM metrics WHERE event = 'layer1_5_injected'").fetchone()
+            l15_no_match = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'layer1_5_no_match'").fetchone()[0]
+            l15_skipped = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'layer1_5_skipped_all_seen'").fetchone()[0]
+            hit_rate = (l15_injected[0] / l15_fired * 100) if l15_fired > 0 else 0
+            avg_results = l15_injected[1] or 0
+            print(f"\n=== Layer 1.5 (per-prompt injection) ===")
+            print(f"  Total fired: {l15_fired}  Injected: {l15_injected[0]} ({hit_rate:.0f}%)  No match: {l15_no_match}  Skipped (seen): {l15_skipped}")
+            print(f"  Avg results when injected: {avg_results:.1f}")
     except Exception:
         pass  # metrics table may not exist yet
 

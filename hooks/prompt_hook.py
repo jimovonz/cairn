@@ -22,7 +22,7 @@ from typing import Any, Optional
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from hook_helpers import get_conn, get_embedder, get_session_project, DB_PATH, LOG_PATH
+from hook_helpers import get_conn, get_embedder, get_session_project, record_metric, DB_PATH, LOG_PATH
 
 
 def log(msg: str) -> None:
@@ -146,12 +146,15 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
         return None
 
     if not results or results[0]["similarity"] < L1_5_SIM_THRESHOLD:
+        record_metric(session_id, "layer1_5_no_match", user_message[:80])
         return None
 
     # Skip memories already injected this session
     seen_ids = load_injected_ids(session_id)
+    before_dedup = len(results)
     results = [r for r in results if r["id"] not in seen_ids]
     if not results:
+        record_metric(session_id, "layer1_5_skipped_all_seen", user_message[:80], before_dedup)
         return None
 
     project_results = [r for r in results if project and r.get("project") == project]
@@ -172,6 +175,7 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
         lines.append("  </scope>")
 
     lines.append("</cairn_context>")
+    record_metric(session_id, "layer1_5_injected", user_message[:80], len(results))
     return "\n".join(lines)
 
 
