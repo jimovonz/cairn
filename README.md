@@ -12,7 +12,7 @@
 
 Cairn exploits the gap between Claude Code's raw LLM output and its rendered display. Angle bracket tags in LLM responses are stripped from the terminal — but they're preserved in the hook system. This creates an invisible control plane where the LLM self-annotates every response with structured memory data, and the infrastructure enforces it mechanically.
 
-No cloud. No API keys. No MCP. One SQLite file. Two hooks.
+No cloud. No API keys. No MCP. One SQLite file. Two hooks. **No additional LLM calls** — memory is written as part of the normal response, not via a separate extraction step.
 
 ---
 
@@ -28,7 +28,7 @@ Cairn makes the LLM an **active participant in its own memory lifecycle on every
 
 All three are enforced mechanically. The LLM cannot forget to participate. No other memory system operates this way.
 
-**The LLM is the memory author.** It distills its own output into one-line structured memories — not raw transcripts, not embeddings of chat logs, but the LLM's own assessment of what matters. A 50,000-token session becomes 10 precise facts.
+**The LLM is the memory author — at zero extra cost.** Memory is written as part of every response, not via a separate LLM call. Other systems run a second Claude invocation after the session to extract memories. Cairn's `<memory>` block is invisible tail content appended to the normal response — the same tokens that answer the user also capture the memory. No extra API calls, no added latency, no background processes for extraction.
 
 **The metadata is invisible.** The user sees a clean response. The hook infrastructure sees structured XML with type, topic, confidence signals, and retrieval requests. The LLM writes to a channel the user can't see.
 
@@ -50,6 +50,7 @@ Cairn is the only system in all three categories that makes the LLM an active pa
 
 | Capability | Cairn | All others surveyed |
 |------------|-------|---------------------|
+| Memory captured within the normal response — no extra LLM calls | ✓ | ✗ |
 | LLM self-declares context gaps mid-conversation, system injects and re-prompts | ✓ | ✗ |
 | Bootstrap enforcement — forces context checks every N turns | ✓ | ✗ |
 | Completeness enforcement — blocks stop if LLM says it's not done | ✓ | ✗ |
