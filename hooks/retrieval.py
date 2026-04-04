@@ -13,7 +13,7 @@ import re
 from config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
                      L3_GLOBAL_SIM_WITHOUT_PROJECT, L3_PROJECT_QUALITY_FLOOR,
                      L3_MAX_PROJECT_RESULTS, L3_MAX_GLOBAL_RESULTS,
-                     WEAK_ENTRY_SCORE_FLOOR)
+                     WEAK_ENTRY_SCORE_FLOOR, RRF_K)
 
 
 CONTEXT_CACHE_SIM_THRESHOLD: float = 0.9
@@ -67,52 +67,41 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
     if threshold_boost > 0:
         log(f"Adaptive threshold boost: +{threshold_boost:.2f}")
 
-    seen_ids: set[int] = set()
+    # --- Collect candidates from both search methods ---
+    # semantic_ranked: {memory_id: (rank_position, result_dict)}
+    # fts_ranked:      {memory_id: (rank_position, result_dict)}
+    semantic_ranked: dict[int, tuple[int, dict[str, Any]]] = {}
+    fts_ranked: dict[int, tuple[int, dict[str, Any]]] = {}
 
     if emb:
         try:
             # Primary search: project-prefixed query (biased toward project-local matches)
             all_results = emb.find_similar(conn, context_need, current_project=project)
-            project_threshold: float = L3_PROJECT_SIM_THRESHOLD + threshold_boost
-
-            # Collect project-scoped results (exclude same-session memories)
-            for r in all_results:
-                if session_id and r.get("session_id") == session_id:
-                    continue
-                if project and r.get("project") == project and r["similarity"] >= project_threshold:
-                    project_results.append(r)
-                    seen_ids.add(r["id"])
-
-            # Mitigation 2: Only raise global threshold if project results are quality matches
-            quality_project = [r for r in project_results if r["similarity"] >= L3_PROJECT_QUALITY_FLOOR]
-            global_threshold: float = (L3_GLOBAL_SIM_WITH_PROJECT if quality_project
-                                       else L3_GLOBAL_SIM_WITHOUT_PROJECT) + threshold_boost
-
-            # Collect global results from primary search (exclude same-session)
-            for r in all_results:
-                if session_id and r.get("session_id") == session_id:
-                    continue
-                if r["id"] not in seen_ids and r["similarity"] >= global_threshold:
-                    global_results.append(r)
-                    seen_ids.add(r["id"])
 
             # Mitigation 3: Unprefixed search for cross-project matches
             if project:
                 unprefixed_results = emb.find_similar(conn, context_need, current_project=None)
+                # Merge unprefixed results (keep best score per id)
+                by_id = {r["id"]: r for r in all_results}
                 for r in unprefixed_results:
-                    if session_id and r.get("session_id") == session_id:
-                        continue
-                    if r["id"] not in seen_ids and r["similarity"] >= global_threshold:
-                        global_results.append(r)
-                        seen_ids.add(r["id"])
+                    if r["id"] not in by_id or r["score"] > by_id[r["id"]]["score"]:
+                        by_id[r["id"]] = r
+                all_results = sorted(by_id.values(), key=lambda x: x["score"], reverse=True)
+
+            # Build ranked list (excluding same-session)
+            rank = 0
+            for r in all_results:
+                if session_id and r.get("session_id") == session_id:
+                    continue
+                semantic_ranked[r["id"]] = (rank, r)
+                rank += 1
 
         except (ConnectionError, TimeoutError, OSError) as e:
             log(f"Context retrieval embedding unavailable: {e}")
         except Exception as e:
             log(f"Context retrieval error ({type(e).__name__}): {e}")
 
-    # Mitigation 1: FTS always runs alongside semantic (not just as fallback)
-    # Catches exact term matches that semantic search misses due to embedding bias
+    # FTS5 keyword search — runs alongside semantic for hybrid fusion
     _STOPWORDS = frozenset({
         "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
         "of", "with", "by", "from", "is", "it", "its", "was", "are", "be",
@@ -125,7 +114,6 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
         "very", "too", "here", "there", "been", "being", "were",
     })
     try:
-        # Convert to OR-joined terms, filtering stopwords for precision
         words = re.findall(r'\w+', context_need.lower())
         meaningful = [w for w in words if len(w) > 2 and w not in _STOPWORDS]
         if not meaningful:
@@ -134,27 +122,116 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
             meaningful = words
         fts_query = " OR ".join(f'"{w}"' for w in meaningful) if meaningful else context_need
         rows = conn.execute("""
-            SELECT m.id, m.type, m.topic, m.content, m.updated_at, m.project, m.session_id, m.confidence
+            SELECT m.id, m.type, m.topic, m.content, m.updated_at, m.project,
+                   m.session_id, m.confidence, m.depth, m.archived_reason, rank
             FROM memories_fts f
             JOIN memories m ON f.rowid = m.id
             WHERE memories_fts MATCH ?
-            ORDER BY rank LIMIT 15
+            ORDER BY rank LIMIT 20
         """, (fts_query,)).fetchall()
+        rank = 0
         for r in rows:
-            if r[0] not in seen_ids:
-                # Exclude same-session memories
-                if session_id and r[6] == session_id:
-                    continue
-                entry: dict[str, Any] = {"id": r[0], "type": r[1], "topic": r[2], "content": r[3],
-                         "updated_at": r[4], "project": r[5], "session_id": r[6],
-                         "confidence": r[7] or 0.7, "similarity": 0.35, "score": 0.30}
-                seen_ids.add(r[0])
-                if project and r[5] == project:
-                    project_results.append(entry)
-                else:
-                    global_results.append(entry)
+            if session_id and r[6] == session_id:
+                continue
+            confidence = r[7] if r[7] is not None else 0.7
+            entry: dict[str, Any] = {
+                "id": r[0], "type": r[1], "topic": r[2], "content": r[3],
+                "updated_at": r[4], "project": r[5], "session_id": r[6],
+                "confidence": confidence, "depth": r[8],
+                "archived_reason": r[9], "bm25_rank": -r[10],  # FTS5 rank is negative (lower = better)
+            }
+            fts_ranked[r[0]] = (rank, entry)
+            rank += 1
     except Exception as e:
         log(f"FTS search error: {e}")
+
+    # --- RRF Fusion ---
+    # Merge both result sets. Memories found by both methods get boosted.
+    all_ids = set(semantic_ranked.keys()) | set(fts_ranked.keys())
+    fused: list[dict[str, Any]] = []
+
+    for mid in all_ids:
+        # RRF score: sum of 1/(k + rank) across each method that found this memory
+        rrf_score = 0.0
+        result_dict: Optional[dict[str, Any]] = None
+
+        if mid in semantic_ranked:
+            sem_rank, sem_result = semantic_ranked[mid]
+            rrf_score += 1.0 / (RRF_K + sem_rank)
+            result_dict = sem_result
+
+        if mid in fts_ranked:
+            fts_rank_pos, fts_result = fts_ranked[mid]
+            rrf_score += 1.0 / (RRF_K + fts_rank_pos)
+            # If we didn't get this from semantic, use the FTS result
+            if result_dict is None:
+                # FTS-only result needs a composite score computed from its metadata
+                from embeddings import composite_score as _cscore
+                fts_sim = 0.35  # FTS doesn't produce a vector similarity; use baseline
+                fts_result["similarity"] = fts_sim
+                fts_result["score"] = _cscore(
+                    fts_sim, fts_result["confidence"],
+                    fts_result.get("updated_at"), fts_result.get("project"), project
+                )
+                result_dict = fts_result
+
+        if result_dict is None:
+            continue
+
+        # Blend: use the original composite score but boost by RRF contribution
+        # RRF score range for k=60: single-method top rank = 1/61 ≈ 0.016,
+        # dual-method top rank = 2/61 ≈ 0.033. Normalise to a meaningful boost.
+        # Max possible RRF = 2/61 ≈ 0.033. Scale so dual-top gives ~0.20 boost.
+        rrf_boost = rrf_score * (0.20 / (2.0 / (RRF_K + 1)))
+        result_dict["rrf_score"] = rrf_score
+        result_dict["score"] = result_dict.get("score", 0.30) + rrf_boost
+
+        # Tag source method for logging
+        in_sem = mid in semantic_ranked
+        in_fts = mid in fts_ranked
+        result_dict["_source"] = "both" if (in_sem and in_fts) else ("semantic" if in_sem else "fts")
+
+        fused.append(result_dict)
+
+    # Sort by fused score and split into project/global
+    fused.sort(key=lambda x: x["score"], reverse=True)
+
+    seen_ids: set[int] = set()
+    project_threshold: float = L3_PROJECT_SIM_THRESHOLD + threshold_boost
+    quality_project_count = 0
+
+    for r in fused:
+        mid = r["id"]
+        if mid in seen_ids:
+            continue
+        sim = r.get("similarity", 0)
+
+        if project and r.get("project") == project and sim >= project_threshold:
+            project_results.append(r)
+            seen_ids.add(mid)
+            if sim >= L3_PROJECT_QUALITY_FLOOR:
+                quality_project_count += 1
+        # Defer global results until we know the threshold
+
+    global_threshold: float = (L3_GLOBAL_SIM_WITH_PROJECT if quality_project_count > 0
+                               else L3_GLOBAL_SIM_WITHOUT_PROJECT) + threshold_boost
+
+    for r in fused:
+        mid = r["id"]
+        if mid in seen_ids:
+            continue
+        sim = r.get("similarity", 0)
+        # FTS-only results (sim=0.35) pass through if their fused score is strong enough
+        # Use a relaxed threshold for FTS-only: if RRF boosted score >= global threshold, allow
+        if sim >= global_threshold or (r.get("_source") == "fts" and r["score"] >= WEAK_ENTRY_SCORE_FLOOR):
+            global_results.append(r)
+            seen_ids.add(mid)
+
+    # Log RRF fusion stats
+    both_count = sum(1 for r in fused if r.get("_source") == "both")
+    sem_only = sum(1 for r in fused if r.get("_source") == "semantic")
+    fts_only = sum(1 for r in fused if r.get("_source") == "fts")
+    log(f"RRF fusion: {len(fused)} candidates ({both_count} both, {sem_only} sem-only, {fts_only} fts-only)")
 
     conn.close()
 

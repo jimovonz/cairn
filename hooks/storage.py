@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from types import ModuleType
 from typing import Optional
 
@@ -10,6 +12,62 @@ from hook_helpers import log, get_conn, get_session_project, record_metric
 from config import (DEDUP_THRESHOLD, CONFIDENCE_BOOST,
                      CONFIDENCE_MIN, CONFIDENCE_MAX, CONFIDENCE_DEFAULT,
                      DISTINCT_VARIANT_SIM_THRESHOLD, NEGATION_SIM_FLOOR)
+
+
+def extract_associated_files(transcript_path: str, lookback: int = 30) -> list[str]:
+    """Extract file paths from recent tool calls in the transcript.
+
+    Scans the last `lookback` entries for Read, Edit, Write, and MultiEdit
+    tool uses and returns unique file paths found.
+    """
+    if not transcript_path:
+        return []
+    try:
+        # Read all lines and take the last N
+        with open(transcript_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        recent = lines[-lookback:] if len(lines) > lookback else lines
+
+        files: list[str] = []
+        seen: set[str] = set()
+        for line in recent:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Tool use entries have tool_name and parameters
+            tool_name = entry.get("tool_name") or ""
+            if tool_name in ("Read", "Edit", "Write", "MultiEdit"):
+                params = entry.get("parameters") or entry.get("input") or {}
+                fp = params.get("file_path") or params.get("filePath") or ""
+                if fp and fp not in seen:
+                    files.append(fp)
+                    seen.add(fp)
+                # MultiEdit may have multiple file edits
+                edits = params.get("edits") or []
+                for edit in edits:
+                    efp = edit.get("file_path") or edit.get("filePath") or ""
+                    if efp and efp not in seen:
+                        files.append(efp)
+                        seen.add(efp)
+
+            # Also check Bash tool calls for file paths in commands
+            if tool_name == "Bash":
+                cmd = (params if isinstance(params, str) else
+                       (entry.get("parameters") or entry.get("input") or {}).get("command", ""))
+                # Extract paths that look like file references
+                for match in re.findall(r'(?:^|\s)(/[^\s;|&>]+\.[a-zA-Z0-9]+)', str(cmd)):
+                    if match not in seen:
+                        files.append(match)
+                        seen.add(match)
+
+        return files
+    except (FileNotFoundError, PermissionError, OSError):
+        return []
 
 
 EMPTY_MEMORY_PATTERNS: list[str] = [
@@ -122,7 +180,8 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
     return applied
 
 
-def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = None) -> int:
+def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = None,
+                    transcript_path: Optional[str] = None) -> int:
     """Insert memory entries, deduplicating via cosine similarity."""
     if not entries:
         return 0
@@ -142,6 +201,15 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     conn = get_conn()
     project: Optional[str] = get_session_project(conn, session_id)
     inserted: int = 0
+
+    # Lazy file extraction for correction-type memories
+    _associated_files: Optional[list[str]] = None
+    has_corrections = any(e.get("type") == "correction" for e in entries)
+
+    if has_corrections and transcript_path:
+        _associated_files = extract_associated_files(transcript_path)
+        if _associated_files:
+            log(f"Correction file association: {len(_associated_files)} files from transcript")
 
     for entry in entries:
         mem_type: str = entry.get("type", "fact")
@@ -261,6 +329,21 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
         inserted += 1
+
+        # Associate file paths with correction-type memories
+        if mem_type == "correction" and _associated_files:
+            files_json = json.dumps(_associated_files)
+            # Get the ID of the memory we just inserted/updated
+            last_id = conn.execute(
+                "SELECT id FROM memories WHERE type = ? AND topic = ? ORDER BY updated_at DESC LIMIT 1",
+                (mem_type, topic)
+            ).fetchone()
+            if last_id:
+                conn.execute(
+                    "UPDATE memories SET associated_files = ? WHERE id = ?",
+                    (files_json, last_id[0])
+                )
+                log(f"Associated {len(_associated_files)} files with correction {last_id[0]}: {_associated_files[:3]}")
 
     conn.commit()
 

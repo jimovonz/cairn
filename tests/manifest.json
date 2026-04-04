@@ -1,0 +1,1871 @@
+{
+  "tags": {
+    "5E23": {
+      "test_function": "test_compute_response_hash_single_sentence",
+      "target_function": "compute_response_hash",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result == 8",
+      "verifies": "basic single-sentence hash equals first letter value (h=8)"
+    },
+    "5D8C": {
+      "test_function": "test_compute_response_hash_empty",
+      "target_function": "compute_response_hash",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert compute_response_hash(\"\") == 0",
+      "verifies": "empty string returns 0"
+    },
+    "5996": {
+      "test_function": "test_compute_response_hash_only_memory_block",
+      "target_function": "compute_response_hash",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert compute_response_hash(text) == 0",
+      "verifies": "text that is only a memory block returns 0 after stripping"
+    },
+    "440A": {
+      "test_function": "test_compute_response_hash_nested_memory_tags",
+      "target_function": "compute_response_hash",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result == 5",
+      "verifies": "nested memory tags \u2014 non-greedy regex strips first match, rest leaks through with computable hash"
+    },
+    "827B": {
+      "test_function": "test_compute_response_hash_strips_memory",
+      "target_function": "compute_response_hash",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result == 34",
+      "verifies": "memory block stripped, surrounding text on both sides contributes to hash"
+    },
+    "8204": {
+      "test_function": "test_compute_response_hash_strips_code_blocks",
+      "target_function": "compute_response_hash",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result == 4",
+      "verifies": "fenced code blocks replaced with sentence boundary, content inside not hashed"
+    },
+    "C464": {
+      "test_function": "test_compute_response_hash_paragraph_breaks",
+      "target_function": "compute_response_hash",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result == 3",
+      "verifies": "double-newline paragraph breaks become sentence boundaries"
+    },
+    "7563": {
+      "test_function": "test_compute_response_hash_multiple_punctuation_types",
+      "target_function": "compute_response_hash",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result == 6",
+      "verifies": "all three punctuation types (. ! ?) act as sentence boundaries"
+    },
+    "E433": {
+      "test_function": "test_compute_response_hash_non_alpha_start",
+      "target_function": "compute_response_hash",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result == 1",
+      "verifies": "non-alpha first character contributes 0, only alpha chars add to sum"
+    },
+    "2089": {
+      "test_function": "test_compute_response_hash_case_insensitive",
+      "target_function": "compute_response_hash",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result == 26",
+      "verifies": "uppercase Z produces same value as lowercase z (z=26)"
+    },
+    "1C36": {
+      "test_function": "test_verify_hash_match",
+      "target_function": "verify_hash",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert match is True",
+      "verifies": "matching claimed hash returns (True, actual) with correct actual value"
+    },
+    "AA3D": {
+      "test_function": "test_verify_hash_empty_text",
+      "target_function": "verify_hash",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert match is True",
+      "verifies": "empty text with claimed=0 returns (True, 0) \u2014 boundary match"
+    },
+    "7C52": {
+      "test_function": "test_verify_hash_mismatch",
+      "target_function": "verify_hash",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert match is False",
+      "verifies": "incorrect claimed value returns (False, correct_actual) so caller can see difference"
+    },
+    "98C5": {
+      "test_function": "test_verify_hash_negative_claimed",
+      "target_function": "verify_hash",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert match is False",
+      "verifies": "negative claimed hash never matches since computed hash is always >= 0"
+    },
+    "C73B": {
+      "test_function": "test_verify_hash_multi_sentence_mismatch",
+      "target_function": "verify_hash",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert match is False",
+      "verifies": "multi-sentence verify returns correct actual on mismatch for debugging"
+    },
+    "8C9C": {
+      "test_function": "test_parse_memory_block_uses_last_closed_tag",
+      "target_function": "parse_memory_block",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(result.entries) == 1",
+      "verifies": "closed <memory> tags are found and the last block is used when multiple exist"
+    },
+    "93FF": {
+      "test_function": "test_parse_memory_block_unclosed_tag",
+      "target_function": "parse_memory_block",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(result.entries) == 1",
+      "verifies": "unclosed <memory> tag is parsed as fallback when no closing tag exists"
+    },
+    "8287": {
+      "test_function": "test_parse_memory_block_no_tag_returns_no_block",
+      "target_function": "parse_memory_block",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is NO_BLOCK",
+      "verifies": "text with no <memory> tag returns NO_BLOCK sentinel"
+    },
+    "8277": {
+      "test_function": "test_parse_memory_block_compact_detection",
+      "target_function": "parse_memory_block",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.is_compact is True",
+      "verifies": "compact format is detected via type/topic: pattern and dispatched correctly"
+    },
+    "50C4": {
+      "test_function": "test_compact_entry_with_keywords",
+      "target_function": "parse_memory_block",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.entries[0][\"type\"] == \"decision\"",
+      "verifies": "compact entry with keywords extracts type, topic, content, and keyword list correctly"
+    },
+    "8DAC": {
+      "test_function": "test_compact_entry_no_keywords",
+      "target_function": "parse_memory_block",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.entries[0][\"content\"] == \"plain content without keywords\"",
+      "verifies": "compact entry without [k: ...] suffix keeps full content and keywords remain empty"
+    },
+    "1E82": {
+      "test_function": "test_compact_entry_colons_in_content",
+      "target_function": "parse_memory_block",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.entries[0][\"topic\"] == \"docker\"",
+      "verifies": "compact entry with colons in content is parsed correctly (colon after topic delimiter)"
+    },
+    "4227": {
+      "test_function": "test_compact_multiple_entries_keywords_override",
+      "target_function": "parse_memory_block",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(result.entries) == 2",
+      "verifies": "multiple compact entries accumulate and last entry's keywords win"
+    },
+    "189A": {
+      "test_function": "test_compact_control_line_positive",
+      "target_function": "parse_memory_block",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.complete is True",
+      "verifies": "control line \"+ c h:1A\" sets complete=True, context=sufficient, hash=0x1A"
+    },
+    "2ED1": {
+      "test_function": "test_compact_noop_with_hash",
+      "target_function": "parse_memory_block",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.entries == []",
+      "verifies": "noop \".\" block with hash is parsed; entries list is empty"
+    },
+    "2DEA": {
+      "test_function": "test_compact_incomplete_with_remaining",
+      "target_function": "parse_memory_block",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.complete is False",
+      "verifies": "\"- :remaining text\" sets complete=False and captures remaining"
+    },
+    "4AD9": {
+      "test_function": "test_compact_control_line_all_fields",
+      "target_function": "parse_memory_block",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.complete is False",
+      "verifies": "control line \"- c?:query text h:AB\" sets incomplete, insufficient context, and hash"
+    },
+    "E71E": {
+      "test_function": "test_verbose_full_entry",
+      "target_function": "parse_memory_block",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.entries[0] == {\"type\": \"correction\", \"topic\": \"bug-fix\", \"content\"",
+      "verifies": "verbose format parses all standard fields (type, topic, content, complete, context, keywords)"
+    },
+    "75F8": {
+      "test_function": "test_verbose_missing_explicit_fields",
+      "target_function": "parse_memory_block",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.complete is None",
+      "verifies": "verbose block with no complete/context fields has explicit flags as False"
+    },
+    "433A": {
+      "test_function": "test_verbose_incomplete_with_remaining",
+      "target_function": "parse_memory_block",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.complete is False",
+      "verifies": "verbose block with \"complete: false\" and remaining text is parsed correctly"
+    },
+    "F58A": {
+      "test_function": "test_verbose_mixed_dash_nodash",
+      "target_function": "parse_memory_block",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(result.entries) == 1",
+      "verifies": "verbose block with bare \"- \" line separators and no dashes on key lines still parses"
+    },
+    "EE1C": {
+      "test_function": "test_verbose_multi_entry_boundary",
+      "target_function": "parse_memory_block",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(result.entries) == 2",
+      "verifies": "two consecutive verbose entries with repeated \"type\" key triggers entry boundary"
+    },
+    "BCB5": {
+      "test_function": "test_verbose_partial_entry_defaults_content",
+      "target_function": "parse_memory_block",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(result.entries) == 1",
+      "verifies": "partial entry (type+topic, no content) defaults content to topic value"
+    },
+    "C93F": {
+      "test_function": "test_verbose_type_only_not_added",
+      "target_function": "parse_memory_block",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(result.entries) == 0",
+      "verifies": "entry with only type (no topic) is not added to entries"
+    },
+    "CC8A": {
+      "test_function": "test_verbose_confidence_updates_all_directions",
+      "target_function": "parse_memory_block",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(result.confidence_updates) == 3",
+      "verifies": "confidence_update in verbose format parses id, direction, and optional reason"
+    },
+    "FAC9": {
+      "test_function": "test_no_block_sentinel_structure",
+      "target_function": "parse_memory_block",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert NO_BLOCK.entries is None",
+      "verifies": "NO_BLOCK sentinel has entries=None, complete=None, and all explicit flags False"
+    },
+    "1B1C": {
+      "test_function": "test_noop_block_sentinel_structure",
+      "target_function": "parse_memory_block",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert NOOP_BLOCK.entries == []",
+      "verifies": "NOOP_BLOCK sentinel has empty entries list, complete=True, context=sufficient"
+    },
+    "DE5B": {
+      "test_function": "test_show_context_behavioural_normal",
+      "target_function": "show_context",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert output.startswith(\"=== Memory [1] fact/auth-bug ===\")",
+      "verifies": "show_context extracts correct conversation window around memory timestamp with proper anchor"
+    },
+    "B149": {
+      "test_function": "test_show_context_edge_memory_after_all_messages",
+      "target_function": "show_context",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(ctx) == 3",
+      "verifies": "when all transcript messages precede memory timestamp, anchor is last message"
+    },
+    "3C14": {
+      "test_function": "test_show_context_error_no_memory",
+      "target_function": "show_context",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(output_lines) == 1",
+      "verifies": "show_context prints error and returns for nonexistent memory ID"
+    },
+    "D255": {
+      "test_function": "test_show_context_adversarial_malformed_jsonl",
+      "target_function": "show_context",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(ctx) == 3",
+      "verifies": "malformed JSONL lines are skipped and valid messages still produce correct context"
+    },
+    "D0D6": {
+      "test_function": "test_show_context_error_no_session_id",
+      "target_function": "show_context",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(output_lines) == 3  # header, content, \"No session ID\" message",
+      "verifies": "memory with no session_id prints \"No session ID\" and returns without error"
+    },
+    "1CB7": {
+      "test_function": "test_show_context_error_missing_transcript_file",
+      "target_function": "show_context",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(not_found_lines) == 1",
+      "verifies": "when transcript file path is recorded but file is missing on disk, prints error path"
+    },
+    "37B3": {
+      "test_function": "test_show_context_edge_depth_controls_lookback",
+      "target_function": "show_context",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(ctx) == 4",
+      "verifies": "depth field on memory controls lookback window size instead of default margin"
+    },
+    "5B14": {
+      "test_function": "test_show_context_adversarial_no_text_content",
+      "target_function": "show_context",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(ctx) == 0",
+      "verifies": "transcript with only non-text content entries results in \"No text-bearing messages\""
+    },
+    "35A5": {
+      "test_function": "test_backfill_embeddings_behavioural",
+      "target_function": "backfill_embeddings",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert mock_emb.embed.call_count == 3",
+      "verifies": "backfill generates embeddings for all NULL-embedding memories, stores blobs, and commits"
+    },
+    "0953": {
+      "test_function": "test_backfill_embeddings_edge_all_have_embeddings",
+      "target_function": "backfill_embeddings",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert mock_emb.embed.call_count == 0",
+      "verifies": "when all memories already have embeddings, prints message and makes no DB writes"
+    },
+    "B5FC": {
+      "test_function": "test_backfill_embeddings_error_import_failure",
+      "target_function": "backfill_embeddings",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert output.strip() == \"sentence-transformers not available\"",
+      "verifies": "when embeddings module is not importable, prints error and returns without DB access"
+    },
+    "BB4E": {
+      "test_function": "test_backfill_embeddings_adversarial_partial_failure",
+      "target_function": "backfill_embeddings",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert null_count == 3",
+      "verifies": "if embed() raises mid-backfill, earlier rows are NOT committed (transaction atomicity)"
+    },
+    "1705": {
+      "test_function": "test_backfill_embeddings_project_prefix_included",
+      "target_function": "backfill_embeddings",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert embed_arg == \"myproj fact auth use JWT\"",
+      "verifies": "project prefix is prepended to search_text when project is non-NULL"
+    },
+    "D5DC": {
+      "test_function": "test_backfill_embeddings_no_project_prefix",
+      "target_function": "backfill_embeddings",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert embed_arg == \"decision db use sqlite\"",
+      "verifies": "when project is NULL, search_text has no leading space or prefix"
+    },
+    "A624": {
+      "test_function": "test_search_behavioural",
+      "target_function": "search",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 5",
+      "verifies": "search returns correct count of FTS matches with valid row fields"
+    },
+    "903B": {
+      "test_function": "test_search_edge",
+      "target_function": "search",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 0",
+      "verifies": "search returns zero-length list when query has no matches in populated DB"
+    },
+    "A9D5": {
+      "test_function": "test_search_error",
+      "target_function": "search",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 0",
+      "verifies": "search returns empty list on empty database without raising exception"
+    },
+    "DF71": {
+      "test_function": "test_search_adversarial",
+      "target_function": "search",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 2",
+      "verifies": "search limit parameter constrains result count below total matches"
+    },
+    "468D": {
+      "test_function": "test_list_by_type_behavioural",
+      "target_function": "list_by_type",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 2",
+      "verifies": "list_by_type returns only rows with the requested type field"
+    },
+    "8704": {
+      "test_function": "test_list_by_type_edge",
+      "target_function": "list_by_type",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 0",
+      "verifies": "list_by_type returns empty list for nonexistent type string"
+    },
+    "B298": {
+      "test_function": "test_list_by_type_error",
+      "target_function": "list_by_type",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 0",
+      "verifies": "list_by_type returns empty list on empty database"
+    },
+    "C602": {
+      "test_function": "test_list_by_type_adversarial",
+      "target_function": "list_by_type",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 0",
+      "verifies": "list_by_type safely handles SQL injection characters in type parameter"
+    },
+    "3608": {
+      "test_function": "test_list_recent_behavioural",
+      "target_function": "list_recent",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 3",
+      "verifies": "list_recent returns rows in descending updated_at order respecting limit"
+    },
+    "5825": {
+      "test_function": "test_list_recent_edge",
+      "target_function": "list_recent",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 0",
+      "verifies": "list_recent on empty database returns zero-length list"
+    },
+    "9E58": {
+      "test_function": "test_list_recent_error",
+      "target_function": "list_recent",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 1",
+      "verifies": "list_recent with limit=1 returns exactly the most recent row"
+    },
+    "1B56": {
+      "test_function": "test_list_recent_adversarial",
+      "target_function": "list_recent",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 5",
+      "verifies": "list_recent with limit exceeding row count returns all available rows"
+    },
+    "EDA4": {
+      "test_function": "test_list_by_date_behavioural",
+      "target_function": "list_by_date",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 3",
+      "verifies": "list_by_date with since and until returns only rows within date range"
+    },
+    "8B8E": {
+      "test_function": "test_list_by_date_edge",
+      "target_function": "list_by_date",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 5",
+      "verifies": "list_by_date with no filters returns all memories up to limit"
+    },
+    "E241": {
+      "test_function": "test_list_by_date_error",
+      "target_function": "list_by_date",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 0",
+      "verifies": "list_by_date with reversed range where since > until returns empty"
+    },
+    "4C8E": {
+      "test_function": "test_list_by_date_adversarial",
+      "target_function": "list_by_date",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 1",
+      "verifies": "list_by_date with relative \"3d\" format computes correct date via _parse_date"
+    },
+    "7B34": {
+      "test_function": "test_list_by_session_behavioural",
+      "target_function": "list_by_session",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 5",
+      "verifies": "list_by_session returns memories matching session prefix only"
+    },
+    "5E34": {
+      "test_function": "test_list_by_session_edge",
+      "target_function": "list_by_session",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 0",
+      "verifies": "list_by_session returns empty for nonexistent session prefix"
+    },
+    "EC90": {
+      "test_function": "test_list_by_session_error",
+      "target_function": "list_by_session",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 0",
+      "verifies": "list_by_session on empty database returns empty list"
+    },
+    "53D0": {
+      "test_function": "test_list_by_session_adversarial",
+      "target_function": "list_by_session",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 1",
+      "verifies": "list_by_session correctly isolates by exact prefix, not matching other sessions"
+    },
+    "384F": {
+      "test_function": "test_show_context_behavioural",
+      "target_function": "show_context",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 4",
+      "verifies": "show_context displays conversation anchor marker and context around memory timestamp"
+    },
+    "3A4B": {
+      "test_function": "test_show_context_edge",
+      "target_function": "show_context",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 2",
+      "verifies": "show_context prints no-session message when memory has NULL session_id"
+    },
+    "F951": {
+      "test_function": "test_show_context_error",
+      "target_function": "show_context",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert out.strip() == \"No memory with id 999\"",
+      "verifies": "show_context prints descriptive error for nonexistent memory ID"
+    },
+    "DB00": {
+      "test_function": "test_show_context_adversarial",
+      "target_function": "show_context",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 2",
+      "verifies": "show_context handles corrupt created_at without crashing and prints parse error"
+    },
+    "18D9": {
+      "test_function": "test_verify_sources_behavioural",
+      "target_function": "verify_sources",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 4",
+      "verifies": "verify_sources reports correct coverage percentages for memories with depth and session"
+    },
+    "67AF": {
+      "test_function": "test_verify_sources_edge",
+      "target_function": "verify_sources",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 1",
+      "verifies": "verify_sources reports No memories for empty database"
+    },
+    "BD57": {
+      "test_function": "test_verify_sources_error",
+      "target_function": "verify_sources",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 2",
+      "verifies": "verify_sources skips legacy drift when transcript file is missing"
+    },
+    "5934": {
+      "test_function": "test_verify_sources_adversarial",
+      "target_function": "verify_sources",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 1",
+      "verifies": "verify_sources recovers from malformed JSONL lines in transcript without crash"
+    },
+    "92A3": {
+      "test_function": "test_stats_behavioural",
+      "target_function": "stats",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 6",
+      "verifies": "stats reports correct total, type breakdown, and latency from metrics table"
+    },
+    "33E5": {
+      "test_function": "test_stats_edge",
+      "target_function": "stats",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 3",
+      "verifies": "stats on empty DB reports zero for all counts without errors"
+    },
+    "8DD4": {
+      "test_function": "test_stats_error",
+      "target_function": "stats",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 3",
+      "verifies": "stats handles missing metrics table gracefully via try/except"
+    },
+    "780D": {
+      "test_function": "test_stats_adversarial",
+      "target_function": "stats",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 3",
+      "verifies": "stats handles NULL confidence values in distribution calculation"
+    },
+    "6788": {
+      "test_function": "test_add_memory_behavioural",
+      "target_function": "add_memory",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] == \"decision\"",
+      "verifies": "add_memory inserts row with correct type, topic, content, project, session_id"
+    },
+    "B81C": {
+      "test_function": "test_add_memory_edge",
+      "target_function": "add_memory",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] == \"\"",
+      "verifies": "add_memory accepts empty string content and stores it correctly"
+    },
+    "637D": {
+      "test_function": "test_add_memory_error",
+      "target_function": "add_memory",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] is None",
+      "verifies": "add_memory works without embeddings module reporting without embedding"
+    },
+    "B8FA": {
+      "test_function": "test_add_memory_adversarial",
+      "target_function": "add_memory",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] == malicious",
+      "verifies": "add_memory safely stores SQL injection payload without executing it"
+    },
+    "0644": {
+      "test_function": "test_check_behavioural",
+      "target_function": "check",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert isinstance(result, int)",
+      "verifies": "check returns integer failure count and reports memory count for healthy DB"
+    },
+    "C113": {
+      "test_function": "test_check_edge",
+      "target_function": "check",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert isinstance(result, int)",
+      "verifies": "check reports zero memories for empty DB without errors"
+    },
+    "7FE1": {
+      "test_function": "test_check_error",
+      "target_function": "check",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result > 0",
+      "verifies": "check returns nonzero failure count when DB file does not exist"
+    },
+    "078C": {
+      "test_function": "test_check_adversarial",
+      "target_function": "check",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert isinstance(result, int)",
+      "verifies": "check handles corrupt settings.json without crashing"
+    },
+    "57A4": {
+      "test_function": "test_show_history_behavioural",
+      "target_function": "show_history",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 3",
+      "verifies": "show_history displays current content and prior version count after update"
+    },
+    "1B58": {
+      "test_function": "test_show_history_edge",
+      "target_function": "show_history",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert out.strip() == \"No memory with id 999\"",
+      "verifies": "show_history reports No memory for nonexistent ID"
+    },
+    "D7D8": {
+      "test_function": "test_show_history_error",
+      "target_function": "show_history",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 2",
+      "verifies": "show_history shows No prior versions for memory never updated"
+    },
+    "2903": {
+      "test_function": "test_show_history_adversarial",
+      "target_function": "show_history",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 4",
+      "verifies": "show_history displays all prior versions after multiple sequential updates"
+    },
+    "2D25": {
+      "test_function": "test_delete_memory_behavioural",
+      "target_function": "delete_memory",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert c.execute(\"SELECT COUNT(*) FROM memory_history\").fetchone()[0] == 1",
+      "verifies": "delete_memory removes the row and its history entries from the database"
+    },
+    "122A": {
+      "test_function": "test_delete_memory_edge",
+      "target_function": "delete_memory",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert out.strip() == \"No memory with id 999\"",
+      "verifies": "delete_memory reports No memory for nonexistent ID"
+    },
+    "BE05": {
+      "test_function": "test_delete_memory_error",
+      "target_function": "delete_memory",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert out2.strip() == \"No memory with id 1\"",
+      "verifies": "delete_memory second call on same ID reports No memory after prior delete"
+    },
+    "D6CA": {
+      "test_function": "test_delete_memory_adversarial",
+      "target_function": "delete_memory",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(pre) == 1",
+      "verifies": "delete_memory also removes FTS index entry so search no longer finds it"
+    },
+    "CE16": {
+      "test_function": "test_archive_memory_behavioural",
+      "target_function": "archive_memory",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] == 0",
+      "verifies": "archive_memory sets confidence to 0 and stores reason string in DB"
+    },
+    "7D8E": {
+      "test_function": "test_archive_memory_edge",
+      "target_function": "archive_memory",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert out.strip() == \"No memory with id 999\"",
+      "verifies": "archive_memory reports No memory for nonexistent ID"
+    },
+    "2EA1": {
+      "test_function": "test_archive_memory_error",
+      "target_function": "archive_memory",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] == 0",
+      "verifies": "archive_memory on already-archived memory sets confidence to 0 again"
+    },
+    "024A": {
+      "test_function": "test_archive_memory_adversarial",
+      "target_function": "archive_memory",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] == reason",
+      "verifies": "archive_memory safely stores reason with special characters"
+    },
+    "F5CC": {
+      "test_function": "test_update_memory_behavioural",
+      "target_function": "update_memory",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert current == \"new content\"",
+      "verifies": "update_memory changes content and preserves old value in history via trigger"
+    },
+    "139B": {
+      "test_function": "test_update_memory_edge",
+      "target_function": "update_memory",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert out.strip() == \"No memory with id 999\"",
+      "verifies": "update_memory reports No memory for nonexistent ID"
+    },
+    "EB2E": {
+      "test_function": "test_update_memory_error",
+      "target_function": "update_memory",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert hist_count == 1",
+      "verifies": "update_memory to same content still creates a history entry via trigger"
+    },
+    "2477": {
+      "test_function": "test_update_memory_adversarial",
+      "target_function": "update_memory",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] == malicious",
+      "verifies": "update_memory safely stores SQL injection payload as content"
+    },
+    "8106": {
+      "test_function": "test_show_session_chain_behavioural",
+      "target_function": "show_session_chain",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 2",
+      "verifies": "show_session_chain displays parent-child chain with memory counts"
+    },
+    "CC39": {
+      "test_function": "test_show_session_chain_edge",
+      "target_function": "show_session_chain",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert out.strip() == \"No session found matching nonexistent\"",
+      "verifies": "show_session_chain reports No session found for nonexistent session"
+    },
+    "F56E": {
+      "test_function": "test_show_session_chain_error",
+      "target_function": "show_session_chain",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 2",
+      "verifies": "show_session_chain handles single session with no parent or children"
+    },
+    "CF1D": {
+      "test_function": "test_show_session_chain_adversarial",
+      "target_function": "show_session_chain",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 4",
+      "verifies": "show_session_chain traverses three-level deep chain correctly"
+    },
+    "A883": {
+      "test_function": "test_review_behavioural",
+      "target_function": "review",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 3",
+      "verifies": "review categorizes memories into suppressed, uncertain, and healthy counts"
+    },
+    "E2FD": {
+      "test_function": "test_review_edge",
+      "target_function": "review",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 1",
+      "verifies": "review reports all healthy when no low-confidence memories exist"
+    },
+    "70A9": {
+      "test_function": "test_review_error",
+      "target_function": "review",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 1",
+      "verifies": "review on empty database reports zero counts"
+    },
+    "00AC": {
+      "test_function": "test_review_adversarial",
+      "target_function": "review",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 2",
+      "verifies": "review correctly classifies memory at exact threshold boundary 0.3"
+    },
+    "DA61": {
+      "test_function": "test_format_rows_behavioural",
+      "target_function": "format_rows",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) == 4  # 2 rows \u00d7 2 lines each (header + content)",
+      "verifies": "format_rows prints sqlite3.Row objects with id, type, topic, content fields"
+    },
+    "C8AA": {
+      "test_function": "test_format_rows_edge",
+      "target_function": "format_rows",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert out.strip() == \"No results.\"",
+      "verifies": "format_rows prints No results for empty input list"
+    },
+    "6953": {
+      "test_function": "test_format_rows_error",
+      "target_function": "format_rows",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) == 2",
+      "verifies": "format_rows prints dict objects with similarity score formatted to 3 decimals"
+    },
+    "E4BF": {
+      "test_function": "test_format_rows_adversarial",
+      "target_function": "format_rows",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(lines) >= 2",
+      "verifies": "format_rows handles content with special characters without corruption"
+    },
+    "5396": {
+      "test_function": "test_adaptive_boost_high_harmful_rate",
+      "target_function": "get_adaptive_threshold_boost",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert boost == 0.10, f\"Expected 0.10 for 60% harmful rate, got {boost}\"",
+      "verifies": "returns 0.10 boost when harmful+neutral rate exceeds 50%"
+    },
+    "C8A0": {
+      "test_function": "test_adaptive_boost_insufficient_data",
+      "target_function": "get_adaptive_threshold_boost",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert boost == 0.0, f\"Expected 0.0 for < 5 total metrics, got {boost}\"",
+      "verifies": "returns 0.0 when fewer than 5 total metrics exist"
+    },
+    "2488": {
+      "test_function": "test_adaptive_boost_db_error",
+      "target_function": "get_adaptive_threshold_boost",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert boost == 0.0, f\"Expected 0.0 on DB error, got {boost}\"",
+      "verifies": "returns 0.0 when database access raises sqlite3.Error"
+    },
+    "1685": {
+      "test_function": "test_adaptive_boost_boundary_fifty_percent",
+      "target_function": "get_adaptive_threshold_boost",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert boost == 0.05, f\"Expected 0.05 at exactly 50% harmful rate, got {boost}\"",
+      "verifies": "returns 0.05 (not 0.10) when harmful rate is exactly 50% boundary"
+    },
+    "53AD": {
+      "test_function": "test_retrieve_context_project_and_global",
+      "target_function": "retrieve_context",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.startswith('<cairn_context query=\"authentication and deployment\"')",
+      "verifies": "returns XML with both project and global scopes containing correct entries"
+    },
+    "4CBE": {
+      "test_function": "test_retrieve_context_no_results_returns_none",
+      "target_function": "retrieve_context",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None",
+      "verifies": "returns None and records context_empty metric when no results match"
+    },
+    "E6DC": {
+      "test_function": "test_retrieve_context_embedding_error_fts_fallback",
+      "target_function": "retrieve_context",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result.startswith('<cairn_context')",
+      "verifies": "embedding ConnectionError is caught and FTS fallback returns correct entry"
+    },
+    "40C2": {
+      "test_function": "test_retrieve_context_only_stopwords",
+      "target_function": "retrieve_context",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(empty_calls) == 1",
+      "verifies": "context_need of only stopwords does not crash and produces valid output or None"
+    },
+    "A6AB": {
+      "test_function": "test_layer2_stages_results",
+      "target_function": "layer2_cross_project_search",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert xml.startswith('<cairn_context')",
+      "verifies": "stages cross-project results into hook_state with correct XML structure and entry data"
+    },
+    "FE9B": {
+      "test_function": "test_layer2_empty_keywords",
+      "target_function": "layer2_cross_project_search",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert.*",
+      "verifies": "empty keywords list returns immediately without calling get_embedder"
+    },
+    "C1B3": {
+      "test_function": "test_layer2_search_error",
+      "target_function": "layer2_cross_project_search",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(all_rows) == 0, f\"Expected empty hook_state after error, got {len(all",
+      "verifies": "find_similar exception is caught, no context staged, no crash"
+    },
+    "3684": {
+      "test_function": "test_layer2_all_same_project_nothing_staged",
+      "target_function": "layer2_cross_project_search",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(all_rows) == 0, f\"Expected no staged context for same-project results",
+      "verifies": "all same-project results filtered out, nothing staged"
+    },
+    "3C92": {
+      "test_function": "test_is_cached_semantic_match",
+      "target_function": "is_context_cached",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is True",
+      "verifies": "returns True when embedding similarity meets CONTEXT_CACHE_SIM_THRESHOLD"
+    },
+    "7DA2": {
+      "test_function": "test_is_cached_empty_no_embedder",
+      "target_function": "is_context_cached",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is False",
+      "verifies": "returns False when served_needs is empty and no embedder"
+    },
+    "2C72": {
+      "test_function": "test_is_cached_embed_error_falls_back",
+      "target_function": "is_context_cached",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result_match is True, \"Should fall back to exact text match\"",
+      "verifies": "embedder exception falls back to exact text match returning True for match and False for mismatch"
+    },
+    "5A04": {
+      "test_function": "test_is_cached_missing_embedding_hex",
+      "target_function": "is_context_cached",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result_match is True",
+      "verifies": "missing embedding_hex key triggers fallback to text match"
+    },
+    "B573": {
+      "test_function": "test_load_context_cache_returns_parsed",
+      "target_function": "is_context_cached",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(result) == 1",
+      "verifies": "returns parsed JSON list with correct structure from hook_state"
+    },
+    "436C": {
+      "test_function": "test_save_context_cache_persists",
+      "target_function": "is_context_cached",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(parsed) == 1",
+      "verifies": "persists served_needs to hook_state and round-trips correctly"
+    },
+    "0D08": {
+      "test_function": "test_add_to_cache_with_embedder",
+      "target_function": "is_context_cached",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(result) == 1",
+      "verifies": "appends entry with embedding_hex whose length matches 384-dim float32 vector"
+    },
+    "1B62": {
+      "test_function": "test_add_to_cache_without_embedder",
+      "target_function": "is_context_cached",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(result) == 2",
+      "verifies": "appends text-only entry without embedding_hex when embedder is None"
+    },
+    "63F3": {
+      "test_function": "test_semantic_search_behavioural",
+      "target_function": "semantic_search",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert isinstance(results, list), \"Should return a list\"",
+      "verifies": "semantic_search returns similar memories ranked by composite score when embeddings module is available"
+    },
+    "699D": {
+      "test_function": "test_semantic_search_edge_empty_db",
+      "target_function": "semantic_search",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert isinstance(results, list), \"Should return a list\"",
+      "verifies": "semantic_search returns empty list when no memories exceed the similarity threshold"
+    },
+    "A196": {
+      "test_function": "test_semantic_search_error_import",
+      "target_function": "semantic_search",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None, \"Should return None when embeddings unavailable\"",
+      "verifies": "semantic_search returns None and prints fallback message when embeddings module is unavailable"
+    },
+    "0E2E": {
+      "test_function": "test_semantic_search_adversarial_bad_query_type",
+      "target_function": "semantic_search",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert isinstance(results, (list, type(None))), \\",
+      "verifies": "semantic_search handles non-string query input without crashing (adversarial type violation)"
+    },
+    "E555": {
+      "test_function": "test_semantic_search_edge_limit",
+      "target_function": "semantic_search",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert isinstance(results, list), \"Should return a list\"",
+      "verifies": "semantic_search respects limit parameter and returns at most limit results"
+    },
+    "3A61": {
+      "test_function": "test_semantic_search_adversarial_bad_params",
+      "target_function": "semantic_search",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert isinstance(results, (list, type(None)))",
+      "verifies": "semantic_search handles negative threshold and zero limit without crashing"
+    },
+    "A1C3": {
+      "test_function": "test_register_session_new_root",
+      "target_function": "register_session",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] == \"sess-root-001\"",
+      "verifies": "new root session is inserted into sessions table with correct ID and null parent/project"
+    },
+    "B2D4": {
+      "test_function": "test_register_session_skips_existing",
+      "target_function": "register_session",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] == \"old-project\"",
+      "verifies": "existing session is not re-registered or overwritten (idempotent guard)"
+    },
+    "C3E5": {
+      "test_function": "test_register_session_missing_transcript",
+      "target_function": "register_session",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] == \"sess-nofile\"",
+      "verifies": "missing transcript file does not crash and session is still registered with no parent"
+    },
+    "D4F6": {
+      "test_function": "test_register_session_empty_session_id",
+      "target_function": "register_session",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 0",
+      "verifies": "empty session_id string triggers early return with zero DB rows written"
+    },
+    "E5A7": {
+      "test_function": "test_auto_label_from_cwd",
+      "target_function": "auto_label_project",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] == \"my-cool-project\"",
+      "verifies": "cwd basename is lowercased and stored as project label for unlabelled session"
+    },
+    "F6B8": {
+      "test_function": "test_auto_label_skips_if_already_set",
+      "target_function": "auto_label_project",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row[0] == \"existing-project\"",
+      "verifies": "existing project label is not overwritten by auto-labelling"
+    },
+    "A7C9": {
+      "test_function": "test_auto_label_rejects_root_path",
+      "target_function": "auto_label_project",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 1",
+      "verifies": "root path \"/\" is in rejection list and produces no project label"
+    },
+    "B8DA": {
+      "test_function": "test_auto_label_empty_cwd",
+      "target_function": "auto_label_project",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 1",
+      "verifies": "empty cwd string triggers early return guard with no DB mutation"
+    },
+    "C9EB": {
+      "test_function": "test_main_valid_block_stores_and_allows_stop",
+      "target_function": "main",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None",
+      "verifies": "valid memory block with all fields is stored in DB and hook exits 0 with no block output"
+    },
+    "DA0C": {
+      "test_function": "test_main_missing_block_instructed_session_blocks",
+      "target_function": "main",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert missing_metric == 1",
+      "verifies": "instructed session (2+ hook_fired) without memory block gets block decision with hint"
+    },
+    "EB1D": {
+      "test_function": "test_main_incomplete_blocks_with_remaining",
+      "target_function": "main",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result[\"decision\"] == \"block\"",
+      "verifies": "complete: false with remaining field produces block with remaining text in reason"
+    },
+    "0C2E": {
+      "test_function": "test_main_context_insufficient_triggers_retrieval",
+      "target_function": "main",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert context_served == 1",
+      "verifies": "context: insufficient with valid need triggers retrieval and blocks with CAIRN CONTEXT"
+    },
+    "1D3F": {
+      "test_function": "test_main_headless_mode_skips_enforcement",
+      "target_function": "main",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None",
+      "verifies": "CAIRN_HEADLESS env var skips all enforcement and exits 0 even without memory block"
+    },
+    "2E4A": {
+      "test_function": "test_main_confidence_updates_applied",
+      "target_function": "main",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert code == 0",
+      "verifies": "confidence_update: 42:+ increases target memory confidence above initial 0.7"
+    },
+    "3F5B": {
+      "test_function": "test_main_question_before_cairn_stages_reminder",
+      "target_function": "main",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert code == 0",
+      "verifies": "question mark in last 3 sentences triggers question_before_cairn metric and stages file"
+    },
+    "4A6C": {
+      "test_function": "test_main_empty_text_allows_stop",
+      "target_function": "main",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None",
+      "verifies": "empty last_assistant_message causes immediate exit 0 before any parsing"
+    },
+    "5B7D": {
+      "test_function": "test_main_uninstructed_session_allows_stop",
+      "target_function": "main",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None",
+      "verifies": "session with no prior memories and <=1 hook_fired is treated as uninstructed (exit 0)"
+    },
+    "6C8E": {
+      "test_function": "test_main_continuation_cap_forces_stop",
+      "target_function": "main",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None",
+      "verifies": "continuation count at MAX_CONTINUATIONS forces stop (exit 0) and resets counter"
+    },
+    "7D9F": {
+      "test_function": "test_main_context_low_info_prefiltered",
+      "target_function": "main",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert code == 0",
+      "verifies": "context_need \"help\" (in LOW_INFO_STOPLIST and <8 chars) is prefiltered"
+    },
+    "8EAB": {
+      "test_function": "test_main_intent_resolved_skips_check",
+      "target_function": "main",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None",
+      "verifies": "intent: resolved in memory block bypasses trailing intent detection entirely"
+    },
+    "9FBC": {
+      "test_function": "test_main_missing_block_continuation_allows_stop",
+      "target_function": "main",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None",
+      "verifies": "missing block on continuation (stop_hook_active=True) allows stop to prevent loops"
+    },
+    "A0CD": {
+      "test_function": "test_main_invalid_json_stdin_crashes_gracefully",
+      "target_function": "main",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert output.strip() == \"\"",
+      "verifies": "malformed JSON on stdin causes crash handler to exit 0 (fail-open) with no stdout"
+    },
+    "B1DE": {
+      "test_function": "test_main_complete_none_blocks",
+      "target_function": "main",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert strict_metric == 1",
+      "verifies": "memory block with entries but no complete: field produces block with missing-completeness hint"
+    },
+    "C2EF": {
+      "test_function": "test_main_strict_validation_missing_fields_blocks",
+      "target_function": "main",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert strict_metric == 1",
+      "verifies": "block with complete: true but missing context: and keywords: triggers strict validation block"
+    },
+    "D3FA": {
+      "test_function": "test_main_malformed_block_open_tag_only",
+      "target_function": "main",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert code == 0",
+      "verifies": "unclosed <memory> tag on instructed session produces malformed block hint"
+    },
+    "E4AB": {
+      "test_function": "test_main_hash_mismatch_non_blocking",
+      "target_function": "main",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert code == 0",
+      "verifies": "hash mismatch in compact format is logged as metric but does not block"
+    },
+    "F5BC": {
+      "test_function": "test_main_completeness_cap_reached_forces_stop",
+      "target_function": "main",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None",
+      "verifies": "complete: false at continuation cap forces stop instead of further blocking"
+    },
+    "A6CD": {
+      "test_function": "test_main_adversarial_nested_memory_tags",
+      "target_function": "main",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert crash_count == 0",
+      "verifies": "nested/duplicate <memory> tags are handled without crash"
+    },
+    "B7DE": {
+      "test_function": "test_main_adversarial_huge_response_no_entries",
+      "target_function": "main",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert density_metric == 1",
+      "verifies": ">1000 char response body with empty memory block triggers density enforcement"
+    },
+    "C8EF": {
+      "test_function": "test_main_context_need_too_short_prefiltered",
+      "target_function": "main",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert code == 0",
+      "verifies": "context_need of 3 chars (\"xyz\") is below 8-char minimum and prefiltered"
+    },
+    "D9FA": {
+      "test_function": "test_main_multiple_entries_stored_with_metrics",
+      "target_function": "main",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None",
+      "verifies": "two entries in one block both stored and hook_fired metric records entries=2"
+    },
+    "EA0B": {
+      "test_function": "test_main_trailing_intent_blocks",
+      "target_function": "main",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert intent_metric == 1",
+      "verifies": "high cosine similarity on trailing sentence triggers trailing intent block"
+    },
+    "FB1C": {
+      "test_function": "test_main_context_bootstrap_short_response_blocks",
+      "target_function": "main",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert bootstrap >= 1",
+      "verifies": "context bootstrap triggers block when turns exceed interval and response is short (<200 chars)"
+    },
+    "AC2D": {
+      "test_function": "test_main_density_short_content_blocks",
+      "target_function": "main",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert density_metric == 1",
+      "verifies": "entry with content shorter than 20 chars is blocked by density gate"
+    },
+    "D377": {
+      "test_function": "test_apply_confidence_corroboration_boosts",
+      "target_function": "apply_confidence_updates",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert applied == 1",
+      "verifies": "corroboration (+) boosts confidence using saturating formula BOOST * (1 - current)"
+    },
+    "8877": {
+      "test_function": "test_apply_confidence_contradiction_annotates",
+      "target_function": "apply_confidence_updates",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert applied == 1",
+      "verifies": "contradiction (-!) sets archived_reason to the provided reason string"
+    },
+    "42E3": {
+      "test_function": "test_apply_confidence_empty_list",
+      "target_function": "apply_confidence_updates",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert storage.apply_confidence_updates([]) == 0",
+      "verifies": "empty updates list returns 0 without any DB interaction"
+    },
+    "039F": {
+      "test_function": "test_apply_confidence_missing_memory",
+      "target_function": "apply_confidence_updates",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert applied == 0",
+      "verifies": "update referencing non-existent memory ID returns 0 applied count"
+    },
+    "EE63": {
+      "test_function": "test_apply_confidence_irrelevant_no_change",
+      "target_function": "apply_confidence_updates",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert applied == 1",
+      "verifies": "irrelevant (-) direction increments applied count but leaves confidence at 0.7"
+    },
+    "7EDD": {
+      "test_function": "test_insert_memories_basic",
+      "target_function": "insert_memories",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 1",
+      "verifies": "single valid entry is stored with correct type, topic, content in DB"
+    },
+    "D81E": {
+      "test_function": "test_insert_memories_same_topic_distinct_variant",
+      "target_function": "insert_memories",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len(rows) == 2",
+      "verifies": "same type+topic without embedder inserts as distinct variant (sim=0.0 < threshold)"
+    },
+    "841D": {
+      "test_function": "test_insert_memories_write_throttle",
+      "target_function": "insert_memories",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count <= MAX_MEMORIES_PER_RESPONSE",
+      "verifies": "write throttle keeps correction (priority 0) over project entries (priority 7)"
+    },
+    "7BA2": {
+      "test_function": "test_insert_memories_semantic_dedup",
+      "target_function": "insert_memories",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 1",
+      "verifies": "semantic dedup updates existing row when find_nearest similarity >= DEDUP_THRESHOLD"
+    },
+    "58F4": {
+      "test_function": "test_insert_memories_empty_list",
+      "target_function": "insert_memories",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert storage.insert_memories([]) == 0",
+      "verifies": "empty entries list returns 0 without any DB or embedder interaction"
+    },
+    "3356": {
+      "test_function": "test_insert_memories_quality_gate_rejects_pattern",
+      "target_function": "insert_memories",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 0",
+      "verifies": "quality gate rejects content matching \"no context available\" pattern"
+    },
+    "1DCD": {
+      "test_function": "test_insert_memories_quality_gate_short_content",
+      "target_function": "insert_memories",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 0",
+      "verifies": "content under 10 characters (after strip) is rejected by quality gate"
+    },
+    "3BC1": {
+      "test_function": "test_insert_memories_no_content_key",
+      "target_function": "insert_memories",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 0",
+      "verifies": "entry with no content key defaults to \"\" which is rejected by quality gate"
+    },
+    "25EE": {
+      "test_function": "test_insert_memories_embedding_connection_error",
+      "target_function": "insert_memories",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 1",
+      "verifies": "ConnectionError from embedder is caught, memory stored without embedding"
+    },
+    "F30B": {
+      "test_function": "test_insert_memories_embed_returns_none",
+      "target_function": "insert_memories",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 1",
+      "verifies": "embed() returning None triggers daemon_unavailable path, memory stored without embedding"
+    },
+    "161B": {
+      "test_function": "test_insert_memories_missing_keys_defaults",
+      "target_function": "insert_memories",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 1",
+      "verifies": "entry missing type/topic keys uses defaults \"fact\"/\"unknown\""
+    },
+    "1856": {
+      "test_function": "test_insert_memories_negation_supersedes",
+      "target_function": "insert_memories",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 1",
+      "verifies": "negation mismatch on same type+topic sets archived_reason with \"superseded\" on old row"
+    },
+    "47CF": {
+      "test_function": "test_insert_memories_project_label",
+      "target_function": "insert_memories",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 1",
+      "verifies": "project label from get_session_project is stored on inserted memories"
+    },
+    "4C3E": {
+      "test_function": "test_insert_memories_triggers_backfill",
+      "target_function": "insert_memories",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert mock_backfill.call_args[0][0] >= 1",
+      "verifies": "backfill is triggered with count >= 1 when memories lack embeddings"
+    },
+    "F991": {
+      "test_function": "test_insert_memories_negation_cross_topic",
+      "target_function": "insert_memories",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 1",
+      "verifies": "cross-topic negation via embedding similarity annotates old memory as superseded"
+    },
+    "D883": {
+      "test_function": "test_insert_memories_depth_stored",
+      "target_function": "insert_memories",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 1",
+      "verifies": "depth field from entry dict is stored in the database"
+    },
+    "1B25": {
+      "test_function": "test_semantic_search_garbage_gate",
+      "target_function": "semantic_search",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len\\(results\\) == 0",
+      "verifies": "garbage gate rejects results when best similarity is below MIN_INJECTION_SIMILARITY (0.35)"
+    },
+    "R1A0": {
+      "test_function": "test_rrf_dual_match_ranks_higher_than_single",
+      "target_function": "retrieve_context",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert entry_ids\\.index\\(m1\\) < entry_ids\\.index\\(m2\\)",
+      "verifies": "RRF dual-match (semantic+FTS) produces higher fused score than single-match (FTS-only)"
+    },
+    "R1B0": {
+      "test_function": "test_xml_output_structure_with_project_and_global",
+      "target_function": "retrieve_context",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert lines\\[0\\] ==",
+      "verifies": "XML output contains correct structure \u2014 cairn_context root, instruction, project and global scopes"
+    },
+    "R2A0": {
+      "test_function": "test_no_embedder_fts_only_produces_output",
+      "target_function": "retrieve_context",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert extracted_content ==",
+      "verifies": "with no embedder (None), FTS-only path still produces valid output via composite_score"
+    },
+    "R2B0": {
+      "test_function": "test_max_per_scope_caps_results",
+      "target_function": "retrieve_context",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert project_entry_count == 1",
+      "verifies": "max_per_scope parameter caps project and global results independently"
+    },
+    "R3A0": {
+      "test_function": "test_embedder_connection_error_falls_back_to_fts",
+      "target_function": "retrieve_context",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert m1 in entry_ids",
+      "verifies": "ConnectionError from embedder.find_similar is caught and FTS results still returned"
+    },
+    "R3B0": {
+      "test_function": "test_null_confidence_defaults_to_0_7",
+      "target_function": "retrieve_context",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert entry_ids\\[0\\] == mem_id",
+      "verifies": "memory with NULL confidence in DB gets default 0.7 in FTS path instead of crashing"
+    },
+    "R4A0": {
+      "test_function": "test_same_session_excluded_from_both_methods",
+      "target_function": "retrieve_context",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None",
+      "verifies": "same-session memories are excluded from BOTH FTS and semantic results simultaneously"
+    },
+    "R4B0": {
+      "test_function": "test_sql_metacharacters_in_context_need",
+      "target_function": "retrieve_context",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert count == 1",
+      "verifies": "context_need with SQL metacharacters and embedded quotes doesn't crash or inject"
+    },
+    "A001": {
+      "test_function": "test_rrf_fts_only_results_have_proper_scores",
+      "target_function": "retrieve_context",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert mem_id in entry_ids",
+      "verifies": "FTS-only results get a real composite score (not hardcoded 0.30) and appear in output"
+    },
+    "A002": {
+      "test_function": "test_rrf_dual_match_boosted_above_single",
+      "target_function": "retrieve_context",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert entry_ids\\[0\\] == 1",
+      "verifies": "memory found by both FTS and semantic scores higher than one found by FTS only"
+    },
+    "A003": {
+      "test_function": "test_rrf_fts_exact_match_surfaces",
+      "target_function": "retrieve_context",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert mem_id in entry_ids",
+      "verifies": "exact keyword match via FTS surfaces a result even when semantic search returns nothing"
+    },
+    "A004": {
+      "test_function": "test_rrf_same_session_excluded",
+      "target_function": "retrieve_context",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert result is None",
+      "verifies": "memories from the current session are excluded from both FTS and semantic result sets"
+    },
+    "A005": {
+      "test_function": "test_extract_associated_files_from_transcript",
+      "target_function": "extract_associated_files",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert sorted\\(files\\) == sorted\\(",
+      "verifies": "extract_associated_files finds exactly the file paths from Read/Edit/Write tool calls"
+    },
+    "A006": {
+      "test_function": "test_extract_associated_files_deduplicates",
+      "target_function": "extract_associated_files",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert files == \\[",
+      "verifies": "same file path appearing multiple times in transcript is deduplicated to one entry"
+    },
+    "A007": {
+      "test_function": "test_extract_associated_files_empty_transcript",
+      "target_function": "extract_associated_files",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert files == \\[\\]",
+      "verifies": "non-existent transcript path returns empty list without raising an exception"
+    },
+    "A008": {
+      "test_function": "test_correction_gets_associated_files",
+      "target_function": "insert_memories",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert sorted\\(files\\) == sorted\\(",
+      "verifies": "correction memory inserted with a transcript gets associated_files populated from transcript"
+    },
+    "A009": {
+      "test_function": "test_non_correction_skips_file_association",
+      "target_function": "insert_memories",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert row\\[0\\] is None",
+      "verifies": "non-correction memory type does not get associated_files populated even with transcript"
+    },
+    "A00A": {
+      "test_function": "test_gotcha_finds_corrections_by_exact_path",
+      "target_function": "find_corrections_for_file",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len\\(matches\\) == 1",
+      "verifies": "find_corrections_for_file matches a correction by exact file path"
+    },
+    "A00B": {
+      "test_function": "test_gotcha_finds_corrections_by_basename",
+      "target_function": "find_corrections_for_file",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len\\(matches\\) == 1",
+      "verifies": "find_corrections_for_file falls back to basename match when full paths differ"
+    },
+    "A00C": {
+      "test_function": "test_gotcha_skips_archived_corrections",
+      "target_function": "find_corrections_for_file",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len\\(matches\\) == 0",
+      "verifies": "archived corrections are excluded from gotcha injection results"
+    },
+    "A00D": {
+      "test_function": "test_gotcha_no_match_returns_empty",
+      "target_function": "find_corrections_for_file",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len\\(matches\\) == 0",
+      "verifies": "querying for an unrelated file returns empty list with no false positives"
+    },
+    "A00E": {
+      "test_function": "test_gotcha_respects_max_injections",
+      "target_function": "find_corrections_for_file",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len\\(matches\\) == pretool_hook\\.MAX_GOTCHA_INJECTIONS",
+      "verifies": "result count is capped at MAX_GOTCHA_INJECTIONS when many corrections match"
+    },
+    "A00F": {
+      "test_function": "test_gotcha_hook_outputs_additional_context",
+      "target_function": "main",
+      "category": "behavioural",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert ctx\\.count\\(\"CAIRN GOTCHA\"\\) == 1",
+      "verifies": "pretool hook produces additionalContext JSON with CAIRN GOTCHA header and topic name"
+    },
+    "A010": {
+      "test_function": "test_main_non_file_tool_exits_without_output",
+      "target_function": "main",
+      "category": "edge",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert exc_info\\.value\\.code == 0",
+      "verifies": "Bash tool (non-file-access) causes main() to exit(0) before printing anything"
+    },
+    "A011": {
+      "test_function": "test_main_empty_file_path_produces_no_output",
+      "target_function": "main",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert exc_info\\.value\\.code == 0",
+      "verifies": "empty file_path causes main() to exit(0) before printing \u2014 no path lookup on empty string"
+    },
+    "A012": {
+      "test_function": "test_main_malformed_json_stdin_raises_json_error",
+      "target_function": "main",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert isinstance\\(raised, json\\.JSONDecodeError\\)",
+      "verifies": "malformed JSON on stdin raises JSONDecodeError, not another exception type"
+    },
+    "A013": {
+      "test_function": "test_extract_files_skips_malformed_json_lines",
+      "target_function": "extract_associated_files",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert files == \\[\"/project/valid\\.py\"\\]",
+      "verifies": "malformed JSON lines in transcript are skipped and valid tool calls still collected"
+    },
+    "A014": {
+      "test_function": "test_extract_files_multiedit_captures_all_paths",
+      "target_function": "extract_associated_files",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert sorted\\(files\\) == \\[",
+      "verifies": "MultiEdit with multiple file_path entries in edits array are all captured"
+    },
+    "A015": {
+      "test_function": "test_gotcha_empty_file_path_returns_empty",
+      "target_function": "find_corrections_for_file",
+      "category": "error",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len\\(matches\\) == 0",
+      "verifies": "empty file_path argument to find_corrections_for_file returns empty list immediately"
+    },
+    "A016": {
+      "test_function": "test_gotcha_null_associated_files_skipped",
+      "target_function": "find_corrections_for_file",
+      "category": "adversarial",
+      "expected_outcome": "pass",
+      "assertion_pattern": "assert len\\(matches\\) == 1",
+      "verifies": "NULL associated_files (not malformed JSON) is skipped without crashing"
+    }
+  },
+  "code_paths": [
+    "main",
+    "register_session",
+    "auto_label_project",
+    "retrieve_context",
+    "extract_associated_files",
+    "find_corrections_for_file"
+  ],
+  "residual_risks": [
+    "register_session: transcript with only non-user/assistant entries \u2014 near-impossible scenario",
+    "auto_label_project: pathological cwd \u2014 os.path.basename handles at stdlib level",
+    "main: hook_state merge for retrieved_ids \u2014 standard SQL INSERT ON CONFLICT",
+    "main: bootstrap deferred path (>200 chars stages file) \u2014 blocking path tested in FB1C",
+    "main: __main__ fail-open handler \u2014 tested indirectly via A0CD",
+    "retrieve_context: adaptive threshold boost effect on thresholds \u2014 would need time-series metric fixtures to test precisely",
+    "retrieve_context: max_per_scope global cap when global_scope_match is absent \u2014 low-value branch with no global results",
+    "retrieve_context: archived memory formatting (superseded=true entries) \u2014 format_entry inner function, not directly exercised"
+  ],
+  "test_suite_passed": true
+}

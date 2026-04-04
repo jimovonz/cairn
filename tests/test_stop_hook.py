@@ -881,8 +881,7 @@ def test_main_trailing_intent_blocks():
         hh.LOG_PATH = original_log
 
     output = captured_output.getvalue()
-    result = json.loads(output) if output.strip() else None
-    assert result is not None, "Trailing intent should produce block output"
+    result = json.loads(output) if output.strip() else {}
     assert result["decision"] == "block"
     intent_metric = conn.execute(
         "SELECT COUNT(*) FROM metrics WHERE event = 'trailing_intent_blocked'"
