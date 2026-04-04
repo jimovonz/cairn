@@ -99,6 +99,82 @@ def format_entry(r: dict[str, Any]) -> str:
     )
 
 
+def load_injected_ids(session_id: str) -> set[int]:
+    """Load memory IDs already injected this session — avoid re-injecting."""
+    try:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT value FROM hook_state WHERE session_id = ? AND key = 'retrieved_ids'",
+            (session_id,)
+        ).fetchone()
+        conn.close()
+        if row and row[0]:
+            return set(json.loads(row[0]))
+    except Exception:
+        pass
+    return set()
+
+
+def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
+    """Layer 1.5: Per-prompt semantic injection for subsequent prompts.
+
+    Fires on every message after the first. Higher threshold than Layer 1 (0.55 vs 0.30)
+    to avoid mid-session noise. Skips IDs already injected this session.
+    """
+    from config import L1_5_ENABLED, L1_5_SIM_THRESHOLD, L1_5_MAX_RESULTS, MIN_INJECTION_SIMILARITY
+
+    if not L1_5_ENABLED:
+        return None
+
+    emb = get_embedder()
+    if not emb:
+        return None
+
+    try:
+        conn = get_conn()
+        project = get_session_project(conn, session_id)
+        count = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL").fetchone()[0]
+        if count == 0:
+            conn.close()
+            return None
+
+        results = emb.find_similar(conn, user_message, threshold=L1_5_SIM_THRESHOLD,
+                                   limit=L1_5_MAX_RESULTS, current_project=project)
+        conn.close()
+    except Exception as e:
+        log(f"Layer 1.5 error: {e}")
+        return None
+
+    if not results or results[0]["similarity"] < L1_5_SIM_THRESHOLD:
+        return None
+
+    # Skip memories already injected this session
+    seen_ids = load_injected_ids(session_id)
+    results = [r for r in results if r["id"] not in seen_ids]
+    if not results:
+        return None
+
+    project_results = [r for r in results if project and r.get("project") == project]
+    global_results = [r for r in results if not project or r.get("project") != project]
+
+    lines = [f'<cairn_context query="{user_message[:80]}" current_project="{project or "none"}" layer="per-prompt">']
+    lines.append('  <instruction>Before acting on any entry below, run: python3 /home/james/Projects/cairn/cairn/query.py --context &lt;id&gt; to recover the full conversation behind it.</instruction>')
+
+    if project_results:
+        lines.append(f'  <scope level="project" name="{project}" weight="high">')
+        for r in project_results:
+            lines.append("  " + format_entry(r))
+        lines.append("  </scope>")
+    if global_results:
+        lines.append('  <scope level="global" weight="low">')
+        for r in global_results:
+            lines.append("  " + format_entry(r))
+        lines.append("  </scope>")
+
+    lines.append("</cairn_context>")
+    return "\n".join(lines)
+
+
 def layer1_search(user_message: str, session_id: str) -> Optional[str]:
     """Layer 1: Search cairn using user's first message."""
     from config import L1_SIM_THRESHOLD, L1_MAX_RESULTS, MIN_INJECTION_SIMILARITY
@@ -172,6 +248,13 @@ def main() -> None:
         context_parts.append(
             "MEMORY BLOCK: End every response with a <memory> block — entries, control signals, and confidence feedback."
         )
+
+    else:
+        # Layer 1.5: Per-prompt semantic injection for subsequent prompts
+        l1_5_context = layer1_5_search(user_message, session_id)
+        if l1_5_context:
+            context_parts.append(l1_5_context)
+            log(f"Layer 1.5: injected per-prompt context for: {user_message[:50]}...")
 
     # Clean up stale staged context (older than 7 days — sessions unlikely to resume)
     try:
