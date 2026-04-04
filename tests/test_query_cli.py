@@ -3,6 +3,7 @@
 
 import sys
 import os
+import re
 import sqlite3
 import tempfile
 import shutil
@@ -88,7 +89,8 @@ def test_list_recent():
     assert len(rows) <= 3
     # Verify rows have expected fields
     output = capture_output(query.format_rows, rows)
-    assert "topic-" in output
+    assert re.search(r"topic-\d+", output), \
+        f"Expected output to contain 'topic-N' pattern; got: {output!r}"
     conn.close()
 
 
@@ -97,7 +99,7 @@ def test_list_recent_empty_db():
     db_path, conn = fresh_db()
     with patch.object(query, 'DB_PATH', db_path):
         output = capture_output(query.format_rows, query.list_recent())
-    assert "No results" in output
+    assert output.strip() == "No results."
     conn.close()
 
 
@@ -150,8 +152,10 @@ def test_stats_output():
     seed_db(conn)
     with patch.object(query, 'DB_PATH', db_path):
         output = capture_output(query.stats)
-    assert "Total memories:" in output
-    assert "5" in output  # We seeded 5
+    import re as _re
+    m = _re.search(r'Total memories: (\d+)', output)
+    assert m is not None, f"Output did not contain 'Total memories: N' format:\n{output}"
+    assert int(m.group(1)) == 5, f"Expected 5 memories, got {m.group(1)}"
     conn.close()
 
 
@@ -167,7 +171,10 @@ def test_review_shows_low_confidence():
     conn.commit()
     with patch.object(query, 'DB_PATH', db_path):
         output = capture_output(query.review)
-    assert "low" in output.lower() or "Suppressed" in output
+    import re as _re
+    m = _re.search(r'(\d+) suppressed', output)
+    assert m is not None, f"Output did not contain suppressed count:\n{output}"
+    assert int(m.group(1)) == 1, f"Expected 1 suppressed memory (confidence=0.2 < threshold 0.3), got {m.group(1)}"
     conn.close()
 
 
@@ -192,7 +199,7 @@ def test_delete_nonexistent():
     db_path, conn = fresh_db()
     with patch.object(query, 'DB_PATH', db_path):
         output = capture_output(query.delete_memory, 999)
-    assert "No memory" in output
+    assert output.strip() == "No memory with id 999"
     conn.close()
 
 
@@ -209,8 +216,11 @@ def test_show_history_with_versions():
     conn.commit()
     with patch.object(query, 'DB_PATH', db_path):
         output = capture_output(query.show_history, 1)
-    assert "PostgreSQL" in output  # Old version in history
-    assert "SQLite" in output  # Current
+    sq_pos = output.index("SQLite")
+    pg_pos = output.index("PostgreSQL")
+    assert sq_pos < pg_pos, (
+        "Current content (SQLite) should appear before prior version (PostgreSQL) in history output"
+    )
     conn.close()
 
 
@@ -224,8 +234,10 @@ def test_compact_output():
     seed_db(conn)
     with patch.object(query, 'DB_PATH', db_path):
         output = capture_output(query.compact, "TestProject")
-    assert "TestProject" in output
-    assert "memories" in output.lower()
+    import re as _re
+    m = _re.search(r'\((\d+) memories\)', output)
+    assert m is not None, f"Expected '(N memories)' in compact output, got:\n{output}"
+    assert int(m.group(1)) == 5, f"Expected 5 memories in compact output, got {m.group(1)}"
     conn.close()
 
 
@@ -239,7 +251,10 @@ def test_list_projects():
     seed_db(conn)
     with patch.object(query, 'DB_PATH', db_path):
         output = capture_output(query.list_projects)
-    assert "TestProject" in output
+    import re as _re
+    m = _re.search(r'TestProject: (\d+) memories', output)
+    assert m is not None, f"Expected 'TestProject: N memories' in output, got:\n{output}"
+    assert int(m.group(1)) == 5, f"Expected 5 memories for TestProject, got {m.group(1)}"
     conn.close()
 
 

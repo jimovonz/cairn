@@ -4,11 +4,14 @@
 import sys
 import os
 import json
+import re
 import sqlite3
 import tempfile
 from unittest.mock import patch
 from io import StringIO
 from datetime import datetime, timedelta
+
+_ANSI = re.compile(r'\x1b\[[0-9;]*m')
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 import query
@@ -90,18 +93,19 @@ def _make_transcript(messages, path):
 # search
 # ============================================================
 
-#TAG: [A624] 2026-04-02
+#TAG: [07C3] 2026-04-05
 # Verifies: search returns correct count of FTS matches with valid row fields
 def test_search_behavioural():
     db, c = fresh_db(); seed(c)
     with patch.object(query, 'DB_PATH', db):
         rows = query.search("item")
     assert len(rows) == 5
-    assert rows[0]["type"] in ("fact", "decision", "preference", "correction", "project")
+    returned_types = {r["type"] for r in rows}
+    assert returned_types == {"fact", "decision", "preference", "correction", "project"}
     c.close()
 
 
-#TAG: [903B] 2026-04-02
+#TAG: [903B] 2026-04-05
 # Verifies: search returns zero-length list when query has no matches in populated DB
 def test_search_edge():
     db, c = fresh_db(); seed(c)
@@ -111,7 +115,7 @@ def test_search_edge():
     c.close()
 
 
-#TAG: [A9D5] 2026-04-02
+#TAG: [A9D5] 2026-04-05
 # Verifies: search returns empty list on empty database without raising exception
 def test_search_error():
     db, c = fresh_db()
@@ -121,7 +125,7 @@ def test_search_error():
     c.close()
 
 
-#TAG: [DF71] 2026-04-02
+#TAG: [DF71] 2026-04-05
 # Verifies: search limit parameter constrains result count below total matches
 def test_search_adversarial():
     db, c = fresh_db(); seed(c)
@@ -137,7 +141,7 @@ def test_search_adversarial():
 # list_by_type
 # ============================================================
 
-#TAG: [468D] 2026-04-02
+#TAG: [468D] 2026-04-05
 # Verifies: list_by_type returns only rows with the requested type field
 def test_list_by_type_behavioural():
     db, c = fresh_db(); seed(c, 10)
@@ -148,7 +152,7 @@ def test_list_by_type_behavioural():
     c.close()
 
 
-#TAG: [8704] 2026-04-02
+#TAG: [8704] 2026-04-05
 # Verifies: list_by_type returns empty list for nonexistent type string
 def test_list_by_type_edge():
     db, c = fresh_db(); seed(c)
@@ -158,7 +162,7 @@ def test_list_by_type_edge():
     c.close()
 
 
-#TAG: [B298] 2026-04-02
+#TAG: [B298] 2026-04-05
 # Verifies: list_by_type returns empty list on empty database
 def test_list_by_type_error():
     db, c = fresh_db()
@@ -168,7 +172,7 @@ def test_list_by_type_error():
     c.close()
 
 
-#TAG: [C602] 2026-04-02
+#TAG: [C602] 2026-04-05
 # Verifies: list_by_type safely handles SQL injection characters in type parameter
 def test_list_by_type_adversarial():
     db, c = fresh_db(); seed(c)
@@ -183,7 +187,7 @@ def test_list_by_type_adversarial():
 # list_recent
 # ============================================================
 
-#TAG: [3608] 2026-04-02
+#TAG: [3608] 2026-04-05
 # Verifies: list_recent returns rows in descending updated_at order respecting limit
 def test_list_recent_behavioural():
     db, c = fresh_db(); seed(c)
@@ -195,7 +199,7 @@ def test_list_recent_behavioural():
     c.close()
 
 
-#TAG: [5825] 2026-04-02
+#TAG: [5825] 2026-04-05
 # Verifies: list_recent on empty database returns zero-length list
 def test_list_recent_edge():
     db, c = fresh_db()
@@ -205,7 +209,7 @@ def test_list_recent_edge():
     c.close()
 
 
-#TAG: [9E58] 2026-04-02
+#TAG: [9E58] 2026-04-05
 # Verifies: list_recent with limit=1 returns exactly the most recent row
 def test_list_recent_error():
     db, c = fresh_db(); seed(c)
@@ -216,7 +220,7 @@ def test_list_recent_error():
     c.close()
 
 
-#TAG: [1B56] 2026-04-02
+#TAG: [1B56] 2026-04-05
 # Verifies: list_recent with limit exceeding row count returns all available rows
 def test_list_recent_adversarial():
     db, c = fresh_db(); seed(c)
@@ -230,7 +234,7 @@ def test_list_recent_adversarial():
 # list_by_date
 # ============================================================
 
-#TAG: [EDA4] 2026-04-02
+#TAG: [EDA4] 2026-04-05
 # Verifies: list_by_date with since and until returns only rows within date range
 def test_list_by_date_behavioural():
     db, c = fresh_db(); seed(c)
@@ -242,7 +246,7 @@ def test_list_by_date_behavioural():
     c.close()
 
 
-#TAG: [8B8E] 2026-04-02
+#TAG: [8B8E] 2026-04-05
 # Verifies: list_by_date with no filters returns all memories up to limit
 def test_list_by_date_edge():
     db, c = fresh_db(); seed(c)
@@ -252,7 +256,7 @@ def test_list_by_date_edge():
     c.close()
 
 
-#TAG: [E241] 2026-04-02
+#TAG: [E241] 2026-04-05
 # Verifies: list_by_date with reversed range where since > until returns empty
 def test_list_by_date_error():
     db, c = fresh_db(); seed(c)
@@ -262,7 +266,7 @@ def test_list_by_date_error():
     c.close()
 
 
-#TAG: [4C8E] 2026-04-02
+#TAG: [4C8E] 2026-04-05
 # Verifies: list_by_date with relative "3d" format computes correct date via _parse_date
 def test_list_by_date_adversarial():
     db, c = fresh_db()
@@ -281,7 +285,7 @@ def test_list_by_date_adversarial():
 # list_by_session
 # ============================================================
 
-#TAG: [7B34] 2026-04-02
+#TAG: [7B34] 2026-04-05
 # Verifies: list_by_session returns memories matching session prefix only
 def test_list_by_session_behavioural():
     db, c = fresh_db(); seed(c)
@@ -293,7 +297,7 @@ def test_list_by_session_behavioural():
     c.close()
 
 
-#TAG: [5E34] 2026-04-02
+#TAG: [5E34] 2026-04-05
 # Verifies: list_by_session returns empty for nonexistent session prefix
 def test_list_by_session_edge():
     db, c = fresh_db(); seed(c)
@@ -303,7 +307,7 @@ def test_list_by_session_edge():
     c.close()
 
 
-#TAG: [EC90] 2026-04-02
+#TAG: [EC90] 2026-04-05
 # Verifies: list_by_session on empty database returns empty list
 def test_list_by_session_error():
     db, c = fresh_db()
@@ -313,7 +317,7 @@ def test_list_by_session_error():
     c.close()
 
 
-#TAG: [53D0] 2026-04-02
+#TAG: [53D0] 2026-04-05
 # Verifies: list_by_session correctly isolates by exact prefix, not matching other sessions
 def test_list_by_session_adversarial():
     db, c = fresh_db()
@@ -331,7 +335,7 @@ def test_list_by_session_adversarial():
 # show_context — NON-TRIVIAL
 # ============================================================
 
-#TAG: [384F] 2026-04-02
+#TAG: [6F04] 2026-04-05
 # Verifies: show_context displays conversation anchor marker and context around memory timestamp
 def test_show_context_behavioural():
     db, c = fresh_db()
@@ -353,11 +357,15 @@ def test_show_context_behavioural():
         out, _ = capture(query.show_context, 1)
     lines = out.strip().split('\n')
     assert len(lines) >= 4
-    assert out.count("<<<") == 1
+    # Anchor marker appended to exactly 1 message line; use endswith (structural, not containment)
+    marker_lines = [l for l in lines if l.endswith(' <<<')]
+    assert len(marker_lines) == 1, f"Expected exactly 1 '<<<' marker line; got: {marker_lines}"
+    assert re.match(r'\s+\[\d{2}:\d{2}:\d{2}\]\s+\w+:.*<<<$', marker_lines[0]), \
+        f"Marker line format unexpected: {marker_lines[0]!r}"
     c.close()
 
 
-#TAG: [3A4B] 2026-04-02
+#TAG: [A49B] 2026-04-05
 # Verifies: show_context prints no-session message when memory has NULL session_id
 def test_show_context_edge():
     db, c = fresh_db()
@@ -366,12 +374,12 @@ def test_show_context_edge():
     with patch.object(query, 'DB_PATH', db):
         out, _ = capture(query.show_context, 1)
     lines = out.strip().split('\n')
-    assert len(lines) >= 2
-    assert any("No session ID" in line for line in lines)
+    assert len(lines) == 3
+    assert lines[2] == "  No session ID — cannot locate transcript."
     c.close()
 
 
-#TAG: [F951] 2026-04-02
+#TAG: [F951] 2026-04-05
 # Verifies: show_context prints descriptive error for nonexistent memory ID
 def test_show_context_error():
     db, c = fresh_db()
@@ -381,7 +389,7 @@ def test_show_context_error():
     c.close()
 
 
-#TAG: [DB00] 2026-04-02
+#TAG: [4A69] 2026-04-05
 # Verifies: show_context handles corrupt created_at without crashing and prints parse error
 def test_show_context_adversarial():
     db, c = fresh_db()
@@ -394,8 +402,8 @@ def test_show_context_adversarial():
     with patch.object(query, 'DB_PATH', db):
         out, _ = capture(query.show_context, 1)
     lines = out.strip().split('\n')
-    assert len(lines) >= 2
-    assert any("Cannot parse" in line for line in lines)
+    assert len(lines) == 3
+    assert lines[2] == "  Cannot parse created_at: NOT_A_DATE"
     c.close()
 
 
@@ -403,7 +411,7 @@ def test_show_context_adversarial():
 # verify_sources — NON-TRIVIAL
 # ============================================================
 
-#TAG: [18D9] 2026-04-02
+#TAG: [0723] 2026-04-05
 # Verifies: verify_sources reports correct coverage percentages for memories with depth and session
 def test_verify_sources_behavioural():
     db, c = fresh_db()
@@ -412,25 +420,25 @@ def test_verify_sources_behavioural():
     with patch.object(query, 'DB_PATH', db):
         out, _ = capture(query.verify_sources)
     lines = out.strip().split('\n')
-    assert len(lines) >= 4
-    assert any("100.0%" in line for line in lines)
-    assert any("min=5" in line for line in lines)
+    assert len(lines) == 6
+    assert lines[1] == "  With session (timestamp-navigable): 1 (100.0%)"
+    assert lines[5] == "  Depth distribution: min=5, avg=5.0, max=5"
     c.close()
 
 
-#TAG: [67AF] 2026-04-02
+#TAG: [448C] 2026-04-05
 # Verifies: verify_sources reports No memories for empty database
 def test_verify_sources_edge():
     db, c = fresh_db()
     with patch.object(query, 'DB_PATH', db):
         out, _ = capture(query.verify_sources)
     lines = out.strip().split('\n')
-    assert len(lines) >= 1
-    assert any("No memories" in line for line in lines)
+    assert len(lines) == 2
+    assert lines[1] == "  No memories"
     c.close()
 
 
-#TAG: [BD57] 2026-04-02
+#TAG: [BD57] 2026-04-05
 # Verifies: verify_sources skips legacy drift when transcript file is missing
 def test_verify_sources_error():
     db, c = fresh_db()
@@ -446,7 +454,7 @@ def test_verify_sources_error():
     c.close()
 
 
-#TAG: [5934] 2026-04-02
+#TAG: [5934] 2026-04-05
 # Verifies: verify_sources recovers from malformed JSONL lines in transcript without crash
 def test_verify_sources_adversarial():
     db, c = fresh_db()
@@ -470,7 +478,7 @@ def test_verify_sources_adversarial():
 # stats — NON-TRIVIAL
 # ============================================================
 
-#TAG: [92A3] 2026-04-02
+#TAG: [326F] 2026-04-05
 # Verifies: stats reports correct total, type breakdown, and latency from metrics table
 def test_stats_behavioural():
     db, c = fresh_db(); seed(c)
@@ -478,12 +486,14 @@ def test_stats_behavioural():
         out, _ = capture(query.stats)
     lines = out.strip().split('\n')
     assert len(lines) >= 6
-    assert any("Total memories: 5" in line for line in lines)
-    assert any("fact=" in line for line in lines)
+    assert lines[1] == "Total memories: 5"
+    types_line = next(l for l in lines if l.startswith("Types: "))
+    type_counts = dict(pair.split('=') for pair in types_line[7:].split(', '))
+    assert type_counts == {"fact": "1", "decision": "1", "preference": "1", "correction": "1", "project": "1"}
     c.close()
 
 
-#TAG: [33E5] 2026-04-02
+#TAG: [A70E] 2026-04-05
 # Verifies: stats on empty DB reports zero for all counts without errors
 def test_stats_edge():
     db, c = fresh_db()
@@ -491,11 +501,12 @@ def test_stats_edge():
         out, _ = capture(query.stats)
     lines = out.strip().split('\n')
     assert len(lines) >= 3
-    assert any("Total memories: 0" in line for line in lines)
+    total_line = next(l for l in lines if l.startswith("Total memories:"))
+    assert total_line == "Total memories: 0"
     c.close()
 
 
-#TAG: [8DD4] 2026-04-02
+#TAG: [4185] 2026-04-05
 # Verifies: stats handles missing metrics table gracefully via try/except
 def test_stats_error():
     db, c = fresh_db(); seed(c)
@@ -505,11 +516,12 @@ def test_stats_error():
         out, _ = capture(query.stats)
     lines = out.strip().split('\n')
     assert len(lines) >= 3
-    assert any("Total memories: 5" in line for line in lines)
+    total_line = next(l for l in lines if l.startswith("Total memories:"))
+    assert total_line == "Total memories: 5"
     c.close()
 
 
-#TAG: [780D] 2026-04-02
+#TAG: [300D] 2026-04-05
 # Verifies: stats handles NULL confidence values in distribution calculation
 def test_stats_adversarial():
     db, c = fresh_db()
@@ -519,7 +531,8 @@ def test_stats_adversarial():
         out, _ = capture(query.stats)
     lines = out.strip().split('\n')
     assert len(lines) >= 3
-    assert any("Total memories: 1" in line for line in lines)
+    total_line = next(l for l in lines if l.startswith("Total memories:"))
+    assert total_line == "Total memories: 1"
     c.close()
 
 
@@ -527,7 +540,7 @@ def test_stats_adversarial():
 # add_memory — NON-TRIVIAL
 # ============================================================
 
-#TAG: [6788] 2026-04-02
+#TAG: [6788] 2026-04-05
 # Verifies: add_memory inserts row with correct type, topic, content, project, session_id
 def test_add_memory_behavioural():
     db, c = fresh_db()
@@ -541,7 +554,7 @@ def test_add_memory_behavioural():
     c.close()
 
 
-#TAG: [B81C] 2026-04-02
+#TAG: [B81C] 2026-04-05
 # Verifies: add_memory accepts empty string content and stores it correctly
 def test_add_memory_edge():
     db, c = fresh_db()
@@ -553,7 +566,7 @@ def test_add_memory_edge():
     c.close()
 
 
-#TAG: [637D] 2026-04-02
+#TAG: [637D] 2026-04-05
 # Verifies: add_memory works without embeddings module reporting without embedding
 def test_add_memory_error():
     db, c = fresh_db()
@@ -566,7 +579,7 @@ def test_add_memory_error():
     c.close()
 
 
-#TAG: [B8FA] 2026-04-02
+#TAG: [B8FA] 2026-04-05
 # Verifies: add_memory safely stores SQL injection payload without executing it
 def test_add_memory_adversarial():
     db, c = fresh_db()
@@ -584,31 +597,35 @@ def test_add_memory_adversarial():
 # check — NON-TRIVIAL
 # ============================================================
 
-#TAG: [0644] 2026-04-02
+#TAG: [B8D4] 2026-04-05
 # Verifies: check returns integer failure count and reports memory count for healthy DB
 def test_check_behavioural():
     db, c = fresh_db(); seed(c); c.close()
     with patch.object(query, 'DB_PATH', db), \
          patch('os.path.expanduser', return_value=TEST_DIR):
         out, result = capture(query.check)
-    assert isinstance(result, int)
-    lines = out.strip().split('\n')
-    assert len(lines) >= 3
-    assert any("5 memories stored" in line for line in lines)
+    plain_lines = [_ANSI.sub('', l) for l in out.strip().split('\n')]
+    mem_lines = [l for l in plain_lines if re.match(r'  [✓!✗] \d+ memories stored', l)]
+    assert len(mem_lines) == 1
+    assert mem_lines[0] == "  ✓ 5 memories stored"
+    assert result >= 0
 
 
-#TAG: [C113] 2026-04-02
+#TAG: [61AB] 2026-04-05
 # Verifies: check reports zero memories for empty DB without errors
 def test_check_edge():
     db, c = fresh_db(); c.close()
     with patch.object(query, 'DB_PATH', db), \
          patch('os.path.expanduser', return_value=TEST_DIR):
         out, result = capture(query.check)
-    assert isinstance(result, int)
-    assert any("0 memories stored" in line for line in out.strip().split('\n'))
+    plain_lines = [_ANSI.sub('', l) for l in out.strip().split('\n')]
+    mem_lines = [l for l in plain_lines if re.match(r'  [✓!✗] \d+ memories stored', l)]
+    assert len(mem_lines) == 1
+    assert mem_lines[0] == "  ✓ 0 memories stored"
+    assert result >= 0
 
 
-#TAG: [7FE1] 2026-04-02
+#TAG: [A64B] 2026-04-05
 # Verifies: check returns nonzero failure count when DB file does not exist
 def test_check_error():
     missing = os.path.join(TEST_DIR, "nonexistent.db")
@@ -616,10 +633,9 @@ def test_check_error():
          patch('os.path.expanduser', return_value=TEST_DIR):
         out, result = capture(query.check)
     assert result > 0
-    assert isinstance(result, int)
 
 
-#TAG: [078C] 2026-04-02
+#TAG: [8899] 2026-04-05
 # Verifies: check handles corrupt settings.json without crashing
 def test_check_adversarial():
     db, c = fresh_db(); c.close()
@@ -630,7 +646,7 @@ def test_check_adversarial():
     with patch.object(query, 'DB_PATH', db), \
          patch('os.path.expanduser', return_value=settings_dir):
         out, result = capture(query.check)
-    assert isinstance(result, int)
+    assert result >= 0
     lines = out.strip().split('\n')
     assert len(lines) >= 3
 
@@ -639,7 +655,7 @@ def test_check_adversarial():
 # show_history
 # ============================================================
 
-#TAG: [57A4] 2026-04-02
+#TAG: [FAB9] 2026-04-05
 # Verifies: show_history displays current content and prior version count after update
 def test_show_history_behavioural():
     db, c = fresh_db()
@@ -651,11 +667,12 @@ def test_show_history_behavioural():
         out, _ = capture(query.show_history, 1)
     lines = out.strip().split('\n')
     assert len(lines) >= 3
-    assert any("1 prior versions" in line for line in lines)
+    hist_line = next(l for l in lines if "prior versions" in l)
+    assert hist_line == "  --- History (1 prior versions) ---"
     c.close()
 
 
-#TAG: [1B58] 2026-04-02
+#TAG: [1B58] 2026-04-05
 # Verifies: show_history reports No memory for nonexistent ID
 def test_show_history_edge():
     db, c = fresh_db()
@@ -665,7 +682,7 @@ def test_show_history_edge():
     c.close()
 
 
-#TAG: [D7D8] 2026-04-02
+#TAG: [938F] 2026-04-05
 # Verifies: show_history shows No prior versions for memory never updated
 def test_show_history_error():
     db, c = fresh_db()
@@ -675,11 +692,12 @@ def test_show_history_error():
         out, _ = capture(query.show_history, 1)
     lines = out.strip().split('\n')
     assert len(lines) >= 2
-    assert any("No prior versions" in line for line in lines)
+    no_hist_line = next(l for l in lines if "prior versions" in l)
+    assert no_hist_line == "  No prior versions."
     c.close()
 
 
-#TAG: [2903] 2026-04-02
+#TAG: [1942] 2026-04-05
 # Verifies: show_history displays all prior versions after multiple sequential updates
 def test_show_history_adversarial():
     db, c = fresh_db()
@@ -693,7 +711,8 @@ def test_show_history_adversarial():
         out, _ = capture(query.show_history, 1)
     lines = out.strip().split('\n')
     assert len(lines) >= 4
-    assert any("2 prior versions" in line for line in lines)
+    hist_line = next(l for l in lines if "prior versions" in l)
+    assert hist_line == "  --- History (2 prior versions) ---"
     c.close()
 
 
@@ -701,7 +720,7 @@ def test_show_history_adversarial():
 # delete_memory
 # ============================================================
 
-#TAG: [2D25] 2026-04-02
+#TAG: [2D25] 2026-04-05
 # Verifies: delete_memory removes the row and its history entries from the database
 def test_delete_memory_behavioural():
     db, c = fresh_db()
@@ -717,7 +736,7 @@ def test_delete_memory_behavioural():
     c.close()
 
 
-#TAG: [122A] 2026-04-02
+#TAG: [122A] 2026-04-05
 # Verifies: delete_memory reports No memory for nonexistent ID
 def test_delete_memory_edge():
     db, c = fresh_db()
@@ -727,7 +746,7 @@ def test_delete_memory_edge():
     c.close()
 
 
-#TAG: [BE05] 2026-04-02
+#TAG: [BE05] 2026-04-05
 # Verifies: delete_memory second call on same ID reports No memory after prior delete
 def test_delete_memory_error():
     db, c = fresh_db()
@@ -740,7 +759,7 @@ def test_delete_memory_error():
     c.close()
 
 
-#TAG: [D6CA] 2026-04-02
+#TAG: [D6CA] 2026-04-05
 # Verifies: delete_memory also removes FTS index entry so search no longer finds it
 def test_delete_memory_adversarial():
     db, c = fresh_db()
@@ -759,7 +778,7 @@ def test_delete_memory_adversarial():
 # archive_memory
 # ============================================================
 
-#TAG: [CE16] 2026-04-02
+#TAG: [CE16] 2026-04-05
 # Verifies: archive_memory sets confidence to 0 and stores reason string in DB
 def test_archive_memory_behavioural():
     db, c = fresh_db()
@@ -773,7 +792,7 @@ def test_archive_memory_behavioural():
     c.close()
 
 
-#TAG: [7D8E] 2026-04-02
+#TAG: [7D8E] 2026-04-05
 # Verifies: archive_memory reports No memory for nonexistent ID
 def test_archive_memory_edge():
     db, c = fresh_db()
@@ -783,7 +802,7 @@ def test_archive_memory_edge():
     c.close()
 
 
-#TAG: [2EA1] 2026-04-02
+#TAG: [2EA1] 2026-04-05
 # Verifies: archive_memory on already-archived memory sets confidence to 0 again
 def test_archive_memory_error():
     db, c = fresh_db()
@@ -797,7 +816,7 @@ def test_archive_memory_error():
     c.close()
 
 
-#TAG: [024A] 2026-04-02
+#TAG: [024A] 2026-04-05
 # Verifies: archive_memory safely stores reason with special characters
 def test_archive_memory_adversarial():
     db, c = fresh_db()
@@ -816,7 +835,7 @@ def test_archive_memory_adversarial():
 # update_memory
 # ============================================================
 
-#TAG: [F5CC] 2026-04-02
+#TAG: [F5CC] 2026-04-05
 # Verifies: update_memory changes content and preserves old value in history via trigger
 def test_update_memory_behavioural():
     db, c = fresh_db()
@@ -831,7 +850,7 @@ def test_update_memory_behavioural():
     c.close()
 
 
-#TAG: [139B] 2026-04-02
+#TAG: [139B] 2026-04-05
 # Verifies: update_memory reports No memory for nonexistent ID
 def test_update_memory_edge():
     db, c = fresh_db()
@@ -841,7 +860,7 @@ def test_update_memory_edge():
     c.close()
 
 
-#TAG: [EB2E] 2026-04-02
+#TAG: [EB2E] 2026-04-05
 # Verifies: update_memory to same content still creates a history entry via trigger
 def test_update_memory_error():
     db, c = fresh_db()
@@ -854,7 +873,7 @@ def test_update_memory_error():
     c.close()
 
 
-#TAG: [2477] 2026-04-02
+#TAG: [2477] 2026-04-05
 # Verifies: update_memory safely stores SQL injection payload as content
 def test_update_memory_adversarial():
     db, c = fresh_db()
@@ -873,7 +892,7 @@ def test_update_memory_adversarial():
 # show_session_chain
 # ============================================================
 
-#TAG: [8106] 2026-04-02
+#TAG: [1584] 2026-04-05
 # Verifies: show_session_chain displays parent-child chain with memory counts
 def test_show_session_chain_behavioural():
     db, c = fresh_db()
@@ -885,12 +904,17 @@ def test_show_session_chain_behavioural():
     with patch.object(query, 'DB_PATH', db):
         out, _ = capture(query.show_session_chain, "root-001")
     lines = out.strip().split('\n')
-    assert len(lines) >= 2
-    assert any("[1 memories]" in line for line in lines)
+    assert len(lines) == 3
+    root_count = re.search(r'\[(\d+) memories\]', lines[1])
+    child_count = re.search(r'\[(\d+) memories\]', lines[2])
+    assert root_count.group(1) == "1", f"root-001 memory count wrong: {lines[1]}"
+    assert child_count.group(1) == "1", f"child-001 memory count wrong: {lines[2]}"
+    assert lines[1].split("...")[0] == "root-001"
+    assert lines[2].split("...")[0] == "  -> child-001"
     c.close()
 
 
-#TAG: [CC39] 2026-04-02
+#TAG: [CC39] 2026-04-05
 # Verifies: show_session_chain reports No session found for nonexistent session
 def test_show_session_chain_edge():
     db, c = fresh_db()
@@ -900,7 +924,7 @@ def test_show_session_chain_edge():
     c.close()
 
 
-#TAG: [F56E] 2026-04-02
+#TAG: [6DDA] 2026-04-05
 # Verifies: show_session_chain handles single session with no parent or children
 def test_show_session_chain_error():
     db, c = fresh_db()
@@ -910,11 +934,12 @@ def test_show_session_chain_error():
         out, _ = capture(query.show_session_chain, "orphan-001")
     lines = out.strip().split('\n')
     assert len(lines) >= 2
-    assert any("orphan-001" in line for line in lines)
+    orphan_lines = [l for l in lines if "orphan-001" in l]
+    assert len(orphan_lines) == 1
     c.close()
 
 
-#TAG: [CF1D] 2026-04-02
+#TAG: [97EF] 2026-04-05
 # Verifies: show_session_chain traverses three-level deep chain correctly
 def test_show_session_chain_adversarial():
     db, c = fresh_db()
@@ -925,9 +950,9 @@ def test_show_session_chain_adversarial():
     with patch.object(query, 'DB_PATH', db):
         out, _ = capture(query.show_session_chain, "L3")
     lines = out.strip().split('\n')
-    assert len(lines) >= 4
-    assert any("L1" in line for line in lines)
-    assert any("L3" in line for line in lines)
+    assert len(lines) == 4
+    assert lines[1].split("...")[0] == "L1"
+    assert lines[3].split("...")[0] == "    -> L3"
     c.close()
 
 
@@ -935,7 +960,7 @@ def test_show_session_chain_adversarial():
 # review
 # ============================================================
 
-#TAG: [A883] 2026-04-02
+#TAG: [B979] 2026-04-05
 # Verifies: review categorizes memories into suppressed, uncertain, and healthy counts
 def test_review_behavioural():
     db, c = fresh_db()
@@ -947,11 +972,12 @@ def test_review_behavioural():
         out, _ = capture(query.review)
     lines = out.strip().split('\n')
     assert len(lines) >= 3
-    assert any("1 suppressed, 1 uncertain, 1 healthy" in line for line in lines)
+    summary_line = next(l for l in lines if l.startswith("Summary:"))
+    assert summary_line == "Summary: 1 suppressed, 1 uncertain, 1 healthy (of 3 total)"
     c.close()
 
 
-#TAG: [E2FD] 2026-04-02
+#TAG: [0C78] 2026-04-05
 # Verifies: review reports all healthy when no low-confidence memories exist
 def test_review_edge():
     db, c = fresh_db()
@@ -961,11 +987,12 @@ def test_review_edge():
         out, _ = capture(query.review)
     lines = out.strip().split('\n')
     assert len(lines) >= 1
-    assert any("All memories have confidence >= 0.6" in line for line in lines)
+    first_nonblank = next(l for l in lines if l.strip())
+    assert first_nonblank == "All memories have confidence >= 0.6"
     c.close()
 
 
-#TAG: [70A9] 2026-04-02
+#TAG: [44FF] 2026-04-05
 # Verifies: review on empty database reports zero counts
 def test_review_error():
     db, c = fresh_db()
@@ -973,11 +1000,12 @@ def test_review_error():
         out, _ = capture(query.review)
     lines = out.strip().split('\n')
     assert len(lines) >= 1
-    assert any("0 total" in line for line in lines)
+    summary_line = next(l for l in lines if l.startswith("Summary:"))
+    assert summary_line == "Summary: 0 suppressed, 0 uncertain, 0 healthy (of 0 total)"
     c.close()
 
 
-#TAG: [00AC] 2026-04-02
+#TAG: [F008] 2026-04-05
 # Verifies: review correctly classifies memory at exact threshold boundary 0.3
 def test_review_adversarial():
     db, c = fresh_db()
@@ -988,7 +1016,8 @@ def test_review_adversarial():
     lines = out.strip().split('\n')
     assert len(lines) >= 2
     # 0.3 is >= threshold_low (0.3) but < threshold_high (0.6), so it's "uncertain"
-    assert any("Uncertain" in line for line in lines)
+    uncertain_header = next(l for l in lines if l.startswith("=== Uncertain"))
+    assert uncertain_header == "=== Uncertain (confidence 0.3–0.6) ==="
     c.close()
 
 
@@ -996,7 +1025,7 @@ def test_review_adversarial():
 # format_rows
 # ============================================================
 
-#TAG: [DA61] 2026-04-02
+#TAG: [DA61] 2026-04-05
 # Verifies: format_rows prints sqlite3.Row objects with id, type, topic, content fields
 def test_format_rows_behavioural():
     db, c = fresh_db(); seed(c)
@@ -1010,14 +1039,14 @@ def test_format_rows_behavioural():
     c.close()
 
 
-#TAG: [C8AA] 2026-04-02
+#TAG: [C8AA] 2026-04-05
 # Verifies: format_rows prints No results for empty input list
 def test_format_rows_edge():
     out, _ = capture(query.format_rows, [])
     assert out.strip() == "No results."
 
 
-#TAG: [6953] 2026-04-02
+#TAG: [2C2E] 2026-04-05
 # Verifies: format_rows prints dict objects with similarity score formatted to 3 decimals
 def test_format_rows_error():
     rows = [{"id": 1, "type": "fact", "topic": "test", "content": "dict content",
@@ -1031,7 +1060,7 @@ def test_format_rows_error():
     assert sim_str == "sim=0.950"
 
 
-#TAG: [E4BF] 2026-04-02
+#TAG: [E4BF] 2026-04-05
 # Verifies: format_rows handles content with special characters without corruption
 def test_format_rows_adversarial():
     db, c = fresh_db()

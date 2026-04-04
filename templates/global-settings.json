@@ -23,6 +23,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{VENV_PYTHON}} {{CAIRN_HOME}}/hooks/pretool_hook.py",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

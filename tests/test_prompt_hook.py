@@ -129,7 +129,7 @@ def test_staged_context_loaded():
 
     with patch.object(hook_helpers, 'DB_PATH', db_path):
         data = prompt_hook.load_staged_context("sess-1")
-    assert "test data" in data
+    assert data == "<cairn_context>test data</cairn_context>"
     conn.close()
 
 

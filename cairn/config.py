@@ -88,6 +88,10 @@ CONTEXT_BOOTSTRAP_INTERVAL = 20    # Turns without a layer 3 request before forc
 CONTEXT_BOOTSTRAP_FIRST_INTERVAL = 10  # First bootstrap fires earlier to seed context sooner
 BOOTSTRAP_MAX_PER_SCOPE = 3        # Cap bootstrap retrieval results per scope (project/global)
 
+# === RRF (Reciprocal Rank Fusion) ===
+# Fuses FTS5 keyword search with vector semantic search. Higher k smooths rank differences.
+RRF_K = 60                         # Standard RRF constant — prevents single high rank from dominating
+
 # === Concurrency ===
 DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for lock release
 

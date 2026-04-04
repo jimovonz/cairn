@@ -12,7 +12,7 @@ from hooks.hash_verify import compute_response_hash, verify_hash
 # compute_response_hash — core 4 categories
 # ═══════════════════════════════════════════════════════════════
 
-#TAG: [5E23] 2026-04-02
+#TAG: [5E23] 2026-04-05
 # Verifies: basic single-sentence hash equals first letter value (h=8)
 @pytest.mark.behavioural
 def test_compute_response_hash_single_sentence():
@@ -20,14 +20,14 @@ def test_compute_response_hash_single_sentence():
     assert result == 8
 
 
-#TAG: [5D8C] 2026-04-02
+#TAG: [5D8C] 2026-04-05
 # Verifies: empty string returns 0
 @pytest.mark.edge
 def test_compute_response_hash_empty():
     assert compute_response_hash("") == 0
 
 
-#TAG: [5996] 2026-04-02
+#TAG: [5996] 2026-04-05
 # Verifies: text that is only a memory block returns 0 after stripping
 @pytest.mark.error
 def test_compute_response_hash_only_memory_block():
@@ -35,7 +35,7 @@ def test_compute_response_hash_only_memory_block():
     assert compute_response_hash(text) == 0
 
 
-#TAG: [440A] 2026-04-02
+#TAG: [440A] 2026-04-05
 # Verifies: nested memory tags — non-greedy regex strips first match, rest leaks through with computable hash
 @pytest.mark.adversarial
 def test_compute_response_hash_nested_memory_tags():
@@ -52,7 +52,7 @@ def test_compute_response_hash_nested_memory_tags():
 # compute_response_hash — additional behavioural tests
 # ═══════════════════════════════════════════════════════════════
 
-#TAG: [827B] 2026-04-02
+#TAG: [827B] 2026-04-05
 # Verifies: memory block stripped, surrounding text on both sides contributes to hash
 @pytest.mark.behavioural
 def test_compute_response_hash_strips_memory():
@@ -62,7 +62,7 @@ def test_compute_response_hash_strips_memory():
     assert result == 34
 
 
-#TAG: [8204] 2026-04-02
+#TAG: [8204] 2026-04-05
 # Verifies: fenced code blocks replaced with sentence boundary, content inside not hashed
 @pytest.mark.behavioural
 def test_compute_response_hash_strips_code_blocks():
@@ -74,7 +74,7 @@ def test_compute_response_hash_strips_code_blocks():
     assert result == 4
 
 
-#TAG: [C464] 2026-04-02
+#TAG: [C464] 2026-04-05
 # Verifies: double-newline paragraph breaks become sentence boundaries
 @pytest.mark.behavioural
 def test_compute_response_hash_paragraph_breaks():
@@ -85,7 +85,7 @@ def test_compute_response_hash_paragraph_breaks():
     assert result == 3
 
 
-#TAG: [7563] 2026-04-02
+#TAG: [7563] 2026-04-05
 # Verifies: all three punctuation types (. ! ?) act as sentence boundaries
 @pytest.mark.behavioural
 def test_compute_response_hash_multiple_punctuation_types():
@@ -95,7 +95,7 @@ def test_compute_response_hash_multiple_punctuation_types():
     assert result == 6
 
 
-#TAG: [E433] 2026-04-02
+#TAG: [E433] 2026-04-05
 # Verifies: non-alpha first character contributes 0, only alpha chars add to sum
 @pytest.mark.behavioural
 def test_compute_response_hash_non_alpha_start():
@@ -105,7 +105,7 @@ def test_compute_response_hash_non_alpha_start():
     assert result == 1
 
 
-#TAG: [2089] 2026-04-02
+#TAG: [2089] 2026-04-05
 # Verifies: uppercase Z produces same value as lowercase z (z=26)
 @pytest.mark.behavioural
 def test_compute_response_hash_case_insensitive():
@@ -117,7 +117,7 @@ def test_compute_response_hash_case_insensitive():
 # verify_hash — core 4 categories
 # ═══════════════════════════════════════════════════════════════
 
-#TAG: [1C36] 2026-04-02
+#TAG: [1C36] 2026-04-05
 # Verifies: matching claimed hash returns (True, actual) with correct actual value
 @pytest.mark.behavioural
 def test_verify_hash_match():
@@ -127,7 +127,7 @@ def test_verify_hash_match():
     assert actual == 8
 
 
-#TAG: [AA3D] 2026-04-02
+#TAG: [AA3D] 2026-04-05
 # Verifies: empty text with claimed=0 returns (True, 0) — boundary match
 @pytest.mark.edge
 def test_verify_hash_empty_text():
@@ -136,7 +136,7 @@ def test_verify_hash_empty_text():
     assert actual == 0
 
 
-#TAG: [7C52] 2026-04-02
+#TAG: [7C52] 2026-04-05
 # Verifies: incorrect claimed value returns (False, correct_actual) so caller can see difference
 @pytest.mark.error
 def test_verify_hash_mismatch():
@@ -146,7 +146,7 @@ def test_verify_hash_mismatch():
     assert actual == 8
 
 
-#TAG: [98C5] 2026-04-02
+#TAG: [98C5] 2026-04-05
 # Verifies: negative claimed hash never matches since computed hash is always >= 0
 @pytest.mark.adversarial
 def test_verify_hash_negative_claimed():
@@ -156,7 +156,7 @@ def test_verify_hash_negative_claimed():
     assert actual == 1
 
 
-#TAG: [C73B] 2026-04-02
+#TAG: [C73B] 2026-04-05
 # Verifies: multi-sentence verify returns correct actual on mismatch for debugging
 @pytest.mark.behavioural
 def test_verify_hash_multi_sentence_mismatch():

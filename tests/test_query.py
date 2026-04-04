@@ -99,7 +99,7 @@ def cairn_env(tmp_path):
         yield tmp_path, db_path
 
 
-#TAG: [DE5B] 2026-04-02
+#TAG: [996B] 2026-04-05
 # Verifies: show_context extracts correct conversation window around memory timestamp with proper anchor
 def test_show_context_behavioural_normal(cairn_env, capsys):
     tmp_path, db_path = cairn_env
@@ -150,7 +150,7 @@ def test_show_context_behavioural_normal(cairn_env, capsys):
     assert times == sorted(times)
 
 
-#TAG: [B149] 2026-04-02
+#TAG: [B149] 2026-04-05
 # Verifies: when all transcript messages precede memory timestamp, anchor is last message
 def test_show_context_edge_memory_after_all_messages(cairn_env, capsys):
     tmp_path, db_path = cairn_env
@@ -189,7 +189,7 @@ def test_show_context_edge_memory_after_all_messages(cairn_env, capsys):
     assert anchors[0] == ctx[-1]
 
 
-#TAG: [3C14] 2026-04-02
+#TAG: [3C14] 2026-04-05
 # Verifies: show_context prints error and returns for nonexistent memory ID
 def test_show_context_error_no_memory(cairn_env, capsys):
     tmp_path, db_path = cairn_env
@@ -203,7 +203,7 @@ def test_show_context_error_no_memory(cairn_env, capsys):
     assert output_lines[0] == "No memory with id 9999"
 
 
-#TAG: [D255] 2026-04-02
+#TAG: [D255] 2026-04-05
 # Verifies: malformed JSONL lines are skipped and valid messages still produce correct context
 def test_show_context_adversarial_malformed_jsonl(cairn_env, capsys):
     tmp_path, db_path = cairn_env
@@ -253,7 +253,7 @@ def test_show_context_adversarial_malformed_jsonl(cairn_env, capsys):
     assert anchors[0]["text"] == "Valid second"
 
 
-#TAG: [D0D6] 2026-04-02
+#TAG: [D0D6] 2026-04-05
 # Verifies: memory with no session_id prints "No session ID" and returns without error
 def test_show_context_error_no_session_id(cairn_env, capsys):
     tmp_path, db_path = cairn_env
@@ -276,7 +276,7 @@ def test_show_context_error_no_session_id(cairn_env, capsys):
     assert output_lines[2] == "No session ID \u2014 cannot locate transcript."
 
 
-#TAG: [1CB7] 2026-04-02
+#TAG: [1CB7] 2026-04-05
 # Verifies: when transcript file path is recorded but file is missing on disk, prints error path
 def test_show_context_error_missing_transcript_file(cairn_env, capsys):
     tmp_path, db_path = cairn_env
@@ -304,7 +304,7 @@ def test_show_context_error_missing_transcript_file(cairn_env, capsys):
     assert not_found_lines[0] == f"Transcript not found: {nonexistent}"
 
 
-#TAG: [37B3] 2026-04-02
+#TAG: [37B3] 2026-04-05
 # Verifies: depth field on memory controls lookback window size instead of default margin
 def test_show_context_edge_depth_controls_lookback(cairn_env, capsys):
     tmp_path, db_path = cairn_env
@@ -351,7 +351,7 @@ def test_show_context_edge_depth_controls_lookback(cairn_env, capsys):
     assert depth_lines[0] == "Created: 2026-03-28 10:08:30, depth: 2 turns"
 
 
-#TAG: [5B14] 2026-04-02
+#TAG: [5B14] 2026-04-05
 # Verifies: transcript with only non-text content entries results in "No text-bearing messages"
 def test_show_context_adversarial_no_text_content(cairn_env, capsys):
     tmp_path, db_path = cairn_env
@@ -440,7 +440,7 @@ def _seed_memories(db_path, memories):
     conn.close()
 
 
-#TAG: [35A5] 2026-04-02
+#TAG: [35A5] 2026-04-05
 # Verifies: backfill generates embeddings for all NULL-embedding memories, stores blobs, and commits
 def test_backfill_embeddings_behavioural(backfill_env, capsys):
     db_path = backfill_env
@@ -480,7 +480,7 @@ def test_backfill_embeddings_behavioural(backfill_env, capsys):
     assert done_lines[0] == "Done. 3 embeddings generated."
 
 
-#TAG: [0953] 2026-04-02
+#TAG: [0953] 2026-04-05
 # Verifies: when all memories already have embeddings, prints message and makes no DB writes
 def test_backfill_embeddings_edge_all_have_embeddings(backfill_env, capsys):
     db_path = backfill_env
@@ -502,7 +502,7 @@ def test_backfill_embeddings_edge_all_have_embeddings(backfill_env, capsys):
     assert output.strip() == "All memories have embeddings."
 
 
-#TAG: [B5FC] 2026-04-02
+#TAG: [B5FC] 2026-04-05
 # Verifies: when embeddings module is not importable, prints error and returns without DB access
 def test_backfill_embeddings_error_import_failure(backfill_env, capsys):
     db_path = backfill_env
@@ -523,7 +523,7 @@ def test_backfill_embeddings_error_import_failure(backfill_env, capsys):
     assert null_count == 1
 
 
-#TAG: [BB4E] 2026-04-02
+#TAG: [BB4E] 2026-04-05
 # Verifies: if embed() raises mid-backfill, earlier rows are NOT committed (transaction atomicity)
 def test_backfill_embeddings_adversarial_partial_failure(backfill_env):
     db_path = backfill_env
@@ -558,7 +558,7 @@ def test_backfill_embeddings_adversarial_partial_failure(backfill_env):
     assert null_count == 3
 
 
-#TAG: [1705] 2026-04-02
+#TAG: [1705] 2026-04-05
 # Verifies: project prefix is prepended to search_text when project is non-NULL
 @pytest.mark.behavioural
 def test_backfill_embeddings_project_prefix_included(backfill_env, capsys):
@@ -580,7 +580,7 @@ def test_backfill_embeddings_project_prefix_included(backfill_env, capsys):
     assert embed_arg == "myproj fact auth use JWT"
 
 
-#TAG: [D5DC] 2026-04-02
+#TAG: [D5DC] 2026-04-05
 # Verifies: when project is NULL, search_text has no leading space or prefix
 @pytest.mark.behavioural
 def test_backfill_embeddings_no_project_prefix(backfill_env, capsys):

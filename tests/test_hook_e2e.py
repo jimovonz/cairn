@@ -200,8 +200,7 @@ def test_multiple_entries_stored():
     assert count == 2, f"Expected 2 memories, got {count}"
 
     topics = [r[0] for r in conn.execute("SELECT topic FROM memories ORDER BY id").fetchall()]
-    assert "multi-1" in topics
-    assert "multi-2" in topics
+    assert topics == ["multi-1", "multi-2"], f"Expected exactly ['multi-1', 'multi-2'] in order, got {topics}"
     conn.close()
 
 
@@ -265,8 +264,8 @@ def test_metrics_recorded():
     result, code = run_hook(db_path, payload)
 
     events = [r[0] for r in conn.execute("SELECT event FROM metrics").fetchall()]
-    assert "hook_fired" in events, f"Expected hook_fired metric, got: {events}"
-    assert "memories_stored" in events, f"Expected memories_stored metric, got: {events}"
+    assert events.count("hook_fired") == 1, f"Expected exactly 1 hook_fired metric, got: {events}"
+    assert events.count("memories_stored") == 1, f"Expected exactly 1 memories_stored metric, got: {events}"
     conn.close()
 
 

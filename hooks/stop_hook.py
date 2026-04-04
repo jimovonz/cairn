@@ -298,7 +298,7 @@ def main() -> None:
 
     # Insert memories into DB
     if entries:
-        count = insert_memories(entries, session_id=session_id)
+        count = insert_memories(entries, session_id=session_id, transcript_path=transcript_path)
         record_metric(session_id, "memories_stored", None, count)
         log(f"Stored {count} memories (session: {session_id[:8]}...)" if session_id else f"Stored {count} memories")
 

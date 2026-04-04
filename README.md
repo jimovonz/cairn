@@ -18,7 +18,15 @@ No cloud. No API keys. No MCP. One SQLite file. Two hooks.
 
 ## What makes this different
 
-Most LLM memory systems store conversation logs and retrieve them with RAG. Cairn does something fundamentally different:
+Most LLM memory systems treat memory as infrastructure *around* the LLM — capturing at session end, on compaction, via batch tools, or when the LLM calls an explicit tool. Retrieval fires at session start or when the user's prompt happens to match something stored.
+
+Cairn makes the LLM an **active participant in its own memory lifecycle on every single turn**:
+
+- **Every response** → the LLM authors structured memories and commits them to the cairn
+- **Every response** → the LLM self-assesses whether it has sufficient context and requests retrieval if not
+- **Every response** → keywords are extracted and cross-project knowledge is staged for the next turn
+
+All three are enforced mechanically. The LLM cannot forget to participate. No other memory system operates this way.
 
 **The LLM is the memory author.** It distills its own output into one-line structured memories — not raw transcripts, not embeddings of chat logs, but the LLM's own assessment of what matters. A 50,000-token session becomes 10 precise facts.
 
@@ -27,6 +35,32 @@ Most LLM memory systems store conversation logs and retrieve them with RAG. Cair
 **The LLM controls the retrieval loop.** It declares when it lacks context. A Stop hook searches the database, injects results, and re-prompts — all before the response reaches the user. The LLM also rates what it gets back, dynamically adjusting confidence scores that determine what surfaces in future sessions.
 
 **Enforcement is mechanical, not advisory.** A Stop hook fires after every response. No memory block? Blocked and re-prompted. Says it's incomplete? Blocked and continued. Needs context? Blocked, searched, injected, continued. The LLM can't forget to participate.
+
+### How it compares
+
+Surveyed the top 30 GitHub "claude memory" repos (April 2026). The landscape breaks into three approaches:
+
+| Approach | Examples | Limitation |
+|----------|----------|------------|
+| File-based / markdown | claude-memory-engine, claude-memory-extractor | No semantic search, no dedup, no retrieval loop |
+| Session-end capture | claude-memory-plugin, claude-cache | Memories captured after the fact; no per-turn participation |
+| MCP tool-call | claude-memory-mcp, claude_memory | LLM must explicitly invoke retrieval tools; passive otherwise |
+
+Cairn is the only system in all three categories that makes the LLM an active participant on every turn. Specific capabilities absent from all surveyed alternatives:
+
+| Capability | Cairn | All others surveyed |
+|------------|-------|---------------------|
+| LLM self-declares context gaps mid-conversation, system injects and re-prompts | ✓ | ✗ |
+| Bootstrap enforcement — forces context checks every N turns | ✓ | ✗ |
+| Completeness enforcement — blocks stop if LLM says it's not done | ✓ | ✗ |
+| Veracity feedback loop — `+`/`-!` annotations across sessions | ✓ | ✗ |
+| Two-step recall — memory summary → full session conversation via `--context <id>` | ✓ | ✗ |
+| Correction-file association — corrections auto-linked to files touched at time of mistake | ✓ | ✗ |
+| Content density enforcement — rejects thin memories | ✓ | ✗ |
+| Trailing intent detection — blocks stop if LLM promised action without doing it | ✓ | ✗ |
+| Hybrid FTS5 + vector search with RRF | ✓ | One (codenamev/claude_memory) |
+| Proactive gotcha injection on file access | ✓ | One (claude-memory-plugin, Ollama-dependent) |
+| Local embeddings, no API key | ✓ | Several |
 
 **Session 1** — casual conversation in `~/temp`:
 ```
@@ -45,19 +79,26 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 ## Features
 
 - **Cross-session memory** — decisions, preferences, facts, corrections, people, projects, skills, workflows
-- **Three-layer retrieval** — proactive first-prompt push, cross-project keyword surfacing, and LLM-requested pull
+- **Per-turn memory authoring** — the LLM writes structured memories on every response, enforced mechanically; no separate capture step
+- **Per-turn context self-assessment** — the LLM declares when it lacks context on every response; the system retrieves and re-prompts automatically
+- **Four retrieval layers** — proactive first-prompt push, cross-project keyword surfacing, LLM-requested pull, and gotcha injection on file access
+- **Hybrid FTS5 + vector search with RRF** — exact keyword matches (error codes, function names) fused with semantic similarity via Reciprocal Rank Fusion; dual-method matches ranked higher than single-method
 - **Veracity tracking** — confidence represents corroboration, not retrieval rank; `+` corroborates, `-!` annotates contradictions with reasons that persist for future sessions
-- **Semantic search** — local embeddings via `all-MiniLM-L6-v2` with sqlite-vec indexed vector search
+- **Semantic search** — local embeddings via `all-MiniLM-L6-v2` with sqlite-vec indexed vector search; no API key required
 - **Project scoping** — memories auto-labelled by working directory, retrievable per-project or globally
 - **Invisible** — metadata tags are stripped from user display; the system operates transparently
 - **Quality gates** — 9 configurable filters including garbage, borderline, relative, dominance, and diversity
 - **Contradiction handling** — same-topic updates suppress the old entry; negation heuristics dampen conflicting memories; `-!` annotations preserve why something was wrong
+- **Correction-file association** — when a correction is stored, surrounding file paths are automatically extracted from the transcript and linked; future access to those files injects the correction proactively
+- **Gotcha injection** — PreToolUse hook surfaces corrections and relevant context before Read/Edit/Write tool calls on associated files
 - **Compact memory format** — dual-format parser supports both verbose (`- type: fact`) and compact (`fact/topic: content [k: kw1, kw2]`) memory blocks
+- **Completeness enforcement** — `complete: false` blocks stop and re-prompts with remaining work; trailing intent detection blocks when the LLM promises action without following through
+- **Bootstrap enforcement** — forces context checks every N turns to build the habit of cairn-first reasoning
+- **Two-step recall** — `--context <id>` recovers the full session conversation around any memory, with depth-based navigation; the one-liner summary links back to the original discussion
 - **Self-improving** — retrieval outcome feedback adaptively tightens thresholds when results are poor
 - **Memory audit** — `/cairn audit` reviews session memories for accuracy, enriches thin entries, fills gaps; background agent (`audit_agent.py`) reads transcripts via `claude -p` for automated review
 - **Archive over delete** — superseded and incorrect memories are archived with reasons, preserving the learning trail of rejected approaches and mistakes
-- **Context recovery** — `--context <id>` recovers the full conversation around any memory from the session transcript, with depth-based navigation
-- **Content enforcement** — strict metadata validation, content density checks, trailing intent detection, anti-fabrication rules
+- **Content enforcement** — strict metadata validation, content density checks, anti-fabrication rules
 - **Health check** — `--check` validates the full chain (DB, hooks, daemon, embeddings, rules) post-install
 - **Self-healing embeddings** — auto-starts daemon and backfills when memories are stored without embeddings
 - **Env var overrides** — any config value tunable via `CAIRN_<NAME>=value` without editing source
@@ -124,7 +165,7 @@ Every LLM response ends with a `<memory>` block using angle bracket tags. Claude
 </memory>
 ```
 
-### Three retrieval layers
+### Four retrieval layers
 
 | Layer | When | What |
 |-------|------|------|
@@ -132,6 +173,7 @@ Every LLM response ends with a `<memory>` block using angle bracket tags. Claude
 | **Keyword cross-project** | Between turns | Surfaces global knowledge based on topic keywords from the current conversation |
 | **Pull-based** | When LLM identifies a gap | LLM declares `context: insufficient`, hook searches and injects |
 | **Bootstrapping** | Every N turns without pull | Forces a `context: insufficient` declaration to build the habit |
+| **Gotcha injection** | Before Read/Edit/Write tool calls | PreToolUse hook surfaces corrections linked to the file being accessed |
 
 ### Veracity system
 
@@ -194,7 +236,8 @@ cairn/
 │   ├── parser.py           # Memory block parsing (ParseResult NamedTuple)
 │   ├── storage.py          # Insert, dedup, confidence, quality gates
 │   ├── enforcement.py      # Trailing intent detection, continuation counting
-│   ├── retrieval.py        # Context retrieval, Layer 2, context cache
+│   ├── retrieval.py        # Context retrieval with RRF fusion, Layer 2, context cache
+│   ├── pretool_hook.py     # PreToolUse hook — gotcha injection on file access
 │   └── hash_verify.py      # Response hash verification (log-only, non-blocking)
 └── templates/              # Installer templates for global config
 ```
@@ -267,7 +310,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test 
 
 ## Testing
 
-430 tests across 19 test files. No embedding model required — tests use mock vectors and patched DB paths.
+478 tests across 22 test files. No embedding model required — tests use mock vectors and patched DB paths.
 
 ```bash
 cd ~/cairn

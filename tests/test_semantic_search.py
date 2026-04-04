@@ -111,7 +111,7 @@ def capture_stdout(func, *args, **kwargs):
 # semantic_search — 4 categories (behavioural, edge, error, adversarial)
 # ============================================================
 
-#TAG: [63F3] 2026-04-02
+#TAG: [63F3] 2026-04-05
 # Verifies: semantic_search returns similar memories ranked by composite score when embeddings module is available
 def test_semantic_search_behavioural():
     db_path, conn = fresh_db()
@@ -137,7 +137,7 @@ def test_semantic_search_behavioural():
     assert top["score"] > 0, "Composite score should be positive"
 
 
-#TAG: [699D] 2026-04-02
+#TAG: [699D] 2026-04-05
 # Verifies: semantic_search returns empty list when no memories exceed the similarity threshold
 def test_semantic_search_edge_empty_db():
     db_path, conn = fresh_db()
@@ -154,7 +154,7 @@ def test_semantic_search_edge_empty_db():
     assert len(results) == 0, f"Should return empty list for dissimilar content, got {len(results)} results"
 
 
-#TAG: [A196] 2026-04-02
+#TAG: [5CB4] 2026-04-05
 # Verifies: semantic_search returns None and prints fallback message when embeddings module is unavailable
 def test_semantic_search_error_import():
     # Simulate embeddings module not being importable
@@ -180,7 +180,7 @@ def test_semantic_search_error_import():
     assert fallback_idx >= 0, f"Should print fallback message, got: {output!r}"
 
 
-#TAG: [0E2E] 2026-04-02
+#TAG: [0E2E] 2026-04-05
 # Verifies: semantic_search handles non-string query input without crashing (adversarial type violation)
 def test_semantic_search_adversarial_bad_query_type():
     db_path, conn = fresh_db()
@@ -206,7 +206,7 @@ def test_semantic_search_adversarial_bad_query_type():
             pass  # Acceptable — propagating type error from embed is fine
 
 
-#TAG: [1B25] 2026-04-02
+#TAG: [F8E9] 2026-04-05
 # Verifies: garbage gate rejects results when best similarity is below MIN_INJECTION_SIMILARITY (0.35)
 @pytest.mark.behavioural
 def test_semantic_search_garbage_gate():
@@ -232,7 +232,7 @@ def test_semantic_search_garbage_gate():
     assert len(results) == 0, f"Garbage gate should reject results with sim={sim:.3f} < 0.35"
 
 
-#TAG: [E555] 2026-04-02
+#TAG: [E555] 2026-04-05
 # Verifies: semantic_search respects limit parameter and returns at most limit results
 def test_semantic_search_edge_limit():
     db_path, conn = fresh_db()
@@ -257,7 +257,7 @@ def test_semantic_search_edge_limit():
     assert len(results) <= 3, f"Should respect limit=3, got {len(results)} results"
 
 
-#TAG: [3A61] 2026-04-02
+#TAG: [3A61] 2026-04-05
 # Verifies: semantic_search handles negative threshold and zero limit without crashing
 def test_semantic_search_adversarial_bad_params():
     db_path, conn = fresh_db()

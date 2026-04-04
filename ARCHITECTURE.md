@@ -270,11 +270,12 @@ cairn/
 ├── hooks/
 │   ├── stop_hook.py                   # Main hook — capture, enforce, retrieve, veracity
 │   ├── prompt_hook.py                 # Layer 1 + Layer 2 injection
+│   ├── pretool_hook.py                # PreToolUse hook — gotcha injection on file access
 │   ├── hook_helpers.py                # Shared DB access, logging, metrics
 │   ├── parser.py                      # Memory block parsing (verbose + compact formats)
-│   ├── storage.py                     # Insert, dedup, confidence, quality gates
+│   ├── storage.py                     # Insert, dedup, confidence, quality gates, file association
 │   ├── enforcement.py                 # Trailing intent detection, continuation counting
-│   ├── retrieval.py                   # Context retrieval, Layer 2, context cache
+│   ├── retrieval.py                   # Context retrieval with RRF fusion, Layer 2, context cache
 │   └── hash_verify.py                 # Response hash verification (log-only, non-blocking)
 └── .venv/                             # Python venv with sentence-transformers
 ```
@@ -295,6 +296,7 @@ cairn/
 | confidence | REAL | Dynamic confidence score 0.0–1.0 (default 0.7) |
 | source_start | INTEGER | LLM-estimated conversation turn where this knowledge originated (start) |
 | source_end | INTEGER | LLM-estimated conversation turn where this knowledge originated (end) |
+| associated_files | TEXT | JSON array of file paths touched in the same conversation — used by PreToolUse gotcha hook |
 | created_at | TIMESTAMP | First created |
 | updated_at | TIMESTAMP | Last modified |
 
@@ -488,6 +490,7 @@ Three retrieval layers operate at different points, each covering a different bl
 | **1. First-prompt push** | First message of session | User submits prompt | Project context for the opening question | UserPromptSubmit |
 | **2. Keyword cross-project** | Between turns | LLM outputs `keywords:` in memory block | Global knowledge surfaced by topic overlap from other projects | Stop (stages) → UserPromptSubmit (injects) |
 | **3. Pull-based** | Any time LLM recognises a gap | LLM declares `context: insufficient` | Specific missing context the LLM explicitly requests | Stop |
+| **4. Gotcha injection** | Before any file access | Read/Edit/Write/MultiEdit tool calls | Corrections associated with the target file | PreToolUse |
 
 ### Layer 1: First-prompt push
 
@@ -504,6 +507,40 @@ This surfaces cross-project knowledge the LLM doesn't know to ask for. It only f
 ### Layer 3: Pull-based
 
 The LLM explicitly requests context by declaring `context: insufficient` with a `context_need`. The Stop hook searches the cairn, applies all quality gates, and re-prompts the LLM with results. This is the most precise retrieval layer because the query is a deliberate, targeted description rather than raw user text or extracted keywords.
+
+### Layer 4: Gotcha injection (PreToolUse)
+
+`hooks/pretool_hook.py` is a Claude Code PreToolUse hook that fires before Read, Edit, Write, and MultiEdit tool calls. It queries the cairn for memories whose `associated_files` column includes the target file path, and injects them as `additionalContext` before the tool executes.
+
+**Closed loop:**
+1. LLM makes a mistake on file X → correction stored in cairn
+2. Stop hook extracts file paths from surrounding tool calls in the transcript → stored as `associated_files` JSON on the correction memory
+3. Next session, LLM reads/edits file X → PreToolUse fires → correction injected as warning
+4. LLM sees the warning before touching the file — mistake prevented
+
+File matching is by exact path or basename (for when the same file is referenced with a different absolute path). Archived/superseded corrections are skipped. Injection is capped at 3 entries per file access. All memory types (not just corrections) can be file-associated; corrections are highlighted as gotchas, others as general file context.
+
+### Hybrid FTS5 + Vector Search with RRF
+
+`hooks/retrieval.py` uses Reciprocal Rank Fusion to merge FTS5 keyword search and semantic vector search results.
+
+**Why hybrid retrieval?** Embeddings handle conceptual queries well ("what did we decide about persistence?") but are weak on exact terms — error codes, function names, identifiers. FTS5 handles exact matching but misses conceptual similarity. RRF fuses both.
+
+**Implementation:**
+
+```
+rrf_score = Σ 1/(k + rank_i)  across each search method that found this memory
+```
+
+Where `k = 60` (standard constant). A memory found by both methods gets contributions from both rank terms — dual-match memories naturally score higher than single-method matches.
+
+FTS5 uses Porter stemming and unicode61 tokenizer. Stopwords are filtered before building the OR-joined query. Each search path returns up to 20 candidates; RRF merges them, and the fused score replaces the old hardcoded 0.30 penalty for FTS-only results.
+
+### Correction-file association
+
+When `storage.insert_memories()` processes a correction-type memory, it reads the session transcript file and extracts file paths from recent tool calls (Read, Edit, Write, MultiEdit in the last 30 lines). These paths are stored as a JSON array in the `associated_files` column.
+
+This is fully automatic — no LLM tagging required. The file paths are determined from the transcript, not from the memory content. This means corrections are correctly associated even when the LLM doesn't mention the file name in the correction text.
 
 ### Context bootstrapping
 
@@ -655,22 +692,19 @@ The LLM is instructed to use `--context <id>` when:
 ```json
 {
   "hooks": {
-    "Stop": [
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "...prompt_hook.py", "timeout": 30 }] }],
+    "Stop":            [{ "hooks": [{ "type": "command", "command": "...stop_hook.py",   "timeout": 60 }] }],
+    "PreToolUse": [
       {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/.venv/bin/python3 /path/to/hooks/stop_hook.py",
-            "timeout": 60
-          }
-        ]
+        "matcher": "Read|Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "...pretool_hook.py", "timeout": 5 }]
       }
     ]
   }
 }
 ```
 
-The hook is registered **globally** in `~/.claude/settings.json` so it fires in every Claude Code session regardless of working directory. This is essential for cross-project memory — every session in every directory captures and retrieves from the same cairn. The project-local `.claude/settings.json` can add project-specific hook configuration if needed. Changes require a session restart — hooks are cached at session start.
+The hooks are registered **globally** in `~/.claude/settings.json` so they fire in every Claude Code session regardless of working directory. This is essential for cross-project memory — every session in every directory captures and retrieves from the same cairn. The project-local `.claude/settings.json` can add project-specific hook configuration if needed. Changes require a session restart — hooks are cached at session start.
 
 ### LLM instructions
 
@@ -809,7 +843,7 @@ All tunable parameters are centralised in `cairn/config.py`:
 
 ## Testing
 
-171 tests across 10 files, runnable without the embedding model (deterministic mock vectors and patched DB paths).
+478 tests across 22 files, runnable without the embedding model (deterministic mock vectors and patched DB paths).
 
 ```bash
 python3 -m pytest tests/
