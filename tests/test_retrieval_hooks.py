@@ -77,10 +77,10 @@ def parse_xml_attr(xml, attr_name):
 # get_adaptive_threshold_boost — 4 tests
 # ============================================================
 
-#TAG: [5396] 2026-04-02
+#TAG: [5396] 2026-04-05
 # Verifies: returns 0.10 boost when harmful+neutral rate exceeds 50%
 @pytest.mark.behavioural
-def test_adaptive_boost_high_harmful_rate():
+def test_get_adaptive_threshold_boost_high_harmful_rate():
     db_path, conn = fresh_db()
     for _ in range(6):
         conn.execute("INSERT INTO metrics (event, session_id) VALUES ('retrieval_harmful', 's1')")
@@ -95,10 +95,10 @@ def test_adaptive_boost_high_harmful_rate():
     conn.close()
 
 
-#TAG: [C8A0] 2026-04-02
+#TAG: [C8A0] 2026-04-05
 # Verifies: returns 0.0 when fewer than 5 total metrics exist
 @pytest.mark.edge
-def test_adaptive_boost_insufficient_data():
+def test_get_adaptive_threshold_boost_insufficient_data():
     db_path, conn = fresh_db()
     for _ in range(3):
         conn.execute("INSERT INTO metrics (event, session_id) VALUES ('retrieval_harmful', 's1')")
@@ -111,20 +111,20 @@ def test_adaptive_boost_insufficient_data():
     conn.close()
 
 
-#TAG: [2488] 2026-04-02
+#TAG: [2488] 2026-04-05
 # Verifies: returns 0.0 when database access raises sqlite3.Error
 @pytest.mark.error
-def test_adaptive_boost_db_error():
+def test_get_adaptive_threshold_boost_db_error():
     with patch('retrieval.get_conn', side_effect=sqlite3.OperationalError("locked")):
         boost = retrieval.get_adaptive_threshold_boost()
 
     assert boost == 0.0, f"Expected 0.0 on DB error, got {boost}"
 
 
-#TAG: [1685] 2026-04-02
+#TAG: [1685] 2026-04-05
 # Verifies: returns 0.05 (not 0.10) when harmful rate is exactly 50% boundary
 @pytest.mark.adversarial
-def test_adaptive_boost_boundary_fifty_percent():
+def test_get_adaptive_threshold_boost_boundary_fifty_percent():
     db_path, conn = fresh_db()
     # 5 harmful + 5 useful = exactly 50% harmful rate
     for _ in range(5):
@@ -145,7 +145,7 @@ def test_adaptive_boost_boundary_fifty_percent():
 # retrieve_context — 4 tests
 # ============================================================
 
-#TAG: [53AD] 2026-04-02
+#TAG: [D8AC] 2026-04-05
 # Verifies: returns XML with both project and global scopes containing correct entries
 @pytest.mark.behavioural
 def test_retrieve_context_project_and_global():
@@ -182,13 +182,17 @@ def test_retrieve_context_project_and_global():
     # Verify both scopes present with correct structure
     project_scope = re.search(r'<scope level="project" name="ProjA" weight="high">(.*?)</scope>', result, re.DOTALL)
     global_scope = re.search(r'<scope level="global" weight="low">(.*?)</scope>', result, re.DOTALL)
-    # Verify entries are in correct scopes — scope regex captures inner XML
-    assert project_scope.group(1).count('id="1"') == 1
-    assert global_scope.group(1).count('id="2"') == 1
+    # Verify entries are in correct scopes — extract id attribute and compare exactly
+    proj_entry = re.search(r'<entry id="(\d+)"', project_scope.group(1))
+    assert proj_entry is not None and proj_entry.group(1) == "1", \
+        f"Expected project scope to contain entry id=\"1\"; got: {project_scope.group(1)!r}"
+    global_entry = re.search(r'<entry id="(\d+)"', global_scope.group(1))
+    assert global_entry is not None and global_entry.group(1) == "2", \
+        f"Expected global scope to contain entry id=\"2\"; got: {global_scope.group(1)!r}"
     conn.close()
 
 
-#TAG: [4CBE] 2026-04-02
+#TAG: [4CBE] 2026-04-05
 # Verifies: returns None and records context_empty metric when no results match
 @pytest.mark.edge
 def test_retrieve_context_no_results_returns_none():
@@ -213,7 +217,7 @@ def test_retrieve_context_no_results_returns_none():
     conn.close()
 
 
-#TAG: [E6DC] 2026-04-02
+#TAG: [7C75] 2026-04-05
 # Verifies: embedding ConnectionError is caught and FTS fallback returns correct entry
 @pytest.mark.error
 def test_retrieve_context_embedding_error_fts_fallback():
@@ -243,7 +247,7 @@ def test_retrieve_context_embedding_error_fts_fallback():
     conn.close()
 
 
-#TAG: [40C2] 2026-04-02
+#TAG: [29DD] 2026-04-05
 # Verifies: context_need of only stopwords does not crash and produces valid output or None
 @pytest.mark.adversarial
 def test_retrieve_context_only_stopwords():
@@ -280,10 +284,10 @@ def test_retrieve_context_only_stopwords():
 # layer2_cross_project_search — 4 tests
 # ============================================================
 
-#TAG: [A6AB] 2026-04-02
+#TAG: [3E69] 2026-04-05
 # Verifies: stages cross-project results into hook_state with correct XML structure and entry data
 @pytest.mark.behavioural
-def test_layer2_stages_results():
+def test_layer2_cross_project_search_stages_results():
     db_path, conn = fresh_db()
     seed_project_session(conn, "s1", "ProjA")
 
@@ -318,10 +322,10 @@ def test_layer2_stages_results():
     conn.close()
 
 
-#TAG: [FE9B] 2026-04-02
+#TAG: [FE9B] 2026-04-05
 # Verifies: empty keywords list returns immediately without calling get_embedder
 @pytest.mark.edge
-def test_layer2_empty_keywords():
+def test_layer2_cross_project_search_empty_keywords():
     mock_emb = MagicMock()
     with patch.object(hook_helpers, 'get_embedder', return_value=mock_emb) as mock_get:
         retrieval.layer2_cross_project_search([], session_id="s1")
@@ -329,10 +333,10 @@ def test_layer2_empty_keywords():
     mock_get.assert_not_called()
 
 
-#TAG: [C1B3] 2026-04-02
+#TAG: [C1B3] 2026-04-05
 # Verifies: find_similar exception is caught, no context staged, no crash
 @pytest.mark.error
-def test_layer2_search_error():
+def test_layer2_cross_project_search_search_error():
     db_path, conn = fresh_db()
     seed_project_session(conn, "s1", "ProjA")
 
@@ -350,10 +354,10 @@ def test_layer2_search_error():
     conn.close()
 
 
-#TAG: [3684] 2026-04-02
+#TAG: [3684] 2026-04-05
 # Verifies: all same-project results filtered out, nothing staged
 @pytest.mark.adversarial
-def test_layer2_all_same_project_nothing_staged():
+def test_layer2_cross_project_search_all_same_project():
     db_path, conn = fresh_db()
     seed_project_session(conn, "s1", "ProjA")
 
@@ -382,10 +386,10 @@ def test_layer2_all_same_project_nothing_staged():
 # is_context_cached — 4 tests
 # ============================================================
 
-#TAG: [3C92] 2026-04-02
+#TAG: [3C92] 2026-04-05
 # Verifies: returns True when embedding similarity meets CONTEXT_CACHE_SIM_THRESHOLD
 @pytest.mark.behavioural
-def test_is_cached_semantic_match():
+def test_is_context_cached_semantic_match():
     mock_emb = MagicMock()
     query_vec = make_vector(100)
     cached_vec = make_vector(100)
@@ -399,18 +403,18 @@ def test_is_cached_semantic_match():
     assert result is True
 
 
-#TAG: [7DA2] 2026-04-02
+#TAG: [7DA2] 2026-04-05
 # Verifies: returns False when served_needs is empty and no embedder
 @pytest.mark.edge
-def test_is_cached_empty_no_embedder():
+def test_is_context_cached_empty_no_embedder():
     result = retrieval.is_context_cached("anything", [], None)
     assert result is False
 
 
-#TAG: [2C72] 2026-04-02
+#TAG: [2C72] 2026-04-05
 # Verifies: embedder exception falls back to exact text match returning True for match and False for mismatch
 @pytest.mark.error
-def test_is_cached_embed_error_falls_back():
+def test_is_context_cached_embed_error_falls_back():
     mock_emb = MagicMock()
     mock_emb.embed.side_effect = RuntimeError("model unavailable")
 
@@ -422,10 +426,10 @@ def test_is_cached_embed_error_falls_back():
     assert result_nomatch is False, "Should not match different text"
 
 
-#TAG: [5A04] 2026-04-02
+#TAG: [5A04] 2026-04-05
 # Verifies: missing embedding_hex key triggers fallback to text match
 @pytest.mark.adversarial
-def test_is_cached_missing_embedding_hex():
+def test_is_context_cached_missing_embedding_hex():
     mock_emb = MagicMock()
     mock_emb.embed.return_value = make_vector(100)
 
@@ -442,7 +446,7 @@ def test_is_cached_missing_embedding_hex():
 # load_context_cache — 1 test
 # ============================================================
 
-#TAG: [B573] 2026-04-02
+#TAG: [B573] 2026-04-05
 # Verifies: returns parsed JSON list with correct structure from hook_state
 @pytest.mark.behavioural
 def test_load_context_cache_returns_parsed():
@@ -466,7 +470,7 @@ def test_load_context_cache_returns_parsed():
 # save_context_cache — 1 test
 # ============================================================
 
-#TAG: [436C] 2026-04-02
+#TAG: [436C] 2026-04-05
 # Verifies: persists served_needs to hook_state and round-trips correctly
 @pytest.mark.behavioural
 def test_save_context_cache_persists():
@@ -489,10 +493,10 @@ def test_save_context_cache_persists():
 # add_to_context_cache — 2 tests
 # ============================================================
 
-#TAG: [0D08] 2026-04-02
+#TAG: [0D08] 2026-04-05
 # Verifies: appends entry with embedding_hex whose length matches 384-dim float32 vector
 @pytest.mark.behavioural
-def test_add_to_cache_with_embedder():
+def test_add_to_context_cache_with_embedder():
     mock_emb = MagicMock()
     vec = make_vector(42)
     mock_emb.embed.return_value = vec
@@ -507,13 +511,161 @@ def test_add_to_cache_with_embedder():
     assert len(result[0]["embedding_hex"]) == 3072
 
 
-#TAG: [1B62] 2026-04-02
+#TAG: [1B62] 2026-04-05
 # Verifies: appends text-only entry without embedding_hex when embedder is None
 @pytest.mark.edge
-def test_add_to_cache_without_embedder():
+def test_add_to_context_cache_without_embedder():
     served = [{"text": "existing"}]
     result = retrieval.add_to_context_cache("another query", served, None)
 
     assert len(result) == 2
     assert result[1]["text"] == "another query"
     assert set(result[1].keys()) == {"text"}
+
+
+# ============================================================
+# add_to_context_cache — error + adversarial
+# ============================================================
+
+#TAG: [701D] 2026-04-05
+# Verifies: embed() exception is caught and entry is stored with only text key, no embedding_hex
+@pytest.mark.error
+def test_add_to_context_cache_embed_error():
+    mock_emb = MagicMock()
+    mock_emb.embed.side_effect = RuntimeError("model load failed")
+
+    served = []
+    result = retrieval.add_to_context_cache("crash query", served, mock_emb)
+
+    assert len(result) == 1
+    assert result[0]["text"] == "crash query"
+    assert set(result[0].keys()) == {"text"}
+
+
+#TAG: [D848] 2026-04-05
+# Verifies: to_blob() exception is caught and entry is stored with only text key, no embedding_hex
+@pytest.mark.adversarial
+def test_add_to_context_cache_to_blob_error():
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = make_vector(99)
+    mock_emb.to_blob.side_effect = ValueError("cannot serialize")
+
+    served = []
+    result = retrieval.add_to_context_cache("blob fail query", served, mock_emb)
+
+    assert len(result) == 1
+    assert result[0]["text"] == "blob fail query"
+    assert set(result[0].keys()) == {"text"}
+
+
+# ============================================================
+# load_context_cache — edge, error, adversarial
+# ============================================================
+
+#TAG: [94F7] 2026-04-05
+# Verifies: returns empty list when no cache entry exists for the session
+@pytest.mark.edge
+def test_load_context_cache_missing_session():
+    db_path, conn = fresh_db()
+    # No hook_state rows inserted
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        result = retrieval.load_context_cache("nonexistent-session")
+
+    assert result == []
+    conn.close()
+
+
+#TAG: [5CFC] 2026-04-05
+# Verifies: returns empty list when stored value is corrupt JSON (JSONDecodeError path)
+@pytest.mark.error
+def test_load_context_cache_corrupt_json():
+    db_path, conn = fresh_db()
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value) VALUES (?, 'context_cache', ?)",
+        ("s1", "THIS IS NOT JSON {{{"))
+    conn.commit()
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        result = retrieval.load_context_cache("s1")
+
+    assert result == []
+    conn.close()
+
+
+#TAG: [D398] 2026-04-05
+# Verifies: returns empty list when hook_state row has NULL value (falsy guard path)
+@pytest.mark.adversarial
+def test_load_context_cache_null_value():
+    db_path, conn = fresh_db()
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value) VALUES (?, 'context_cache', NULL)",
+        ("s1",))
+    conn.commit()
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        result = retrieval.load_context_cache("s1")
+
+    assert result == []
+    conn.close()
+
+
+# ============================================================
+# save_context_cache — edge, error, adversarial
+# ============================================================
+
+#TAG: [AC01] 2026-04-05
+# Verifies: empty list is serialised as JSON array and round-trips back to empty list
+@pytest.mark.edge
+def test_save_context_cache_empty_list():
+    db_path, conn = fresh_db()
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        retrieval.save_context_cache("s1", [])
+
+    row = conn.execute(
+        "SELECT value FROM hook_state WHERE session_id = 's1' AND key = 'context_cache'"
+    ).fetchone()
+    assert row[0] == "[]"
+    conn.close()
+
+
+#TAG: [B450] 2026-04-05
+# Verifies: INSERT OR REPLACE overwrites an existing cache entry with the new value
+@pytest.mark.error
+def test_save_context_cache_overwrites_existing():
+    db_path, conn = fresh_db()
+    conn.execute(
+        "INSERT INTO hook_state (session_id, key, value) VALUES ('s1', 'context_cache', '[{\"text\":\"old\"}]')")
+    conn.commit()
+
+    new_data = [{"text": "new-entry"}]
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        retrieval.save_context_cache("s1", new_data)
+
+    row = conn.execute(
+        "SELECT value FROM hook_state WHERE session_id = 's1' AND key = 'context_cache'"
+    ).fetchone()
+    import json as _json
+    parsed = _json.loads(row[0])
+    assert len(parsed) == 1
+    assert parsed[0]["text"] == "new-entry"
+    conn.close()
+
+
+#TAG: [FD27] 2026-04-05
+# Verifies: data containing quotes and unicode round-trips correctly through JSON serialisation
+@pytest.mark.adversarial
+def test_save_context_cache_special_chars_roundtrip():
+    db_path, conn = fresh_db()
+    data = [{"text": 'query with "quotes" and \u00e9 unicode'}]
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        retrieval.save_context_cache("s1", data)
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path):
+        result = retrieval.load_context_cache("s1")
+
+    assert len(result) == 1
+    assert result[0]["text"] == 'query with "quotes" and \u00e9 unicode'
+    conn.close()

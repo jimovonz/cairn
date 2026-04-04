@@ -202,8 +202,8 @@ def test_contradiction_annotates_old_memory():
     assert old[0] == "Use PostgreSQL"
     # Supersession annotation present
     reason = conn.execute("SELECT archived_reason FROM memories WHERE id = ?", (id1,)).fetchone()[0]
-    assert "superseded" in reason
-    assert "SQLite" in reason
+    assert reason is not None and "superseded" in reason and "SQLite" in reason, \
+        f"Expected archived_reason to contain 'superseded' and 'SQLite'; got: {reason!r}"
     conn.close()
 
 
@@ -404,7 +404,8 @@ def test_context_insufficient_produces_block():
 
     entries, complete, remaining, context, context_need, *_ = parse_memory_block(text)
     assert context == "insufficient"
-    assert "database" in context_need
+    assert context_need == "what database did we choose for the project", \
+        f"Expected exact context_need string; got: {context_need!r}"
     assert complete is True
 
 

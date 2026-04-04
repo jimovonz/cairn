@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Claude Code PreToolUse Hook for Cairn — Gotcha Injection.
+Claude Code PreToolUse Hook for Cairn — File Context Injection.
 
 Fires before Read/Edit/Write/MultiEdit tool uses. Queries the cairn DB for
-correction-type memories associated with the target file and injects them
-as warnings via additionalContext.
+memories associated with the target file and injects them as context.
+
+Two injection paths:
+  1. Corrections (gotcha) — warnings injected as CAIRN GOTCHA, highest priority
+  2. All other types (decisions, facts, etc.) — injected as CAIRN CONTEXT FOR FILE
 
 This creates a closed loop:
-  LLM makes mistake → correction stored → file paths captured →
-  next access to those files → warning injected → mistake prevented.
+  LLM touches file → memories written → file paths captured →
+  next access to that file → relevant context injected automatically.
 """
 
 from __future__ import annotations
@@ -24,16 +27,23 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from hook_helpers import log, get_conn, record_metric
 
-# Max corrections to inject per file access (avoid flooding context)
+# Max entries to inject per file access (avoid flooding context)
 MAX_GOTCHA_INJECTIONS = 3
+MAX_CONTEXT_INJECTIONS = 5
 
 
-def find_corrections_for_file(file_path: str, session_id: Optional[str] = None) -> list[dict[str, Any]]:
-    """Find correction memories associated with a given file path.
+def find_memories_for_file(
+    file_path: str,
+    corrections_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Find memories associated with a given file path.
 
     Matches by:
     1. Exact path match in associated_files JSON array
     2. Basename match (for when the same file is referenced by different absolute paths)
+
+    If corrections_only=True, returns only correction-type memories (gotcha path).
+    Otherwise returns all non-correction types (context path).
     """
     if not file_path:
         return []
@@ -41,16 +51,18 @@ def find_corrections_for_file(file_path: str, session_id: Optional[str] = None) 
     conn = get_conn()
     basename = os.path.basename(file_path)
 
+    type_filter = "type = 'correction'" if corrections_only else "type != 'correction'"
+
     try:
-        rows = conn.execute("""
-            SELECT id, topic, content, associated_files, confidence, archived_reason
+        rows = conn.execute(f"""
+            SELECT id, type, topic, content, associated_files, confidence
             FROM memories
-            WHERE type = 'correction'
+            WHERE {type_filter}
               AND associated_files IS NOT NULL
               AND archived_reason IS NULL
         """).fetchall()
     except sqlite3.Error as e:
-        log(f"Gotcha query error: {e}")
+        log(f"File context query error: {e}")
         conn.close()
         return []
 
@@ -58,28 +70,24 @@ def find_corrections_for_file(file_path: str, session_id: Optional[str] = None) 
 
     matches: list[dict[str, Any]] = []
     for row in rows:
-        mid, topic, content, files_json, confidence, archived = row
+        mid, mem_type, topic, content, files_json, confidence = row
         try:
             files = json.loads(files_json)
         except (json.JSONDecodeError, TypeError):
             continue
 
-        # Check for exact path match or basename match
-        matched = False
         for f in files:
             if f == file_path or os.path.basename(f) == basename:
-                matched = True
+                matches.append({
+                    "id": mid,
+                    "type": mem_type,
+                    "topic": topic,
+                    "content": content,
+                    "confidence": confidence or 0.7,
+                })
                 break
 
-        if matched:
-            matches.append({
-                "id": mid,
-                "topic": topic,
-                "content": content,
-                "confidence": confidence or 0.7,
-            })
-
-    return matches[:MAX_GOTCHA_INJECTIONS]
+    return matches
 
 
 def main() -> None:
@@ -100,33 +108,41 @@ def main() -> None:
     if not file_path:
         sys.exit(0)
 
-    # Query for corrections
-    corrections = find_corrections_for_file(file_path, session_id)
-
-    if not corrections:
-        sys.exit(0)
-
-    # Format warnings
-    warnings: list[str] = []
-    ids: list[str] = []
-    for c in corrections:
-        warnings.append(f"- [{c['topic']}] {c['content']}")
-        ids.append(str(c["id"]))
-
     basename = os.path.basename(file_path)
-    context_text = (
-        f"CAIRN GOTCHA for {basename}:\n"
-        + "\n".join(warnings)
-        + f"\nSources: {', '.join(ids)}"
-    )
+    sections: list[str] = []
 
-    log(f"Gotcha injection: {len(corrections)} corrections for {basename}")
-    record_metric(session_id, "gotcha_injected", basename, len(corrections))
+    # Path 1: corrections (gotcha warnings) — highest priority
+    corrections = find_memories_for_file(file_path, corrections_only=True)
+    if corrections:
+        warnings = [f"- [{c['topic']}] {c['content']}" for c in corrections[:MAX_GOTCHA_INJECTIONS]]
+        ids = [str(c["id"]) for c in corrections[:MAX_GOTCHA_INJECTIONS]]
+        sections.append(
+            f"CAIRN GOTCHA for {basename}:\n" + "\n".join(warnings) + f"\nSources: {', '.join(ids)}"
+        )
+        log(f"Gotcha injection: {len(corrections)} corrections for {basename}")
+        record_metric(session_id, "gotcha_injected", basename, len(corrections))
+
+    # Path 2: all other memory types (decisions, facts, skills, etc.)
+    context_memories = find_memories_for_file(file_path, corrections_only=False)
+    if context_memories:
+        # Sort by confidence descending, cap at MAX_CONTEXT_INJECTIONS
+        context_memories.sort(key=lambda m: m["confidence"], reverse=True)
+        top = context_memories[:MAX_CONTEXT_INJECTIONS]
+        lines = [f"- [{m['type']}/{m['topic']}] {m['content']}" for m in top]
+        ids = [str(m["id"]) for m in top]
+        sections.append(
+            f"CAIRN CONTEXT for {basename}:\n" + "\n".join(lines) + f"\nSources: {', '.join(ids)}"
+        )
+        log(f"File context injection: {len(top)} memories for {basename}")
+        record_metric(session_id, "file_context_injected", basename, len(top))
+
+    if not sections:
+        sys.exit(0)
 
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "additionalContext": context_text
+            "additionalContext": "\n\n".join(sections)
         }
     }
     print(json.dumps(output))

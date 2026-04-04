@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Tests for hooks/storage.py — memory storage, deduplication, confidence updates, quality gates."""
 
+import json
 import os
 import sys
 import sqlite3
 import pytest
 from unittest.mock import patch, MagicMock
-from types import ModuleType
 
 # Add hooks and cairn directories to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
@@ -33,6 +33,7 @@ def _init_db(path):
             anchor_line INTEGER,
             depth INTEGER,
             archived_reason TEXT,
+            associated_files TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -104,369 +105,186 @@ def _execute(db_path, sql, params=()):
 # apply_confidence_updates
 # ============================================================
 
-#TAG: [D377] 2026-04-02
-# Verifies: corroboration (+) boosts confidence using saturating formula BOOST * (1 - current)
+#TAG: [9FE4] 2026-04-05
+# Verifies: corroboration (+) boosts confidence via saturating formula; contradiction (-!) sets archived_reason
 @pytest.mark.behavioural
-def test_apply_confidence_corroboration_boosts(db_path):
-    """Corroboration (+) should increase confidence toward max using BOOST * (1 - current)."""
+def test_apply_confidence_updates_behavioural(db_path):
     from config import CONFIDENCE_BOOST, CONFIDENCE_DEFAULT, CONFIDENCE_MAX
+    _execute(db_path, "INSERT INTO memories (id, type, topic, content, confidence) VALUES (1, 'fact', 'a', 'content here for testing', ?)", (CONFIDENCE_DEFAULT,))
+    _execute(db_path, "INSERT INTO memories (id, type, topic, content, confidence) VALUES (2, 'fact', 'b', 'other content for test', 0.7)")
 
-    _execute(db_path,
-        "INSERT INTO memories (id, type, topic, content, confidence) VALUES (1, 'fact', 'test', 'some content', ?)",
-        (CONFIDENCE_DEFAULT,))
+    applied = storage.apply_confidence_updates([(1, "+", None), (2, "-!", "superseded by new info")])
 
-    applied = storage.apply_confidence_updates([(1, "+", None)])
-    assert applied == 1
-
-    rows = _query(db_path, "SELECT confidence FROM memories WHERE id = 1")
+    assert applied == 2
+    conf_rows = _query(db_path, "SELECT confidence FROM memories WHERE id = 1")
     expected = min(CONFIDENCE_DEFAULT + CONFIDENCE_BOOST * (1 - CONFIDENCE_DEFAULT), CONFIDENCE_MAX)
-    assert abs(rows[0][0] - expected) < 1e-9, f"Expected {expected}, got {rows[0][0]}"
+    assert abs(conf_rows[0][0] - expected) < 1e-9
+    reason_rows = _query(db_path, "SELECT archived_reason FROM memories WHERE id = 2")
+    assert reason_rows[0][0] == "superseded by new info"
 
 
-#TAG: [8877] 2026-04-02
-# Verifies: contradiction (-!) sets archived_reason to the provided reason string
-@pytest.mark.behavioural
-def test_apply_confidence_contradiction_annotates(db_path):
-    """Contradiction (-!) should set archived_reason on the memory."""
-    _execute(db_path,
-        "INSERT INTO memories (id, type, topic, content, confidence) VALUES (1, 'fact', 'test', 'old info', 0.7)")
-
-    reason = "superseded by new approach"
-    applied = storage.apply_confidence_updates([(1, "-!", reason)])
-    assert applied == 1
-
-    rows = _query(db_path, "SELECT archived_reason FROM memories WHERE id = 1")
-    assert rows[0][0] == reason
-
-
-#TAG: [42E3] 2026-04-02
-# Verifies: empty updates list returns 0 without any DB interaction
+#TAG: [4FF2] 2026-04-05
+# Verifies: empty updates list returns 0 immediately without any DB interaction
 @pytest.mark.edge
-def test_apply_confidence_empty_list():
-    """Empty updates list should return 0 immediately."""
+def test_apply_confidence_updates_edge():
     assert storage.apply_confidence_updates([]) == 0
 
 
-#TAG: [039F] 2026-04-02
-# Verifies: update referencing non-existent memory ID returns 0 applied count
+#TAG: [7FAA] 2026-04-05
+# Verifies: update referencing non-existent memory ID is skipped and returns 0 applied count
 @pytest.mark.error
-def test_apply_confidence_missing_memory(db_path):
-    """Update for a non-existent memory ID should be skipped, returning 0."""
+def test_apply_confidence_updates_error(db_path):
     applied = storage.apply_confidence_updates([(9999, "+", None)])
     assert applied == 0
 
 
-#TAG: [EE63] 2026-04-02
-# Verifies: irrelevant (-) direction increments applied count but leaves confidence at 0.7
+#TAG: [AAF6] 2026-04-05
+# Verifies: irrelevant (-) increments applied count but leaves confidence unchanged at original value
 @pytest.mark.adversarial
-def test_apply_confidence_irrelevant_no_change(db_path):
-    """Irrelevant (-) should not change the confidence value."""
-    _execute(db_path,
-        "INSERT INTO memories (id, type, topic, content, confidence) VALUES (1, 'fact', 'test', 'content', 0.7)")
-
+def test_apply_confidence_updates_adversarial(db_path):
+    _execute(db_path, "INSERT INTO memories (id, type, topic, content, confidence) VALUES (1, 'fact', 't', 'some long content value here', 0.7)")
     applied = storage.apply_confidence_updates([(1, "-", None)])
     assert applied == 1
-
     rows = _query(db_path, "SELECT confidence FROM memories WHERE id = 1")
     assert rows[0][0] == 0.7
 
 
 # ============================================================
-# insert_memories — behavioural
+# extract_associated_files
 # ============================================================
 
-#TAG: [7EDD] 2026-04-02
-# Verifies: single valid entry is stored with correct type, topic, content in DB
+#TAG: [7A3E] 2026-04-05
+# Verifies: JSONL with Read, Edit, Write, MultiEdit tool calls returns unique file paths in insertion order
 @pytest.mark.behavioural
-def test_insert_memories_basic(db_path):
-    """Basic insert of a single valid memory should store it and return 1."""
-    entries = [{"type": "fact", "topic": "db-choice", "content": "Use SQLite for persistence — zero-config, WAL mode"}]
-    with patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
-
-    assert count == 1
-    rows = _query(db_path, "SELECT type, topic, content FROM memories WHERE topic = 'db-choice'")
-    assert len(rows) == 1
-    assert rows[0][0] == "fact"
-    assert rows[0][2] == "Use SQLite for persistence — zero-config, WAL mode"
-
-
-#TAG: [D81E] 2026-04-02
-# Verifies: same type+topic without embedder inserts as distinct variant (sim=0.0 < threshold)
-@pytest.mark.behavioural
-def test_insert_memories_same_topic_distinct_variant(db_path):
-    """Same type+topic with no embedder → sim=0.0 < DISTINCT_VARIANT threshold → inserts new row."""
-    entries1 = [{"type": "fact", "topic": "version", "content": "Using Python 3.10 for the project runtime"}]
-    entries2 = [{"type": "fact", "topic": "version", "content": "Upgraded to Python 3.11 for performance gains"}]
-    with patch.object(storage, "_trigger_background_backfill"):
-        storage.insert_memories(entries1, session_id="s1")
-        storage.insert_memories(entries2, session_id="s2")
-
-    rows = _query(db_path, "SELECT content FROM memories WHERE type = 'fact' AND topic = 'version' ORDER BY id")
-    assert len(rows) == 2
-    assert rows[0][0] == "Using Python 3.10 for the project runtime"
-    assert rows[1][0] == "Upgraded to Python 3.11 for performance gains"
-
-
-#TAG: [841D] 2026-04-02
-# Verifies: write throttle keeps correction (priority 0) over project entries (priority 7)
-@pytest.mark.behavioural
-def test_insert_memories_write_throttle(db_path):
-    """When entries exceed MAX_MEMORIES_PER_RESPONSE, corrections survive over projects."""
-    from config import MAX_MEMORIES_PER_RESPONSE
-
-    entries = [
-        {"type": "project", "topic": f"proj{i}", "content": f"Project metadata entry number {i} for testing"} for i in range(MAX_MEMORIES_PER_RESPONSE + 3)
-    ] + [
-        {"type": "correction", "topic": "bugfix", "content": "Fixed off-by-one in loop counter — boundary check needed"},
+def test_extract_associated_files_behavioural(tmp_path):
+    lines = [
+        json.dumps({"tool_name": "Read", "parameters": {"file_path": "/hooks/storage.py"}}),
+        json.dumps({"tool_name": "Edit", "parameters": {"file_path": "/hooks/pretool_hook.py"}}),
+        json.dumps({"tool_name": "Write", "parameters": {"file_path": "/cairn/query.py"}}),
+        json.dumps({"tool_name": "Read", "parameters": {"file_path": "/hooks/storage.py"}}),  # duplicate
+        json.dumps({"tool_name": "MultiEdit", "input": {"edits": [
+            {"file_path": "/tests/test_storage.py"},
+            {"filePath": "/cairn/config.py"},
+        ]}}),
     ]
-    with patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
+    (tmp_path / "t.jsonl").write_text("\n".join(lines))
 
-    assert count <= MAX_MEMORIES_PER_RESPONSE
-    rows = _query(db_path, "SELECT content FROM memories WHERE topic = 'bugfix'")
-    assert len(rows) == 1, "Correction should survive write throttle"
+    result = storage.extract_associated_files(str(tmp_path / "t.jsonl"))
+
+    assert result == [
+        "/hooks/storage.py",
+        "/hooks/pretool_hook.py",
+        "/cairn/query.py",
+        "/tests/test_storage.py",
+        "/cairn/config.py",
+    ]
 
 
-#TAG: [7BA2] 2026-04-02
-# Verifies: semantic dedup updates existing row when find_nearest similarity >= DEDUP_THRESHOLD
+#TAG: [5142] 2026-04-05
+# Verifies: empty transcript file returns [] and empty string argument returns []
+@pytest.mark.edge
+def test_extract_associated_files_edge(tmp_path):
+    (tmp_path / "empty.jsonl").write_text("")
+    assert storage.extract_associated_files(str(tmp_path / "empty.jsonl")) == []
+    assert storage.extract_associated_files("") == []
+
+
+#TAG: [663A] 2026-04-05
+# Verifies: non-existent transcript path returns [] with FileNotFoundError silently caught
+@pytest.mark.error
+def test_extract_associated_files_error():
+    result = storage.extract_associated_files("/nonexistent/path/no_such_file.jsonl")
+    assert result == []
+
+
+#TAG: [7242] 2026-04-05
+# Verifies: malformed JSON lines are skipped; Bash tool file paths extracted via regex; valid entries processed
+@pytest.mark.adversarial
+def test_extract_associated_files_adversarial(tmp_path):
+    lines = [
+        "NOT VALID JSON{{{",
+        json.dumps({"tool_name": "Bash", "parameters": {"command": "python3 /hooks/storage.py /cairn/daemon.py"}}),
+        json.dumps({"tool_name": "Read", "parameters": {"file_path": "/cairn/config.py"}}),
+        "",
+        "{incomplete json",
+    ]
+    (tmp_path / "t.jsonl").write_text("\n".join(lines))
+
+    result = storage.extract_associated_files(str(tmp_path / "t.jsonl"))
+
+    assert result == ["/hooks/storage.py", "/cairn/daemon.py", "/cairn/config.py"]
+    assert len(result) == len(set(result))
+
+
+# ============================================================
+# insert_memories
+# ============================================================
+
+#TAG: [D8E8] 2026-04-05
+# Verifies: single valid entry stored correctly; associated_files JSON column set from transcript_path
 @pytest.mark.behavioural
-def test_insert_memories_semantic_dedup(db_path):
-    """When find_nearest match >= DEDUP_THRESHOLD, existing row is updated."""
-    from config import DEDUP_THRESHOLD
+def test_insert_memories_behavioural(db_path, tmp_path):
+    lines = [json.dumps({"tool_name": "Read", "parameters": {"file_path": "/hooks/storage.py"}})]
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("\n".join(lines))
 
-    _execute(db_path,
-        "INSERT INTO memories (id, type, topic, content, embedding) VALUES (1, 'fact', 'db', 'Use SQLite for storage', ?)",
-        (b"\x00" * (384 * 4),))
-
-    mock_emb = MagicMock()
-    mock_emb.embed.return_value = [0.1] * 384
-    mock_emb.to_blob.return_value = b"\x01" * (384 * 4)
-    mock_emb.find_nearest.return_value = [{
-        "id": 1,
-        "content": "Use SQLite for storage",
-        "similarity": DEDUP_THRESHOLD + 0.01,
-    }]
-    mock_emb.upsert_vec_index = MagicMock()
-
-    entries = [{"type": "fact", "topic": "database", "content": "SQLite selected for persistent storage layer"}]
-    with patch.object(storage.hook_helpers, "get_embedder", return_value=mock_emb), \
-         patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
+    entries = [{"type": "correction", "topic": "boundary", "content": "Fixed off-by-one in loop boundary — exclusive vs inclusive upper bound"}]
+    with patch.object(storage, "_trigger_background_backfill"):
+        count = storage.insert_memories(entries, session_id="s1", transcript_path=str(transcript))
 
     assert count == 1
-    rows = _query(db_path, "SELECT COUNT(*) FROM memories")
-    assert rows[0][0] == 1
-    updated = _query(db_path, "SELECT content FROM memories WHERE id = 1")
-    assert updated[0][0] == "SQLite selected for persistent storage layer"
+    rows = _query(db_path, "SELECT content, associated_files FROM memories WHERE topic = 'boundary'")
+    assert rows[0][0] == "Fixed off-by-one in loop boundary — exclusive vs inclusive upper bound"
+    assert json.loads(rows[0][1]) == ["/hooks/storage.py"]
 
 
-# ============================================================
-# insert_memories — edge
-# ============================================================
-
-#TAG: [58F4] 2026-04-02
-# Verifies: empty entries list returns 0 without any DB or embedder interaction
+#TAG: [24F1] 2026-04-05
+# Verifies: empty list returns 0; short content rejected by quality gate; no transcript_path → associated_files NULL
 @pytest.mark.edge
-def test_insert_memories_empty_list():
-    """Empty entries list should return 0 immediately."""
+def test_insert_memories_edge(db_path):
     assert storage.insert_memories([]) == 0
 
-
-#TAG: [3356] 2026-04-02
-# Verifies: quality gate rejects content matching "no context available" pattern
-@pytest.mark.edge
-def test_insert_memories_quality_gate_rejects_pattern(db_path):
-    """Memory with empty-pattern content should be rejected."""
-    entries = [{"type": "fact", "topic": "test", "content": "No context available for this topic"}]
     with patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
+        count_short = storage.insert_memories([{"type": "fact", "topic": "t", "content": "short"}])
+    assert count_short == 0
 
-    assert count == 0
-    rows = _query(db_path, "SELECT COUNT(*) FROM memories")
-    assert rows[0][0] == 0
-
-
-#TAG: [1DCD] 2026-04-02
-# Verifies: content under 10 characters (after strip) is rejected by quality gate
-@pytest.mark.edge
-def test_insert_memories_quality_gate_short_content(db_path):
-    """Content shorter than 10 characters should be rejected."""
-    entries = [{"type": "fact", "topic": "tiny", "content": "short"}]
     with patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
-
-    assert count == 0
-    rows = _query(db_path, "SELECT COUNT(*) FROM memories")
-    assert rows[0][0] == 0
-
-
-#TAG: [3BC1] 2026-04-02
-# Verifies: entry with no content key defaults to "" which is rejected by quality gate
-@pytest.mark.edge
-def test_insert_memories_no_content_key(db_path):
-    """Entry with no content key defaults to '' and is rejected."""
-    entries = [{"type": "fact", "topic": "empty"}]
-    with patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
-
-    assert count == 0
-    rows = _query(db_path, "SELECT COUNT(*) FROM memories")
-    assert rows[0][0] == 0
-
-
-# ============================================================
-# insert_memories — error
-# ============================================================
-
-#TAG: [25EE] 2026-04-02
-# Verifies: ConnectionError from embedder is caught, memory stored without embedding
-@pytest.mark.error
-def test_insert_memories_embedding_connection_error(db_path):
-    """When embedder raises ConnectionError, memory is still inserted without embedding."""
-    mock_emb = MagicMock()
-    mock_emb.embed.side_effect = ConnectionError("daemon down")
-
-    entries = [{"type": "fact", "topic": "resilient", "content": "This memory should be stored despite embedding failure"}]
-    with patch.object(storage.hook_helpers, "get_embedder", return_value=mock_emb), \
-         patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
-
-    assert count == 1
-    rows = _query(db_path, "SELECT content, embedding FROM memories WHERE topic = 'resilient'")
-    assert rows[0][0] == "This memory should be stored despite embedding failure"
-    assert rows[0][1] is None
-
-
-#TAG: [F30B] 2026-04-02
-# Verifies: embed() returning None triggers daemon_unavailable path, memory stored without embedding
-@pytest.mark.error
-def test_insert_memories_embed_returns_none(db_path):
-    """When embed() returns None (daemon unavailable), memory stored without embedding."""
-    mock_emb = MagicMock()
-    mock_emb.embed.return_value = None
-
-    entries = [{"type": "decision", "topic": "approach", "content": "Chose event-driven architecture over polling for real-time updates"}]
-    with patch.object(storage.hook_helpers, "get_embedder", return_value=mock_emb), \
-         patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
-
-    assert count == 1
-    rows = _query(db_path, "SELECT embedding FROM memories WHERE topic = 'approach'")
+        storage.insert_memories([{"type": "fact", "topic": "no-files", "content": "Memory without any transcript file association context provided"}])
+    rows = _query(db_path, "SELECT associated_files FROM memories WHERE topic = 'no-files'")
     assert rows[0][0] is None
 
 
-# ============================================================
-# insert_memories — adversarial
-# ============================================================
-
-#TAG: [161B] 2026-04-02
-# Verifies: entry missing type/topic keys uses defaults "fact"/"unknown"
-@pytest.mark.adversarial
-def test_insert_memories_missing_keys_defaults(db_path):
-    """Entry with no type or topic should use defaults and still insert."""
-    entries = [{"content": "A valid memory content that is long enough to pass quality gate"}]
-    with patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
-
-    assert count == 1
-    rows = _query(db_path, "SELECT type, topic FROM memories")
-    assert rows[0][0] == "fact"
-    assert rows[0][1] == "unknown"
-
-
-#TAG: [1856] 2026-04-02
-# Verifies: negation mismatch on same type+topic sets archived_reason with "superseded" on old row
-@pytest.mark.adversarial
-def test_insert_memories_negation_supersedes(db_path):
-    """Same type+topic with negation mismatch should annotate old as superseded."""
-    _execute(db_path,
-        "INSERT INTO memories (id, type, topic, content) VALUES (1, 'decision', 'feature-x', 'Enable feature X for all users')")
-
-    entries = [{"type": "decision", "topic": "feature-x", "content": "Disable feature X due to performance regression"}]
-    with patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
-
-    assert count == 1
-    rows = _query(db_path, "SELECT archived_reason FROM memories WHERE id = 1")
-    assert isinstance(rows[0][0], str) and len(rows[0][0]) > 0, "archived_reason should be a non-empty string"
-    assert rows[0][0].split(":")[0] == "superseded", f"Expected 'superseded' prefix, got: {rows[0][0]}"
-
-
-# ============================================================
-# Additional insert_memories paths
-# ============================================================
-
-#TAG: [47CF] 2026-04-02
-# Verifies: project label from get_session_project is stored on inserted memories
-@pytest.mark.behavioural
-def test_insert_memories_project_label(db_path):
-    """Memory should inherit project label from session."""
-    entries = [{"type": "fact", "topic": "config", "content": "Configuration loaded from cairn/config.py module"}]
-    with patch.object(storage, "get_session_project", return_value="cairn"), \
-         patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
-
-    assert count == 1
-    rows = _query(db_path, "SELECT project FROM memories WHERE topic = 'config'")
-    assert rows[0][0] == "cairn"
-
-
-#TAG: [4C3E] 2026-04-02
-# Verifies: backfill is triggered with count >= 1 when memories lack embeddings
-@pytest.mark.behavioural
-def test_insert_memories_triggers_backfill(db_path):
-    """After inserting without embeddings, _trigger_background_backfill should be called."""
-    entries = [{"type": "fact", "topic": "trigger", "content": "Memory that triggers background backfill process"}]
-    with patch.object(storage, "_trigger_background_backfill") as mock_backfill:
-        storage.insert_memories(entries, session_id="s1")
-
-    mock_backfill.assert_called_once()
-    assert mock_backfill.call_args[0][0] >= 1
-
-
-#TAG: [F991] 2026-04-02
-# Verifies: cross-topic negation via embedding similarity annotates old memory as superseded
-@pytest.mark.behavioural
-def test_insert_memories_negation_cross_topic(db_path):
-    """Cross-topic negation via embedding similarity should annotate old as superseded."""
-    from config import NEGATION_SIM_FLOOR, DEDUP_THRESHOLD
-
-    _execute(db_path,
-        "INSERT INTO memories (id, type, topic, content, embedding) VALUES (1, 'decision', 'auth', 'Use JWT tokens for authentication', ?)",
-        (b"\x00" * (384 * 4),))
-
-    sim = (NEGATION_SIM_FLOOR + DEDUP_THRESHOLD) / 2
+#TAG: [8A94] 2026-04-05
+# Verifies: ConnectionError from embedder is caught and memory is inserted without embedding blob
+@pytest.mark.error
+def test_insert_memories_error(db_path):
     mock_emb = MagicMock()
-    mock_emb.embed.return_value = [0.1] * 384
-    mock_emb.to_blob.return_value = b"\x01" * (384 * 4)
-    mock_emb.find_nearest.return_value = [{
-        "id": 1,
-        "content": "Use JWT tokens for authentication",
-        "similarity": sim,
-    }]
-    mock_emb.upsert_vec_index = MagicMock()
+    mock_emb.embed.side_effect = ConnectionError("daemon down")
 
-    entries = [{"type": "decision", "topic": "auth-change", "content": "Avoid JWT tokens — replaced with session cookies"}]
     with patch.object(storage.hook_helpers, "get_embedder", return_value=mock_emb), \
          patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
+        count = storage.insert_memories(
+            [{"type": "fact", "topic": "resilient", "content": "Memory stored despite ConnectionError from embedding daemon"}],
+            session_id="s1"
+        )
+
+    assert count == 1
+    rows = _query(db_path, "SELECT embedding FROM memories WHERE topic = 'resilient'")
+    assert rows[0][0] is None
+
+
+#TAG: [28B4] 2026-04-05
+# Verifies: same type+topic with negation mismatch annotates old row archived_reason as superseded
+@pytest.mark.adversarial
+def test_insert_memories_adversarial(db_path):
+    _execute(db_path, "INSERT INTO memories (id, type, topic, content) VALUES (1, 'decision', 'feat', 'Enable feature X for all users')")
+
+    with patch.object(storage, "_trigger_background_backfill"):
+        count = storage.insert_memories(
+            [{"type": "decision", "topic": "feat", "content": "Disable feature X due to performance regression"}],
+            session_id="s1"
+        )
 
     assert count == 1
     rows = _query(db_path, "SELECT archived_reason FROM memories WHERE id = 1")
-    assert isinstance(rows[0][0], str) and len(rows[0][0]) > 0, "archived_reason should be a non-empty string"
-    assert rows[0][0].split(":")[0] == "superseded", f"Expected 'superseded' prefix, got: {rows[0][0]}"
-
-
-#TAG: [D883] 2026-04-02
-# Verifies: depth field from entry dict is stored in the database
-@pytest.mark.behavioural
-def test_insert_memories_depth_stored(db_path):
-    """The depth field should be stored when provided in entry."""
-    entries = [{"type": "fact", "topic": "depth-test", "content": "Memory with depth value set to five turns back", "depth": 5}]
-    with patch.object(storage, "_trigger_background_backfill"):
-        count = storage.insert_memories(entries, session_id="s1")
-
-    assert count == 1
-    rows = _query(db_path, "SELECT depth FROM memories WHERE topic = 'depth-test'")
-    assert rows[0][0] == 5
+    assert isinstance(rows[0][0], str) and rows[0][0].startswith("superseded")

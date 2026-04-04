@@ -238,8 +238,8 @@ def test_write_throttle_corrections_survive_over_project():
     entries.sort(key=lambda e: type_priority.get(e.get("type", ""), 99))
     kept = entries[:MAX_MEMORIES_PER_RESPONSE]
     types_kept = [e["type"] for e in kept]
-    assert "correction" in types_kept
-    assert "decision" in types_kept
+    assert types_kept[0] == "correction"
+    assert types_kept[1] == "decision"
 
 
 # Verifies: write throttle caps entries at MAX_MEMORIES_PER_RESPONSE

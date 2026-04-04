@@ -145,7 +145,7 @@ def valid_block(content_entries="", extra_fields=""):
 # register_session tests
 # ============================================================
 
-#TAG: [A1C3]
+#TAG: [49BD] 2026-04-05
 # Verifies: new root session is inserted into sessions table with correct ID and null parent/project
 @pytest.mark.behavioural
 def test_register_session_new_root():
@@ -168,7 +168,7 @@ def test_register_session_new_root():
         conn.close()
 
 
-#TAG: [B2D4]
+#TAG: [72BE] 2026-04-05
 # Verifies: existing session is not re-registered or overwritten (idempotent guard)
 @pytest.mark.edge
 def test_register_session_skips_existing():
@@ -193,7 +193,7 @@ def test_register_session_skips_existing():
         conn.close()
 
 
-#TAG: [C3E5]
+#TAG: [D6D6] 2026-04-05
 # Verifies: missing transcript file does not crash and session is still registered with no parent
 @pytest.mark.error
 def test_register_session_missing_transcript():
@@ -215,7 +215,7 @@ def test_register_session_missing_transcript():
         conn.close()
 
 
-#TAG: [D4F6]
+#TAG: [0843] 2026-04-05
 # Verifies: empty session_id string triggers early return with zero DB rows written
 @pytest.mark.adversarial
 def test_register_session_empty_session_id():
@@ -237,10 +237,10 @@ def test_register_session_empty_session_id():
 # auto_label_project tests
 # ============================================================
 
-#TAG: [E5A7]
+#TAG: [D95D] 2026-04-05
 # Verifies: cwd basename is lowercased and stored as project label for unlabelled session
 @pytest.mark.behavioural
-def test_auto_label_from_cwd():
+def test_auto_label_project_from_cwd():
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id) VALUES (?)", ("sess-label",))
     conn.commit()
@@ -259,10 +259,10 @@ def test_auto_label_from_cwd():
         conn.close()
 
 
-#TAG: [F6B8]
+#TAG: [BF03] 2026-04-05
 # Verifies: existing project label is not overwritten by auto-labelling
 @pytest.mark.edge
-def test_auto_label_skips_if_already_set():
+def test_auto_label_project_skips_if_already_set():
     db_path, conn = fresh_db()
     conn.execute(
         "INSERT INTO sessions (session_id, project) VALUES (?, ?)",
@@ -284,10 +284,10 @@ def test_auto_label_skips_if_already_set():
         conn.close()
 
 
-#TAG: [A7C9]
+#TAG: [85DA] 2026-04-05
 # Verifies: root path "/" is in rejection list and produces no project label
 @pytest.mark.error
-def test_auto_label_rejects_root_path():
+def test_auto_label_project_rejects_root_path():
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id) VALUES (?)", ("sess-root-cwd",))
     conn.commit()
@@ -308,10 +308,10 @@ def test_auto_label_rejects_root_path():
         conn.close()
 
 
-#TAG: [B8DA]
+#TAG: [B22E] 2026-04-05
 # Verifies: empty cwd string triggers early return guard with no DB mutation
 @pytest.mark.adversarial
-def test_auto_label_empty_cwd():
+def test_auto_label_project_empty_cwd():
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id) VALUES (?)", ("sess-empty-cwd",))
     conn.commit()
@@ -336,7 +336,7 @@ def test_auto_label_empty_cwd():
 # main() tests — behavioural
 # ============================================================
 
-#TAG: [C9EB]
+#TAG: [56DE] 2026-04-05
 # Verifies: valid memory block with all fields is stored in DB and hook exits 0 with no block output
 @pytest.mark.behavioural
 def test_main_valid_block_stores_and_allows_stop():
@@ -355,7 +355,7 @@ def test_main_valid_block_stores_and_allows_stop():
     conn.close()
 
 
-#TAG: [DA0C]
+#TAG: [80FC] 2026-04-05
 # Verifies: instructed session (2+ hook_fired) without memory block gets block decision with hint
 @pytest.mark.behavioural
 def test_main_missing_block_instructed_session_blocks():
@@ -380,7 +380,7 @@ def test_main_missing_block_instructed_session_blocks():
     conn.close()
 
 
-#TAG: [EB1D]
+#TAG: [BBB0] 2026-04-05
 # Verifies: complete: false with remaining field produces block with remaining text in reason
 @pytest.mark.behavioural
 def test_main_incomplete_blocks_with_remaining():
@@ -394,7 +394,7 @@ def test_main_incomplete_blocks_with_remaining():
     conn.close()
 
 
-#TAG: [0C2E]
+#TAG: [FBCB] 2026-04-05
 # Verifies: context: insufficient with valid need triggers retrieval and blocks with CAIRN CONTEXT
 @pytest.mark.behavioural
 def test_main_context_insufficient_triggers_retrieval():
@@ -446,7 +446,7 @@ def test_main_context_insufficient_triggers_retrieval():
     conn.close()
 
 
-#TAG: [1D3F]
+#TAG: [18AE] 2026-04-05
 # Verifies: CAIRN_HEADLESS env var skips all enforcement and exits 0 even without memory block
 @pytest.mark.behavioural
 def test_main_headless_mode_skips_enforcement():
@@ -459,7 +459,7 @@ def test_main_headless_mode_skips_enforcement():
     conn.close()
 
 
-#TAG: [2E4A]
+#TAG: [7D0B] 2026-04-05
 # Verifies: confidence_update: 42:+ increases target memory confidence above initial 0.7
 @pytest.mark.behavioural
 def test_main_confidence_updates_applied():
@@ -486,7 +486,7 @@ def test_main_confidence_updates_applied():
     conn.close()
 
 
-#TAG: [3F5B]
+#TAG: [A32C] 2026-04-05
 # Verifies: question mark in last 3 sentences triggers question_before_cairn metric and stages file
 @pytest.mark.behavioural
 def test_main_question_before_cairn_stages_reminder():
@@ -517,7 +517,7 @@ def test_main_question_before_cairn_stages_reminder():
 # main() tests — edge
 # ============================================================
 
-#TAG: [4A6C]
+#TAG: [DBD7] 2026-04-05
 # Verifies: empty last_assistant_message causes immediate exit 0 before any parsing
 @pytest.mark.edge
 def test_main_empty_text_allows_stop():
@@ -530,7 +530,7 @@ def test_main_empty_text_allows_stop():
     conn.close()
 
 
-#TAG: [5B7D]
+#TAG: [876E] 2026-04-05
 # Verifies: session with no prior memories and <=1 hook_fired is treated as uninstructed (exit 0)
 @pytest.mark.edge
 def test_main_uninstructed_session_allows_stop():
@@ -547,7 +547,7 @@ def test_main_uninstructed_session_allows_stop():
     conn.close()
 
 
-#TAG: [6C8E]
+#TAG: [EA8E] 2026-04-05
 # Verifies: continuation count at MAX_CONTINUATIONS forces stop (exit 0) and resets counter
 @pytest.mark.edge
 def test_main_continuation_cap_forces_stop():
@@ -571,7 +571,7 @@ def test_main_continuation_cap_forces_stop():
     conn.close()
 
 
-#TAG: [7D9F]
+#TAG: [2B7E] 2026-04-05
 # Verifies: context_need "help" (in LOW_INFO_STOPLIST and <8 chars) is prefiltered
 @pytest.mark.edge
 def test_main_context_low_info_prefiltered():
@@ -588,7 +588,7 @@ def test_main_context_low_info_prefiltered():
     conn.close()
 
 
-#TAG: [8EAB]
+#TAG: [AE58] 2026-04-05
 # Verifies: intent: resolved in memory block bypasses trailing intent detection entirely
 @pytest.mark.edge
 def test_main_intent_resolved_skips_check():
@@ -605,7 +605,7 @@ def test_main_intent_resolved_skips_check():
     conn.close()
 
 
-#TAG: [9FBC]
+#TAG: [7AC5] 2026-04-05
 # Verifies: missing block on continuation (stop_hook_active=True) allows stop to prevent loops
 @pytest.mark.edge
 def test_main_missing_block_continuation_allows_stop():
@@ -624,7 +624,7 @@ def test_main_missing_block_continuation_allows_stop():
 # main() tests — error
 # ============================================================
 
-#TAG: [A0CD]
+#TAG: [FB9E] 2026-04-05
 # Verifies: malformed JSON on stdin causes crash handler to exit 0 (fail-open) with no stdout
 @pytest.mark.error
 def test_main_invalid_json_stdin_crashes_gracefully():
@@ -661,7 +661,7 @@ def test_main_invalid_json_stdin_crashes_gracefully():
     conn.close()
 
 
-#TAG: [B1DE]
+#TAG: [BEAF] 2026-04-05
 # Verifies: memory block with entries but no complete: field produces block with missing-completeness hint
 @pytest.mark.error
 def test_main_complete_none_blocks():
@@ -678,7 +678,7 @@ def test_main_complete_none_blocks():
     conn.close()
 
 
-#TAG: [C2EF]
+#TAG: [31CC] 2026-04-05
 # Verifies: block with complete: true but missing context: and keywords: triggers strict validation block
 @pytest.mark.error
 def test_main_strict_validation_missing_fields_blocks():
@@ -695,7 +695,7 @@ def test_main_strict_validation_missing_fields_blocks():
     conn.close()
 
 
-#TAG: [D3FA]
+#TAG: [3BCF] 2026-04-05
 # Verifies: unclosed <memory> tag on instructed session produces malformed block hint
 @pytest.mark.error
 def test_main_malformed_block_open_tag_only():
@@ -715,7 +715,7 @@ def test_main_malformed_block_open_tag_only():
     conn.close()
 
 
-#TAG: [E4AB]
+#TAG: [AE29] 2026-04-05
 # Verifies: hash mismatch in compact format is logged as metric but does not block
 @pytest.mark.error
 def test_main_hash_mismatch_non_blocking():
@@ -732,7 +732,7 @@ def test_main_hash_mismatch_non_blocking():
     conn.close()
 
 
-#TAG: [F5BC]
+#TAG: [D3A7] 2026-04-05
 # Verifies: complete: false at continuation cap forces stop instead of further blocking
 @pytest.mark.error
 def test_main_completeness_cap_reached_forces_stop():
@@ -762,7 +762,7 @@ def test_main_completeness_cap_reached_forces_stop():
 # main() tests — adversarial
 # ============================================================
 
-#TAG: [A6CD]
+#TAG: [944A] 2026-04-05
 # Verifies: nested/duplicate <memory> tags are handled without crash
 @pytest.mark.adversarial
 def test_main_adversarial_nested_memory_tags():
@@ -784,7 +784,7 @@ def test_main_adversarial_nested_memory_tags():
     conn.close()
 
 
-#TAG: [B7DE]
+#TAG: [4EC4] 2026-04-05
 # Verifies: >1000 char response body with empty memory block triggers density enforcement
 @pytest.mark.adversarial
 def test_main_adversarial_huge_response_no_entries():
@@ -801,7 +801,7 @@ def test_main_adversarial_huge_response_no_entries():
     conn.close()
 
 
-#TAG: [C8EF]
+#TAG: [F26B] 2026-04-05
 # Verifies: context_need of 3 chars ("xyz") is below 8-char minimum and prefiltered
 @pytest.mark.adversarial
 def test_main_context_need_too_short_prefiltered():
@@ -818,7 +818,7 @@ def test_main_context_need_too_short_prefiltered():
     conn.close()
 
 
-#TAG: [D9FA]
+#TAG: [9501] 2026-04-05
 # Verifies: two entries in one block both stored and hook_fired metric records entries=2
 @pytest.mark.adversarial
 def test_main_multiple_entries_stored_with_metrics():
@@ -840,7 +840,7 @@ def test_main_multiple_entries_stored_with_metrics():
     conn.close()
 
 
-#TAG: [EA0B]
+#TAG: [203F] 2026-04-05
 # Verifies: high cosine similarity on trailing sentence triggers trailing intent block
 @pytest.mark.adversarial
 def test_main_trailing_intent_blocks():
@@ -890,7 +890,7 @@ def test_main_trailing_intent_blocks():
     conn.close()
 
 
-#TAG: [FB1C]
+#TAG: [0787] 2026-04-05
 # Verifies: context bootstrap triggers block when turns exceed interval and response is short (<200 chars)
 @pytest.mark.adversarial
 def test_main_context_bootstrap_short_response_blocks():
@@ -917,7 +917,7 @@ def test_main_context_bootstrap_short_response_blocks():
     conn.close()
 
 
-#TAG: [AC2D]
+#TAG: [7D34] 2026-04-05
 # Verifies: entry with content shorter than 20 chars is blocked by density gate
 @pytest.mark.adversarial
 def test_main_density_short_content_blocks():

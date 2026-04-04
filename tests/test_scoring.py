@@ -239,7 +239,7 @@ def test_contradiction_annotation_default_reason():
     with patch.object(hook_helpers, 'DB_PATH', db_path):
         apply_confidence_updates([(1, "-!", None)], session_id="s1")
     row = conn.execute("SELECT archived_reason FROM memories WHERE id = 1").fetchone()
-    assert isinstance(row[0], str) and "contradicted" in row[0].lower(), f"Expected default annotation containing 'contradicted', got: {row[0]}"
+    assert row[0] == "contradicted by later session", f"Expected exact default annotation, got: {row[0]}"
     conn.close()
 
 

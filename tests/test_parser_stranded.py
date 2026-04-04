@@ -13,7 +13,7 @@ from parser import parse_memory_block, NO_BLOCK, NOOP_BLOCK, ParseResult
 # 1. parse_memory_block — format detection and tag extraction
 # ---------------------------------------------------------------------------
 
-#TAG: [8C9C] 2026-04-02
+#TAG: [8C9C] 2026-04-05
 # Verifies: closed <memory> tags are found and the last block is used when multiple exist
 @pytest.mark.behavioural
 def test_parse_memory_block_uses_last_closed_tag():
@@ -32,7 +32,7 @@ def test_parse_memory_block_uses_last_closed_tag():
     assert result.complete is False
 
 
-#TAG: [93FF] 2026-04-02
+#TAG: [93FF] 2026-04-05
 # Verifies: unclosed <memory> tag is parsed as fallback when no closing tag exists
 @pytest.mark.edge
 def test_parse_memory_block_unclosed_tag():
@@ -45,7 +45,7 @@ def test_parse_memory_block_unclosed_tag():
     assert result.is_compact is False
 
 
-#TAG: [8287] 2026-04-02
+#TAG: [8287] 2026-04-05
 # Verifies: text with no <memory> tag returns NO_BLOCK sentinel
 @pytest.mark.error
 def test_parse_memory_block_no_tag_returns_no_block():
@@ -56,7 +56,7 @@ def test_parse_memory_block_no_tag_returns_no_block():
     assert result.confidence_updates == []
 
 
-#TAG: [8277] 2026-04-02
+#TAG: [8277] 2026-04-05
 # Verifies: compact format is detected via type/topic: pattern and dispatched correctly
 @pytest.mark.adversarial
 def test_parse_memory_block_compact_detection():
@@ -76,7 +76,7 @@ def test_parse_memory_block_compact_detection():
 # 2. Compact entry parsing (type/topic: content [k: keywords])
 # ---------------------------------------------------------------------------
 
-#TAG: [50C4] 2026-04-02
+#TAG: [50C4] 2026-04-05
 # Verifies: compact entry with keywords extracts type, topic, content, and keyword list correctly
 @pytest.mark.behavioural
 def test_compact_entry_with_keywords():
@@ -89,7 +89,7 @@ def test_compact_entry_with_keywords():
     assert result.keywords_explicit is True
 
 
-#TAG: [8DAC] 2026-04-02
+#TAG: [8DAC] 2026-04-05
 # Verifies: compact entry without [k: ...] suffix keeps full content and keywords remain empty
 @pytest.mark.edge
 def test_compact_entry_no_keywords():
@@ -100,7 +100,7 @@ def test_compact_entry_no_keywords():
     assert result.keywords_explicit is False
 
 
-#TAG: [1E82] 2026-04-02
+#TAG: [1E82] 2026-04-05
 # Verifies: compact entry with colons in content is parsed correctly (colon after topic delimiter)
 @pytest.mark.error
 def test_compact_entry_colons_in_content():
@@ -110,7 +110,7 @@ def test_compact_entry_colons_in_content():
     assert result.entries[0]["content"] == "run with: docker run -p 8080:80 image:latest"
 
 
-#TAG: [4227] 2026-04-02
+#TAG: [4227] 2026-04-05
 # Verifies: multiple compact entries accumulate and last entry's keywords win
 @pytest.mark.adversarial
 def test_compact_multiple_entries_keywords_override():
@@ -133,7 +133,7 @@ def test_compact_multiple_entries_keywords_override():
 # 3. Compact control lines (complete/context/hash/noop/incomplete)
 # ---------------------------------------------------------------------------
 
-#TAG: [189A] 2026-04-02
+#TAG: [189A] 2026-04-05
 # Verifies: control line "+ c h:1A" sets complete=True, context=sufficient, hash=0x1A
 @pytest.mark.behavioural
 def test_compact_control_line_positive():
@@ -145,7 +145,7 @@ def test_compact_control_line_positive():
     assert result.hash_claimed == 0x1A
 
 
-#TAG: [2ED1] 2026-04-02
+#TAG: [2ED1] 2026-04-05
 # Verifies: noop "." block with hash is parsed; entries list is empty
 @pytest.mark.edge
 def test_compact_noop_with_hash():
@@ -156,7 +156,7 @@ def test_compact_noop_with_hash():
     assert result.is_compact is True
 
 
-#TAG: [2DEA] 2026-04-02
+#TAG: [2DEA] 2026-04-05
 # Verifies: "- :remaining text" sets complete=False and captures remaining
 @pytest.mark.error
 def test_compact_incomplete_with_remaining():
@@ -166,7 +166,7 @@ def test_compact_incomplete_with_remaining():
     assert result.remaining == "need to finish the migration"
 
 
-#TAG: [4AD9] 2026-04-02
+#TAG: [4AD9] 2026-04-05
 # Verifies: control line "- c?:query text h:AB" sets incomplete, insufficient context, and hash
 @pytest.mark.adversarial
 def test_compact_control_line_all_fields():
@@ -182,10 +182,10 @@ def test_compact_control_line_all_fields():
 # 4. Verbose entry + field parsing
 # ---------------------------------------------------------------------------
 
-#TAG: [E71E] 2026-04-02
+#TAG: [E71E] 2026-04-05
 # Verifies: verbose format parses all standard fields (type, topic, content, complete, context, keywords)
 @pytest.mark.behavioural
-def test_verbose_full_entry():
+def test_parse_memory_block_verbose_full_entry():
     text = (
         "<memory>\n"
         "- type: correction\n- topic: bug-fix\n- content: Off-by-one in loop\n"
@@ -205,10 +205,10 @@ def test_verbose_full_entry():
     assert result.is_compact is False
 
 
-#TAG: [75F8] 2026-04-02
+#TAG: [75F8] 2026-04-05
 # Verifies: verbose block with no complete/context fields has explicit flags as False
 @pytest.mark.edge
-def test_verbose_missing_explicit_fields():
+def test_parse_memory_block_verbose_missing_fields():
     text = "<memory>\n- type: fact\n- topic: test\n- content: data\n</memory>"
     result = parse_memory_block(text)
     assert result.complete is None
@@ -217,10 +217,10 @@ def test_verbose_missing_explicit_fields():
     assert result.keywords_explicit is False
 
 
-#TAG: [433A] 2026-04-02
+#TAG: [433A] 2026-04-05
 # Verifies: verbose block with "complete: false" and remaining text is parsed correctly
 @pytest.mark.error
-def test_verbose_incomplete_with_remaining():
+def test_parse_memory_block_verbose_incomplete_remaining():
     text = (
         "<memory>\n"
         "- type: project\n- topic: migration\n- content: started\n"
@@ -233,10 +233,10 @@ def test_verbose_incomplete_with_remaining():
     assert result.remaining == "need to run tests"
 
 
-#TAG: [F58A] 2026-04-02
+#TAG: [F58A] 2026-04-05
 # Verifies: verbose block with bare "- " line separators and no dashes on key lines still parses
 @pytest.mark.adversarial
-def test_verbose_mixed_dash_nodash():
+def test_parse_memory_block_verbose_mixed_dash():
     text = (
         "<memory>\n"
         "type: fact\n"
@@ -257,10 +257,10 @@ def test_verbose_mixed_dash_nodash():
 # 5. Verbose multi-entry and partial entry handling
 # ---------------------------------------------------------------------------
 
-#TAG: [EE1C] 2026-04-02
+#TAG: [EE1C] 2026-04-05
 # Verifies: two consecutive verbose entries with repeated "type" key triggers entry boundary
 @pytest.mark.behavioural
-def test_verbose_multi_entry_boundary():
+def test_parse_memory_block_verbose_multi_entry():
     text = (
         "<memory>\n"
         "- type: fact\n- topic: first\n- content: entry one\n"
@@ -276,10 +276,10 @@ def test_verbose_multi_entry_boundary():
     assert result.entries[1]["content"] == "entry two"
 
 
-#TAG: [BCB5] 2026-04-02
+#TAG: [BCB5] 2026-04-05
 # Verifies: partial entry (type+topic, no content) defaults content to topic value
 @pytest.mark.edge
-def test_verbose_partial_entry_defaults_content():
+def test_parse_memory_block_verbose_partial_defaults():
     text = (
         "<memory>\n"
         "- type: fact\n- topic: orphan-topic\n"
@@ -291,10 +291,10 @@ def test_verbose_partial_entry_defaults_content():
     assert result.entries[0]["content"] == "orphan-topic"
 
 
-#TAG: [C93F] 2026-04-02
+#TAG: [C93F] 2026-04-05
 # Verifies: entry with only type (no topic) is not added to entries
 @pytest.mark.error
-def test_verbose_type_only_not_added():
+def test_parse_memory_block_verbose_type_only():
     text = (
         "<memory>\n"
         "- type: fact\n"
@@ -305,10 +305,10 @@ def test_verbose_type_only_not_added():
     assert len(result.entries) == 0
 
 
-#TAG: [CC8A] 2026-04-02
+#TAG: [CC8A] 2026-04-05
 # Verifies: confidence_update in verbose format parses id, direction, and optional reason
 @pytest.mark.adversarial
-def test_verbose_confidence_updates_all_directions():
+def test_parse_memory_block_verbose_confidence_updates():
     text = (
         "<memory>\n"
         "- type: fact\n- topic: cu\n- content: testing updates\n"
@@ -329,10 +329,10 @@ def test_verbose_confidence_updates_all_directions():
 # Sentinel constants (lightweight)
 # ---------------------------------------------------------------------------
 
-#TAG: [FAC9] 2026-04-02
+#TAG: [FAC9] 2026-04-05
 # Verifies: NO_BLOCK sentinel has entries=None, complete=None, and all explicit flags False
 @pytest.mark.behavioural
-def test_no_block_sentinel_structure():
+def test_parse_memory_block_no_block_sentinel():
     assert NO_BLOCK.entries is None
     assert NO_BLOCK.complete is None
     assert NO_BLOCK.remaining is None
@@ -342,10 +342,10 @@ def test_no_block_sentinel_structure():
     assert NO_BLOCK.is_compact is False
 
 
-#TAG: [1B1C] 2026-04-02
+#TAG: [1B1C] 2026-04-05
 # Verifies: NOOP_BLOCK sentinel has empty entries list, complete=True, context=sufficient
 @pytest.mark.behavioural
-def test_noop_block_sentinel_structure():
+def test_parse_memory_block_noop_sentinel():
     assert NOOP_BLOCK.entries == []
     assert NOOP_BLOCK.complete is True
     assert NOOP_BLOCK.context == "sufficient"

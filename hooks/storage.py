@@ -57,8 +57,8 @@ def extract_associated_files(transcript_path: str, lookback: int = 30) -> list[s
 
             # Also check Bash tool calls for file paths in commands
             if tool_name == "Bash":
-                cmd = (params if isinstance(params, str) else
-                       (entry.get("parameters") or entry.get("input") or {}).get("command", ""))
+                bash_params = entry.get("parameters") or entry.get("input") or {}
+                cmd = bash_params.get("command", "") if isinstance(bash_params, dict) else ""
                 # Extract paths that look like file references
                 for match in re.findall(r'(?:^|\s)(/[^\s;|&>]+\.[a-zA-Z0-9]+)', str(cmd)):
                     if match not in seen:
@@ -202,14 +202,12 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     project: Optional[str] = get_session_project(conn, session_id)
     inserted: int = 0
 
-    # Lazy file extraction for correction-type memories
+    # Lazy file extraction — associate touched files with all memory types
     _associated_files: Optional[list[str]] = None
-    has_corrections = any(e.get("type") == "correction" for e in entries)
-
-    if has_corrections and transcript_path:
+    if transcript_path:
         _associated_files = extract_associated_files(transcript_path)
         if _associated_files:
-            log(f"Correction file association: {len(_associated_files)} files from transcript")
+            log(f"File association: {len(_associated_files)} files from transcript")
 
     for entry in entries:
         mem_type: str = entry.get("type", "fact")
@@ -330,8 +328,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
         inserted += 1
 
-        # Associate file paths with correction-type memories
-        if mem_type == "correction" and _associated_files:
+        # Associate file paths with all memories
+        if _associated_files:
             files_json = json.dumps(_associated_files)
             # Get the ID of the memory we just inserted/updated
             last_id = conn.execute(
@@ -343,7 +341,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     "UPDATE memories SET associated_files = ? WHERE id = ?",
                     (files_json, last_id[0])
                 )
-                log(f"Associated {len(_associated_files)} files with correction {last_id[0]}: {_associated_files[:3]}")
+                log(f"Associated {len(_associated_files)} files with {mem_type} {last_id[0]}: {_associated_files[:3]}")
 
     conn.commit()
 

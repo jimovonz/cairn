@@ -135,6 +135,7 @@ def test_no_question_passes():
     )
     result = run_hook(text)
     reason = result.get("reason", "")
+    assert result.get("exit_code") == 0, f"Hook should allow non-question response, got: {result}"
     assert "question" not in reason.lower(), f"Should not trigger on non-question: {result}"
     print("PASS: response without questions passes")
 
@@ -148,6 +149,7 @@ def test_question_in_code_block_ignored():
     )
     result = run_hook(text)
     reason = result.get("reason", "")
+    assert result.get("exit_code") == 0, f"Hook should allow when question is in code block, got: {result}"
     assert "question" not in reason.lower(), f"Question in code block should not trigger: {result}"
     print("PASS: question in code block ignored")
 
@@ -161,6 +163,7 @@ def test_question_in_quotes_ignored():
     )
     result = run_hook(text)
     reason = result.get("reason", "")
+    assert result.get("exit_code") == 0, f"Hook should allow when question is in quotes, got: {result}"
     assert "question" not in reason.lower(), f"Question in quotes should not trigger: {result}"
     print("PASS: question in quotes ignored")
 
@@ -176,6 +179,7 @@ def test_question_early_in_response_ignored():
     )
     result = run_hook(text)
     reason = result.get("reason", "")
+    assert result.get("exit_code") == 0, f"Hook should allow when question is early in response, got: {result}"
     assert "question" not in reason.lower(), f"Question early in response should not trigger: {result}"
     print("PASS: question early in response (outside last 3 sentences) ignored")
 

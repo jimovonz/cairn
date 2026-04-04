@@ -134,7 +134,8 @@ class TestExtractLastSentence:
         import stop_hook
         text = "First I did this. Then I checked the logs. Let me investigate the error further."
         result = enforcement._extract_last_sentence(text)
-        assert "investigate" in result
+        assert result == "Let me investigate the error further", \
+            f"Expected exact last sentence (period stripped); got: {result!r}"
 
 
 class TestCheckTrailingIntent:

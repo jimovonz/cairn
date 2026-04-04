@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 import hook_helpers
 import retrieval
+import embeddings as embeddings_mod
 from config import RRF_K
 
 TEST_DIR = tempfile.mkdtemp()
@@ -103,10 +104,10 @@ def make_semantic_result(mid, type_="fact", topic="test", content="test",
 # Behavioural
 # ============================================================
 
-#TAG: [R1A0]
+#TAG: [4BC1] 2026-04-05
 # Verifies: RRF dual-match (semantic+FTS) produces higher fused score than single-match (FTS-only)
 @pytest.mark.behavioural
-def test_rrf_dual_match_ranks_higher_than_single():
+def test_retrieve_context_rrf_dual_match_ranks_higher():
     """Memory found by both semantic and FTS should appear before FTS-only match."""
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'proj')")
@@ -134,17 +135,16 @@ def test_rrf_dual_match_ranks_higher_than_single():
     # Both memories should appear. Dual-match (memory 1) should come first in output.
     # Extract all entry ids in document order to verify ranking
     entry_ids = [int(m.group(1)) for m in re.finditer(r'<entry id="(\d+)"', result)]
-    assert m1 in entry_ids, f"Dual-match memory id={m1} must appear in output"
-    assert m2 in entry_ids, f"Single-match memory id={m2} must appear in output"
-    assert entry_ids.index(m1) < entry_ids.index(m2), (
-        f"Dual-match id={m1} should rank before single-match id={m2}, got order: {entry_ids}"
+    # List equality proves both: exact membership (once each) and ordering (m1 before m2)
+    assert entry_ids == [m1, m2], (
+        f"Expected [m1={m1}, m2={m2}] in that order; got {entry_ids}"
     )
 
 
-#TAG: [R1B0]
+#TAG: [C375] 2026-04-05
 # Verifies: XML output contains correct structure — cairn_context root, instruction, project and global scopes
 @pytest.mark.behavioural
-def test_xml_output_structure_with_project_and_global():
+def test_retrieve_context_xml_structure():
     """retrieve_context should produce well-formed XML with both scopes when applicable."""
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'myproj')")
@@ -176,31 +176,34 @@ def test_xml_output_structure_with_project_and_global():
     lines = result.strip().split("\n")
     assert lines[0] == '<cairn_context query="database schema migration" current_project="myproj">'
     assert lines[-1] == "</cairn_context>"
-    # Exactly 1 instruction element
-    assert sum(1 for l in lines if "<instruction>" in l) == 1
-    # Exactly 1 project scope and 1 global scope
-    assert sum(1 for l in lines if 'level="project"' in l) == 1
-    assert sum(1 for l in lines if 'level="global"' in l) == 1
+    # Exactly 1 instruction element at line[1], exactly 1 project scope at line[2], global at line[5]
+    assert lines[1][:15] == "  <instruction>"
+    assert lines[2] == '  <scope level="project" name="myproj" weight="high">'
+    assert lines[5] == '  <scope level="global" weight="low">'
     # Project scope references the correct project name and weight
     proj_scope_line = [l for l in lines if 'level="project"' in l][0]
     scope_attrs = re.search(r'<scope level="project" name="(\w+)" weight="(\w+)">', proj_scope_line)
     assert scope_attrs.group(1) == "myproj"
     assert scope_attrs.group(2) == "high"
-    # Entry with depth=3 should have ctx="y" attribute — verify exactly once
+    # Entry with depth=3 should have ctx="y" attribute — verify exact attribute value
     entry_with_ctx = [l for l in lines if f'id="{m1}"' in l][0]
-    assert entry_with_ctx.count('ctx="y"') == 1
-    # Reliability label must be "strong" for score 0.60 — verify exact value
-    assert entry_with_ctx.count('reliability="strong"') == 1
+    ctx_attr = re.search(r'\bctx="([^"]*)"', entry_with_ctx)
+    assert ctx_attr is not None and ctx_attr.group(1) == "y", \
+        f"Expected ctx=\"y\" in entry line; got: {entry_with_ctx!r}"
+    # Reliability label must be "strong" for score 0.60 — verify exact attribute value
+    rel_attr = re.search(r'\breliability="([^"]*)"', entry_with_ctx)
+    assert rel_attr is not None and rel_attr.group(1) == "strong", \
+        f"Expected reliability=\"strong\"; got: {entry_with_ctx!r}"
 
 
 # ============================================================
 # Edge
 # ============================================================
 
-#TAG: [R2A0]
+#TAG: [2846] 2026-04-05
 # Verifies: with no embedder (None), FTS-only path still produces valid output via composite_score
 @pytest.mark.edge
-def test_no_embedder_fts_only_produces_output():
+def test_retrieve_context_fts_only_no_embedder():
     """When get_embedder returns None, FTS results still go through RRF and produce XML."""
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'proj')")
@@ -209,12 +212,13 @@ def test_no_embedder_fts_only_produces_output():
                        project="proj", confidence=0.8, session_id="other")
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
-         patch.object(hook_helpers, 'get_embedder', return_value=None):
+         patch.object(hook_helpers, 'get_embedder', return_value=None), \
+         patch.object(embeddings_mod, 'composite_score', return_value=0.75):
         result = retrieval.retrieve_context("SQLite WAL deadlock", session_id="s1")
 
     # FTS should find the memory. Verify it's a complete XML document with the expected entry.
     lines = result.strip().split("\n")
-    assert lines[0].startswith("<cairn_context")
+    assert lines[0] == '<cairn_context query="SQLite WAL deadlock" current_project="proj">'
     assert lines[-1] == "</cairn_context>"
     # The FTS-found entry should have a computed score (not hardcoded 0.30)
     # and should reference our memory's content
@@ -223,16 +227,18 @@ def test_no_embedder_fts_only_produces_output():
     m_content = re.search(r'>(.+)</entry>', entry_line)
     extracted_content = m_content.group(1) if m_content else ""
     assert extracted_content == "SQLite WAL mode fixed concurrent access deadlock"
-    # FTS-only results get a computed composite score — verify reliability label is a valid enum value
+    # composite_score=0.75 → score ≈ 0.75+0.10=0.85 ≥ 0.6 → "strong"
+    # If 0.30 fallback were used: score ≈ 0.40 → "moderate", not "strong"
     m_rel = re.search(r'reliability="(\w+)"', entry_line)
     extracted_rel = m_rel.group(1) if m_rel else ""
-    assert extracted_rel in {"weak", "moderate", "strong"}
+    assert extracted_rel == "strong", \
+        f"Expected reliability=strong (score≈0.85 from composite_score=0.75); got '{extracted_rel}'"
 
 
-#TAG: [R2B0]
+#TAG: [999F] 2026-04-05
 # Verifies: max_per_scope parameter caps project and global results independently
 @pytest.mark.edge
-def test_max_per_scope_caps_results():
+def test_retrieve_context_max_per_scope_caps():
     """max_per_scope=1 should limit to at most 1 project and 1 global result."""
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'proj')")
@@ -273,23 +279,23 @@ def test_max_per_scope_caps_results():
         r'<scope level="project".*?>(.*?)</scope>', result, re.DOTALL)
     global_scope_match = re.search(
         r'<scope level="global".*?>(.*?)</scope>', result, re.DOTALL)
-    project_scope_count = result.count('<scope level="project"')
-    assert project_scope_count == 1, f"Expected exactly 1 project scope, got {project_scope_count}"
-    project_entry_count = project_scope_match.group(1).count("<entry ") if project_scope_match else 0
-    assert project_entry_count == 1, f"Expected 1 project entry, got {project_entry_count}"
+    # Extract integer entry IDs from each scope — len() of integers is not string containment
+    assert project_scope_match is not None, "Expected project scope in output"
+    project_entry_ids = [int(m.group(1)) for m in re.finditer(r'<entry id="(\d+)"', project_scope_match.group(1))]
+    assert len(project_entry_ids) == 1, f"Expected 1 project entry, got {len(project_entry_ids)}: {project_entry_ids}"
     if global_scope_match:
-        global_entries = global_scope_match.group(1).count("<entry ")
-        assert global_entries == 1, f"Expected 1 global entry, got {global_entries}"
+        global_entry_ids = [int(m.group(1)) for m in re.finditer(r'<entry id="(\d+)"', global_scope_match.group(1))]
+        assert len(global_entry_ids) == 1, f"Expected 1 global entry, got {len(global_entry_ids)}: {global_entry_ids}"
 
 
 # ============================================================
 # Error
 # ============================================================
 
-#TAG: [R3A0]
+#TAG: [A7AA] 2026-04-05
 # Verifies: ConnectionError from embedder.find_similar is caught and FTS results still returned
 @pytest.mark.error
-def test_embedder_connection_error_falls_back_to_fts():
+def test_retrieve_context_embedder_connection_error():
     """When semantic search raises ConnectionError, FTS results should still be returned."""
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'proj')")
@@ -307,15 +313,15 @@ def test_embedder_connection_error_falls_back_to_fts():
     # FTS should still return results despite semantic failure
     # Verify the entry exists in output and has the correct id
     entry_ids = [int(m.group(1)) for m in re.finditer(r'<entry id="(\d+)"', result)]
-    assert m1 in entry_ids, f"FTS-found memory id={m1} must appear despite semantic failure"
+    assert entry_ids == [m1], f"Expected exactly [m1={m1}] in FTS output; got {entry_ids}"
     # Verify the result is a well-formed cairn_context document
     assert result.strip().split("\n")[-1] == "</cairn_context>"
 
 
-#TAG: [R3B0]
+#TAG: [7473] 2026-04-05
 # Verifies: memory with NULL confidence in DB gets default 0.7 in FTS path instead of crashing
 @pytest.mark.error
-def test_null_confidence_defaults_to_0_7():
+def test_retrieve_context_null_confidence():
     """FTS path should handle NULL confidence by defaulting to 0.7."""
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'proj')")
@@ -337,7 +343,7 @@ def test_null_confidence_defaults_to_0_7():
         result = retrieval.retrieve_context("deployment pipeline confidence", session_id="s1")
 
     # FTS should find the memory via keywords as the sole result
-    assert result is not None, "NULL-confidence memory must still be retrievable via FTS"
+    # (TypeError on next line if result is None — NULL confidence must not suppress retrieval)
     entry_ids = [int(m.group(1)) for m in re.finditer(r'<entry id="(\d+)"', result)]
     assert len(entry_ids) == 1, f"Expected exactly 1 FTS result, got {len(entry_ids)}"
     assert entry_ids[0] == mem_id, f"Expected entry id={mem_id}, got {entry_ids[0]}"
@@ -347,10 +353,10 @@ def test_null_confidence_defaults_to_0_7():
 # Adversarial
 # ============================================================
 
-#TAG: [R4A0]
+#TAG: [CE3A] 2026-04-05
 # Verifies: same-session memories are excluded from BOTH FTS and semantic results simultaneously
 @pytest.mark.adversarial
-def test_same_session_excluded_from_both_methods():
+def test_retrieve_context_same_session_excluded():
     """Memories from the querying session must be excluded from both search methods."""
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'proj')")
@@ -376,10 +382,10 @@ def test_same_session_excluded_from_both_methods():
     assert result is None
 
 
-#TAG: [R4B0]
+#TAG: [2B8F] 2026-04-05
 # Verifies: context_need with SQL metacharacters and embedded quotes doesn't crash or inject
 @pytest.mark.adversarial
-def test_sql_metacharacters_in_context_need():
+def test_retrieve_context_sql_injection_in_query():
     """SQL metacharacters in query should be handled safely without crashes."""
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'proj')")
