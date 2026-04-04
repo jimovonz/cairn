@@ -38,30 +38,31 @@ All three are enforced mechanically. The LLM cannot forget to participate. No ot
 
 ### How it compares
 
-Surveyed the top 30 GitHub "claude memory" repos (April 2026). The landscape breaks into three approaches:
+Surveyed the top 30 GitHub "claude memory" repos (April 2026) plus the two most prominent dedicated memory systems (Claude-Mem, Mem0). The landscape breaks into four approaches:
 
 | Approach | Examples | Limitation |
 |----------|----------|------------|
 | File-based / markdown | claude-memory-engine, claude-memory-extractor | No semantic search, no dedup, no retrieval loop |
-| Session-end capture | claude-memory-plugin, claude-cache | Memories captured after the fact; no per-turn participation |
-| MCP tool-call | claude-memory-mcp, claude_memory | LLM must explicitly invoke retrieval tools; passive otherwise |
+| Session-end capture | claude-memory-plugin, claude-mem | Memory extracted after the session; requires extra LLM calls |
+| SDK / API layer | Mem0 | Requires 2+ extra LLM calls per add(); no Claude Code hook integration |
+| MCP tool-call | claude-memory-mcp, claude_memory | LLM must explicitly invoke retrieval; passive otherwise |
 
-Cairn is the only system in all three categories that makes the LLM an active participant on every turn. Specific capabilities absent from all surveyed alternatives:
+Cairn is the only system that makes the LLM an active participant on every turn with zero extra LLM calls:
 
-| Capability | Cairn | All others surveyed |
-|------------|-------|---------------------|
-| Memory captured within the normal response — no extra LLM calls | ✓ | ✗ |
-| LLM self-declares context gaps mid-conversation, system injects and re-prompts | ✓ | ✗ |
-| Bootstrap enforcement — forces context checks every N turns | ✓ | ✗ |
-| Completeness enforcement — blocks stop if LLM says it's not done | ✓ | ✗ |
-| Veracity feedback loop — `+`/`-!` annotations across sessions | ✓ | ✗ |
-| Verbatim session recovery — `--context <id>` retrieves the actual transcript excerpt, not a summary | ✓ | ✗ |
-| Correction-file association — corrections auto-linked to files touched at time of mistake | ✓ | ✗ |
-| Content density enforcement — rejects thin memories | ✓ | ✗ |
-| Trailing intent detection — blocks stop if LLM promised action without doing it | ✓ | ✗ |
-| Hybrid FTS5 + vector search with RRF | ✓ | One (codenamev/claude_memory) |
-| Proactive gotcha injection on file access | ✓ | One (claude-memory-plugin, Ollama-dependent) |
-| Local embeddings, no API key | ✓ | Several |
+| Capability | Cairn | Claude-Mem | Mem0 | Others |
+|------------|-------|-----------|------|--------|
+| Memory captured within the normal response — **no extra LLM calls** | ✓ | ✗ (1 call/session) | ✗ (2+ calls/add) | ✗ |
+| LLM self-declares context gaps mid-conversation, system injects and re-prompts | ✓ | ✗ | ✗ | ✗ |
+| Automatic context injection — no explicit tool call required | ✓ | ✗ | ✗ | ✗ |
+| Bootstrap enforcement — forces context checks every N turns | ✓ | ✗ | ✗ | ✗ |
+| Completeness enforcement — blocks stop if LLM says it's not done | ✓ | ✗ | ✗ | ✗ |
+| Veracity feedback loop — `+`/`-!` annotations across sessions | ✓ | ✗ | ✗ | ✗ |
+| Verbatim session recovery — retrieves actual transcript excerpt, not a summary | ✓ | partial | ✗ | ✗ |
+| Correction-file association — corrections auto-linked to files at time of mistake | ✓ | ✗ | ✗ | ✗ |
+| Structured memory taxonomy (decision/correction/fact/etc.) enforced at write time | ✓ | ✗ | ✗ | ✗ |
+| Trailing intent detection — blocks stop if LLM promised action without doing it | ✓ | ✗ | ✗ | ✗ |
+| Hybrid FTS5 + vector search with RRF | ✓ | ✗ | ✗ | one |
+| Cloud-free, no external dependencies | ✓ | ✓ | optional | most |
 
 **Session 1** — casual conversation in `~/temp`:
 ```
