@@ -149,10 +149,12 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
         record_metric(session_id, "layer1_5_no_match", user_message[:80])
         return None
 
-    # Skip memories already injected this session
+    # Skip memories already injected this session, and memories produced in this session
     seen_ids = load_injected_ids(session_id)
     before_dedup = len(results)
-    results = [r for r in results if r["id"] not in seen_ids]
+    results = [r for r in results
+               if r["id"] not in seen_ids
+               and r.get("session_id") != session_id]
     if not results:
         record_metric(session_id, "layer1_5_skipped_all_seen", user_message[:80], before_dedup)
         return None
