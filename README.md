@@ -55,7 +55,7 @@ Cairn is the only system in all three categories that makes the LLM an active pa
 | Bootstrap enforcement — forces context checks every N turns | ✓ | ✗ |
 | Completeness enforcement — blocks stop if LLM says it's not done | ✓ | ✗ |
 | Veracity feedback loop — `+`/`-!` annotations across sessions | ✓ | ✗ |
-| Two-step recall — memory summary → full session conversation via `--context <id>` | ✓ | ✗ |
+| Verbatim session recovery — `--context <id>` retrieves the actual transcript excerpt, not a summary | ✓ | ✗ |
 | Correction-file association — corrections auto-linked to files touched at time of mistake | ✓ | ✗ |
 | Content density enforcement — rejects thin memories | ✓ | ✗ |
 | Trailing intent detection — blocks stop if LLM promised action without doing it | ✓ | ✗ |
@@ -95,7 +95,7 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Compact memory format** — dual-format parser supports both verbose (`- type: fact`) and compact (`fact/topic: content [k: kw1, kw2]`) memory blocks
 - **Completeness enforcement** — `complete: false` blocks stop and re-prompts with remaining work; trailing intent detection blocks when the LLM promises action without following through
 - **Bootstrap enforcement** — forces context checks every N turns to build the habit of cairn-first reasoning
-- **Two-step recall** — `--context <id>` recovers the full session conversation around any memory, with depth-based navigation; the one-liner summary links back to the original discussion
+- **Verbatim session recovery** — every memory links back to the exact conversation that produced it; `--context <id>` retrieves the verbatim transcript excerpt from the original session — the actual words spoken, not a summary or reconstruction. No other surveyed system provides this.
 - **Self-improving** — retrieval outcome feedback adaptively tightens thresholds when results are poor
 - **Memory audit** — `/cairn audit` reviews session memories for accuracy, enriches thin entries, fills gaps; background agent (`audit_agent.py`) reads transcripts via `claude -p` for automated review
 - **Archive over delete** — superseded and incorrect memories are archived with reasons, preserving the learning trail of rejected approaches and mistakes
@@ -140,7 +140,7 @@ Every Claude Code response produces invisible metadata that gets captured and st
 | `/cairn audit` | Review session memories — confirm, enrich, archive, fill gaps |
 | `/cairn audit-bg` | Background audit via `claude -p` agent with transcript |
 | `/cairn review` | Surface low-confidence and suppressed memories |
-| `/cairn context <id>` | Recover full conversation around a memory |
+| `/cairn context <id>` | Recover verbatim transcript excerpt from the session where this memory was created |
 | `/cairn history <id>` | Version history for a memory |
 | `/cairn check` | Validate system health (DB, hooks, daemon, embeddings) |
 | `/cairn compact [project]` | Dense dump suitable for LLM ingestion |
