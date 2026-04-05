@@ -85,6 +85,7 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Per-turn context self-assessment** — the LLM declares when it lacks context on every response; the system retrieves and re-prompts automatically
 - **Five retrieval layers** — CWD-based project bootstrap, proactive first-prompt push, per-prompt mid-session injection, cross-project keyword surfacing, LLM-requested pull, plus gotcha injection on file access
 - **Hybrid FTS5 + vector search with RRF** — exact keyword matches (error codes, function names) fused with semantic similarity via Reciprocal Rank Fusion; dual-method matches ranked higher than single-method
+- **Type-prefix fan-out** — query expansion that searches with each memory type prefix (fact, decision, correction, etc.) and takes the max similarity per memory; closes the embedding gap between bare queries and type-prefixed stored memories
 - **Veracity tracking** — confidence represents corroboration, not retrieval rank; `+` corroborates, `-!` annotates contradictions with reasons that persist for future sessions
 - **Semantic search** — local embeddings via `all-MiniLM-L6-v2` with sqlite-vec indexed vector search; no API key required
 - **Project bootstrap** — on session start, injects standing-context memories (preferences, facts, project state) for the current working directory; gives Claude project awareness from CWD alone, independent of prompt content
@@ -169,7 +170,7 @@ Every LLM response ends with a `<memory>` block using angle bracket tags. Claude
 </memory>
 ```
 
-### Four retrieval layers
+### Five retrieval layers
 
 | Layer | When | What |
 |-------|------|------|
@@ -266,6 +267,7 @@ All tunable parameters are in `cairn/config.py`. Any value can be overridden via
 - Confidence boost/penalty rates
 - Quality gate thresholds
 - Deduplication sensitivity
+- Query expansion (`QUERY_EXPANSION_FANOUT` — type-prefix fan-out, default on)
 - Trailing intent detection threshold
 - Loop protection limits
 
@@ -314,7 +316,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test 
 
 ## Testing
 
-486 tests across 23 test files. No embedding model required — tests use mock vectors and patched DB paths.
+572 tests across 30 test files. Most tests use mock vectors and patched DB paths — no embedding model required. Quality benchmarks (`test_retrieval_quality*.py`, `test_query_expansion.py`) use real embeddings for ground-truth validation.
 
 ```bash
 cd ~/cairn
@@ -339,6 +341,12 @@ python3 -m pytest tests/
 | `test_enforcement_loop.py` | Two-pass enforcement loop, continuation cap, context cache, write throttle |
 | `test_question_enforcement.py` | Question-before-cairn detection and enforcement |
 | `test_trailing_intent.py` | Trailing intent detection, intent: resolved escape, content quality gate |
+| `test_e2e_pipeline.py` | Full round-trip through all 5 layers + gotcha: prompt → stop → prompt multi-turn flow |
+| `test_install_validation.py` | Installation validation: DB schema, templates, settings merge/removal, script syntax, health check, config |
+| `test_retrieval_benchmark.py` | Latency regression: FTS5/vector/RRF at 100/500/1000 scale, dedup throughput, scaling curves |
+| `test_retrieval_quality.py` | Retrieval quality (easy): ground-truth P/R/MRR for semantic, FTS5, hybrid RRF across 5 clean clusters |
+| `test_retrieval_quality_hard.py` | Retrieval quality (hard): overlapping clusters, temporal spread, cross-project, distractors, graded difficulty |
+| `test_query_expansion.py` | Query expansion strategies: type-prefix fan-out, corpus PRF, neighbor blend, combined — comparative benchmarks |
 
 ## License
 
