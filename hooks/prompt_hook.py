@@ -177,7 +177,10 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
         lines.append("  </scope>")
 
     lines.append("</cairn_context>")
+    result_ids = [r["id"] for r in project_results + global_results]
     record_metric(session_id, "layer1_5_injected", user_message[:80], len(results))
+    if result_ids:
+        record_metric(session_id, "layer_delivery", json.dumps({"layer": "L1.5", "ids": result_ids}))
     return "\n".join(lines)
 
 
@@ -242,7 +245,10 @@ def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
     lines.append('  </scope>')
     lines.append('</cairn_context>')
 
+    result_ids = [r[0] for r in rows]  # r[0] is id
     record_metric(session_id, "project_bootstrap_injected", project_name, len(rows))
+    if result_ids:
+        record_metric(session_id, "layer_delivery", json.dumps({"layer": "bootstrap", "ids": result_ids}))
     log(f"Project bootstrap: injected {len(rows)} standing-context entries for {project_name}")
     return "\n".join(lines)
 
@@ -293,6 +299,9 @@ def layer1_search(user_message: str, session_id: str) -> Optional[str]:
         lines.append("  </scope>")
 
     lines.append("</cairn_context>")
+    result_ids = [r["id"] for r in project_results + global_results]
+    if result_ids:
+        record_metric(session_id, "layer_delivery", json.dumps({"layer": "L1", "ids": result_ids}))
     return "\n".join(lines)
 
 
@@ -303,6 +312,8 @@ def main() -> None:
     cwd = hook_input.get("cwd", "")
     user_message = hook_input.get("user_message") or hook_input.get("prompt", "")
 
+    is_subagent = bool(hook_input.get("agent_id"))
+
     if not user_message or len(user_message) < 3:
         if not user_message:
             log(f"No user message found in hook input. Keys: {list(hook_input.keys())}")
@@ -310,7 +321,7 @@ def main() -> None:
 
     context_parts: list[str] = []
 
-    # Layer 1: First-prompt push
+    # Layer 1: First-prompt push (+ bootstrap)
     if is_first_prompt(session_id):
         mark_first_prompt_done(session_id)
 
@@ -323,36 +334,39 @@ def main() -> None:
         if l1_context:
             context_parts.append(l1_context)
             log(f"Layer 1: injected context for: {user_message[:50]}...")
-        # Memory block reminder on first prompt
-        context_parts.append(
-            "MEMORY BLOCK: End every response with a <memory> block — entries, control signals, and confidence feedback."
-        )
+        if not is_subagent:
+            # Memory block reminder on first prompt (not needed for subagents)
+            context_parts.append(
+                "MEMORY BLOCK: End every response with a <memory> block — entries, control signals, and confidence feedback."
+            )
 
-    else:
+    elif not is_subagent:
         # Layer 1.5: Per-prompt semantic injection for subsequent prompts
+        # Skipped for subagents — short-lived, adds latency
         l1_5_context = layer1_5_search(user_message, session_id)
         if l1_5_context:
             context_parts.append(l1_5_context)
             log(f"Layer 1.5: injected per-prompt context for: {user_message[:50]}...")
 
-    # Clean up stale staged context (older than 7 days — sessions unlikely to resume)
-    try:
-        cleanup_conn = get_conn()
-        from config import STAGED_CONTEXT_RETENTION_DAYS
-        cleanup_conn.execute(
-            "DELETE FROM hook_state WHERE key = 'staged_context' AND updated_at < datetime('now', ?)",
-            (f"-{STAGED_CONTEXT_RETENTION_DAYS} days",)
-        )
-        cleanup_conn.commit()
-        cleanup_conn.close()
-    except Exception:
-        pass
+    if not is_subagent:
+        # Clean up stale staged context (older than 7 days — sessions unlikely to resume)
+        try:
+            cleanup_conn = get_conn()
+            from config import STAGED_CONTEXT_RETENTION_DAYS
+            cleanup_conn.execute(
+                "DELETE FROM hook_state WHERE key = 'staged_context' AND updated_at < datetime('now', ?)",
+                (f"-{STAGED_CONTEXT_RETENTION_DAYS} days",)
+            )
+            cleanup_conn.commit()
+            cleanup_conn.close()
+        except Exception:
+            pass
 
-    # Layer 2: Staged cross-project context from previous stop hook
-    staged = load_staged_context(session_id)
-    if staged:
-        context_parts.append(staged)
-        log(f"Layer 2: injected staged cross-project context")
+        # Layer 2: Staged cross-project context from previous stop hook
+        staged = load_staged_context(session_id)
+        if staged:
+            context_parts.append(staged)
+            log(f"Layer 2: injected staged cross-project context")
 
     # Bootstrap reminder (deferred from previous stop hook — non-blocking)
     staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")

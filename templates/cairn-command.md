@@ -28,6 +28,9 @@ Map the argument to the appropriate command:
 - `/cairn daemon start` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/daemon.py start`
 - `/cairn daemon stop` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/daemon.py stop`
 - `/cairn daemon status` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/daemon.py status`
+- `/cairn bootstrap` → `python3 {{CAIRN_HOME}}/cairn/query.py --bootstrap`
+- `/cairn bootstrap <project>` → `python3 {{CAIRN_HOME}}/cairn/query.py --bootstrap <project>`
+- `/cairn dashboard` → `{{VENV_PYTHON}} {{CAIRN_HOME}}/cairn/dashboard.py &` (launches web dashboard in background, opens browser at http://127.0.0.1:8420)
 
 Run the matching bash command and show the output to the user.
 

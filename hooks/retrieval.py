@@ -367,6 +367,10 @@ def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[s
 
     log(f"Layer 2: staged {len(cross_project)} cross-project entries for next prompt")
     record_metric(session_id, "layer2_staged", query[:100], len(cross_project))
+    result_ids = [r["id"] for r in cross_project if "id" in r]
+    if result_ids:
+        import json as _json
+        record_metric(session_id, "layer_delivery", _json.dumps({"layer": "L2", "ids": result_ids}))
 
 
 # --- Context cache ---

@@ -123,6 +123,7 @@ def main() -> None:
     transcript_path: str = hook_input.get("transcript_path", "")
     session_id: str = hook_input.get("session_id", "")
     cwd: str = hook_input.get("cwd", "")
+    is_subagent: bool = bool(hook_input.get("agent_id"))
 
     # Register session and track parent chain
     register_session(session_id, transcript_path)
@@ -151,7 +152,7 @@ def main() -> None:
         log("Headless mode — skipping enforcement")
         sys.exit(0)
 
-    log(f"Text length: {len(text)}, has <memory>: {'<memory>' in text}, continuation: {is_continuation}")
+    log(f"Text length: {len(text)}, has <memory>: {'<memory>' in text}, continuation: {is_continuation}, subagent: {is_subagent}")
 
     # Parse memory block
     parsed = parse_memory_block(text)
@@ -160,6 +161,19 @@ def main() -> None:
     confidence_updates, retrieval_outcome = parsed.confidence_updates, parsed.retrieval_outcome
     keywords, intent = parsed.keywords, parsed.intent
     hash_claimed = parsed.hash_claimed
+
+    # Subagent mode: opportunistic — store what's volunteered, skip enforcement
+    if is_subagent:
+        if confidence_updates:
+            apply_confidence_updates(confidence_updates, session_id=session_id)
+        if retrieval_outcome:
+            record_metric(session_id, f"retrieval_{retrieval_outcome}", context_need[:100] if context_need else None)
+        if entries:
+            count = insert_memories(entries, session_id=session_id, transcript_path=transcript_path)
+            record_metric(session_id, "memories_stored", None, count)
+            log(f"Subagent: stored {count} memories opportunistically")
+        record_metric(session_id, "hook_fired", f"subagent,entries={len(entries) if entries else 0}")
+        sys.exit(0)
 
     # No memory block found
     if entries is None and complete is None:
@@ -359,6 +373,8 @@ def main() -> None:
                         # contradiction enforcement and per-memory dedup
                         injected_ids = _re.findall(r'id="(\d+)"', retrieved)
                         if injected_ids:
+                            layer_name = "L3-bootstrap" if _is_bootstrap else "L3"
+                            record_metric(session_id, "layer_delivery", json.dumps({"layer": layer_name, "ids": [int(i) for i in injected_ids]}))
                             conn2 = get_conn()
                             import json as _json
                             existing_row = conn2.execute(

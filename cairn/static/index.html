@@ -1,0 +1,1539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cairn Dashboard</title>
+<style>
+:root, [data-theme="dark"] {
+  --bg: #0d1117;
+  --bg-card: #161b22;
+  --bg-hover: #1c2333;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --text-dim: #8b949e;
+  --text-bright: #f0f6fc;
+  --accent: #58a6ff;
+  --accent-dim: #1f6feb;
+  --green: #3fb950;
+  --yellow: #d29922;
+  --red: #f85149;
+  --purple: #bc8cff;
+  --orange: #d18616;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+[data-theme="light"] {
+  --bg: #f6f8fa;
+  --bg-card: #ffffff;
+  --bg-hover: #f0f2f5;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --text-dim: #656d76;
+  --text-bright: #0d1117;
+  --accent: #0969da;
+  --accent-dim: #0550ae;
+  --green: #1a7f37;
+  --yellow: #9a6700;
+  --red: #cf222e;
+  --purple: #8250df;
+  --orange: #bc4c00;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Layout */
+.header {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+.header h1 { font-size: 18px; color: var(--text-bright); font-weight: 600; }
+.header nav { display: flex; gap: 4px; }
+.header nav button {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+}
+.header nav button:hover { color: var(--text); background: var(--bg-hover); }
+.header nav button.active {
+  color: var(--text-bright);
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+
+.main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+.panel { display: none; }
+.panel.active { display: block; }
+
+/* Cards */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.card h2 { font-size: 14px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+.card h3 { font-size: 15px; color: var(--text-bright); margin-bottom: 8px; }
+
+/* Stats grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.stat-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+}
+.stat-box .value { font-size: 28px; font-weight: 700; color: var(--text-bright); }
+.stat-box .label { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+
+/* Confidence bar */
+.conf-bar {
+  display: flex;
+  height: 24px;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 8px 0;
+}
+.conf-bar .segment { display: flex; align-items: center; justify-content: center; font-size: 11px; color: #fff; font-weight: 600; }
+
+/* Type badges */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.badge-decision { background: #1f6feb33; color: var(--accent); }
+.badge-preference { background: #bc8cff33; color: var(--purple); }
+.badge-fact { background: #3fb95033; color: var(--green); }
+.badge-correction { background: #f8514933; color: var(--red); }
+.badge-person { background: #d2992233; color: var(--yellow); }
+.badge-project { background: #d1861633; color: var(--orange); }
+.badge-skill { background: #58a6ff33; color: var(--accent); }
+.badge-workflow { background: #8b949e33; color: var(--text-dim); }
+
+/* Tables */
+.mem-table { width: 100%; border-collapse: collapse; }
+.mem-table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.mem-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.mem-table th.sortable:hover { color: var(--text-bright); }
+.mem-table th.sortable::after { content: ''; margin-left: 4px; }
+.mem-table th.sort-asc::after { content: ' \25B2'; }
+.mem-table th.sort-desc::after { content: ' \25BC'; }
+.mem-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.mem-table tr { cursor: pointer; transition: background 0.1s; }
+.mem-table tr:hover { background: var(--bg-hover); }
+.mem-table .content-cell {
+  max-width: 500px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mem-table .topic-cell { color: var(--text-bright); font-weight: 500; white-space: nowrap; }
+.mem-table .date-cell { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+.mem-table .conf-cell { font-family: var(--font-mono); font-size: 12px; }
+
+/* Search bar */
+.search-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.search-bar input, .search-bar select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+}
+.search-bar input:focus, .search-bar select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.search-bar input[type="text"] { flex: 1; }
+.search-bar button {
+  background: var(--accent-dim);
+  border: none;
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.search-bar button:hover { background: var(--accent); }
+
+/* Memory detail modal */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 100;
+  overflow-y: auto;
+  padding: 40px 24px;
+}
+.modal-overlay.active { display: flex; justify-content: center; }
+.modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 900px;
+  padding: 24px;
+  max-height: 90vh;
+  overflow-y: auto;
+  align-self: flex-start;
+}
+.modal-close {
+  float: right;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.modal-close:hover { color: var(--text); }
+.modal h2 { font-size: 16px; color: var(--text-bright); margin-bottom: 16px; }
+
+/* Transcript viewer */
+.transcript { margin-top: 16px; }
+.transcript .msg {
+  padding: 10px 14px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.transcript .msg-user {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+  border-left: 3px solid var(--accent);
+}
+.transcript .msg-assistant {
+  background: color-mix(in srgb, var(--purple) 8%, var(--bg-card));
+  border-left: 3px solid var(--purple);
+}
+.transcript .msg-anchor {
+  border-left-color: var(--yellow) !important;
+  background: color-mix(in srgb, var(--yellow) 10%, var(--bg-card));
+}
+.transcript .msg-role {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.transcript .msg-time { color: var(--text-dim); font-size: 11px; margin-left: 8px; }
+.transcript .memory-block {
+  background: color-mix(in srgb, var(--green) 10%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--green) 25%, var(--border));
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--green);
+  white-space: pre-wrap;
+}
+
+/* Session list */
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.session-item:hover { background: var(--bg-hover); }
+.session-id { font-family: var(--font-mono); font-size: 13px; color: var(--accent); }
+.session-project { font-size: 12px; color: var(--purple); }
+.session-meta { font-size: 12px; color: var(--text-dim); margin-left: auto; }
+
+/* Config editor */
+.config-group { margin-bottom: 20px; }
+.config-group h3 { font-size: 13px; color: var(--accent); margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.config-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+}
+.config-row label {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-bright);
+  min-width: 300px;
+}
+.config-row input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  width: 120px;
+}
+.config-row input:focus { outline: none; border-color: var(--accent); }
+.config-row .default-val { font-size: 11px; color: var(--text-dim); }
+.config-row .overridden { border-color: var(--yellow); }
+.config-save {
+  background: var(--green);
+  border: none;
+  color: #000;
+  padding: 8px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  margin-top: 12px;
+}
+.config-save:hover { opacity: 0.9; }
+
+/* Chart area */
+.chart-container {
+  position: relative;
+  height: 200px;
+  margin: 12px 0;
+}
+.chart-bar-group {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 100%;
+  padding: 0 4px;
+}
+.chart-bar {
+  flex: 1;
+  background: var(--accent-dim);
+  border-radius: 2px 2px 0 0;
+  min-width: 4px;
+  max-width: 20px;
+  position: relative;
+  transition: background 0.15s;
+}
+.chart-bar:hover { background: var(--accent); }
+.chart-bar .tooltip {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+  z-index: 10;
+}
+.chart-bar:hover .tooltip { display: block; }
+
+/* Pagination */
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.pagination button {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.pagination button:disabled { opacity: 0.4; cursor: default; }
+
+/* Loading */
+.loading { color: var(--text-dim); text-align: center; padding: 40px; }
+
+/* Back button */
+.back-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.back-btn:hover { color: var(--text); border-color: var(--text-dim); }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .mem-table .content-cell { max-width: 200px; }
+  .config-row { flex-wrap: wrap; }
+  .config-row label { min-width: auto; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Cairn</h1>
+  <nav>
+    <button class="active" data-panel="overview">Overview</button>
+    <button data-panel="memories">Memories</button>
+    <button data-panel="sessions">Sessions</button>
+    <button data-panel="metrics">Metrics</button>
+    <button data-panel="usage">Usage</button>
+    <button data-panel="config">Config</button>
+  </nav>
+  <button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark theme" style="margin-left:auto;background:none;border:1px solid var(--border);color:var(--text-dim);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:16px">&#9789;</button>
+</div>
+
+<div class="main">
+
+  <!-- Overview Panel -->
+  <div id="panel-overview" class="panel active">
+    <div class="stats-grid" id="stats-grid"></div>
+    <div class="card">
+      <h2>Confidence Distribution</h2>
+      <div id="conf-bar-container"></div>
+      <div id="conf-legend" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--text-dim)"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="card">
+        <h2>Memory Types</h2>
+        <div id="types-chart"></div>
+      </div>
+      <div class="card">
+        <h2>Growth</h2>
+        <div class="chart-container" id="growth-chart"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Token Usage (estimated)</h2>
+      <p style="color:var(--text-dim);font-size:11px;margin-bottom:8px">Estimated from transcript text (~4 chars/token). Excludes system prompt (~3.5K), memory files (~9K), tool schemas (~8.5K), and thinking tokens. Actual usage is ~20K+ tokens higher per session.</p>
+      <div id="token-stats" class="stats-grid"></div>
+      <div id="token-by-project" style="margin-top:12px"></div>
+    </div>
+    <div class="card">
+      <h2>Recent Memories</h2>
+      <div id="recent-memories"></div>
+    </div>
+  </div>
+
+  <!-- Memories Panel -->
+  <div id="panel-memories" class="panel">
+    <div class="search-bar">
+      <input type="text" id="mem-search" placeholder="Search memories...">
+      <select id="mem-mode">
+        <option value="fts">Keyword</option>
+        <option value="semantic">Semantic</option>
+      </select>
+      <select id="mem-type-filter">
+        <option value="">All types</option>
+        <option value="decision">decision</option>
+        <option value="preference">preference</option>
+        <option value="fact">fact</option>
+        <option value="correction">correction</option>
+        <option value="person">person</option>
+        <option value="project">project</option>
+        <option value="skill">skill</option>
+        <option value="workflow">workflow</option>
+      </select>
+      <select id="mem-project-filter">
+        <option value="">All projects</option>
+      </select>
+      <button onclick="searchMemories()">Search</button>
+    </div>
+    <div id="memories-results"></div>
+    <div class="pagination" id="memories-pagination"></div>
+  </div>
+
+  <!-- Sessions Panel -->
+  <div id="panel-sessions" class="panel">
+    <div id="sessions-list-view">
+      <div class="search-bar">
+        <input type="text" id="session-search" placeholder="Filter sessions...">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-dim);white-space:nowrap;cursor:pointer">
+          <input type="checkbox" id="hide-empty-sessions" checked onchange="sessionPage=0;loadSessions()"> Hide empty
+        </label>
+      </div>
+      <div id="sessions-list"></div>
+      <div class="pagination" id="sessions-pagination"></div>
+    </div>
+    <div id="session-detail-view" style="display:none">
+      <button class="back-btn" onclick="showSessionsList()">&larr; Back to sessions</button>
+      <div id="session-detail"></div>
+    </div>
+  </div>
+
+  <!-- Metrics Panel -->
+  <div id="panel-metrics" class="panel">
+    <div class="stats-grid" id="metrics-summary"></div>
+    <div class="card">
+      <h2>Retrieval Latency (daily avg)</h2>
+      <div class="chart-container" id="latency-chart"></div>
+    </div>
+    <div class="card">
+      <h2>Layer Activity</h2>
+      <div id="layer-activity"></div>
+    </div>
+    <div class="card">
+      <h2>Embedding Performance</h2>
+      <p style="color:var(--text-dim);font-size:12px;margin-bottom:12px">Per-call timing for embedding generation, vector search, and fan-out expansion.</p>
+      <div id="embed-stats"></div>
+      <div class="chart-container" id="embed-chart" style="margin-top:12px"></div>
+    </div>
+  </div>
+
+  <!-- Usage Panel -->
+  <div id="panel-usage" class="panel">
+    <div class="stats-grid" id="usage-summary"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="card">
+        <h2>Delivery by Layer</h2>
+        <div id="layer-delivery"></div>
+      </div>
+      <div class="card">
+        <h2>Retrieval Outcomes</h2>
+        <div id="retrieval-outcomes"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Most Retrieved Memories</h2>
+      <div id="top-retrieved"></div>
+    </div>
+    <div class="card">
+      <h2>Per-Session: Generated vs Retrieved</h2>
+      <div id="session-gen-ret"></div>
+    </div>
+  </div>
+
+  <!-- Config Panel -->
+  <div id="panel-config" class="panel">
+    <div class="card">
+      <h2>Configuration</h2>
+      <p style="color:var(--text-dim);margin-bottom:16px;font-size:13px">
+        Changes are saved to <code style="color:var(--accent)">cairn/.env</code> and take effect on next hook invocation.
+      </p>
+      <div id="config-editor"></div>
+      <button class="config-save" onclick="saveConfig()">Save Changes</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- Memory Detail Modal -->
+<div class="modal-overlay" id="memory-modal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal()">&times;</button>
+    <div id="modal-content"></div>
+  </div>
+</div>
+
+<script>
+// ─── State ─────────────────────────────────────────────────────────────────
+let currentPanel = 'overview';
+let memoryPage = 0;
+let memorySort = 'updated_at';
+let memoryOrder = 'desc';
+let sessionPage = 0;
+const PAGE_SIZE = 50;
+
+// ─── Navigation ────────────────────────────────────────────────────────────
+document.querySelectorAll('.header nav button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.header nav button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    const panel = btn.dataset.panel;
+    document.getElementById('panel-' + panel).classList.add('active');
+    currentPanel = panel;
+    if (panel === 'overview') loadOverview();
+    else if (panel === 'memories') loadMemories();
+    else if (panel === 'sessions') loadSessions();
+    else if (panel === 'metrics') loadMetrics();
+    else if (panel === 'usage') loadUsage();
+    else if (panel === 'config') loadConfig();
+  });
+});
+
+// ─── API helpers ───────────────────────────────────────────────────────────
+async function api(path) {
+  const r = await fetch(path);
+  return r.json();
+}
+
+function formatDate(d) {
+  if (!d) return '';
+  return d.replace('T', ' ').slice(0, 16);
+}
+
+function formatBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  return (b/1048576).toFixed(1) + ' MB';
+}
+
+function badge(type) {
+  return `<span class="badge badge-${type}">${type}</span>`;
+}
+
+function confColor(c) {
+  if (c >= 0.9) return 'var(--green)';
+  if (c >= 0.7) return 'var(--accent)';
+  if (c >= 0.5) return 'var(--yellow)';
+  if (c >= 0.3) return 'var(--orange)';
+  return 'var(--red)';
+}
+
+// ─── Generic table sorting ─────────────────────────────────────────────────
+// Call makeSortable(tableElement) after rendering any table.
+// Each <th> with class="sortable" and data-col="N" becomes clickable.
+// data-type="num"|"date"|"text" controls comparison (default: text).
+function makeSortable(table) {
+  if (!table) return;
+  const headers = table.querySelectorAll('th.sortable');
+  headers.forEach(th => {
+    th.addEventListener('click', () => {
+      const col = parseInt(th.dataset.col);
+      const type = th.dataset.type || 'text';
+      const tbody = table.querySelector('tbody');
+      if (!tbody) return;
+
+      // Toggle direction
+      const wasAsc = th.classList.contains('sort-asc');
+      headers.forEach(h => { h.classList.remove('sort-asc', 'sort-desc'); });
+      const dir = wasAsc ? 'desc' : 'asc';
+      th.classList.add('sort-' + dir);
+
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      rows.sort((a, b) => {
+        const aCell = a.children[col];
+        const bCell = b.children[col];
+        if (!aCell || !bCell) return 0;
+        let aVal = aCell.textContent.trim();
+        let bVal = bCell.textContent.trim();
+        let cmp = 0;
+        if (type === 'num') {
+          cmp = (parseFloat(aVal) || 0) - (parseFloat(bVal) || 0);
+        } else if (type === 'date') {
+          cmp = (aVal || '').localeCompare(bVal || '');
+        } else {
+          cmp = aVal.localeCompare(bVal, undefined, { sensitivity: 'base' });
+        }
+        return dir === 'asc' ? cmp : -cmp;
+      });
+      rows.forEach(r => tbody.appendChild(r));
+    });
+  });
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+// ─── Overview Panel ────────────────────────────────────────────────────────
+async function loadOverview() {
+  const data = await api('/api/stats');
+
+  document.getElementById('stats-grid').innerHTML = [
+    { v: data.total_memories, l: 'Total Memories' },
+    { v: data.with_embeddings, l: 'With Embeddings' },
+    { v: data.tracked_sessions, l: 'Sessions' },
+    { v: data.history_entries, l: 'History Entries' },
+    { v: formatBytes(data.db_size_bytes), l: 'Database Size' },
+    { v: data.confidence.average.toFixed(3), l: 'Avg Confidence' },
+  ].map(s => `<div class="stat-box"><div class="value">${s.v}</div><div class="label">${s.l}</div></div>`).join('');
+
+  // Confidence bar
+  const c = data.confidence;
+  const total = c.suppressed + c.low + c.medium + c.high + c.very_high || 1;
+  const segments = [
+    { v: c.suppressed, l: 'Suppressed', color: 'var(--red)' },
+    { v: c.low, l: 'Low', color: 'var(--orange)' },
+    { v: c.medium, l: 'Medium', color: 'var(--yellow)' },
+    { v: c.high, l: 'High', color: 'var(--accent)' },
+    { v: c.very_high, l: 'Very High', color: 'var(--green)' },
+  ];
+  document.getElementById('conf-bar-container').innerHTML = `<div class="conf-bar">${
+    segments.map(s => {
+      const pct = (s.v / total * 100);
+      if (pct < 1) return '';
+      return `<div class="segment" style="width:${pct}%;background:${s.color}" title="${s.l}: ${s.v}">${s.v}</div>`;
+    }).join('')
+  }</div>`;
+  document.getElementById('conf-legend').innerHTML = segments.map(s =>
+    `<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:4px"></span>${s.l}: ${s.v}</span>`
+  ).join('');
+
+  // Types chart
+  const types = Object.entries(data.types);
+  const maxType = Math.max(...types.map(t => t[1]), 1);
+  document.getElementById('types-chart').innerHTML = types.map(([type, count]) =>
+    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      ${badge(type)}
+      <div style="flex:1;height:20px;background:var(--bg);border-radius:3px;overflow:hidden">
+        <div style="height:100%;width:${count/maxType*100}%;background:var(--accent-dim);border-radius:3px"></div>
+      </div>
+      <span style="font-family:var(--font-mono);font-size:12px;min-width:30px;text-align:right">${count}</span>
+    </div>`
+  ).join('');
+
+  // Growth chart
+  if (data.growth.length > 0) {
+    const maxG = Math.max(...data.growth.map(g => g.count), 1);
+    document.getElementById('growth-chart').innerHTML = `<div class="chart-bar-group">${
+      data.growth.map(g =>
+        `<div class="chart-bar" style="height:${g.count/maxG*100}%">
+          <div class="tooltip">${g.date}: ${g.count} memories</div>
+        </div>`
+      ).join('')
+    }</div>`;
+  }
+
+  // Token stats (async, don't block the rest)
+  api('/api/token-stats').then(ts => {
+    function fmtTokens(n) {
+      if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+      if (n >= 1000) return (n/1000).toFixed(1) + 'K';
+      return n;
+    }
+    document.getElementById('token-stats').innerHTML = [
+      { v: fmtTokens(ts.total_tokens), l: 'Total Tokens' },
+      { v: fmtTokens(ts.total_user_tokens), l: 'User (input)' },
+      { v: fmtTokens(ts.total_assistant_tokens), l: 'Assistant (output)' },
+    ].map(s => `<div class="stat-box"><div class="value">${s.v}</div><div class="label">${s.l}</div></div>`).join('');
+
+    // By project bar chart
+    const projects = Object.entries(ts.by_project).sort((a,b) => (b[1].user_tokens + b[1].assistant_tokens) - (a[1].user_tokens + a[1].assistant_tokens));
+    const maxProj = projects.length ? projects[0][1].user_tokens + projects[0][1].assistant_tokens : 1;
+    document.getElementById('token-by-project').innerHTML = projects.slice(0, 10).map(([name, d]) => {
+      const total = d.user_tokens + d.assistant_tokens;
+      const userPct = total > 0 ? d.user_tokens / total * 100 : 0;
+      return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <span style="min-width:100px;font-size:12px;text-align:right;color:var(--text-dim)">${name}</span>
+        <div style="flex:1;height:16px;background:var(--bg);border-radius:3px;overflow:hidden;display:flex">
+          <div style="width:${userPct * total/maxProj}%;background:var(--accent-dim);height:100%" title="User: ${fmtTokens(d.user_tokens)}"></div>
+          <div style="width:${(100-userPct) * total/maxProj}%;background:var(--purple);opacity:0.5;height:100%" title="Assistant: ${fmtTokens(d.assistant_tokens)}"></div>
+        </div>
+        <span style="min-width:50px;font-size:11px;color:var(--text-dim);font-family:var(--font-mono)">${fmtTokens(total)}</span>
+      </div>`;
+    }).join('');
+  });
+
+  // Recent memories
+  const recent = await api('/api/memories?limit=10');
+  renderMemoryTable(recent.memories, document.getElementById('recent-memories'));
+}
+
+// ─── Memory Table ──────────────────────────────────────────────────────────
+function memorySortClass(col) {
+  if (memorySort !== col) return 'sortable';
+  return 'sortable sort-' + memoryOrder;
+}
+
+function sortMemories(col) {
+  if (memorySort === col) {
+    memoryOrder = memoryOrder === 'desc' ? 'asc' : 'desc';
+  } else {
+    memorySort = col;
+    memoryOrder = col === 'id' || col === 'confidence' ? 'desc' : (col === 'updated_at' ? 'desc' : 'asc');
+  }
+  memoryPage = 0;
+  searchMemories();
+}
+
+function renderMemoryTable(memories, container, serverSort) {
+  if (!memories.length) {
+    container.innerHTML = '<div class="loading">No memories found</div>';
+    return;
+  }
+  // serverSort: use onclick handlers for server-side sort (paginated views)
+  // !serverSort: use makeSortable for client-side sort (small inline tables)
+  const thId = serverSort
+    ? `<th class="${memorySortClass('id')}" onclick="sortMemories('id')">ID</th>`
+    : `<th class="sortable" data-col="0" data-type="num">ID</th>`;
+  const thType = serverSort
+    ? `<th class="${memorySortClass('type')}" onclick="sortMemories('type')">Type</th>`
+    : `<th class="sortable" data-col="1">Type</th>`;
+  const thTopic = serverSort
+    ? `<th class="${memorySortClass('topic')}" onclick="sortMemories('topic')">Topic</th>`
+    : `<th class="sortable" data-col="2">Topic</th>`;
+  const thConf = serverSort
+    ? `<th class="${memorySortClass('confidence')}" onclick="sortMemories('confidence')">Confidence</th>`
+    : `<th class="sortable" data-col="4" data-type="num">Confidence</th>`;
+  const thDate = serverSort
+    ? `<th class="${memorySortClass('updated_at')}" onclick="sortMemories('updated_at')">Updated</th>`
+    : `<th class="sortable" data-col="5" data-type="date">Updated</th>`;
+
+  container.innerHTML = `<table class="mem-table">
+    <thead><tr>
+      ${thId}${thType}${thTopic}<th>Content</th>${thConf}${thDate}
+    </tr></thead>
+    <tbody>${memories.map(m => `<tr onclick="showMemory(${m.id})">
+      <td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">${m.id}</td>
+      <td>${badge(m.type)}</td>
+      <td class="topic-cell">${escapeHtml(m.topic || '')}</td>
+      <td class="content-cell">${escapeHtml(m.content || '')}</td>
+      <td class="conf-cell" style="color:${confColor(m.confidence)}">${(m.confidence||0).toFixed(2)}</td>
+      <td class="date-cell">${formatDate(m.updated_at)}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+  if (!serverSort) makeSortable(container.querySelector('table'));
+}
+
+// ─── Memories Panel ────────────────────────────────────────────────────────
+async function loadMemories() {
+  // Populate project filter
+  const projects = await api('/api/projects');
+  const sel = document.getElementById('mem-project-filter');
+  if (sel.options.length <= 1) {
+    projects.projects.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.project;
+      opt.textContent = `${p.project} (${p.memory_count})`;
+      sel.appendChild(opt);
+    });
+  }
+  await searchMemories();
+}
+
+async function searchMemories() {
+  const q = document.getElementById('mem-search').value;
+  const mode = document.getElementById('mem-mode').value;
+  const type = document.getElementById('mem-type-filter').value;
+  const project = document.getElementById('mem-project-filter').value;
+
+  let url = `/api/memories?limit=${PAGE_SIZE}&offset=${memoryPage * PAGE_SIZE}&sort=${memorySort}&order=${memoryOrder}`;
+  if (q) url += `&q=${encodeURIComponent(q)}&mode=${mode}`;
+  if (type) url += `&type=${type}`;
+  if (project) url += `&project=${encodeURIComponent(project)}`;
+
+  const data = await api(url);
+  renderMemoryTable(data.memories, document.getElementById('memories-results'), true);
+
+  // Pagination
+  const totalPages = Math.ceil(data.total / PAGE_SIZE);
+  document.getElementById('memories-pagination').innerHTML = `
+    <button ${memoryPage === 0 ? 'disabled' : ''} onclick="memoryPage--;searchMemories()">&larr; Prev</button>
+    <span>Page ${memoryPage + 1} of ${totalPages || 1}</span>
+    <button ${memoryPage >= totalPages - 1 ? 'disabled' : ''} onclick="memoryPage++;searchMemories()">Next &rarr;</button>
+  `;
+}
+
+// Search on Enter
+document.getElementById('mem-search').addEventListener('keypress', e => {
+  if (e.key === 'Enter') { memoryPage = 0; searchMemories(); }
+});
+
+// ─── Memory Detail Modal ───────────────────────────────────────────────────
+async function showMemory(id) {
+  const modal = document.getElementById('memory-modal');
+  const content = document.getElementById('modal-content');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+  modal.classList.add('active');
+
+  const [detail, context] = await Promise.all([
+    api(`/api/memory/${id}`),
+    api(`/api/memory/${id}/context`),
+  ]);
+
+  const m = detail.memory;
+  let html = `<h2>${badge(m.type)} ${escapeHtml(m.topic)}</h2>`;
+  html += `<div style="color:var(--text);line-height:1.7;margin-bottom:16px">${escapeHtml(m.content)}</div>`;
+
+  // Metadata
+  html += `<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:13px;margin-bottom:16px">`;
+  html += `<span style="color:var(--text-dim)">ID</span><span style="font-family:var(--font-mono)">${m.id}</span>`;
+  html += `<span style="color:var(--text-dim)">Confidence</span><span style="color:${confColor(m.confidence)}">${(m.confidence||0).toFixed(2)}</span>`;
+  html += `<span style="color:var(--text-dim)">Project</span><span>${escapeHtml(m.project || 'global')}</span>`;
+  html += `<span style="color:var(--text-dim)">Session</span><span style="font-family:var(--font-mono);font-size:12px">${m.session_id ? `<a href="#" onclick="closeModal();showSessionDetail('${m.session_id}');return false">${m.session_id.slice(0,12)}...</a>` : 'none'}</span>`;
+  html += `<span style="color:var(--text-dim)">Created</span><span>${formatDate(m.created_at)}</span>`;
+  html += `<span style="color:var(--text-dim)">Updated</span><span>${formatDate(m.updated_at)}</span>`;
+  if (m.archived_reason) {
+    html += `<span style="color:var(--red)">Archived</span><span style="color:var(--red)">${escapeHtml(m.archived_reason)}</span>`;
+  }
+  if (m.associated_files) {
+    html += `<span style="color:var(--text-dim)">Files</span><span style="font-family:var(--font-mono);font-size:12px">${escapeHtml(m.associated_files)}</span>`;
+  }
+  html += `</div>`;
+
+  // Version history
+  if (detail.history.length > 0) {
+    html += `<div class="card" style="margin-top:12px"><h3>Version History (${detail.history.length})</h3>`;
+    detail.history.forEach(h => {
+      html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--text-dim)">${formatDate(h.changed_at)} &mdash; session ${(h.session_id||'').slice(0,12)}</div>
+        <div style="font-size:13px;margin-top:4px">${escapeHtml(h.content)}</div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // Conversation context
+  if (context.messages && context.messages.length > 0) {
+    html += `<div class="card" style="margin-top:12px"><h3>Conversation Context</h3>`;
+    html += `<div class="transcript">`;
+    context.messages.forEach(msg => {
+      const isAnchor = msg.is_anchor ? ' msg-anchor' : '';
+      const roleClass = msg.role === 'user' ? 'msg-user' : 'msg-assistant';
+      const time = msg.ts ? new Date(msg.ts).toLocaleTimeString() : '';
+      let text = msg.text_before_memory || msg.text;
+      // Truncate very long messages
+      if (text.length > 2000) text = text.slice(0, 2000) + '\n... (truncated)';
+      html += `<div class="msg ${roleClass}${isAnchor}">
+        <span class="msg-role">${msg.role}</span><span class="msg-time">${time}</span>
+        <div>${escapeHtml(text)}</div>
+        ${msg.memory_block ? `<div class="memory-block">&lt;memory&gt;\n${escapeHtml(msg.memory_block)}\n&lt;/memory&gt;</div>` : ''}
+      </div>`;
+    });
+    html += `</div></div>`;
+  } else if (context.note) {
+    html += `<div style="color:var(--text-dim);font-size:13px;margin-top:12px">${escapeHtml(context.note)}</div>`;
+  }
+
+  content.innerHTML = html;
+}
+
+function closeModal() {
+  document.getElementById('memory-modal').classList.remove('active');
+}
+document.getElementById('memory-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeModal();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
+});
+
+// ─── Sessions Panel ────────────────────────────────────────────────────────
+let sessionSort = 'started_at';
+let sessionOrder = 'desc';
+
+function sessionTypeIcon(type, memCount) {
+  if (type === 'agent') return '<span title="Agent session" style="color:var(--purple)">&#9670;</span>';
+  if (type === 'parent') return '<span title="Parent (has agents)" style="color:var(--accent)">&#9673;</span>';
+  if (memCount === 0) return '<span title="Empty session" style="color:var(--text-dim)">&#9676;</span>';
+  return '<span title="Session" style="color:var(--green)">&#9679;</span>';
+}
+
+function sortSessions(col) {
+  if (sessionSort === col) {
+    sessionOrder = sessionOrder === 'desc' ? 'asc' : 'desc';
+  } else {
+    sessionSort = col;
+    sessionOrder = 'desc';
+  }
+  sessionPage = 0;
+  loadSessions();
+}
+
+function sessionSortClass(col) {
+  if (sessionSort !== col) return 'sortable';
+  return 'sortable sort-' + sessionOrder;
+}
+
+async function loadSessions() {
+  const hideEmpty = document.getElementById('hide-empty-sessions').checked;
+  const data = await api(`/api/sessions?limit=${PAGE_SIZE}&offset=${sessionPage * PAGE_SIZE}&sort=${sessionSort}&order=${sessionOrder}&hide_empty=${hideEmpty}`);
+  const container = document.getElementById('sessions-list');
+
+  if (!data.sessions.length) {
+    container.innerHTML = '<div class="loading">No sessions found</div>';
+    return;
+  }
+
+  const filter = document.getElementById('session-search').value.toLowerCase();
+  const filtered = filter
+    ? data.sessions.filter(s => (s.session_id + (s.project||'') + (s.cwd||'')).toLowerCase().includes(filter))
+    : data.sessions;
+
+  container.innerHTML = `<table class="mem-table">
+    <thead><tr>
+      <th></th>
+      <th>Session</th>
+      <th class="${sessionSortClass('project')}" onclick="sortSessions('project')">Project</th>
+      <th>Working Dir</th>
+      <th class="${sessionSortClass('memory_count')}" onclick="sortSessions('memory_count')" style="text-align:center">Memories</th>
+      <th style="text-align:center">Turns</th>
+      <th class="${sessionSortClass('started_at')}" onclick="sortSessions('started_at')">Started</th>
+    </tr></thead>
+    <tbody>${filtered.map(s => `<tr onclick="showSessionDetail('${s.session_id}')">
+      <td style="text-align:center">${sessionTypeIcon(s.session_type, s.memory_count)}</td>
+      <td><span class="session-id">${s.session_id.slice(0,12)}...</span></td>
+      <td><span class="session-project">${escapeHtml(s.project || '')}</span></td>
+      <td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim);max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(s.cwd || '')}">${escapeHtml(s.cwd ? s.cwd.replace(/^\/home\/[^/]+\//, '~/') : '')}</td>
+      <td style="text-align:center">${s.memory_count}</td>
+      <td style="text-align:center;color:var(--text-dim)">${s.interaction_count || 0}</td>
+      <td class="date-cell">${formatDate(s.started_at)}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+
+  const totalPages = Math.ceil(data.total / PAGE_SIZE);
+  document.getElementById('sessions-pagination').innerHTML = `
+    <button ${sessionPage === 0 ? 'disabled' : ''} onclick="sessionPage--;loadSessions()">&larr; Prev</button>
+    <span>Page ${sessionPage + 1} of ${totalPages || 1}</span>
+    <button ${sessionPage >= totalPages - 1 ? 'disabled' : ''} onclick="sessionPage++;loadSessions()">Next &rarr;</button>
+  `;
+}
+
+document.getElementById('session-search').addEventListener('input', () => loadSessions());
+
+function showSessionsList() {
+  document.getElementById('sessions-list-view').style.display = '';
+  document.getElementById('session-detail-view').style.display = 'none';
+}
+
+async function showSessionDetail(sessionId) {
+  // Switch to sessions panel if not there
+  if (currentPanel !== 'sessions') {
+    document.querySelectorAll('.header nav button').forEach(b => {
+      b.classList.toggle('active', b.dataset.panel === 'sessions');
+    });
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('panel-sessions').classList.add('active');
+    currentPanel = 'sessions';
+  }
+
+  document.getElementById('sessions-list-view').style.display = 'none';
+  document.getElementById('session-detail-view').style.display = '';
+  const detail = document.getElementById('session-detail');
+  detail.innerHTML = '<div class="loading">Loading session...</div>';
+
+  const data = await api(`/api/session/${sessionId}`);
+  const s = data.session;
+
+  let html = `<div class="card">
+    <h2>Session</h2>
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:13px">
+      <span style="color:var(--text-dim)">ID</span><span style="font-family:var(--font-mono);font-size:12px">${s.session_id}</span>
+      <span style="color:var(--text-dim)">Project</span><span>${escapeHtml(s.project || 'none')}</span>
+      <span style="color:var(--text-dim)">Started</span><span>${formatDate(s.started_at)}</span>
+      <span style="color:var(--text-dim)">Generated</span><span style="color:var(--green)">${data.memories.length} memories</span>
+      <span style="color:var(--text-dim)">Consumed</span><span style="color:var(--accent)">${(data.consumed || []).length} memories</span>
+      ${data.tokens ? `<span style="color:var(--text-dim)">Tokens (est.)</span><span style="font-family:var(--font-mono);font-size:12px">${(data.tokens.user_tokens + data.tokens.assistant_tokens).toLocaleString()} <span style="color:var(--text-dim)">(in: ${data.tokens.user_tokens.toLocaleString()}, out: ${data.tokens.assistant_tokens.toLocaleString()})</span></span>` : ''}
+    </div>
+  </div>`;
+
+  // Session chain
+  if (data.chain.length > 1) {
+    html += `<div class="card"><h2>Session Chain</h2>`;
+    data.chain.forEach(c => {
+      const isCurrent = c.session_id === s.session_id;
+      html += `<div class="session-item" ${!isCurrent ? `onclick="showSessionDetail('${c.session_id}')"` : ''} style="${isCurrent ? 'background:var(--bg-hover)' : ''}">
+        <span class="session-id">${c.session_id.slice(0,12)}...</span>
+        <span class="session-meta">${c.memory_count} memories &middot; ${formatDate(c.started_at)}</span>
+        ${isCurrent ? '<span style="color:var(--yellow);font-size:11px">current</span>' : ''}
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // Consumed memories (input to this session)
+  const consumed = data.consumed || [];
+  if (consumed.length > 0) {
+    // Build layer lookup from layer_detail
+    const idToLayers = {};
+    (data.layer_detail || []).forEach(d => {
+      (d.ids || []).forEach(id => {
+        if (!idToLayers[id]) idToLayers[id] = [];
+        if (!idToLayers[id].includes(d.layer)) idToLayers[id].push(d.layer);
+      });
+    });
+
+    html += `<div class="card" style="border-left:3px solid var(--accent)"><h2 style="color:var(--accent)">Consumed (${consumed.length} memories retrieved into session)</h2>`;
+    html += `<table class="mem-table" id="session-consumed-table"><thead><tr>
+      <th class="sortable" data-col="0" data-type="num">ID</th>
+      <th class="sortable" data-col="1">Type</th>
+      <th class="sortable" data-col="2">Topic</th>
+      <th>Content</th>
+      <th class="sortable" data-col="4">Source</th>
+      <th class="sortable" data-col="5">Origin</th>
+    </tr></thead><tbody>`;
+    consumed.forEach(m => {
+      const layers = idToLayers[m.id] ? idToLayers[m.id].join(', ') : '';
+      const origin = m.session_id ? `<a href="#" onclick="event.stopPropagation();showSessionDetail('${m.session_id}');return false" style="font-family:var(--font-mono);font-size:11px">${m.session_id.slice(0,8)}...</a>` : '';
+      html += `<tr onclick="showMemory(${m.id})">
+        <td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">${m.id}</td>
+        <td>${badge(m.type)}</td>
+        <td class="topic-cell">${escapeHtml(m.topic || '')}</td>
+        <td class="content-cell">${escapeHtml(m.content || '')}</td>
+        <td style="font-size:11px;color:var(--purple);white-space:nowrap">${layers}</td>
+        <td>${origin}</td>
+      </tr>`;
+    });
+    html += `</tbody></table></div>`;
+  }
+
+  // Generated memories (output from this session)
+  if (data.memories.length) {
+    html += `<div class="card" style="border-left:3px solid var(--green)"><h2 style="color:var(--green)">Generated (${data.memories.length} memories created)</h2>`;
+    html += `<table class="mem-table" id="session-mem-table"><thead><tr>
+      <th class="sortable" data-col="0" data-type="num">ID</th>
+      <th class="sortable" data-col="1">Type</th>
+      <th class="sortable" data-col="2">Topic</th>
+      <th>Content</th>
+      <th class="sortable" data-col="4" data-type="num">Confidence</th>
+    </tr></thead><tbody>`;
+    data.memories.forEach(m => {
+      html += `<tr onclick="showMemory(${m.id})">
+        <td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">${m.id}</td>
+        <td>${badge(m.type)}</td>
+        <td class="topic-cell">${escapeHtml(m.topic || '')}</td>
+        <td class="content-cell">${escapeHtml(m.content || '')}</td>
+        <td class="conf-cell" style="color:${confColor(m.confidence)}">${(m.confidence||0).toFixed(2)}</td>
+      </tr>`;
+    });
+    html += `</tbody></table></div>`;
+  }
+
+  // Transcript button
+  html += `<div class="card"><h2>Transcript</h2>
+    <button class="back-btn" onclick="loadTranscript('${sessionId}')">Load Full Transcript</button>
+    <div id="transcript-container"></div>
+  </div>`;
+
+  detail.innerHTML = html;
+  const sessionMemTable = document.getElementById('session-mem-table');
+  if (sessionMemTable) makeSortable(sessionMemTable);
+  const sessionConsumedTable = document.getElementById('session-consumed-table');
+  if (sessionConsumedTable) makeSortable(sessionConsumedTable);
+}
+
+async function loadTranscript(sessionId) {
+  const container = document.getElementById('transcript-container');
+  container.innerHTML = '<div class="loading">Loading transcript...</div>';
+
+  const data = await api(`/api/session/${sessionId}/transcript`);
+  if (!data.messages.length) {
+    container.innerHTML = `<div class="loading">${data.note || 'No transcript data'}</div>`;
+    return;
+  }
+
+  let html = '<div class="transcript">';
+  data.messages.forEach(msg => {
+    const roleClass = msg.role === 'user' ? 'msg-user' : 'msg-assistant';
+    const time = msg.ts ? new Date(msg.ts).toLocaleTimeString() : '';
+    const text = msg.text_before_memory || msg.text;
+    const displayText = text.length > 3000 ? text.slice(0, 3000) + '\n... (truncated)' : text;
+    html += `<div class="msg ${roleClass}">
+      <span class="msg-role">${msg.role}</span><span class="msg-time">${time}</span>
+      <div>${escapeHtml(displayText)}</div>
+      ${msg.memory_block ? `<div class="memory-block">&lt;memory&gt;\n${escapeHtml(msg.memory_block)}\n&lt;/memory&gt;</div>` : ''}
+    </div>`;
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// ─── Metrics Panel ─────────────────────────────────────────────────────────
+async function loadMetrics() {
+  const data = await api('/api/metrics');
+
+  // Summary boxes
+  const interesting = ['retrieval_latency_ms', 'layer1_5_injected', 'layer1_5_no_match',
+    'layer3_injected', 'retrieval_useful', 'retrieval_neutral', 'retrieval_harmful'];
+  const summaryItems = data.summary.filter(s => interesting.includes(s.event));
+  document.getElementById('metrics-summary').innerHTML = summaryItems.map(s => {
+    const avg = s.avg_value != null ? ` (avg ${s.avg_value.toFixed(1)})` : '';
+    return `<div class="stat-box"><div class="value">${s.count}</div><div class="label">${s.event}${avg}</div></div>`;
+  }).join('');
+
+  // Latency chart
+  if (data.latency_series.length > 0) {
+    const maxL = Math.max(...data.latency_series.map(l => l.avg_ms), 1);
+    document.getElementById('latency-chart').innerHTML = `<div class="chart-bar-group">${
+      data.latency_series.map(l =>
+        `<div class="chart-bar" style="height:${l.avg_ms/maxL*100}%">
+          <div class="tooltip">${l.date}: ${l.avg_ms.toFixed(0)}ms avg (${l.count} calls)</div>
+        </div>`
+      ).join('')
+    }</div>`;
+  } else {
+    document.getElementById('latency-chart').innerHTML = '<div class="loading">No latency data yet</div>';
+  }
+
+  // Layer activity table
+  if (data.layer_series.length > 0) {
+    // Group by date
+    const byDate = {};
+    data.layer_series.forEach(l => {
+      if (!byDate[l.date]) byDate[l.date] = {};
+      byDate[l.date][l.event] = l.count;
+    });
+    const events = [...new Set(data.layer_series.map(l => l.event))].sort();
+    const dates = Object.keys(byDate).sort();
+    let html = `<table class="mem-table" id="layer-table"><thead><tr><th class="sortable" data-col="0" data-type="date">Date</th>${events.map((e, i) => `<th class="sortable" data-col="${i+1}" data-type="num">${e.replace(/^layer/, 'L').replace(/_/g,' ')}</th>`).join('')}</tr></thead><tbody>`;
+    dates.forEach(d => {
+      html += `<tr><td class="date-cell">${d}</td>${events.map(e => `<td style="text-align:center">${byDate[d][e] || ''}</td>`).join('')}</tr>`;
+    });
+    html += '</tbody></table>';
+    document.getElementById('layer-activity').innerHTML = html;
+    makeSortable(document.getElementById('layer-table'));
+  }
+
+  // Embedding performance
+  const embedEl = document.getElementById('embed-stats');
+  if (data.embed_stats && data.embed_stats.length > 0) {
+    const labels = {
+      'embed_daemon_ms': 'Embed (daemon)',
+      'embed_local_ms': 'Embed (local model)',
+      'search_vec_ms': 'Search (vec index)',
+      'search_brute_ms': 'Search (brute force)',
+      'fanout_ms': 'Fan-out expansion',
+    };
+    let html = `<table class="mem-table" id="embed-table"><thead><tr>
+      <th class="sortable" data-col="0">Operation</th>
+      <th class="sortable" data-col="1" data-type="num" style="text-align:right">Count</th>
+      <th class="sortable" data-col="2" data-type="num" style="text-align:right">Avg (ms)</th>
+      <th class="sortable" data-col="3" data-type="num" style="text-align:right">Min (ms)</th>
+      <th class="sortable" data-col="4" data-type="num" style="text-align:right">Max (ms)</th>
+      <th class="sortable" data-col="5" data-type="num" style="text-align:right">Recent Avg (ms)</th>
+    </tr></thead><tbody>`;
+    data.embed_stats.forEach(s => {
+      html += `<tr>
+        <td>${labels[s.event] || s.event}</td>
+        <td style="text-align:right;font-family:var(--font-mono)">${s.count}</td>
+        <td style="text-align:right;font-family:var(--font-mono)">${s.avg_ms != null ? s.avg_ms.toFixed(1) : '-'}</td>
+        <td style="text-align:right;font-family:var(--font-mono)">${s.min_ms != null ? s.min_ms.toFixed(1) : '-'}</td>
+        <td style="text-align:right;font-family:var(--font-mono)">${s.max_ms != null ? s.max_ms.toFixed(1) : '-'}</td>
+        <td style="text-align:right;font-family:var(--font-mono)">${s.recent_avg_ms != null ? s.recent_avg_ms.toFixed(1) : '-'}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    embedEl.innerHTML = html;
+    makeSortable(document.getElementById('embed-table'));
+
+    // Embedding time series chart
+    if (data.embed_series && data.embed_series.length > 0) {
+      const colors = {
+        'embed_daemon_ms': 'var(--green)',
+        'embed_local_ms': 'var(--yellow)',
+        'search_vec_ms': 'var(--accent)',
+        'search_brute_ms': 'var(--orange)',
+        'fanout_ms': 'var(--purple)',
+      };
+      const byDate = {};
+      data.embed_series.forEach(s => {
+        if (!byDate[s.date]) byDate[s.date] = {};
+        byDate[s.date][s.event] = s.avg_ms;
+      });
+      const dates = Object.keys(byDate).sort();
+      const allEvents = [...new Set(data.embed_series.map(s => s.event))];
+      const maxMs = Math.max(...data.embed_series.map(s => s.avg_ms), 1);
+
+      let chartHtml = '<div style="display:flex;gap:12px;margin-bottom:8px;flex-wrap:wrap">';
+      allEvents.forEach(e => {
+        chartHtml += `<span style="font-size:11px;color:var(--text-dim)"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${colors[e] || 'var(--text-dim)'};margin-right:4px"></span>${labels[e] || e}</span>`;
+      });
+      chartHtml += '</div>';
+      chartHtml += '<div class="chart-bar-group">';
+      dates.forEach(d => {
+        // Stacked bar for each date
+        const total = allEvents.reduce((sum, e) => sum + (byDate[d][e] || 0), 0);
+        chartHtml += `<div style="flex:1;display:flex;flex-direction:column-reverse;height:100%;min-width:4px;max-width:20px;gap:1px" title="${d}: ${total.toFixed(0)}ms total">`;
+        allEvents.forEach(e => {
+          const val = byDate[d][e] || 0;
+          if (val > 0) {
+            chartHtml += `<div style="height:${val/maxMs*100}%;background:${colors[e] || 'var(--text-dim)'};border-radius:1px;min-height:1px"></div>`;
+          }
+        });
+        chartHtml += '</div>';
+      });
+      chartHtml += '</div>';
+      document.getElementById('embed-chart').innerHTML = chartHtml;
+    }
+  } else {
+    embedEl.innerHTML = '<div class="loading">No embedding metrics yet. Metrics will appear after the next retrieval.</div>';
+  }
+}
+
+// ─── Usage Panel ──────────────────────────────────────────────────────────
+async function loadUsage() {
+  const data = await api('/api/memory-usage');
+  const s = data.summary;
+
+  // Summary stats
+  document.getElementById('usage-summary').innerHTML = [
+    { v: s.total_memories, l: 'Total Memories' },
+    { v: s.unique_retrieved, l: 'Unique Retrieved' },
+    { v: s.never_retrieved, l: 'Never Retrieved' },
+    { v: s.retrieval_rate + '%', l: 'Retrieval Rate' },
+    { v: s.total_retrieval_events.toLocaleString(), l: 'Total Retrievals' },
+  ].map(x => `<div class="stat-box"><div class="value">${x.v}</div><div class="label">${x.l}</div></div>`).join('');
+
+  // Layer delivery breakdown
+  const layers = data.layer_counts || {};
+  const layerColors = {
+    'bootstrap': 'var(--orange)', 'L1': 'var(--accent)', 'L1.5': 'var(--green)',
+    'L2': 'var(--purple)', 'L3': 'var(--yellow)', 'L3-bootstrap': 'var(--red)',
+  };
+  const layerLabels = {
+    'bootstrap': 'Project Bootstrap', 'L1': 'Layer 1 (first prompt)', 'L1.5': 'Layer 1.5 (per-prompt)',
+    'L2': 'Layer 2 (cross-project)', 'L3': 'Layer 3 (pull-based)', 'L3-bootstrap': 'Layer 3 (forced)',
+  };
+  const layerEntries = Object.entries(layers).sort((a,b) => b[1] - a[1]);
+  if (layerEntries.length > 0) {
+    const maxLayer = layerEntries[0][1];
+    document.getElementById('layer-delivery').innerHTML = layerEntries.map(([layer, count]) => {
+      const color = layerColors[layer] || 'var(--text-dim)';
+      return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="min-width:140px;font-size:12px;text-align:right;color:var(--text-dim)">${layerLabels[layer] || layer}</span>
+        <div style="flex:1;height:20px;background:var(--bg);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${count/maxLayer*100}%;background:${color};border-radius:3px"></div>
+        </div>
+        <span style="font-family:var(--font-mono);font-size:12px;min-width:40px;text-align:right">${count}</span>
+      </div>`;
+    }).join('');
+  } else {
+    document.getElementById('layer-delivery').innerHTML = '<div class="loading">No layer delivery data yet. Data accumulates from this point forward.</div>';
+  }
+
+  // Retrieval outcomes
+  const outcomes = s.outcomes || {};
+  const outcomeTotal = (outcomes.useful || 0) + (outcomes.neutral || 0) + (outcomes.harmful || 0);
+  if (outcomeTotal > 0) {
+    const segments = [
+      { v: outcomes.useful || 0, l: 'Useful', color: 'var(--green)' },
+      { v: outcomes.neutral || 0, l: 'Neutral', color: 'var(--yellow)' },
+      { v: outcomes.harmful || 0, l: 'Harmful', color: 'var(--red)' },
+    ];
+    document.getElementById('retrieval-outcomes').innerHTML = `
+      <div class="conf-bar">${segments.map(seg => {
+        const pct = seg.v / outcomeTotal * 100;
+        return pct > 0 ? `<div class="segment" style="width:${pct}%;background:${seg.color}" title="${seg.l}: ${seg.v}">${seg.v}</div>` : '';
+      }).join('')}</div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:var(--text-dim)">${segments.map(seg =>
+        `<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${seg.color};margin-right:4px"></span>${seg.l}: ${seg.v} (${(seg.v/outcomeTotal*100).toFixed(0)}%)</span>`
+      ).join('')}</div>
+      <div style="margin-top:8px;font-size:12px;color:var(--text-dim)">Rated by LLM after each retrieval. ${outcomeTotal} of ${s.total_retrieval_events.toLocaleString()} retrievals rated.</div>
+    `;
+  } else {
+    document.getElementById('retrieval-outcomes').innerHTML = '<div class="loading">No outcome ratings yet</div>';
+  }
+
+  // Top retrieved memories
+  if (data.top_retrieved.length > 0) {
+    let html = `<table class="mem-table" id="top-ret-table"><thead><tr>
+      <th class="sortable" data-col="0" data-type="num">ID</th>
+      <th class="sortable" data-col="1">Type</th>
+      <th class="sortable" data-col="2">Topic</th>
+      <th class="sortable" data-col="3" data-type="num">Retrievals</th>
+    </tr></thead><tbody>`;
+    data.top_retrieved.forEach(m => {
+      html += `<tr onclick="showMemory(${m.id})">
+        <td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">${m.id}</td>
+        <td>${badge(m.type)}</td>
+        <td class="topic-cell">${escapeHtml(m.topic || '')}</td>
+        <td style="text-align:center;font-family:var(--font-mono)">${m.retrieval_count.toLocaleString()}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    document.getElementById('top-retrieved').innerHTML = html;
+    makeSortable(document.getElementById('top-ret-table'));
+  }
+
+  // Per-session generated vs retrieved
+  if (data.sessions.length > 0) {
+    let html = `<table class="mem-table" id="session-usage-table"><thead><tr>
+      <th class="sortable" data-col="0">Session</th>
+      <th class="sortable" data-col="1">Project</th>
+      <th class="sortable" data-col="2" data-type="num" style="text-align:center">Generated</th>
+      <th class="sortable" data-col="3" data-type="num" style="text-align:center">Retrieved</th>
+      <th class="sortable" data-col="4" data-type="date">Started</th>
+    </tr></thead><tbody>`;
+    data.sessions.forEach(s => {
+      html += `<tr onclick="showSessionDetail('${s.session_id}')">
+        <td><span class="session-id">${s.session_id.slice(0,12)}...</span></td>
+        <td><span class="session-project">${escapeHtml(s.project || '')}</span></td>
+        <td style="text-align:center;font-family:var(--font-mono)">${s.generated}</td>
+        <td style="text-align:center;font-family:var(--font-mono)">${s.retrieved || 0}</td>
+        <td class="date-cell">${formatDate(s.started_at)}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    document.getElementById('session-gen-ret').innerHTML = html;
+    makeSortable(document.getElementById('session-usage-table'));
+  }
+}
+
+// ─── Config Panel ──────────────────────────────────────────────────────────
+let configData = {};
+
+const CONFIG_GROUPS = {
+  'Deduplication': ['DEDUP_THRESHOLD'],
+  'Confidence': ['CONFIDENCE_DEFAULT', 'CONFIDENCE_BOOST', 'CONFIDENCE_MIN', 'CONFIDENCE_MAX'],
+  'Layer 1 (first-prompt)': ['L1_SIM_THRESHOLD', 'L1_MAX_RESULTS'],
+  'Layer 1.5 (per-prompt)': ['L1_5_ENABLED', 'L1_5_SIM_THRESHOLD', 'L1_5_MAX_RESULTS'],
+  'Layer 2 (cross-project)': ['L2_SIM_THRESHOLD', 'L2_MAX_RESULTS'],
+  'Layer 3 (pull-based)': ['L3_PROJECT_SIM_THRESHOLD', 'L3_GLOBAL_SIM_WITH_PROJECT', 'L3_GLOBAL_SIM_WITHOUT_PROJECT', 'L3_PROJECT_QUALITY_FLOOR', 'L3_MAX_PROJECT_RESULTS', 'L3_MAX_GLOBAL_RESULTS'],
+  'Composite Scoring': ['SCORE_W_SIMILARITY', 'SCORE_W_CONFIDENCE', 'SCORE_W_RECENCY', 'SCORE_W_SCOPE', 'RECENCY_HALF_LIFE_DAYS'],
+  'Quality Gates': ['MIN_INJECTION_SIMILARITY', 'BORDERLINE_SIM_CEILING', 'BORDERLINE_SCORE_FLOOR', 'RELATIVE_FILTER_RATIO', 'MAX_INJECTED_ENTRIES', 'DIVERSITY_SIM_THRESHOLD', 'TRAILING_INTENT_SIM_THRESHOLD'],
+  'Content Dedup': ['DISTINCT_VARIANT_SIM_THRESHOLD', 'NEGATION_SIM_FLOOR', 'WEAK_ENTRY_SCORE_FLOOR'],
+  'Write Throttling': ['MAX_MEMORIES_PER_RESPONSE'],
+  'Loop Protection': ['MAX_CONTINUATIONS'],
+  'Context Bootstrap': ['CONTEXT_BOOTSTRAP_INTERVAL', 'CONTEXT_BOOTSTRAP_FIRST_INTERVAL', 'BOOTSTRAP_MAX_PER_SCOPE'],
+  'Project Bootstrap': ['PROJECT_BOOTSTRAP_ENABLED', 'PROJECT_BOOTSTRAP_MAX', 'PROJECT_BOOTSTRAP_TYPES'],
+  'Query Expansion': ['QUERY_EXPANSION_FANOUT'],
+  'RRF': ['RRF_K'],
+  'Staged Context': ['STAGED_CONTEXT_RETENTION_DAYS'],
+  'Concurrency': ['DB_BUSY_TIMEOUT_MS'],
+  'Soft Confidence (disabled)': ['SOFT_SIM_OVERRIDE', 'SOFT_CONF_FLOOR'],
+  'Dominance': ['DOMINANCE_EPSILON'],
+};
+
+async function loadConfig() {
+  const data = await api('/api/config');
+  configData = data.config;
+
+  const editor = document.getElementById('config-editor');
+  let html = '';
+
+  // Collect assigned params
+  const assigned = new Set();
+  Object.values(CONFIG_GROUPS).forEach(params => params.forEach(p => assigned.add(p)));
+
+  for (const [group, params] of Object.entries(CONFIG_GROUPS)) {
+    const groupParams = params.filter(p => configData[p]);
+    if (!groupParams.length) continue;
+
+    html += `<div class="config-group"><h3>${group}</h3>`;
+    groupParams.forEach(name => {
+      const c = configData[name];
+      const inputType = c.type === 'bool' ? 'checkbox' : 'text';
+      const val = c.is_overridden ? c.override : c.value;
+      const overClass = c.is_overridden ? ' overridden' : '';
+
+      if (c.type === 'bool') {
+        html += `<div class="config-row">
+          <label>${name}</label>
+          <input type="checkbox" id="cfg-${name}" ${val === true || val === 'true' || val === '1' ? 'checked' : ''} class="${overClass}">
+          <span class="default-val">default: ${c.value}</span>
+        </div>`;
+      } else {
+        html += `<div class="config-row">
+          <label>${name}</label>
+          <input type="text" id="cfg-${name}" value="${val}"${overClass ? ` class="${overClass}"` : ''}>
+          <span class="default-val">default: ${c.value}</span>
+        </div>`;
+      }
+    });
+    html += `</div>`;
+  }
+
+  // Ungrouped params
+  const ungrouped = Object.keys(configData).filter(k => !assigned.has(k));
+  if (ungrouped.length) {
+    html += `<div class="config-group"><h3>Other</h3>`;
+    ungrouped.forEach(name => {
+      const c = configData[name];
+      const val = c.is_overridden ? c.override : c.value;
+      html += `<div class="config-row">
+        <label>${name}</label>
+        <input type="text" id="cfg-${name}" value="${val}">
+        <span class="default-val">default: ${c.value}</span>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  editor.innerHTML = html;
+}
+
+async function saveConfig() {
+  const updates = {};
+  for (const [name, info] of Object.entries(configData)) {
+    const el = document.getElementById(`cfg-${name}`);
+    if (!el) continue;
+    let val;
+    if (info.type === 'bool') {
+      val = el.checked;
+    } else {
+      val = el.value;
+    }
+    // Only save if different from default
+    if (String(val) !== String(info.value)) {
+      updates[name] = val;
+    }
+  }
+
+  const r = await fetch('/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ updates }),
+  });
+  const result = await r.json();
+  if (result.status === 'saved') {
+    alert('Config saved. Changes take effect on next hook invocation.');
+    loadConfig();
+  } else {
+    alert('Error saving: ' + (result.error || 'unknown'));
+  }
+}
+
+// ─── Theme ─────────────────────────────────────────────────────────────────
+function toggleTheme() {
+  const html = document.documentElement;
+  const current = html.getAttribute('data-theme') || 'dark';
+  const next = current === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('cairn-theme', next);
+  document.getElementById('theme-toggle').innerHTML = next === 'dark' ? '&#9789;' : '&#9788;';
+}
+(function() {
+  const saved = localStorage.getItem('cairn-theme') || 'light';
+  document.documentElement.setAttribute('data-theme', saved);
+  document.getElementById('theme-toggle').innerHTML = saved === 'dark' ? '&#9789;' : '&#9788;';
+})();
+
+// ─── Init ──────────────────────────────────────────────────────────────────
+loadOverview();
+</script>
+
+</body>
+</html>

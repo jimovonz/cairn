@@ -785,7 +785,8 @@ Commands:
   --check                Validate system health (DB, hooks, daemon, embeddings)
   --bootstrap [project]  Show standing-context memories for a project (from CWD if omitted)
   --audit <session_id>   Dump unaudited memories from session for review
-  --stats                Show database statistics"""
+  --stats                Show database statistics
+  --dashboard [--port N]  Launch web dashboard (default port 8420)"""
 
 
 def check():
@@ -1244,6 +1245,12 @@ if __name__ == "__main__":
                 print("No sessions found.")
     elif cmd == "--bootstrap":
         project_bootstrap_query(" ".join(sys.argv[2:]) if len(sys.argv) > 2 else None)
+    elif cmd == "--dashboard":
+        # Launch web dashboard
+        import dashboard
+        extra_args = sys.argv[2:]
+        sys.argv = [sys.argv[0]] + extra_args
+        dashboard.main()
     elif cmd == "--stats":
         stats()
     else:

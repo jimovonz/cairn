@@ -11,6 +11,26 @@ from datetime import datetime
 from typing import Any, Optional
 
 _model: Any = None
+_metrics_conn: Optional[sqlite3.Connection] = None
+
+
+def _record_embed_metric(event: str, value: float) -> None:
+    """Record an embedding performance metric to the DB. Best-effort, never raises."""
+    global _metrics_conn
+    try:
+        if _metrics_conn is None:
+            db_path = os.path.join(os.path.dirname(__file__), "cairn.db")
+            if not os.path.exists(db_path):
+                return
+            _metrics_conn = sqlite3.connect(db_path)
+            _metrics_conn.execute("PRAGMA busy_timeout=2000")
+        _metrics_conn.execute(
+            "INSERT INTO metrics (event, value) VALUES (?, ?)",
+            (event, value)
+        )
+        _metrics_conn.commit()
+    except Exception:
+        _metrics_conn = None
 
 
 _daemon_start_attempted: bool = False
@@ -79,13 +99,18 @@ def get_model() -> Any:
 def embed(text: str, allow_slow: bool = True) -> Optional[np.ndarray]:
     """Return embedding vector. Uses daemon if available.
     If allow_slow=False and daemon unavailable, returns None instead of blocking for model load."""
+    import time as _time
+    t0 = _time.perf_counter()
     vec = _daemon_embed(text)
     if vec is not None:
+        _record_embed_metric("embed_daemon_ms", (_time.perf_counter() - t0) * 1000)
         return vec
     if not allow_slow:
         return None
     model = get_model()
-    return model.encode(text, normalize_embeddings=True)
+    vec = model.encode(text, normalize_embeddings=True)
+    _record_embed_metric("embed_local_ms", (_time.perf_counter() - t0) * 1000)
+    return vec
 
 
 def to_blob(vector: np.ndarray) -> bytes:
@@ -257,6 +282,8 @@ def find_similar(
                         MIN_INJECTION_SIMILARITY, MAX_INJECTED_ENTRIES, DOMINANCE_EPSILON,
                         BORDERLINE_SIM_CEILING, BORDERLINE_SCORE_FLOOR)
 
+    import time as _time
+
     if threshold is None:
         threshold = 0.15  # Permissive floor — quality gates handle the rest
     if limit is None:
@@ -269,20 +296,26 @@ def find_similar(
     query_vec = embed(query_text)
     k = limit * 5  # Over-fetch for post-filtering
 
+    t_search = _time.perf_counter()
     candidates: list[dict[str, Any]] = []
+    search_method = "brute"
     if _load_vec(conn):
         try:
             candidates = _vec_candidates(conn, query_vec, k, current_project)
+            search_method = "vec"
         except Exception:
             pass
 
     if not candidates:
         candidates = _brute_force_candidates(conn, query_vec, k, current_project)
+        search_method = "brute"
+    _record_embed_metric(f"search_{search_method}_ms", (_time.perf_counter() - t_search) * 1000)
 
     # Type-prefix fan-out: search with each memory type prefix, keep max similarity per memory.
     # Memories are embedded as "{project} {type} {topic} {content}" — a bare query misses the
     # type prefix. Fan-out closes this gap with ~7x more dot products (no model inference).
     if QUERY_EXPANSION_FANOUT and candidates:
+        t_fanout = _time.perf_counter()
         _FANOUT_TYPES = ["fact", "decision", "correction", "skill", "preference", "project", "workflow"]
         fanout_vecs = []
         for mtype in _FANOUT_TYPES:
@@ -312,6 +345,7 @@ def find_similar(
                     fanout_best[mid], c["confidence"],
                     c.get("updated_at"), c.get("project"), current_project
                 )
+        _record_embed_metric("fanout_ms", (_time.perf_counter() - t_fanout) * 1000)
 
     # Filter by similarity threshold only — confidence no longer gates retrieval
     filtered = [r for r in candidates if r["similarity"] >= threshold]
