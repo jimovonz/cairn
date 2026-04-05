@@ -362,6 +362,209 @@ def test_layer1_5_skips_already_injected():
         config.L1_5_SIM_THRESHOLD = original_thresh
 
 
+# ============================================================
+# Project bootstrap (CWD-based standing context)
+# ============================================================
+
+# Verifies: project bootstrap injects matching memories by type + project
+def test_project_bootstrap_injects_standing_context():  # TAG:PB01
+    import prompt_hook
+    import config
+    db_path, conn = fresh_env()
+    orig_enabled = config.PROJECT_BOOTSTRAP_ENABLED
+    orig_types = config.PROJECT_BOOTSTRAP_TYPES
+    try:
+        config.PROJECT_BOOTSTRAP_ENABLED = True
+        config.PROJECT_BOOTSTRAP_TYPES = "project,preference,fact"
+        conn.execute(
+            "INSERT INTO memories (type, topic, content, project, archived_reason) VALUES ('fact', 'stack', 'Uses Bun not Node', 'myapp', NULL)"
+        )
+        conn.execute(
+            "INSERT INTO memories (type, topic, content, project, archived_reason) VALUES ('preference', 'style', 'No semicolons', 'myapp', NULL)"
+        )
+        conn.commit()
+        with patch.object(hook_helpers, 'DB_PATH', db_path):
+            result = prompt_hook.project_bootstrap("s1", "/home/user/projects/myapp")
+        assert result is not None
+        assert "project-bootstrap" in result
+        assert "Uses Bun not Node" in result
+        assert "No semicolons" in result
+    finally:
+        config.PROJECT_BOOTSTRAP_ENABLED = orig_enabled
+        config.PROJECT_BOOTSTRAP_TYPES = orig_types
+    conn.close()
+
+
+# Verifies: decision type excluded from project bootstrap
+def test_project_bootstrap_excludes_decisions():  # TAG:PB02
+    import prompt_hook
+    import config
+    db_path, conn = fresh_env()
+    orig_enabled = config.PROJECT_BOOTSTRAP_ENABLED
+    orig_types = config.PROJECT_BOOTSTRAP_TYPES
+    try:
+        config.PROJECT_BOOTSTRAP_ENABLED = True
+        config.PROJECT_BOOTSTRAP_TYPES = "project,preference,fact"
+        conn.execute(
+            "INSERT INTO memories (type, topic, content, project, archived_reason) VALUES ('decision', 'auth', 'Use JWT', 'myapp', NULL)"
+        )
+        conn.execute(
+            "INSERT INTO memories (type, topic, content, project, archived_reason) VALUES ('fact', 'stack', 'Uses Bun', 'myapp', NULL)"
+        )
+        conn.commit()
+        with patch.object(hook_helpers, 'DB_PATH', db_path):
+            result = prompt_hook.project_bootstrap("s1", "/home/user/projects/myapp")
+        assert result is not None
+        assert "Uses Bun" in result
+        assert "Use JWT" not in result
+    finally:
+        config.PROJECT_BOOTSTRAP_ENABLED = orig_enabled
+        config.PROJECT_BOOTSTRAP_TYPES = orig_types
+    conn.close()
+
+
+# Verifies: archived memories excluded from project bootstrap
+def test_project_bootstrap_excludes_archived():  # TAG:PB03
+    import prompt_hook
+    import config
+    db_path, conn = fresh_env()
+    orig_enabled = config.PROJECT_BOOTSTRAP_ENABLED
+    orig_types = config.PROJECT_BOOTSTRAP_TYPES
+    try:
+        config.PROJECT_BOOTSTRAP_ENABLED = True
+        config.PROJECT_BOOTSTRAP_TYPES = "project,preference,fact"
+        conn.execute(
+            "INSERT INTO memories (type, topic, content, project, archived_reason) VALUES ('fact', 'old', 'Stale fact', 'myapp', 'superseded')"
+        )
+        conn.execute(
+            "INSERT INTO memories (type, topic, content, project, archived_reason) VALUES ('fact', 'current', 'Active fact', 'myapp', NULL)"
+        )
+        conn.commit()
+        with patch.object(hook_helpers, 'DB_PATH', db_path):
+            result = prompt_hook.project_bootstrap("s1", "/home/user/projects/myapp")
+        assert result is not None
+        assert "Active fact" in result
+        assert "Stale fact" not in result
+    finally:
+        config.PROJECT_BOOTSTRAP_ENABLED = orig_enabled
+        config.PROJECT_BOOTSTRAP_TYPES = orig_types
+    conn.close()
+
+
+# Verifies: returns None when disabled
+def test_project_bootstrap_disabled():  # TAG:PB04
+    import prompt_hook
+    import config
+    db_path, conn = fresh_env()
+    orig = config.PROJECT_BOOTSTRAP_ENABLED
+    try:
+        config.PROJECT_BOOTSTRAP_ENABLED = False
+        with patch.object(hook_helpers, 'DB_PATH', db_path):
+            result = prompt_hook.project_bootstrap("s1", "/home/user/projects/myapp")
+        assert result is None
+    finally:
+        config.PROJECT_BOOTSTRAP_ENABLED = orig
+    conn.close()
+
+
+# Verifies: returns None for invalid CWD (home, tmp, etc.)
+def test_project_bootstrap_invalid_cwd():  # TAG:PB05
+    import prompt_hook
+    import config
+    db_path, conn = fresh_env()
+    orig = config.PROJECT_BOOTSTRAP_ENABLED
+    try:
+        config.PROJECT_BOOTSTRAP_ENABLED = True
+        with patch.object(hook_helpers, 'DB_PATH', db_path):
+            assert prompt_hook.project_bootstrap("s1", "/home") is None
+            assert prompt_hook.project_bootstrap("s1", "/tmp") is None
+            assert prompt_hook.project_bootstrap("s1", "") is None
+    finally:
+        config.PROJECT_BOOTSTRAP_ENABLED = orig
+    conn.close()
+
+
+# Verifies: returns None when no memories match the project
+def test_project_bootstrap_no_matching_project():  # TAG:PB06
+    import prompt_hook
+    import config
+    db_path, conn = fresh_env()
+    orig_enabled = config.PROJECT_BOOTSTRAP_ENABLED
+    orig_types = config.PROJECT_BOOTSTRAP_TYPES
+    try:
+        config.PROJECT_BOOTSTRAP_ENABLED = True
+        config.PROJECT_BOOTSTRAP_TYPES = "project,preference,fact"
+        conn.execute(
+            "INSERT INTO memories (type, topic, content, project, archived_reason) VALUES ('fact', 'stack', 'Uses Node', 'other-project', NULL)"
+        )
+        conn.commit()
+        with patch.object(hook_helpers, 'DB_PATH', db_path):
+            result = prompt_hook.project_bootstrap("s1", "/home/user/projects/myapp")
+        assert result is None
+    finally:
+        config.PROJECT_BOOTSTRAP_ENABLED = orig_enabled
+        config.PROJECT_BOOTSTRAP_TYPES = orig_types
+    conn.close()
+
+
+# Verifies: max cap is respected
+def test_project_bootstrap_respects_max_cap():  # TAG:PB07
+    import prompt_hook
+    import config
+    db_path, conn = fresh_env()
+    orig_enabled = config.PROJECT_BOOTSTRAP_ENABLED
+    orig_types = config.PROJECT_BOOTSTRAP_TYPES
+    orig_max = config.PROJECT_BOOTSTRAP_MAX
+    try:
+        config.PROJECT_BOOTSTRAP_ENABLED = True
+        config.PROJECT_BOOTSTRAP_TYPES = "fact"
+        config.PROJECT_BOOTSTRAP_MAX = 2
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO memories (type, topic, content, project, archived_reason) VALUES ('fact', ?, ?, 'myapp', NULL)",
+                (f"topic-{i}", f"Fact number {i}")
+            )
+        conn.commit()
+        with patch.object(hook_helpers, 'DB_PATH', db_path):
+            result = prompt_hook.project_bootstrap("s1", "/home/user/projects/myapp")
+        assert result is not None
+        assert result.count("<entry ") == 2
+    finally:
+        config.PROJECT_BOOTSTRAP_ENABLED = orig_enabled
+        config.PROJECT_BOOTSTRAP_TYPES = orig_types
+        config.PROJECT_BOOTSTRAP_MAX = orig_max
+    conn.close()
+
+
+# Verifies: project bootstrap runs in integration with main() on first prompt
+def test_project_bootstrap_in_main_first_prompt():  # TAG:PB08
+    import config
+    db_path, conn = fresh_env()
+    orig_enabled = config.PROJECT_BOOTSTRAP_ENABLED
+    orig_types = config.PROJECT_BOOTSTRAP_TYPES
+    try:
+        config.PROJECT_BOOTSTRAP_ENABLED = True
+        config.PROJECT_BOOTSTRAP_TYPES = "fact"
+        conn.execute(
+            "INSERT INTO memories (type, topic, content, project, archived_reason) VALUES ('fact', 'runtime', 'Uses Bun', 'myapp', NULL)"
+        )
+        conn.commit()
+        with patch.object(hook_helpers, 'DB_PATH', db_path):
+            result = run_prompt_hook(db_path, {
+                "session_id": "sess-pb",
+                "user_message": "Add rate limiting",
+                "cwd": "/home/user/projects/myapp"
+            })
+        assert result is not None
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "project-bootstrap" in ctx
+        assert "Uses Bun" in ctx
+    finally:
+        config.PROJECT_BOOTSTRAP_ENABLED = orig_enabled
+        config.PROJECT_BOOTSTRAP_TYPES = orig_types
+    conn.close()
+
+
 # Verifies: bool config override via environment variable
 def test_l1_5_enabled_env_override():
     import importlib
