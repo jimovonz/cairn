@@ -83,10 +83,12 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Cross-session memory** — decisions, preferences, facts, corrections, people, projects, skills, workflows
 - **Per-turn memory authoring** — the LLM writes structured memories on every response, enforced mechanically; no separate capture step
 - **Per-turn context self-assessment** — the LLM declares when it lacks context on every response; the system retrieves and re-prompts automatically
-- **Four retrieval layers** — proactive first-prompt push, cross-project keyword surfacing, LLM-requested pull, and gotcha injection on file access
+- **Five retrieval layers** — CWD-based project bootstrap, proactive first-prompt push, per-prompt mid-session injection, cross-project keyword surfacing, LLM-requested pull, plus gotcha injection on file access
 - **Hybrid FTS5 + vector search with RRF** — exact keyword matches (error codes, function names) fused with semantic similarity via Reciprocal Rank Fusion; dual-method matches ranked higher than single-method
 - **Veracity tracking** — confidence represents corroboration, not retrieval rank; `+` corroborates, `-!` annotates contradictions with reasons that persist for future sessions
 - **Semantic search** — local embeddings via `all-MiniLM-L6-v2` with sqlite-vec indexed vector search; no API key required
+- **Project bootstrap** — on session start, injects standing-context memories (preferences, facts, project state) for the current working directory; gives Claude project awareness from CWD alone, independent of prompt content
+- **Per-prompt context injection** — on every subsequent prompt, searches for relevant past context mid-conversation; catches cases where relevant memories exist but the LLM didn't know to ask
 - **Project scoping** — memories auto-labelled by working directory, retrievable per-project or globally
 - **Invisible** — metadata tags are stripped from user display; the system operates transparently
 - **Quality gates** — 9 configurable filters including garbage, borderline, relative, dominance, and diversity
@@ -312,7 +314,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test 
 
 ## Testing
 
-478 tests across 22 test files. No embedding model required — tests use mock vectors and patched DB paths.
+486 tests across 23 test files. No embedding model required — tests use mock vectors and patched DB paths.
 
 ```bash
 cd ~/cairn
@@ -326,7 +328,8 @@ python3 -m pytest tests/
 | `test_gates.py` | Quality gates through find_similar, garbage/diversity filtering, boundary conditions |
 | `test_integration.py` | Full pipeline with in-memory DB: insert → dedup → retrieve → gate |
 | `test_hook_e2e.py` | Stop hook main() with patched stdin: storage, blocking, sessions, metrics |
-| `test_prompt_hook.py` | Layer 1/2: first-prompt detection, staged context, short message handling |
+| `test_prompt_hook.py` | Layer 1/1.5/2: first-prompt detection, per-prompt injection, staged context, short message handling |
+| `test_project_bootstrap.py` | CWD-based project bootstrap: standing context injection, type filtering, archived exclusion, error recovery |
 | `test_daemon_and_cache.py` | Daemon fallback, context cache, loop protection, fail-open, pre-filter through main() |
 | `test_query_cli.py` | CLI commands: search, stats, review, delete, history, compact, projects |
 | `test_query.py` | Query functions: search, semantic, context recovery, backfill, stats |

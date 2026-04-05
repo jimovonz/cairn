@@ -61,7 +61,9 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
 ┌──────────────────────────────────────────────────────────────────┐
 │              UserPromptSubmit Hook (prompt_hook.py)               │
 │                                                                  │
+│  Project bootstrap: CWD match? ──▶ Inject standing context       │
 │  Layer 1: First prompt? ──yes──▶ Search cairn ──▶ Inject context │
+│  Layer 1.5: Subsequent? ──yes──▶ Per-prompt semantic injection    │
 │  Layer 2: Staged data?  ──yes──▶ Inject cross-project context    │
 │                                                                  │
 │  Injects via additionalContext (invisible to user)               │
@@ -108,17 +110,31 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-### Three retrieval layers
+### Five retrieval layers
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    RETRIEVAL LAYERS                      │
 │                                                         │
-│  Layer 1: FIRST-PROMPT PUSH                             │
+│  PROJECT BOOTSTRAP: CWD-BASED STANDING CONTEXT          │
 │  ┌───────────────────────────────────────────────────┐  │
 │  │ When: First message of session                    │  │
+│  │ How:  CWD → project name → SQL query by type      │  │
+│  │ Why:  Project awareness without prompt content     │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  Layer 1: FIRST-PROMPT PUSH                             │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │ When: First message of session (after bootstrap)  │  │
 │  │ How:  Embed user message → search cairn           │  │
 │  │ Why:  Eliminate "I don't know" cold start         │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  Layer 1.5: PER-PROMPT PUSH                             │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │ When: Every subsequent message in the session     │  │
+│  │ How:  Embed user message → search (high threshold)│  │
+│  │ Why:  Surface context mid-conversation            │  │
 │  └───────────────────────────────────────────────────┘  │
 │                                                         │
 │  Layer 2: KEYWORD CROSS-PROJECT                         │
@@ -221,15 +237,23 @@ Confidence represents **veracity** — how well-corroborated a memory is across 
          INJECT INTO LLM
 ```
 
-### Legacy text description
+### Text description
 
-Three retrieval layers operate at different points in the conversation lifecycle:
+Five retrieval layers operate at different points in the conversation lifecycle:
 
 ```
 User prompt arrives
-  → Layer 1 (UserPromptSubmit hook): first prompt of session
-    → Searches cairn using user's message
+  → Project bootstrap (UserPromptSubmit hook): first prompt of session
+    → Derives project from CWD basename
+    → Injects top-N standing-context memories (project/preference/fact types)
+    → Independent of prompt content — gives project awareness from CWD alone
+  → Layer 1 (UserPromptSubmit hook): first prompt of session (after bootstrap)
+    → Searches cairn using user's message (semantic + FTS5 via RRF)
     → Injects relevant project + global context via additionalContext
+  → Layer 1.5 (UserPromptSubmit hook): every subsequent prompt
+    → Searches cairn using user's message (higher threshold than Layer 1)
+    → Skips memories already injected this session
+    → Catches context the LLM didn't know to request
   → Layer 2 (UserPromptSubmit hook): subsequent prompts
     → Injects cross-project context staged by previous stop hook keyword search
   → LLM generates response + <memory> block (invisible to user)
@@ -269,7 +293,7 @@ cairn/
 │   └── hook.log                       # Debug log
 ├── hooks/
 │   ├── stop_hook.py                   # Main hook — capture, enforce, retrieve, veracity
-│   ├── prompt_hook.py                 # Layer 1 + Layer 2 injection
+│   ├── prompt_hook.py                 # Project bootstrap + Layer 1/1.5/2 injection
 │   ├── pretool_hook.py                # PreToolUse hook — gotcha injection on file access
 │   ├── hook_helpers.py                # Shared DB access, logging, metrics
 │   ├── parser.py                      # Memory block parsing (verbose + compact formats)
@@ -481,22 +505,36 @@ This is a system-level learning signal recorded in the metrics table, distinct f
 
 The original design used confidence as both a veracity signal and a ranking factor. This created a feedback loop: frequently retrieved memories got boosted, which made them rank higher, which got them retrieved more often — regardless of whether they were actually true. Reframing confidence as pure veracity breaks this loop. The LLM sees the confidence score and can calibrate trust (strong corroboration vs. unverified), but retrieval is driven by similarity and recency.
 
-## Context Retrieval — Three-Layer Design
+## Context Retrieval — Five-Layer Design
 
-Three retrieval layers operate at different points, each covering a different blind spot:
+Five retrieval layers operate at different points, each covering a different blind spot:
 
 | Layer | When | Trigger | What it finds | Hook |
 |-------|------|---------|---------------|------|
-| **1. First-prompt push** | First message of session | User submits prompt | Project context for the opening question | UserPromptSubmit |
+| **Project bootstrap** | First message of session | CWD matches a known project | Standing context (preferences, facts, project state) for the working directory | UserPromptSubmit |
+| **1. First-prompt push** | First message of session | User submits prompt | Prompt-relevant context for the opening question | UserPromptSubmit |
+| **1.5. Per-prompt push** | Every subsequent message | User submits prompt | Mid-conversation context the LLM didn't know to request | UserPromptSubmit |
 | **2. Keyword cross-project** | Between turns | LLM outputs `keywords:` in memory block | Global knowledge surfaced by topic overlap from other projects | Stop (stages) → UserPromptSubmit (injects) |
 | **3. Pull-based** | Any time LLM recognises a gap | LLM declares `context: insufficient` | Specific missing context the LLM explicitly requests | Stop |
-| **4. Gotcha injection** | Before any file access | Read/Edit/Write/MultiEdit tool calls | Corrections associated with the target file | PreToolUse |
+| **Gotcha injection** | Before any file access | Read/Edit/Write/MultiEdit tool calls | Corrections associated with the target file | PreToolUse |
+
+### Project bootstrap
+
+On the first message of each session, before any semantic search, the prompt hook derives a project name from the CWD basename and queries memories filtered to standing-context types (`project`, `preference`, `fact`). Archived memories are excluded. Results are injected independent of prompt content — a terse prompt like "Add rate limiting" still gets full project awareness.
+
+Uses `PROJECT_BOOTSTRAP_MAX` (default 5) and `PROJECT_BOOTSTRAP_TYPES` from config. Returns nothing if CWD doesn't match a known project. Triggerable mid-session via `/cairn bootstrap`.
 
 ### Layer 1: First-prompt push
 
-On the first message of each session, the UserPromptSubmit hook (`prompt_hook.py`) embeds the user's message and searches the cairn. Results are injected via `additionalContext` before the LLM starts generating. This eliminates the cold-start problem where the LLM answers "I don't know" before the Stop hook can correct it.
+On the first message of each session, after project bootstrap, the UserPromptSubmit hook (`prompt_hook.py`) embeds the user's message and searches the cairn using RRF-fused FTS5 + vector search. Results are injected via `additionalContext` before the LLM starts generating. This eliminates the cold-start problem where the LLM answers "I don't know" before the Stop hook can correct it.
 
-Uses `L1_SIM_THRESHOLD` and `L1_MAX_RESULTS` from config. Only fires once per session (tracked via `.first_prompt_done` file).
+Uses `L1_SIM_THRESHOLD` and `L1_MAX_RESULTS` from config. Only fires once per session (tracked via `first_prompt_done` in hook_state).
+
+### Layer 1.5: Per-prompt push
+
+On every subsequent message in the session, the prompt hook embeds the user's message and searches the cairn with a higher similarity threshold (`L1_5_SIM_THRESHOLD`, default 0.55). Memories already injected this session are skipped. This catches cases where relevant context exists but the LLM didn't know to declare `context: insufficient`.
+
+Uses `L1_5_ENABLED` (default true), `L1_5_SIM_THRESHOLD`, and `L1_5_MAX_RESULTS` from config.
 
 ### Layer 2: Keyword cross-project
 
@@ -809,8 +847,8 @@ Full NLI (natural language inference) classifiers are a significant dependency. 
 ### Why retrieval outcome feedback?
 Per-memory `confidence_update` signals tell the system which individual memories are good or bad. But `retrieval_outcome` tells the system whether the *query → results* mapping was useful. This is a system-level signal: if a particular type of query repeatedly yields "neutral" or "harmful" outcomes, the retrieval logic itself may need tuning. The distinction is: confidence improves individual memories, retrieval outcome improves the search process. The adaptive threshold mechanism uses this signal to automatically tighten similarity floors when poor outcomes accumulate.
 
-### Why three retrieval layers instead of one?
-Each layer covers a different blind spot: Layer 1 (first-prompt push) eliminates the cold-start "I don't know" problem. Layer 2 (keyword cross-project) surfaces knowledge the LLM doesn't know to ask for. Layer 3 (pull-based) handles explicit gaps mid-conversation. No single approach covers all three cases. The layers don't overlap — Layer 1 fires once, Layer 2 only injects cross-project data, Layer 3 only fires when the LLM explicitly declares a gap.
+### Why five retrieval layers instead of one?
+Each layer covers a different blind spot: project bootstrap gives CWD-based project awareness independent of prompt content. Layer 1 (first-prompt push) eliminates the cold-start "I don't know" problem. Layer 1.5 (per-prompt push) catches mid-conversation context the LLM didn't know to request. Layer 2 (keyword cross-project) surfaces knowledge from other projects the LLM doesn't know to ask for. Layer 3 (pull-based) handles explicit gaps mid-conversation. No single approach covers all five cases. The layers don't overlap — bootstrap is type-filtered and prompt-independent, Layer 1 fires once, Layer 1.5 skips already-injected IDs, Layer 2 only injects cross-project data, Layer 3 only fires when the LLM explicitly declares a gap.
 
 ### Why non-linear confidence in composite scoring?
 Linear confidence weighting (e.g. `0.30 × confidence`) gives similar advantage to memories at 0.4 vs 0.8 confidence. Using `confidence²` amplifies the gap: 0.4² = 0.16 vs 0.8² = 0.64. This means high-confidence memories (decisions, corrections) dominate over low-confidence entries at equivalent similarity, which matches the intended behaviour — trusted knowledge should outweigh uncertain signals.
@@ -843,7 +881,7 @@ All tunable parameters are centralised in `cairn/config.py`:
 
 ## Testing
 
-478 tests across 22 files, runnable without the embedding model (deterministic mock vectors and patched DB paths).
+486 tests across 23 files, runnable without the embedding model (deterministic mock vectors and patched DB paths).
 
 ```bash
 python3 -m pytest tests/
@@ -856,7 +894,8 @@ python3 -m pytest tests/
 | `test_gates.py` | 21 | All 9 quality gates — boundary values, gate interactions, diversity filter word overlap, combined pass/fail paths |
 | `test_integration.py` | 14 | Full pipeline with in-memory DB — insert → dedup → retrieve → gate, contradiction confidence drop, version history trigger, write throttle |
 | `test_hook_e2e.py` | 13 | Stop hook `main()` with patched stdin — storage, blocking, continuation, sessions, metrics, realistic Claude output (extra text, markdown fences) |
-| `test_prompt_hook.py` | 8 | Layer 1/2 — first-prompt detection, staged context loading/consumption, short message handling, empty DB |
+| `test_prompt_hook.py` | 13 | Layer 1/1.5/2 — first-prompt detection, per-prompt injection, staged context, short message handling, empty DB |
+| `test_project_bootstrap.py` | 4 | CWD-based project bootstrap — standing context injection, type filtering, archived exclusion, error recovery |
 | `test_daemon_and_cache.py` | 16 | Daemon embed fallback, allow_slow=False, stale PID, context cache semantic hit/miss, continuation counter lifecycle, fail-open crash → exit 0, metric recording |
 | `test_query_cli.py` | 12 | CLI commands — search, stats, review, delete, history, compact, projects against test DB |
 | `test_retrieval_pipeline.py` | 22 | Retrieval pipeline — find_nearest, insert dedup/contradiction/variant, retrieve_context, adaptive thresholds, Layer 2 cross-project staging, session registration, auto-label edge cases, negation dampening in insert |
