@@ -29,8 +29,8 @@ else
 fi
 
 # --- Dependencies ---
-echo "Installing dependencies..."
-"$VENV_PATH/bin/pip" install -q -e "$CAIRN_HOME[test]" 2>&1 | tail -1
+echo "Installing dependencies (this may take a few minutes on first install)..."
+"$VENV_PATH/bin/pip" install --progress-bar on -e "$CAIRN_HOME[test]" 2>&1 | grep -E "^(Collecting|Downloading|Installing|Successfully)" || true
 
 # --- Database ---
 echo "Initializing database..."
