@@ -188,7 +188,7 @@ def test_find_memories_for_file_adversarial():
 # main — 4 tests
 # ============================================================
 
-#TAG: [1722] 2026-04-05 src:A8DF
+#TAG: [1722] 2026-04-05
 # Verifies: Read tool with a correction in DB produces hookSpecificOutput JSON with CAIRN GOTCHA section
 @pytest.mark.behavioural
 def test_main_behavioural():
@@ -220,7 +220,7 @@ def test_main_behavioural():
     assert lines[2].startswith("Sources: ")
 
 
-#TAG: [693F] 2026-04-05 src:A8DF
+#TAG: [693F] 2026-04-05
 # Verifies: Bash tool (not in allowed set) causes silent sys.exit(0) with no stdout output
 @pytest.mark.edge
 def test_main_edge():
@@ -239,7 +239,7 @@ def test_main_edge():
     assert output_text == "", f"Expected no output for Bash tool, got: {output_text!r}"
 
 
-#TAG: [6CA5] 2026-04-05 src:A8DF
+#TAG: [6CA5] 2026-04-05
 # Verifies: Write tool with empty tool_input (no file_path or filePath) causes silent sys.exit(0)
 @pytest.mark.error
 def test_main_error():
@@ -258,7 +258,7 @@ def test_main_error():
     assert output_text == "", f"Expected no output when file_path is absent, got: {output_text!r}"
 
 
-#TAG: [A5E5] 2026-04-05 src:A8DF
+#TAG: [A5E5] 2026-04-05
 # Verifies: alternate key names ("input" + "filePath") are resolved and produce CAIRN CONTEXT output
 @pytest.mark.adversarial
 def test_main_adversarial():
