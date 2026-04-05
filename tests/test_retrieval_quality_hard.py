@@ -34,6 +34,17 @@ from typing import Any
 import numpy as np
 import pytest
 
+# These benchmarks require the real embedding model — skip in CI where model isn't downloaded
+try:
+    from sentence_transformers import SentenceTransformer
+    _model = SentenceTransformer("all-MiniLM-L6-v2")
+    del _model
+    HAS_MODEL = True
+except Exception:
+    HAS_MODEL = False
+
+pytestmark = pytest.mark.skipif(not HAS_MODEL, reason="Embedding model not available")
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 

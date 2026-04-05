@@ -29,6 +29,15 @@ from typing import Any
 import numpy as np
 import pytest
 
+try:
+    from sentence_transformers import SentenceTransformer
+    SentenceTransformer("all-MiniLM-L6-v2")
+    HAS_MODEL = True
+except Exception:
+    HAS_MODEL = False
+
+pytestmark = pytest.mark.skipif(not HAS_MODEL, reason="Embedding model not available")
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
