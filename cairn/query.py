@@ -783,6 +783,7 @@ Commands:
   --verify-sources       Analyse accuracy of LLM source_messages estimates
   --backfill             Generate embeddings for memories missing them
   --check                Validate system health (DB, hooks, daemon, embeddings)
+  --bootstrap [project]  Show standing-context memories for a project (from CWD if omitted)
   --audit <session_id>   Dump unaudited memories from session for review
   --stats                Show database statistics"""
 
@@ -1125,6 +1126,39 @@ def memories_for_project(project_name, limit=50):
     return rows
 
 
+def project_bootstrap_query(project_name=None, limit=5):
+    """Output standing-context memories for a project (preferences, facts, project state).
+
+    If no project_name given, derives from CWD basename.
+    """
+    if not project_name:
+        project_name = os.path.basename(os.getcwd().rstrip("/")).lower()
+    if not project_name or project_name in (".", "/", "home", "tmp", "temp"):
+        print("Cannot determine project from CWD.")
+        return
+
+    types = ("project", "preference", "fact")
+    placeholders = ",".join("?" * len(types))
+    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(f"""
+        SELECT id, type, topic, content, updated_at
+        FROM memories
+        WHERE project = ? AND type IN ({placeholders})
+        AND (archived_reason IS NULL OR archived_reason = '')
+        ORDER BY updated_at DESC
+        LIMIT ?
+    """, (project_name, *types, limit)).fetchall()
+    conn.close()
+
+    if not rows:
+        print(f"No standing-context memories found for project '{project_name}'.")
+        return
+
+    print(f"Project bootstrap for '{project_name}' — {len(rows)} standing-context entries:\n")
+    format_rows(rows)
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(USAGE)
@@ -1208,6 +1242,8 @@ if __name__ == "__main__":
                 audit(row[0])
             else:
                 print("No sessions found.")
+    elif cmd == "--bootstrap":
+        project_bootstrap_query(" ".join(sys.argv[2:]) if len(sys.argv) > 2 else None)
     elif cmd == "--stats":
         stats()
     else:
