@@ -3,9 +3,8 @@
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 
-from embeddings import composite_score, _recency_decay
+from cairn.embeddings import composite_score, _recency_decay
 
 
 # Verifies: higher similarity produces higher composite score
@@ -61,7 +60,6 @@ def test_recency_decay_very_old():
 
 # === Confidence dynamics (through real code paths) ===
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 
 def _confidence_db():
@@ -91,8 +89,8 @@ def _confidence_db():
 def test_boost_at_high_confidence_is_tiny():
     """Saturating boost: at 0.9 confidence, boost should be minimal."""
     from unittest.mock import patch
-    import hook_helpers
-    from storage import apply_confidence_updates
+    import hooks.hook_helpers as hook_helpers
+    from hooks.storage import apply_confidence_updates
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.9)")
     conn.commit()
@@ -108,8 +106,8 @@ def test_boost_at_high_confidence_is_tiny():
 def test_boost_at_low_confidence_is_meaningful():
     """Saturating boost: at 0.3 confidence, boost should be larger."""
     from unittest.mock import patch
-    import hook_helpers
-    from storage import apply_confidence_updates
+    import hooks.hook_helpers as hook_helpers
+    from hooks.storage import apply_confidence_updates
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.3)")
     conn.commit()
@@ -125,8 +123,8 @@ def test_boost_at_low_confidence_is_meaningful():
 def test_irrelevant_does_not_change_confidence():
     """- (irrelevant) should not adjust confidence at all."""
     from unittest.mock import patch
-    import hook_helpers
-    from storage import apply_confidence_updates
+    import hooks.hook_helpers as hook_helpers
+    from hooks.storage import apply_confidence_updates
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.9)")
     conn.commit()
@@ -141,8 +139,8 @@ def test_irrelevant_does_not_change_confidence():
 def test_irrelevant_at_low_confidence_unchanged():
     """- (irrelevant) should not adjust confidence even at low values."""
     from unittest.mock import patch
-    import hook_helpers
-    from storage import apply_confidence_updates
+    import hooks.hook_helpers as hook_helpers
+    from hooks.storage import apply_confidence_updates
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.3)")
     conn.commit()
@@ -175,8 +173,7 @@ def test_many_boosts_approach_but_dont_reach_1():
 
 # === Negation heuristic ===
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
-from storage import _has_negation_mismatch
+from hooks.storage import _has_negation_mismatch
 
 
 # Verifies: "do not" negation detected between similar statements
@@ -213,8 +210,8 @@ def test_unrelated_sentences():
 def test_contradiction_annotation_writes_archived_reason():
     """The -! feedback should write archived_reason and leave confidence unchanged."""
     from unittest.mock import patch
-    import hook_helpers
-    from storage import apply_confidence_updates
+    import hooks.hook_helpers as hook_helpers
+    from hooks.storage import apply_confidence_updates
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('decision', 'db-choice', 'Use PostgreSQL', 0.8)")
     conn.commit()
@@ -231,8 +228,8 @@ def test_contradiction_annotation_writes_archived_reason():
 def test_contradiction_annotation_default_reason():
     """-! with no reason should use a default annotation."""
     from unittest.mock import patch
-    import hook_helpers
-    from storage import apply_confidence_updates
+    import hooks.hook_helpers as hook_helpers
+    from hooks.storage import apply_confidence_updates
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.7)")
     conn.commit()
@@ -247,8 +244,8 @@ def test_contradiction_annotation_default_reason():
 def test_mixed_feedback_types():
     """A single response can have +, -, and -! updates applied correctly."""
     from unittest.mock import patch
-    import hook_helpers
-    from storage import apply_confidence_updates
+    import hooks.hook_helpers as hook_helpers
+    from hooks.storage import apply_confidence_updates
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 'a', 'mem a', 0.7)")
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 'b', 'mem b', 0.7)")

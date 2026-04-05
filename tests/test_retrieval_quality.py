@@ -38,8 +38,6 @@ except Exception:
 
 pytestmark = pytest.mark.skipif(not HAS_MODEL, reason="Embedding model not available")
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 TEST_DIR = tempfile.mkdtemp()
 
@@ -214,7 +212,7 @@ def build_quality_db():
     )
 
     # Embed and insert all memories
-    import embeddings
+    import cairn.embeddings as embeddings
     id_offset = 0
     cluster_id_map: dict[str, list[int]] = {}
 
@@ -239,8 +237,8 @@ def build_quality_db():
 
 def run_semantic_search(db_path: str, query: str, limit: int = 10) -> list[dict[str, Any]]:
     """Run semantic-only search (no FTS)."""
-    import embeddings
-    import hook_helpers
+    import cairn.embeddings as embeddings
+    import hooks.hook_helpers as hook_helpers
 
     original_db = hook_helpers.DB_PATH
     try:
@@ -291,8 +289,8 @@ def run_fts_search(db_path: str, query: str, limit: int = 10) -> list[dict[str, 
 
 def run_rrf_search(db_path: str, query: str) -> list[dict[str, Any]]:
     """Run full hybrid RRF pipeline via retrieve_context."""
-    import hook_helpers
-    from retrieval import retrieve_context
+    import hooks.hook_helpers as hook_helpers
+    from hooks.retrieval import retrieve_context
 
     original_db = hook_helpers.DB_PATH
     original_log = hook_helpers.LOG_PATH

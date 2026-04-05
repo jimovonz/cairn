@@ -7,9 +7,9 @@ import re
 from types import ModuleType
 from typing import Optional
 
-import hook_helpers
-from hook_helpers import log, get_conn, get_session_project, record_metric
-from config import (DEDUP_THRESHOLD, CONFIDENCE_BOOST,
+import hooks.hook_helpers as hook_helpers
+from hooks.hook_helpers import log, get_conn, get_session_project, record_metric
+from cairn.config import (DEDUP_THRESHOLD, CONFIDENCE_BOOST,
                      CONFIDENCE_MIN, CONFIDENCE_MAX, CONFIDENCE_DEFAULT,
                      DISTINCT_VARIANT_SIM_THRESHOLD, NEGATION_SIM_FLOOR)
 
@@ -186,7 +186,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     if not entries:
         return 0
 
-    from config import MAX_MEMORIES_PER_RESPONSE
+    from cairn.config import MAX_MEMORIES_PER_RESPONSE
 
     # Write throttling: cap entries per response, keep highest-value ones
     if len(entries) > MAX_MEMORIES_PER_RESPONSE:

@@ -21,8 +21,6 @@ import numpy as np
 
 # Setup paths
 TEST_DIR = tempfile.mkdtemp()
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 _db_counter = [0]
 
@@ -126,7 +124,7 @@ def test_insert_and_retrieve():
     id3 = insert_memory(conn, "preference", "style", "Use snake_case", project="proj", seed=300)
 
     # Query with seed=100 vector — should match id1 (same vector = similarity 1.0)
-    import embeddings as emb
+    import cairn.embeddings as emb
     query_vec = make_vector(100)
 
     # Mock embed to return our test vector
@@ -277,7 +275,7 @@ def test_full_gate_pipeline_rejects_garbage():
     insert_memory(conn, "fact", "auth", "Use JWT", seed=100)
     insert_memory(conn, "decision", "db", "Use SQLite", seed=200)
 
-    import embeddings as emb
+    import cairn.embeddings as emb
     # Seed 999 will produce a vector unrelated to 100 or 200
     query_vec = make_vector(999)
 
@@ -297,7 +295,7 @@ def test_full_gate_pipeline_passes_strong_match():
     db_path, conn = setup_test_db()
     id1 = insert_memory(conn, "fact", "auth", "Use JWT", seed=100, confidence=0.8)
 
-    import embeddings as emb
+    import cairn.embeddings as emb
     query_vec = make_vector(100)
 
     with patch.object(emb, 'embed', return_value=query_vec):
@@ -317,7 +315,7 @@ def test_full_gate_pipeline_passes_strong_match():
 # Verifies: write throttle caps entries at MAX_MEMORIES_PER_RESPONSE
 def test_write_throttle_caps_entries():
     """More than MAX_MEMORIES_PER_RESPONSE entries should be truncated."""
-    from config import MAX_MEMORIES_PER_RESPONSE
+    from cairn.config import MAX_MEMORIES_PER_RESPONSE
     db_path, conn = setup_test_db()
 
     entries = [{"type": "fact", "topic": f"topic-{i}", "content": f"fact number {i}"}
@@ -349,7 +347,7 @@ def test_write_throttle_caps_entries():
 # Verifies: parse -> store -> retrieve round trip preserves data
 def test_parse_store_retrieve_roundtrip():
     """Parse a memory block, store entries, then retrieve and verify."""
-    from parser import parse_memory_block
+    from hooks.parser import parse_memory_block
     db_path, conn = setup_test_db()
 
     text = """Here is my response.
@@ -392,7 +390,7 @@ def test_parse_store_retrieve_roundtrip():
 # Verifies: context: insufficient parses correctly for blocking
 def test_context_insufficient_produces_block():
     """Memory block with context: insufficient should parse correctly for blocking."""
-    from parser import parse_memory_block
+    from hooks.parser import parse_memory_block
 
     text = """I need more context.
 <memory>
@@ -416,7 +414,7 @@ def test_context_insufficient_produces_block():
 # Verifies: parsed confidence updates boost/penalise correct memories
 def test_confidence_updates_applied():
     """Parse confidence updates and verify they modify the right memories."""
-    from parser import parse_memory_block
+    from hooks.parser import parse_memory_block
     db_path, conn = setup_test_db()
 
     id1 = insert_memory(conn, "fact", "t1", "content 1", confidence=0.7)
@@ -492,7 +490,7 @@ def test_version_history_on_overwrite():
 # Verifies: negation heuristic detects contradictory memory pairs
 def test_negation_with_realistic_memories():
     """Two plausible memories that contradict should be detected."""
-    from storage import _has_negation_mismatch
+    from hooks.storage import _has_negation_mismatch
 
     # Real-world pair from a GNSS project
     assert _has_negation_mismatch(

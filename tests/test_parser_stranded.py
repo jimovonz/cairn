@@ -3,10 +3,9 @@
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 import pytest
-from parser import parse_memory_block, NO_BLOCK, NOOP_BLOCK, ParseResult
+from hooks.parser import parse_memory_block, NO_BLOCK, NOOP_BLOCK, ParseResult
 
 
 # ---------------------------------------------------------------------------

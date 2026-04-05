@@ -13,8 +13,7 @@ from datetime import datetime, timedelta
 
 _ANSI = re.compile(r'\x1b\[[0-9;]*m')
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-import query
+import cairn.query as query
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
@@ -570,9 +569,17 @@ def test_add_memory_edge():
 # Verifies: add_memory works without embeddings module reporting without embedding
 def test_add_memory_error():
     db, c = fresh_db()
+    import cairn as _cairn_pkg
+    _saved = getattr(_cairn_pkg, "embeddings", None)
     with patch.object(query, 'DB_PATH', db), \
-         patch.dict('sys.modules', {'embeddings': None}):
-        out, _ = capture(query.add_memory, "fact", "no-emb", "content without embedding")
+         patch.dict('sys.modules', {'cairn.embeddings': None}):
+        if hasattr(_cairn_pkg, "embeddings"):
+            delattr(_cairn_pkg, "embeddings")
+        try:
+            out, _ = capture(query.add_memory, "fact", "no-emb", "content without embedding")
+        finally:
+            if _saved is not None:
+                _cairn_pkg.embeddings = _saved
     row = c.execute("SELECT embedding FROM memories WHERE id=1").fetchone()
     assert row[0] is None
     assert c.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1

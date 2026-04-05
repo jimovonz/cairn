@@ -13,7 +13,7 @@ CAIRN_DIR = os.path.join(os.path.dirname(__file__), "..", "cairn")
 DB_PATH = os.environ.get("CAIRN_DB_PATH", os.path.join(CAIRN_DIR, "cairn.db"))
 LOG_PATH = os.path.join(CAIRN_DIR, "hook.log")
 
-sys.path.insert(0, CAIRN_DIR)
+# cairn package available via pip install -e .
 
 
 def log(msg: str) -> None:
@@ -47,7 +47,7 @@ def get_embedder() -> Optional[ModuleType]:
     if os.environ.get("CAIRN_SKIP_EMBEDDER"):
         return None
     try:
-        import embeddings
+        from cairn import embeddings
         return embeddings
     except ImportError:
         return None

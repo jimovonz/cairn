@@ -20,7 +20,7 @@ _venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".
 if os.path.exists(_venv_python) and sys.prefix == sys.base_prefix:
     os.execv(_venv_python, [_venv_python] + sys.argv)
 
-import config
+from cairn import config
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -110,8 +110,7 @@ def api_memories(params):
 
     if q and mode == "semantic":
         try:
-            sys.path.insert(0, os.path.dirname(__file__))
-            import embeddings as emb
+            from cairn import embeddings as emb
             results = emb.find_similar(conn, q, threshold=0.3, limit=limit)
             conn.close()
             memories = [{

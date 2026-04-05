@@ -19,14 +19,11 @@ import sys
 import os
 from typing import Optional
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.dirname(__file__))
-
-from hook_helpers import log, get_conn, record_metric, get_embedder, get_session_project, DB_PATH
-from parser import parse_memory_block
-from hash_verify import compute_response_hash
-from storage import apply_confidence_updates, insert_memories
-from enforcement import check_trailing_intent, get_continuation_count, increment_continuation, reset_continuation
+from hooks.hook_helpers import log, get_conn, record_metric, get_embedder, get_session_project, DB_PATH
+from hooks.parser import parse_memory_block
+from hooks.hash_verify import compute_response_hash
+from hooks.storage import apply_confidence_updates, insert_memories
+from hooks.enforcement import check_trailing_intent, get_continuation_count, increment_continuation, reset_continuation
 
 # Appended to block reasons that are purely about memory format — the user already saw the
 # response in interactive mode, so restating it is wasteful.  Only used for format/density
@@ -36,10 +33,10 @@ AMEND_ONLY_SUFFIX = (
     "Do NOT restate or repeat it. Just output a single short line like "
     "\"Memory block amended.\" followed by a corrected <memory> block."
 )
-from retrieval import (retrieve_context, layer2_cross_project_search,
+from hooks.retrieval import (retrieve_context, layer2_cross_project_search,
                         load_context_cache, save_context_cache, is_context_cached, add_to_context_cache,
                         CONTEXT_CACHE_SIM_THRESHOLD)
-from config import MAX_CONTINUATIONS, WEAK_ENTRY_SCORE_FLOOR, CONTEXT_BOOTSTRAP_INTERVAL
+from cairn.config import MAX_CONTINUATIONS, WEAK_ENTRY_SCORE_FLOOR, CONTEXT_BOOTSTRAP_INTERVAL
 
 
 def register_session(session_id: str, transcript_path: str) -> None:
@@ -267,7 +264,7 @@ def main() -> None:
 
     # Hash verification — optional, log-only (not blocking)
     if hash_claimed is not None:
-        from hash_verify import verify_hash
+        from hooks.hash_verify import verify_hash
         match, actual = verify_hash(text, hash_claimed)
         if match:
             log(f"Hash verified: {actual:X}")
@@ -353,7 +350,7 @@ def main() -> None:
                         _is_bootstrap = True
                 except Exception:
                     pass
-                from config import BOOTSTRAP_MAX_PER_SCOPE
+                from cairn.config import BOOTSTRAP_MAX_PER_SCOPE
                 _max_scope = BOOTSTRAP_MAX_PER_SCOPE if _is_bootstrap else None
                 retrieved: Optional[str] = retrieve_context(context_need, session_id=session_id, max_per_scope=_max_scope)
                 if retrieved:
@@ -427,7 +424,7 @@ def main() -> None:
         conn.close()
 
         # Use shorter interval for first bootstrap in session, then standard interval
-        from config import CONTEXT_BOOTSTRAP_FIRST_INTERVAL
+        from cairn.config import CONTEXT_BOOTSTRAP_FIRST_INTERVAL
         conn_check = get_conn()
         _prior_bootstrap = conn_check.execute(
             "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'context_bootstrap_triggered'",

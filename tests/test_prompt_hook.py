@@ -10,10 +10,8 @@ import shutil
 from unittest.mock import patch
 from io import StringIO
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
-import hook_helpers
+import hooks.hook_helpers as hook_helpers
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
@@ -40,7 +38,7 @@ def fresh_env():
 
 
 def run_prompt_hook(db_path, payload):
-    import prompt_hook
+    import hooks.prompt_hook as prompt_hook
     payload_json = json.dumps(payload)
     captured = StringIO()
     exit_code = [0]
@@ -78,7 +76,7 @@ def run_prompt_hook(db_path, payload):
 # Verifies: new session is detected as first prompt
 def test_first_prompt_detected():
     """First prompt for a session should be detected."""
-    import prompt_hook
+    import hooks.prompt_hook as prompt_hook
     db_path, conn = fresh_env()
 
     with patch.object(hook_helpers, 'DB_PATH', db_path):
@@ -89,7 +87,7 @@ def test_first_prompt_detected():
 # Verifies: second prompt after mark_done is not treated as first
 def test_second_prompt_not_first():
     """After marking done, second prompt should not be first."""
-    import prompt_hook
+    import hooks.prompt_hook as prompt_hook
     db_path, conn = fresh_env()
 
     with patch.object(hook_helpers, 'DB_PATH', db_path):
@@ -101,7 +99,7 @@ def test_second_prompt_not_first():
 # Verifies: first-prompt state is isolated per session
 def test_different_session_still_first():
     """Marking one session done should not affect another."""
-    import prompt_hook
+    import hooks.prompt_hook as prompt_hook
     db_path, conn = fresh_env()
 
     with patch.object(hook_helpers, 'DB_PATH', db_path):
@@ -117,7 +115,7 @@ def test_different_session_still_first():
 # Verifies: staged context is loaded from hook_state DB
 def test_staged_context_loaded():
     """Staged context should be loaded and consumed."""
-    import prompt_hook
+    import hooks.prompt_hook as prompt_hook
     db_path, conn = fresh_env()
 
     # Stage via DB (as stop_hook would)
@@ -136,7 +134,7 @@ def test_staged_context_loaded():
 # Verifies: loaded staged context is deleted, other sessions untouched
 def test_staged_context_consumed():
     """After loading, staged context should be removed for that session."""
-    import prompt_hook
+    import hooks.prompt_hook as prompt_hook
     db_path, conn = fresh_env()
 
     conn.execute(
@@ -167,7 +165,7 @@ def test_staged_context_consumed():
 # Verifies: missing staged context returns None without error
 def test_no_staged_context():
     """Missing staged data should return None gracefully."""
-    import prompt_hook
+    import hooks.prompt_hook as prompt_hook
     db_path, conn = fresh_env()
 
     with patch.object(hook_helpers, 'DB_PATH', db_path):
@@ -213,7 +211,7 @@ def test_empty_db_no_injection():
 def test_injected_ids_stored_in_hook_state():
     """When context is injected containing entry IDs, prompt hook should
     write those IDs to hook_state for the stop hook's contradiction enforcement."""
-    import prompt_hook
+    import hooks.prompt_hook as prompt_hook
     db_path, conn = fresh_env()
 
     # Stage Layer 2 context containing entry IDs (as stop hook would after keyword search)
@@ -263,8 +261,8 @@ def test_injected_ids_stored_in_hook_state():
 
 # Verifies: Layer 1.5 returns None when disabled (default)
 def test_layer1_5_disabled_by_default():
-    import prompt_hook
-    import config
+    import hooks.prompt_hook as prompt_hook
+    import cairn.config as config
     original = config.L1_5_ENABLED
     try:
         config.L1_5_ENABLED = False
@@ -281,8 +279,8 @@ def test_layer1_5_disabled_by_default():
 
 # Verifies: Layer 1.5 fires on subsequent prompts when enabled with matching results
 def test_layer1_5_injects_on_subsequent_prompt():
-    import prompt_hook
-    import config
+    import hooks.prompt_hook as prompt_hook
+    import cairn.config as config
     import numpy as np
     from unittest.mock import MagicMock
     original = config.L1_5_ENABLED
@@ -307,7 +305,7 @@ def test_layer1_5_injects_on_subsequent_prompt():
         }]
 
         with patch.object(hook_helpers, 'DB_PATH', db_path), \
-             patch('prompt_hook.get_embedder', return_value=mock_emb):
+             patch('hooks.prompt_hook.get_embedder', return_value=mock_emb):
             result = prompt_hook.layer1_5_search("auth approach JWT", "s1")
 
         assert result is not None
@@ -321,8 +319,8 @@ def test_layer1_5_injects_on_subsequent_prompt():
 
 # Verifies: Layer 1.5 skips already-injected IDs
 def test_layer1_5_skips_already_injected():
-    import prompt_hook
-    import config
+    import hooks.prompt_hook as prompt_hook
+    import cairn.config as config
     import json as _json
     from unittest.mock import MagicMock
     original = config.L1_5_ENABLED
@@ -352,7 +350,7 @@ def test_layer1_5_skips_already_injected():
         }]
 
         with patch.object(hook_helpers, 'DB_PATH', db_path), \
-             patch('prompt_hook.get_embedder', return_value=mock_emb):
+             patch('hooks.prompt_hook.get_embedder', return_value=mock_emb):
             result = prompt_hook.layer1_5_search("some query", "s1")
 
         assert result is None  # Already injected — should not re-inject
@@ -369,7 +367,7 @@ def test_l1_5_enabled_env_override():
     env_backup = os.environ.copy()
     try:
         os.environ["CAIRN_L1_5_ENABLED"] = "1"
-        import config
+        import cairn.config as config
         importlib.reload(config)
         assert config.L1_5_ENABLED is True
     finally:

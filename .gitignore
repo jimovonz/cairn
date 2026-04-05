@@ -17,3 +17,4 @@ logs/
 .staged_context/
 cairn/cairn.db.backup-*
 cairn/cairn.db.test-*
+cairn_memory.egg-info/

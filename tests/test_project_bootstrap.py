@@ -11,10 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
-import hook_helpers
+import hooks.hook_helpers as hook_helpers
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
@@ -76,7 +74,7 @@ def parse_entries(xml_str):
 # Verifies: returns structured cairn_context XML with correct entries, attributes, ordering, type filtering, archived exclusion, and metric recording
 @pytest.mark.behavioural
 def test_project_bootstrap_behavioural():
-    from prompt_hook import project_bootstrap
+    from hooks.prompt_hook import project_bootstrap
     db_path, conn = fresh_db()
     id1 = insert_memory(conn, "myproject", mem_type="project", topic="arch",
                         content="Uses SQLite for storage", confidence=0.8,
@@ -153,8 +151,8 @@ def test_project_bootstrap_behavioural():
 # Verifies: returns None for empty cwd, blocked names, root path, dot path, disabled config, no-match project, and respects PROJECT_BOOTSTRAP_MAX cap
 @pytest.mark.edge
 def test_project_bootstrap_edge():
-    from prompt_hook import project_bootstrap
-    import config
+    from hooks.prompt_hook import project_bootstrap
+    import cairn.config as config
     db_path, conn = fresh_db()
     # Insert 10 memories to test max cap
     for i in range(10):
@@ -198,7 +196,7 @@ def test_project_bootstrap_edge():
 # Verifies: returns None without crashing when DB is broken, table is missing, or query fails
 @pytest.mark.error
 def test_project_bootstrap_error():
-    from prompt_hook import project_bootstrap
+    from hooks.prompt_hook import project_bootstrap
     db_path, conn = fresh_db()
     conn.close()
 
@@ -224,7 +222,7 @@ def test_project_bootstrap_error():
 # Verifies: handles NULL confidence (defaults to 0.7), malformed updated_at (days=0), and produces valid XML structure despite bad data
 @pytest.mark.adversarial
 def test_project_bootstrap_adversarial():
-    from prompt_hook import project_bootstrap
+    from hooks.prompt_hook import project_bootstrap
     db_path, conn = fresh_db()
 
     # Memory with NULL confidence

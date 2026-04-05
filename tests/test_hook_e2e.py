@@ -14,8 +14,6 @@ import shutil
 from unittest.mock import patch, MagicMock
 from io import StringIO
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 TEST_DIR = tempfile.mkdtemp()
 _db_counter = [0]
@@ -61,8 +59,8 @@ def run_hook(db_path, payload):
         exit_code[0] = code
         raise SystemExit(code)
 
-    import hook_helpers
-    import stop_hook
+    import hooks.hook_helpers as hook_helpers
+    import hooks.stop_hook as stop_hook
     original_db = hook_helpers.DB_PATH
     original_log = hook_helpers.LOG_PATH
 
@@ -275,7 +273,7 @@ def test_metrics_recorded():
 
 # Verifies: write throttle caps entries at MAX_MEMORIES_PER_RESPONSE
 def test_write_throttle_limits_entries():
-    from config import MAX_MEMORIES_PER_RESPONSE
+    from cairn.config import MAX_MEMORIES_PER_RESPONSE
     db_path, conn = fresh_db()
 
     # Build a block with 8 entries (above limit of 5)
@@ -421,7 +419,7 @@ def test_contradiction_enforcement_blocks():
 
     # Verify the negation detection precondition — response text must actually
     # trigger negation mismatch against the memory content
-    from storage import _has_negation_mismatch
+    from hooks.storage import _has_negation_mismatch
     response_text = response.split("<memory>")[0].strip()
     mem_content = "Use Cloudflare tunnel for public access"
     assert _has_negation_mismatch(response_text, mem_content), \
@@ -445,7 +443,7 @@ def test_contradiction_enforcement_blocks():
         "last_assistant_message": response
     }
 
-    import hook_helpers
+    import hooks.hook_helpers as hook_helpers
     payload_json = json.dumps(payload)
     captured_output = StringIO()
     exit_code = [0]
@@ -461,7 +459,7 @@ def test_contradiction_enforcement_blocks():
         hook_helpers.DB_PATH = db_path
         hook_helpers.LOG_PATH = os.path.join(TEST_DIR, 'test.log')
 
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         with patch('sys.stdin', StringIO(payload_json)), \
              patch('sys.stdout', captured_output), \
              patch('sys.exit', mock_exit), \
@@ -527,7 +525,7 @@ def test_contradiction_enforcement_skips_when_annotated():
         "last_assistant_message": response
     }
 
-    import hook_helpers
+    import hooks.hook_helpers as hook_helpers
     payload_json = json.dumps(payload)
     captured_output = StringIO()
     exit_code = [0]
@@ -543,7 +541,7 @@ def test_contradiction_enforcement_skips_when_annotated():
         hook_helpers.DB_PATH = db_path
         hook_helpers.LOG_PATH = os.path.join(TEST_DIR, 'test.log')
 
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         with patch('sys.stdin', StringIO(payload_json)), \
              patch('sys.stdout', captured_output), \
              patch('sys.exit', mock_exit), \

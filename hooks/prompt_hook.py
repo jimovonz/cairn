@@ -19,10 +19,7 @@ import os
 from datetime import datetime
 from typing import Any, Optional
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.dirname(__file__))
-
-from hook_helpers import get_conn, get_embedder, get_session_project, record_metric, DB_PATH, LOG_PATH
+from hooks.hook_helpers import get_conn, get_embedder, get_session_project, record_metric, DB_PATH, LOG_PATH
 
 
 def log(msg: str) -> None:
@@ -71,7 +68,7 @@ def load_staged_context(session_id: str) -> Optional[str]:
 
 def format_entry(r: dict[str, Any]) -> str:
     """Format a memory entry for injection."""
-    from config import MIN_INJECTION_SIMILARITY
+    from cairn.config import MIN_INJECTION_SIMILARITY
     sim = r.get("similarity", 0)
     conf = r.get("confidence", 0.7)
     score = r.get("score", conf)
@@ -121,7 +118,7 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
     Fires on every message after the first. Higher threshold than Layer 1 (0.55 vs 0.30)
     to avoid mid-session noise. Skips IDs already injected this session.
     """
-    from config import L1_5_ENABLED, L1_5_SIM_THRESHOLD, L1_5_MAX_RESULTS, MIN_INJECTION_SIMILARITY
+    from cairn.config import L1_5_ENABLED, L1_5_SIM_THRESHOLD, L1_5_MAX_RESULTS, MIN_INJECTION_SIMILARITY
 
     if not L1_5_ENABLED:
         return None
@@ -190,7 +187,7 @@ def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
     Queries directly by project name + type filter — no semantic search needed.
     Gives Claude project awareness from CWD alone, independent of prompt content.
     """
-    from config import PROJECT_BOOTSTRAP_ENABLED, PROJECT_BOOTSTRAP_MAX, PROJECT_BOOTSTRAP_TYPES
+    from cairn.config import PROJECT_BOOTSTRAP_ENABLED, PROJECT_BOOTSTRAP_MAX, PROJECT_BOOTSTRAP_TYPES
 
     if not PROJECT_BOOTSTRAP_ENABLED or not cwd:
         return None
@@ -255,7 +252,7 @@ def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
 
 def layer1_search(user_message: str, session_id: str) -> Optional[str]:
     """Layer 1: Search cairn using user's first message."""
-    from config import L1_SIM_THRESHOLD, L1_MAX_RESULTS, MIN_INJECTION_SIMILARITY
+    from cairn.config import L1_SIM_THRESHOLD, L1_MAX_RESULTS, MIN_INJECTION_SIMILARITY
 
     emb = get_embedder()
     if not emb:
@@ -352,7 +349,7 @@ def main() -> None:
         # Clean up stale staged context (older than 7 days — sessions unlikely to resume)
         try:
             cleanup_conn = get_conn()
-            from config import STAGED_CONTEXT_RETENTION_DAYS
+            from cairn.config import STAGED_CONTEXT_RETENTION_DAYS
             cleanup_conn.execute(
                 "DELETE FROM hook_state WHERE key = 'staged_context' AND updated_at < datetime('now', ?)",
                 (f"-{STAGED_CONTEXT_RETENTION_DAYS} days",)

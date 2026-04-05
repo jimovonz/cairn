@@ -4,7 +4,6 @@
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 
 
 def mock_results(entries):
@@ -27,7 +26,6 @@ def mock_results(entries):
     ]
 
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 
 # === Garbage and borderline gates through find_similar ===
@@ -38,8 +36,8 @@ def test_garbage_gate_rejects_weak_results():
     import sqlite3, tempfile
     import numpy as np
     from unittest.mock import patch, MagicMock
-    import hook_helpers
-    from config import MIN_INJECTION_SIMILARITY
+    import hooks.hook_helpers as hook_helpers
+    from cairn.config import MIN_INJECTION_SIMILARITY
 
     db_path = os.path.join(tempfile.mkdtemp(), "gate.db")
     conn = sqlite3.connect(db_path)
@@ -54,13 +52,13 @@ def test_garbage_gate_rejects_weak_results():
                  ("fact", "test", "some content", vec.tobytes(), 0.7))
     conn.commit()
 
-    from embeddings import find_similar
+    from cairn.embeddings import find_similar
     # Use an orthogonal query vector to get low similarity
     query_vec = np.random.RandomState(999).randn(384).astype(np.float32)
     query_vec = query_vec / np.linalg.norm(query_vec)
 
-    with patch('embeddings.embed', return_value=query_vec), \
-         patch('embeddings._load_vec', return_value=False):
+    with patch('cairn.embeddings.embed', return_value=query_vec), \
+         patch('cairn.embeddings._load_vec', return_value=False):
         results = find_similar(conn, "completely unrelated query")
 
     # All results should be filtered out by garbage gate
@@ -76,7 +74,7 @@ def test_diversity_filter_drops_same_type_topic():
     import sqlite3, tempfile
     import numpy as np
     from unittest.mock import patch
-    from embeddings import find_similar
+    from cairn.embeddings import find_similar
 
     db_path = os.path.join(tempfile.mkdtemp(), "div.db")
     conn = sqlite3.connect(db_path)
@@ -95,8 +93,8 @@ def test_diversity_filter_drops_same_type_topic():
                  ("fact", "db-choice", "SQLite chosen for persistence", nudged.tobytes(), 0.8))
     conn.commit()
 
-    with patch('embeddings.embed', return_value=base), \
-         patch('embeddings._load_vec', return_value=False):
+    with patch('cairn.embeddings.embed', return_value=base), \
+         patch('cairn.embeddings._load_vec', return_value=False):
         results = find_similar(conn, "database choice")
 
     topics = [r["topic"] for r in results if r["topic"] == "db-choice"]
@@ -109,7 +107,7 @@ def test_diversity_filter_drops_same_type_topic():
 # Verifies: a single result always passes the relative filter
 def test_relative_filter_single_result():
     """Single result should always survive relative filter."""
-    from config import RELATIVE_FILTER_RATIO
+    from cairn.config import RELATIVE_FILTER_RATIO
     results = [{"similarity": 0.50}]
     max_sim = results[0]["similarity"]
     kept = [r for r in results if r["similarity"] >= RELATIVE_FILTER_RATIO * max_sim]
@@ -119,7 +117,7 @@ def test_relative_filter_single_result():
 # Verifies: tightly-clustered similarities all survive the relative filter
 def test_relative_filter_tight_cluster():
     """Results within 30% of each other should all survive."""
-    from config import RELATIVE_FILTER_RATIO
+    from cairn.config import RELATIVE_FILTER_RATIO
     results = [{"similarity": 0.80}, {"similarity": 0.75}, {"similarity": 0.60}]
     max_sim = 0.80
     kept = [r for r in results if r["similarity"] >= RELATIVE_FILTER_RATIO * max_sim]
@@ -130,7 +128,7 @@ def test_relative_filter_tight_cluster():
 # Verifies: relative filter drops results far below the top similarity
 def test_relative_filter_drops_outlier():
     """One strong + one much weaker should drop the weak one."""
-    from config import RELATIVE_FILTER_RATIO
+    from cairn.config import RELATIVE_FILTER_RATIO
     results = [{"similarity": 0.85}, {"similarity": 0.40}]
     max_sim = 0.85
     kept = [r for r in results if r["similarity"] >= RELATIVE_FILTER_RATIO * max_sim]
@@ -144,7 +142,7 @@ def test_relative_filter_drops_outlier():
 def test_no_confidence_filtering_zero_confidence():
     """similarity=0.50, confidence=0.0 — should be included (confidence doesn't gate retrieval)."""
     # With confidence removed from filtering, only similarity threshold matters
-    from config import SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR
+    from cairn.config import SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR
     assert SOFT_CONF_FLOOR == 0.0, "Confidence floor should be disabled"
     assert SOFT_SIM_OVERRIDE == 0.0, "Similarity override for confidence should be disabled"
 
@@ -171,7 +169,7 @@ def test_no_confidence_filtering_at_sim_threshold():
 # Verifies: gap exactly equal to DOMINANCE_EPSILON does not trigger suppression
 def test_dominance_gap_exactly_at_epsilon():
     """Gap exactly at epsilon boundary — should NOT trigger suppression."""
-    from config import DOMINANCE_EPSILON
+    from cairn.config import DOMINANCE_EPSILON
     gap = DOMINANCE_EPSILON
     assert not (gap < DOMINANCE_EPSILON)
 
@@ -179,7 +177,7 @@ def test_dominance_gap_exactly_at_epsilon():
 # Verifies: gap just below DOMINANCE_EPSILON triggers suppression
 def test_dominance_gap_just_below_epsilon():
     """Gap just below epsilon — should trigger, keeping both."""
-    from config import DOMINANCE_EPSILON
+    from cairn.config import DOMINANCE_EPSILON
     gap = DOMINANCE_EPSILON - 0.001
     assert gap < DOMINANCE_EPSILON
 
@@ -200,7 +198,7 @@ def test_diversity_keeps_different_aspects():
 # Verifies: word overlap below DIVERSITY_SIM_THRESHOLD keeps both entries
 def test_diversity_word_overlap_boundary():
     """Content with exactly 90% word overlap should be caught."""
-    from config import DIVERSITY_SIM_THRESHOLD
+    from cairn.config import DIVERSITY_SIM_THRESHOLD
     # 9 shared words out of 10 total = 0.9
     content_a = "the quick brown fox jumps over the lazy sleeping dog"
     content_b = "the quick brown fox jumps over the lazy sleeping cat"
@@ -214,7 +212,7 @@ def test_diversity_word_overlap_boundary():
 # Verifies: identical content produces word overlap above DIVERSITY_SIM_THRESHOLD
 def test_diversity_identical_content():
     """Exact same content, different topic — word overlap catches it."""
-    from config import DIVERSITY_SIM_THRESHOLD
+    from cairn.config import DIVERSITY_SIM_THRESHOLD
     content = "use JWT for stateless authentication"
     words = set(content.lower().split())
     overlap = len(words & words) / max(len(words | words), 1)
@@ -226,7 +224,7 @@ def test_diversity_identical_content():
 # Verifies: write throttle prioritises corrections and decisions over project entries
 def test_write_throttle_corrections_survive_over_project():
     """When throttled, corrections should be kept over project metadata."""
-    from config import MAX_MEMORIES_PER_RESPONSE
+    from cairn.config import MAX_MEMORIES_PER_RESPONSE
     type_priority = {"correction": 0, "decision": 1, "fact": 2, "preference": 3,
                      "person": 4, "skill": 5, "workflow": 6, "project": 7}
     entries = [
@@ -245,7 +243,7 @@ def test_write_throttle_corrections_survive_over_project():
 # Verifies: write throttle caps entries at MAX_MEMORIES_PER_RESPONSE
 def test_write_throttle_all_same_type():
     """All entries same type — should just keep first N."""
-    from config import MAX_MEMORIES_PER_RESPONSE
+    from cairn.config import MAX_MEMORIES_PER_RESPONSE
     entries = [{"type": "fact", "topic": f"t{i}", "content": f"c{i}"} for i in range(10)]
     assert len(entries[:MAX_MEMORIES_PER_RESPONSE]) == MAX_MEMORIES_PER_RESPONSE
 
@@ -255,7 +253,7 @@ def test_write_throttle_all_same_type():
 # Verifies: borderline entries are caught by either garbage or borderline gate
 def test_gates_combined_weak_but_not_garbage():
     """Entry at garbage floor with low score — when borderline == garbage floor, caught by garbage gate."""
-    from config import MIN_INJECTION_SIMILARITY, BORDERLINE_SIM_CEILING, BORDERLINE_SCORE_FLOOR
+    from cairn.config import MIN_INJECTION_SIMILARITY, BORDERLINE_SIM_CEILING, BORDERLINE_SCORE_FLOOR
     # When BORDERLINE_SIM_CEILING == MIN_INJECTION_SIMILARITY, the borderline gate
     # has no independent effect — entries below the ceiling are also below garbage.
     # Test with a value just below the ceiling to verify both gates agree.
@@ -268,7 +266,7 @@ def test_gates_combined_weak_but_not_garbage():
 # Verifies: high-quality entry passes all gates (garbage, borderline, soft, relative)
 def test_gates_combined_strong_entry_passes_all():
     """Entry at sim=0.75, score=0.65, confidence=0.8 — should pass everything."""
-    from config import (MIN_INJECTION_SIMILARITY, BORDERLINE_SIM_CEILING,
+    from cairn.config import (MIN_INJECTION_SIMILARITY, BORDERLINE_SIM_CEILING,
                         SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR, RELATIVE_FILTER_RATIO)
     sim, score, conf = 0.75, 0.65, 0.8
     passes_garbage = sim >= MIN_INJECTION_SIMILARITY

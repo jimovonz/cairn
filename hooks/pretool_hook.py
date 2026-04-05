@@ -22,10 +22,7 @@ import sqlite3
 import sys
 from typing import Any, Optional
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.dirname(__file__))
-
-from hook_helpers import log, get_conn, record_metric
+from hooks.hook_helpers import log, get_conn, record_metric
 
 # Max entries to inject per file access (avoid flooding context)
 MAX_GOTCHA_INJECTIONS = 3

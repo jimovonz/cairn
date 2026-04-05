@@ -31,8 +31,6 @@ except Exception:
 
 pytestmark = pytest.mark.skipif(not HAS_MODEL, reason="Embedding model not available")
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 TEST_DIR = tempfile.mkdtemp()
 
@@ -202,7 +200,7 @@ def build_expansion_db():
         "INSERT INTO sessions (session_id, project) VALUES ('exp-sid', 'exptest')"
     )
 
-    import embeddings
+    import cairn.embeddings as embeddings
     cluster_id_map: dict[str, list[int]] = {}
 
     for cluster in CLUSTERS:
@@ -247,7 +245,7 @@ def expansion_db():
 
 def run_baseline(db_path: str, query: str, limit: int = 10) -> list[int]:
     """Standard semantic search (baseline)."""
-    import embeddings
+    import cairn.embeddings as embeddings
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA busy_timeout=5000")
     results = embeddings.find_similar(conn, query, threshold=0.0, limit=limit,
@@ -258,8 +256,8 @@ def run_baseline(db_path: str, query: str, limit: int = 10) -> list[int]:
 
 def run_type_fanout(db_path: str, query: str, limit: int = 10) -> list[int]:
     """Type-prefix fan-out strategy."""
-    import embeddings
-    from query_expansion import type_prefix_fanout
+    import cairn.embeddings as embeddings
+    from hooks.query_expansion import type_prefix_fanout
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA busy_timeout=5000")
     results = type_prefix_fanout(conn, query, embeddings.embed,
@@ -270,8 +268,8 @@ def run_type_fanout(db_path: str, query: str, limit: int = 10) -> list[int]:
 
 def run_corpus_prf(db_path: str, query: str, limit: int = 10) -> list[int]:
     """Corpus-aware PRF strategy."""
-    from query_expansion import corpus_prf
-    import embeddings
+    from hooks.query_expansion import corpus_prf
+    import cairn.embeddings as embeddings
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA busy_timeout=5000")
     results = corpus_prf(conn, query, embeddings.embed,
@@ -282,8 +280,8 @@ def run_corpus_prf(db_path: str, query: str, limit: int = 10) -> list[int]:
 
 def run_neighbor_blend(db_path: str, query: str, limit: int = 10) -> list[int]:
     """Nearest-neighbor blending strategy."""
-    from query_expansion import neighbor_blend
-    import embeddings
+    from hooks.query_expansion import neighbor_blend
+    import cairn.embeddings as embeddings
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA busy_timeout=5000")
     results = neighbor_blend(conn, query, embeddings.embed,
@@ -294,8 +292,8 @@ def run_neighbor_blend(db_path: str, query: str, limit: int = 10) -> list[int]:
 
 def run_combined(db_path: str, query: str, limit: int = 10) -> list[int]:
     """Combined fan-out + blend strategy."""
-    from query_expansion import combined_expansion
-    import embeddings
+    from hooks.query_expansion import combined_expansion
+    import cairn.embeddings as embeddings
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA busy_timeout=5000")
     results = combined_expansion(conn, query, embeddings.embed,

@@ -44,7 +44,7 @@ cairn-query = "cairn.query:main_entry"
 cairn-dashboard = "cairn.dashboard:main"
 
 [tool.setuptools.packages.find]
-include = ["cairn*"]
+include = ["cairn*", "hooks*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

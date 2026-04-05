@@ -11,12 +11,10 @@ import numpy as np
 from unittest.mock import patch, MagicMock
 from io import StringIO
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
-import hook_helpers
-import enforcement
-import storage
+import hooks.hook_helpers as hook_helpers
+import hooks.enforcement as enforcement
+import hooks.storage as storage
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
@@ -65,8 +63,8 @@ def fresh_env():
 
 def run_hook(db_path, payload):
     """Run stop_hook.main() with full patching."""
-    import hook_helpers
-    import stop_hook
+    import hooks.hook_helpers as hook_helpers
+    import hooks.stop_hook as stop_hook
     captured = StringIO()
     exit_code = [0]
 
@@ -104,14 +102,14 @@ def run_hook(db_path, payload):
 class TestExtractLastSentence:
     # Verifies: memory block is stripped before sentence extraction
     def test_strips_memory_block(self):
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         text = "Here is my answer.\n<memory>\n- type: fact\n- topic: test\n- content: test\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
         result = enforcement._extract_last_sentence(text)
         assert result == "Here is my answer"
 
     # Verifies: trailing code fences are stripped from extraction
     def test_strips_trailing_code_fence(self):
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         text = "Some code here.\n```\ncode block\n```"
         result = enforcement._extract_last_sentence(text)
         assert isinstance(result, str) and len(result) > 0
@@ -119,19 +117,19 @@ class TestExtractLastSentence:
 
     # Verifies: empty/whitespace input returns None
     def test_returns_none_for_empty(self):
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         assert enforcement._extract_last_sentence("") is None
         assert enforcement._extract_last_sentence("   ") is None
 
     # Verifies: short fragments are skipped (returns None)
     def test_skips_short_fragments(self):
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         text = "Done. Ok. Yes."
         assert enforcement._extract_last_sentence(text) is None
 
     # Verifies: last meaningful sentence is correctly extracted
     def test_extracts_last_meaningful_sentence(self):
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         text = "First I did this. Then I checked the logs. Let me investigate the error further."
         result = enforcement._extract_last_sentence(text)
         assert result == "Let me investigate the error further", \
@@ -143,7 +141,7 @@ class TestCheckTrailingIntent:
 
     def _get_embedder(self):
         try:
-            import embeddings
+            import cairn.embeddings as embeddings
             vec = embeddings.embed("test", allow_slow=True)
             if vec is None:
                 return None
@@ -153,7 +151,7 @@ class TestCheckTrailingIntent:
 
     # Verifies: obvious action intent ("let me run") is detected
     def test_detects_obvious_intent(self):
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         emb = self._get_embedder()
         if emb is None:
             return  # skip if no embedder available
@@ -168,7 +166,7 @@ class TestCheckTrailingIntent:
 
     # Verifies: clean completion statement is not flagged as intent
     def test_allows_clean_ending(self):
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         emb = self._get_embedder()
         if emb is None:
             return
@@ -182,7 +180,7 @@ class TestCheckTrailingIntent:
 
     # Verifies: question to user does not crash intent detection
     def test_allows_question_to_user(self):
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         emb = self._get_embedder()
         if emb is None:
             return
@@ -198,7 +196,7 @@ class TestCheckTrailingIntent:
 
     # Verifies: missing embedder gracefully returns None
     def test_no_embedder_returns_none(self):
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         enforcement._intent_embeddings = None
         with patch.object(hook_helpers, 'get_embedder', return_value=None):
             result = enforcement.check_trailing_intent(
@@ -223,7 +221,7 @@ class TestTrailingIntentIntegration:
         mock_emb.embed.return_value = intent_vec  # same vector = high similarity
         mock_emb.cosine_similarity.return_value = 0.9
 
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         enforcement._intent_embeddings = None
 
         payload = {
@@ -252,7 +250,7 @@ class TestTrailingIntentIntegration:
         mock_emb.embed.return_value = np.random.randn(384).astype(np.float32)
         mock_emb.cosine_similarity.return_value = 0.9  # would normally trigger
 
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         enforcement._intent_embeddings = None
 
         payload = {
@@ -278,7 +276,7 @@ class TestTrailingIntentIntegration:
         mock_emb.embed.return_value = np.random.randn(384).astype(np.float32)
         mock_emb.cosine_similarity.return_value = 0.2  # low similarity
 
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         enforcement._intent_embeddings = None
 
         payload = {
@@ -300,14 +298,14 @@ class TestTrailingIntentIntegration:
 class TestContentQualityGate:
     # Verifies: empty, short, and whitespace strings are classified as empty memories
     def test_rejects_empty_content(self):
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         assert storage._is_empty_memory("") is True
         assert storage._is_empty_memory("short") is True
         assert storage._is_empty_memory("   ") is True
 
     # Verifies: known no-info patterns ("no context available" etc.) are classified as empty
     def test_rejects_no_context_patterns(self):
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         assert storage._is_empty_memory("User asked what was on their lawn - no context available") is True
         assert storage._is_empty_memory("No relevant context for this question") is True
         assert storage._is_empty_memory("Unable to determine what the user meant") is True
@@ -315,7 +313,7 @@ class TestContentQualityGate:
 
     # Verifies: substantive content strings are correctly classified as non-empty
     def test_allows_real_content(self):
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         assert storage._is_empty_memory("User observed a pūkeko on their lawn") is False
         assert storage._is_empty_memory("Changed install.sh to overwrite global CLAUDE.md on re-install") is False
         assert storage._is_empty_memory("WAL mode enabled for concurrent session safety") is False
@@ -327,7 +325,7 @@ class TestContentQualityGate:
         conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'P')")
         conn.commit()
 
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         with patch.object(hook_helpers, 'DB_PATH', db_path), \
              patch.object(hook_helpers, 'LOG_PATH', os.path.join(TEST_DIR, 'quality.log')), \
              patch.object(hook_helpers, 'get_embedder', return_value=None):

@@ -24,8 +24,6 @@ import numpy as np
 from unittest.mock import patch, MagicMock
 from io import StringIO
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
@@ -74,8 +72,8 @@ def fresh_env():
 
 def run_hook(db_path, payload):
     """Run stop_hook.main() with full patching."""
-    import hook_helpers
-    import stop_hook
+    import hooks.hook_helpers as hook_helpers
+    import hooks.stop_hook as stop_hook
     captured = StringIO()
     exit_code = [0]
 
@@ -175,7 +173,7 @@ def test_two_pass_incomplete_then_complete():
 # Verifies: MAX_CONTINUATIONS cap forces stop on repeated incompletes
 def test_continuation_cap_forces_stop():
     """After MAX_CONTINUATIONS blocks, the hook forces a stop regardless."""
-    from config import MAX_CONTINUATIONS
+    from cairn.config import MAX_CONTINUATIONS
     db_path, conn = fresh_env()
 
     # Burn through the cap with incomplete responses
@@ -315,7 +313,7 @@ def test_keywords_parsed_and_logged():
 # Verifies: entries above MAX_MEMORIES_PER_RESPONSE are throttled
 def test_write_throttle_through_main():
     """8 entries in one block — should be capped at MAX_MEMORIES_PER_RESPONSE."""
-    from config import MAX_MEMORIES_PER_RESPONSE
+    from cairn.config import MAX_MEMORIES_PER_RESPONSE
     db_path, conn = fresh_env()
 
     entries = ""
@@ -420,7 +418,7 @@ def test_empty_message_allows_stop():
 # Verifies: cached context_need is a cache hit, skips re-retrieval
 def test_context_cache_prevents_second_retrieval():
     """Pre-populate cache for a session, then verify second request is a cache hit."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_env()
 
     # Pre-populate the cache as if a previous retrieval succeeded

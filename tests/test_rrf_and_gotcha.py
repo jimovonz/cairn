@@ -17,12 +17,10 @@ import numpy as np
 import pytest
 from unittest.mock import patch, MagicMock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
-import hook_helpers
-import storage
-import retrieval
+import hooks.hook_helpers as hook_helpers
+import hooks.storage as storage
+import hooks.retrieval as retrieval
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
@@ -441,7 +439,7 @@ def test_insert_memories_non_file_tool_not_associated():
 @pytest.mark.behavioural
 def test_find_memories_for_file_exact_path():
     """find_memories_for_file with corrections_only=True should match on exact file path."""
-    import pretool_hook
+    import hooks.pretool_hook as pretool_hook
     db_path, conn = fresh_db()
     conn.execute(
         "INSERT INTO memories (type, topic, content, associated_files, confidence) VALUES (?,?,?,?,?)",
@@ -463,7 +461,7 @@ def test_find_memories_for_file_exact_path():
 @pytest.mark.behavioural
 def test_find_memories_for_file_by_basename():
     """find_corrections_for_file should match on basename when full path differs."""
-    import pretool_hook
+    import hooks.pretool_hook as pretool_hook
     db_path, conn = fresh_db()
     conn.execute(
         "INSERT INTO memories (type, topic, content, associated_files, confidence) VALUES (?,?,?,?,?)",
@@ -485,7 +483,7 @@ def test_find_memories_for_file_by_basename():
 @pytest.mark.edge
 def test_find_memories_for_file_skips_archived():
     """Archived corrections should not be injected."""
-    import pretool_hook
+    import hooks.pretool_hook as pretool_hook
     db_path, conn = fresh_db()
     conn.execute(
         "INSERT INTO memories (type, topic, content, associated_files, confidence, archived_reason) VALUES (?,?,?,?,?,?)",
@@ -506,7 +504,7 @@ def test_find_memories_for_file_skips_archived():
 @pytest.mark.edge
 def test_find_memories_for_file_no_match():
     """No corrections for an unrelated file should return empty list."""
-    import pretool_hook
+    import hooks.pretool_hook as pretool_hook
     db_path, conn = fresh_db()
     conn.execute(
         "INSERT INTO memories (type, topic, content, associated_files, confidence) VALUES (?,?,?,?,?)",
@@ -527,7 +525,7 @@ def test_find_memories_for_file_no_match():
 @pytest.mark.behavioural
 def test_find_memories_for_file_max_injections():
     """find_memories_for_file returns all matches; the MAX_GOTCHA_INJECTIONS cap is applied in main()."""
-    import pretool_hook
+    import hooks.pretool_hook as pretool_hook
     db_path, conn = fresh_db()
     for i in range(10):
         conn.execute(
@@ -550,7 +548,7 @@ def test_find_memories_for_file_max_injections():
 @pytest.mark.behavioural
 def test_main_gotcha_outputs_additional_context():
     """The pretool hook should output additionalContext JSON for matching files."""
-    import pretool_hook
+    import hooks.pretool_hook as pretool_hook
     db_path, conn = fresh_db()
     conn.execute(
         "INSERT INTO memories (type, topic, content, associated_files, confidence) VALUES (?,?,?,?,?)",
@@ -598,7 +596,7 @@ def test_main_gotcha_outputs_additional_context():
 @pytest.mark.edge
 def test_main_non_file_tool_exits_without_output():
     """main() must exit without writing to stdout for non-file-access tools (Bash, Grep, etc.)."""
-    import pretool_hook
+    import hooks.pretool_hook as pretool_hook
     from io import StringIO as SIO
     db_path, conn = fresh_db()
     conn.execute(
@@ -625,7 +623,7 @@ def test_main_non_file_tool_exits_without_output():
 @pytest.mark.error
 def test_main_empty_file_path_produces_no_output():
     """main() must exit cleanly when file_path is empty — exit code 0, no output."""
-    import pretool_hook
+    import hooks.pretool_hook as pretool_hook
     from io import StringIO as SIO
     db_path, conn = fresh_db()
     conn.commit()
@@ -647,7 +645,7 @@ def test_main_empty_file_path_produces_no_output():
 @pytest.mark.adversarial
 def test_main_malformed_json_stdin_raises_json_error():
     """main() with non-JSON stdin must raise JSONDecodeError (not crash with unexpected type)."""
-    import pretool_hook
+    import hooks.pretool_hook as pretool_hook
     from io import StringIO as SIO
 
     raised = None
@@ -721,7 +719,7 @@ def test_extract_associated_files_multiedit_paths():
 @pytest.mark.error
 def test_find_memories_for_file_empty_path():
     """find_memories_for_file with empty string must return [] without querying the DB."""
-    import pretool_hook
+    import hooks.pretool_hook as pretool_hook
     db_path, conn = fresh_db()
     conn.execute(
         "INSERT INTO memories (type, topic, content, associated_files, confidence) VALUES (?,?,?,?,?)",
@@ -741,7 +739,7 @@ def test_find_memories_for_file_empty_path():
 @pytest.mark.adversarial
 def test_find_memories_for_file_null_files():
     """Correction with NULL associated_files should be skipped (not crash on json.loads)."""
-    import pretool_hook
+    import hooks.pretool_hook as pretool_hook
     db_path, conn = fresh_db()
     # Row with NULL associated_files (not the same as empty JSON array)
     conn.execute(

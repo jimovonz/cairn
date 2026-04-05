@@ -3,10 +3,8 @@
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 
-from parser import parse_memory_block
+from hooks.parser import parse_memory_block
 
 
 # Verifies: single well-formed entry parses all fields correctly
@@ -726,7 +724,7 @@ def test_compact_no_keywords():
 # Hash computation tests
 # ============================================================
 
-from hash_verify import compute_response_hash, verify_hash
+from hooks.hash_verify import compute_response_hash, verify_hash
 
 
 # Verifies: hash sums first-char values of each sentence

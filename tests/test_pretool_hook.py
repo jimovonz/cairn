@@ -13,12 +13,10 @@ import io
 import pytest
 from unittest.mock import patch, MagicMock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
-import hook_helpers
-import pretool_hook
-from pretool_hook import find_memories_for_file
+import hooks.hook_helpers as hook_helpers
+import hooks.pretool_hook as pretool_hook
+from hooks.pretool_hook import find_memories_for_file
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
@@ -61,8 +59,8 @@ def run_main(hook_input_dict, db_path):
     exit_code = None
     with patch("sys.stdin", io.StringIO(stdin_data)), \
          patch.object(hook_helpers, "DB_PATH", db_path), \
-         patch("pretool_hook.record_metric"), \
-         patch("pretool_hook.log"), \
+         patch("hooks.pretool_hook.record_metric"), \
+         patch("hooks.pretool_hook.log"), \
          patch("builtins.print", side_effect=fake_print):
         try:
             pretool_hook.main()
@@ -96,7 +94,7 @@ def test_find_memories_for_file_behavioural():
     conn.close()
 
     with patch.object(hook_helpers, "DB_PATH", db_path), \
-         patch("pretool_hook.log"):
+         patch("hooks.pretool_hook.log"):
         results = find_memories_for_file("/src/auth.py", corrections_only=True)
 
     assert len(results) == 1
@@ -127,7 +125,7 @@ def test_find_memories_for_file_edge():
     conn.close()
 
     with patch.object(hook_helpers, "DB_PATH", db_path), \
-         patch("pretool_hook.log"):
+         patch("hooks.pretool_hook.log"):
         results = find_memories_for_file("/new/project/storage.py", corrections_only=False)
 
     assert len(results) == 1
@@ -147,7 +145,7 @@ def test_find_memories_for_file_error():
     conn.close()  # memories table deliberately not created
 
     with patch.object(hook_helpers, "DB_PATH", db_path), \
-         patch("pretool_hook.log") as mock_log:
+         patch("hooks.pretool_hook.log") as mock_log:
         results = find_memories_for_file("/any/file.py", corrections_only=False)
 
     assert results == []
@@ -176,7 +174,7 @@ def test_find_memories_for_file_adversarial():
     conn.close()
 
     with patch.object(hook_helpers, "DB_PATH", db_path), \
-         patch("pretool_hook.log"):
+         patch("hooks.pretool_hook.log"):
         results = find_memories_for_file("/target/file.py", corrections_only=False)
 
     assert len(results) == 1

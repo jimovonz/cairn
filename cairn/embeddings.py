@@ -40,7 +40,7 @@ def _daemon_embed(text: str) -> Optional[np.ndarray]:
     """Try embedding via the daemon. Auto-starts daemon on first failure."""
     global _daemon_start_attempted
     try:
-        from daemon import send_request, is_running, SOCKET_PATH
+        from cairn.daemon import send_request, is_running, SOCKET_PATH
         import subprocess
 
         # Auto-start daemon if not running (once per process, with file lock to prevent races)
@@ -141,7 +141,7 @@ def _load_vec(conn: sqlite3.Connection) -> bool:
 
 def _recency_decay(updated_at_str: str) -> float:
     """Compute recency decay factor (0-1). Recent = 1, old = approaching 0."""
-    from config import RECENCY_HALF_LIFE_DAYS
+    from cairn.config import RECENCY_HALF_LIFE_DAYS
     try:
         updated = datetime.strptime(updated_at_str[:19], "%Y-%m-%d %H:%M:%S")
         age_days = (datetime.now() - updated).total_seconds() / 86400
@@ -167,7 +167,7 @@ def composite_score(
 ) -> float:
     """Compute a single scalar retrieval score combining all signals.
     Reduces cognitive load on the LLM by pre-ranking results."""
-    from config import SCORE_W_SIMILARITY, SCORE_W_CONFIDENCE, SCORE_W_RECENCY, SCORE_W_SCOPE
+    from cairn.config import SCORE_W_SIMILARITY, SCORE_W_CONFIDENCE, SCORE_W_RECENCY, SCORE_W_SCOPE
     recency = _recency_decay(updated_at_str) if updated_at_str else 0.5
     scope = _scope_weight(project, current_project) if project is not None else 0.5
     return (
@@ -278,7 +278,7 @@ def find_similar(
     - Composite scoring (pre-ranked by similarity + confidence + recency + scope)
 
     Uses sqlite-vec index if available, falls back to brute-force."""
-    from config import (SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR, RELATIVE_FILTER_RATIO,
+    from cairn.config import (SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR, RELATIVE_FILTER_RATIO,
                         MIN_INJECTION_SIMILARITY, MAX_INJECTED_ENTRIES, DOMINANCE_EPSILON,
                         BORDERLINE_SIM_CEILING, BORDERLINE_SCORE_FLOOR)
 
@@ -289,7 +289,7 @@ def find_similar(
     if limit is None:
         limit = MAX_INJECTED_ENTRIES
 
-    from config import QUERY_EXPANSION_FANOUT
+    from cairn.config import QUERY_EXPANSION_FANOUT
 
     # Prefix query with project to match how stored embeddings are augmented
     query_text = f"{current_project} {text}" if current_project else text
@@ -377,7 +377,7 @@ def find_similar(
             limit = max(limit, 2)
 
     # Diversity filter: greedily drop near-duplicates from results
-    from config import DIVERSITY_SIM_THRESHOLD
+    from cairn.config import DIVERSITY_SIM_THRESHOLD
     diverse: list[dict[str, Any]] = []
     for r in filtered:
         is_dup = False

@@ -11,10 +11,9 @@ from io import StringIO
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 
 # We import show_context directly — the module-level DB_PATH will be patched per test
-import query
+import cairn.query as query
 
 
 def _create_test_db(db_path):
@@ -458,7 +457,9 @@ def test_backfill_embeddings_behavioural(backfill_env, capsys):
     mock_emb.to_blob.side_effect = lambda v: blob_map[len(call_order)]
 
     import sys as _sys
-    with patch.dict(_sys.modules, {"embeddings": mock_emb}):
+    import cairn as _cairn_pkg
+    with patch.dict(_sys.modules, {"cairn.embeddings": mock_emb}), \
+         patch.object(_cairn_pkg, "embeddings", mock_emb):
         query.backfill_embeddings()
 
     # All 3 should have been processed
@@ -491,7 +492,9 @@ def test_backfill_embeddings_edge_all_have_embeddings(backfill_env, capsys):
 
     mock_emb = MagicMock()
     import sys as _sys
-    with patch.dict(_sys.modules, {"embeddings": mock_emb}):
+    import cairn as _cairn_pkg
+    with patch.dict(_sys.modules, {"cairn.embeddings": mock_emb}), \
+         patch.object(_cairn_pkg, "embeddings", mock_emb):
         query.backfill_embeddings()
 
     # embed should never be called — nothing to backfill
@@ -508,10 +511,17 @@ def test_backfill_embeddings_error_import_failure(backfill_env, capsys):
     db_path = backfill_env
     _seed_memories(db_path, [{"id": 1, "type": "fact", "topic": "t", "content": "c"}])
 
-    # Make 'import embeddings' raise ImportError by setting module to None
+    # Make 'from cairn import embeddings' raise ImportError by setting module to None
     import sys as _sys
-    with patch.dict(_sys.modules, {"embeddings": None}):
-        query.backfill_embeddings()
+    import cairn as _cairn_pkg
+    _saved = getattr(_cairn_pkg, "embeddings", None)
+    with patch.dict(_sys.modules, {"cairn.embeddings": None}):
+        delattr(_cairn_pkg, "embeddings") if hasattr(_cairn_pkg, "embeddings") else None
+        try:
+            query.backfill_embeddings()
+        finally:
+            if _saved is not None:
+                _cairn_pkg.embeddings = _saved
 
     output = capsys.readouterr().out
     assert output.strip() == "sentence-transformers not available"
@@ -546,7 +556,9 @@ def test_backfill_embeddings_adversarial_partial_failure(backfill_env):
     mock_emb.to_blob.return_value = b"\xBB"
 
     import sys as _sys
-    with patch.dict(_sys.modules, {"embeddings": mock_emb}):
+    import cairn as _cairn_pkg
+    with patch.dict(_sys.modules, {"cairn.embeddings": mock_emb}), \
+         patch.object(_cairn_pkg, "embeddings", mock_emb):
         with pytest.raises(RuntimeError, match="model crashed"):
             query.backfill_embeddings()
 
@@ -572,7 +584,9 @@ def test_backfill_embeddings_project_prefix_included(backfill_env, capsys):
     mock_emb.to_blob.return_value = b"\xDD"
 
     import sys as _sys
-    with patch.dict(_sys.modules, {"embeddings": mock_emb}):
+    import cairn as _cairn_pkg
+    with patch.dict(_sys.modules, {"cairn.embeddings": mock_emb}), \
+         patch.object(_cairn_pkg, "embeddings", mock_emb):
         query.backfill_embeddings()
 
     # Check the search_text passed to embed has project prefix and correct structure
@@ -594,7 +608,9 @@ def test_backfill_embeddings_no_project_prefix(backfill_env, capsys):
     mock_emb.to_blob.return_value = b"\xDD"
 
     import sys as _sys
-    with patch.dict(_sys.modules, {"embeddings": mock_emb}):
+    import cairn as _cairn_pkg
+    with patch.dict(_sys.modules, {"cairn.embeddings": mock_emb}), \
+         patch.object(_cairn_pkg, "embeddings", mock_emb):
         query.backfill_embeddings()
 
     embed_arg = mock_emb.embed.call_args[0][0]

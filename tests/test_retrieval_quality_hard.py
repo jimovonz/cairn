@@ -45,8 +45,6 @@ except Exception:
 
 pytestmark = pytest.mark.skipif(not HAS_MODEL, reason="Embedding model not available")
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 TEST_DIR = tempfile.mkdtemp()
 
@@ -294,7 +292,7 @@ def build_hard_db():
         "INSERT INTO sessions (session_id, project) VALUES ('hard-sid', 'webapp')"
     )
 
-    import embeddings
+    import cairn.embeddings as embeddings
     memory_ids: list[int] = []
     now = datetime.now()
 
@@ -320,7 +318,8 @@ def build_hard_db():
 # --- Query runners ---
 
 def run_semantic(db_path: str, query: str, limit: int = 10) -> list[int]:
-    import embeddings, hook_helpers
+    import cairn.embeddings as embeddings
+    import hooks.hook_helpers as hook_helpers
     original_db = hook_helpers.DB_PATH
     try:
         hook_helpers.DB_PATH = db_path
@@ -359,8 +358,9 @@ def run_fts(db_path: str, query: str, limit: int = 10) -> list[int]:
 
 
 def run_rrf(db_path: str, query: str) -> list[int]:
-    import re, hook_helpers
-    from retrieval import retrieve_context
+    import re
+    import hooks.hook_helpers as hook_helpers
+    from hooks.retrieval import retrieve_context
     original_db, original_log = hook_helpers.DB_PATH, hook_helpers.LOG_PATH
     try:
         hook_helpers.DB_PATH = db_path
@@ -375,8 +375,8 @@ def run_rrf(db_path: str, query: str) -> list[int]:
 
 
 def run_fanout(db_path: str, query: str, limit: int = 10) -> list[int]:
-    import embeddings
-    from query_expansion import type_prefix_fanout
+    import cairn.embeddings as embeddings
+    from hooks.query_expansion import type_prefix_fanout
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA busy_timeout=5000")
     results = type_prefix_fanout(conn, query, embeddings.embed,
@@ -386,8 +386,8 @@ def run_fanout(db_path: str, query: str, limit: int = 10) -> list[int]:
 
 
 def run_combined(db_path: str, query: str, limit: int = 10) -> list[int]:
-    import embeddings
-    from query_expansion import combined_expansion
+    import cairn.embeddings as embeddings
+    from hooks.query_expansion import combined_expansion
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA busy_timeout=5000")
     results = combined_expansion(conn, query, embeddings.embed,

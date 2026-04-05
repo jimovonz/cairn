@@ -15,12 +15,10 @@ import numpy as np
 from unittest.mock import patch, MagicMock
 from io import StringIO
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
-import hook_helpers
-import storage
-import retrieval
+import hooks.hook_helpers as hook_helpers
+import hooks.storage as storage
+import hooks.retrieval as retrieval
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
@@ -98,7 +96,7 @@ def seed_memories(conn, project="TestProject"):
 # Verifies: exact vector match returns similarity ~1.0
 def test_find_nearest_exact_match():
     """find_nearest with same vector should return similarity ~1.0."""
-    import embeddings as emb
+    import cairn.embeddings as emb
     db_path, conn = fresh_db()
     seed_memories(conn)
     query_vec = make_vector(100)  # Same as auth-method
@@ -116,7 +114,7 @@ def test_find_nearest_exact_match():
 # Verifies: unrelated vector still returns results with low similarity
 def test_find_nearest_no_match():
     """find_nearest with unrelated vector should still return something (no filtering)."""
-    import embeddings as emb
+    import cairn.embeddings as emb
     db_path, conn = fresh_db()
     seed_memories(conn)
     query_vec = make_vector(999)
@@ -137,7 +135,7 @@ def test_find_nearest_no_match():
 # Verifies: near-identical content deduplicates (updates, not inserts)
 def test_insert_dedup_near_identical():
     """Inserting near-identical content should update, not create new entry."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'P')")
     conn.commit()
@@ -175,7 +173,7 @@ def test_insert_dedup_near_identical():
 # Verifies: same type+topic with low similarity creates new entry
 def test_insert_distinct_variant_preserved():
     """Same type+topic but low similarity should create a new entry (distinct variant)."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'P')")
     conn.commit()
@@ -209,7 +207,7 @@ def test_insert_distinct_variant_preserved():
 # Verifies: contradiction overwrites content and resets confidence
 def test_insert_contradiction_overwrites_with_confidence_drop():
     """Same type+topic, different content, high similarity → contradiction overwrite."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'P')")
     conn.execute("INSERT INTO memories (type, topic, content, embedding, session_id, project, confidence) VALUES (?,?,?,?,?,?,?)",
@@ -250,7 +248,7 @@ def test_insert_contradiction_overwrites_with_confidence_drop():
 # Verifies: memory stored with null embedding when daemon unavailable
 def test_insert_without_embedding():
     """When embed returns None (daemon down), memory stored without embedding."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'P')")
     conn.commit()
@@ -279,7 +277,7 @@ def test_insert_without_embedding():
 # Verifies: retrieve_context returns well-formed cairn_context XML
 def test_retrieve_returns_structured_xml():
     """retrieve_context should return well-formed cairn_context XML."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     seed_memories(conn, project="TestProject")
 
@@ -309,7 +307,7 @@ def test_retrieve_returns_structured_xml():
 # Verifies: retrieve_context returns None when no memories match
 def test_retrieve_returns_none_when_no_match():
     """retrieve_context should return None when nothing matches."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     seed_memories(conn)
 
@@ -329,7 +327,7 @@ def test_retrieve_returns_none_when_no_match():
 # Verifies: results split into project and global scopes in XML
 def test_retrieve_separates_project_and_global():
     """Project memories should be in project scope, others in global."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     seed_memories(conn, project="ProjectA")
     # Add a global memory from a different project
@@ -368,7 +366,7 @@ def test_retrieve_separates_project_and_global():
 # Verifies: no metrics data produces zero threshold boost
 def test_adaptive_threshold_no_data():
     """No recent metrics → no boost."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
 
     with patch.object(hook_helpers, 'DB_PATH', db_path):
@@ -381,7 +379,7 @@ def test_adaptive_threshold_no_data():
 # Verifies: high harmful retrieval rate produces positive boost
 def test_adaptive_threshold_with_harmful_outcomes():
     """High rate of harmful outcomes → positive boost."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
 
     # Insert mostly harmful outcomes
@@ -401,7 +399,7 @@ def test_adaptive_threshold_with_harmful_outcomes():
 # Verifies: mostly useful outcomes produce no threshold boost
 def test_adaptive_threshold_with_good_outcomes():
     """Mostly useful outcomes → no boost."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
 
     for _ in range(8):
@@ -424,7 +422,7 @@ def test_adaptive_threshold_with_good_outcomes():
 # Verifies: layer2 stages cross-project results in hook_state
 def test_layer2_stages_cross_project_results():
     """Layer 2 should find and stage results from OTHER projects only."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'ProjectA')")
     conn.execute("INSERT INTO memories (type, topic, content, embedding, project, confidence, session_id) VALUES (?,?,?,?,?,?,?)",
@@ -458,7 +456,7 @@ def test_layer2_stages_cross_project_results():
 # Verifies: layer2 filters out same-project results
 def test_layer2_excludes_current_project():
     """Layer 2 should NOT stage results from the CURRENT project."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'ProjectA')")
     conn.execute("INSERT INTO memories (type, topic, content, embedding, project, confidence, session_id) VALUES (?,?,?,?,?,?,?)",
@@ -496,7 +494,7 @@ def test_layer2_excludes_current_project():
 # Verifies: new session gets registered in sessions table
 def test_register_session_new():
     """New session should be registered with project from cwd."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
@@ -511,7 +509,7 @@ def test_register_session_new():
 # Verifies: duplicate session registration is idempotent
 def test_register_session_idempotent():
     """Registering same session twice should not create duplicates."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
@@ -531,7 +529,7 @@ def test_register_session_idempotent():
 # Verifies: project name extracted from deeply nested cwd path
 def test_auto_label_from_deep_path():
     """Should extract project name from deeply nested path."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id) VALUES ('s-deep')")
     conn.commit()
@@ -548,7 +546,7 @@ def test_auto_label_from_deep_path():
 # Verifies: root path does not produce a project label
 def test_auto_label_skips_root():
     """Should not label with '/' or empty path."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id) VALUES ('s-root')")
     conn.commit()
@@ -565,7 +563,7 @@ def test_auto_label_skips_root():
 # Verifies: /home path does not produce a project label
 def test_auto_label_skips_home():
     """Should not label with 'home'."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id) VALUES ('s-home')")
     conn.commit()
@@ -582,7 +580,7 @@ def test_auto_label_skips_home():
 # Verifies: existing project label is not overwritten by auto-label
 def test_auto_label_does_not_overwrite():
     """Should not overwrite an existing project label."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s-existing', 'AlreadyLabelled')")
     conn.commit()
@@ -603,7 +601,7 @@ def test_auto_label_does_not_overwrite():
 # Verifies: upsert_vec_index gracefully handles missing vec table
 def test_upsert_vec_index_no_crash_without_table():
     """upsert_vec_index should silently fail if vec table doesn't exist."""
-    import embeddings as emb
+    import cairn.embeddings as emb
     db_path, conn = fresh_db()
     # No vec table created — should not crash
     emb.upsert_vec_index(conn, 1, make_blob(100))
@@ -617,7 +615,7 @@ def test_upsert_vec_index_no_crash_without_table():
 # Verifies: negation mismatch archives old memory and inserts new
 def test_negation_dampening_in_insert():
     """Similar memories with negation mismatch should have confidence reduced."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'P')")
     conn.execute("INSERT INTO memories (type, topic, content, embedding, project, confidence, session_id) VALUES (?,?,?,?,?,?,?)",

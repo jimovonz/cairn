@@ -22,7 +22,7 @@ SOCKET_PATH = os.path.join(os.path.dirname(__file__), ".daemon.sock")
 PID_PATH = os.path.join(os.path.dirname(__file__), ".daemon.pid")
 CAIRN_DIR = os.path.dirname(__file__)
 
-sys.path.insert(0, CAIRN_DIR)
+# cairn package is on sys.path via pip install -e .
 
 
 def handle_client(conn, emb):
@@ -80,7 +80,7 @@ def run_server():
 
     # Load model eagerly
     print("Loading embedding model...")
-    import embeddings as emb
+    from cairn import embeddings as emb
     emb.get_model()
     print("Model loaded. Daemon ready.")
 
@@ -176,9 +176,8 @@ if __name__ == "__main__":
         cairn_dir = os.path.dirname(os.path.abspath(__file__))
         subprocess.Popen(
             [sys.executable, "-c",
-             f"import sys,os; sys.path.insert(0,{repr(cairn_dir)}); "
-             f"os.chdir({repr(cairn_dir)}); "
-             "from daemon import run_server; run_server()"],
+             f"import os; os.chdir({repr(cairn_dir)}); "
+             "from cairn.daemon import run_server; run_server()"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

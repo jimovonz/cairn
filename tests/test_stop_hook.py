@@ -16,8 +16,6 @@ from io import StringIO
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 TEST_DIR = tempfile.mkdtemp()
 _db_counter = [0]
@@ -77,8 +75,8 @@ def run_hook(db_path, payload, env_override=None):
         exit_code[0] = code
         raise SystemExit(code)
 
-    import hook_helpers
-    import stop_hook
+    import hooks.hook_helpers as hook_helpers
+    import hooks.stop_hook as stop_hook
     original_db = hook_helpers.DB_PATH
     original_log = hook_helpers.LOG_PATH
 
@@ -150,11 +148,11 @@ def valid_block(content_entries="", extra_fields=""):
 @pytest.mark.behavioural
 def test_register_session_new_root():
     db_path, conn = fresh_db()
-    import hook_helpers
+    import hooks.hook_helpers as hook_helpers
     original_db = hook_helpers.DB_PATH
     hook_helpers.DB_PATH = db_path
     try:
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         stop_hook.register_session("sess-root-001", "")
         row = conn.execute(
             "SELECT session_id, parent_session_id, project FROM sessions WHERE session_id = ?",
@@ -178,11 +176,11 @@ def test_register_session_skips_existing():
         ("sess-exists", "old-project")
     )
     conn.commit()
-    import hook_helpers
+    import hooks.hook_helpers as hook_helpers
     original_db = hook_helpers.DB_PATH
     hook_helpers.DB_PATH = db_path
     try:
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         stop_hook.register_session("sess-exists", "/some/transcript.jsonl")
         row = conn.execute(
             "SELECT project FROM sessions WHERE session_id = ?", ("sess-exists",)
@@ -198,11 +196,11 @@ def test_register_session_skips_existing():
 @pytest.mark.error
 def test_register_session_missing_transcript():
     db_path, conn = fresh_db()
-    import hook_helpers
+    import hooks.hook_helpers as hook_helpers
     original_db = hook_helpers.DB_PATH
     hook_helpers.DB_PATH = db_path
     try:
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         stop_hook.register_session("sess-nofile", "/nonexistent/transcript.jsonl")
         row = conn.execute(
             "SELECT session_id, parent_session_id FROM sessions WHERE session_id = ?",
@@ -220,11 +218,11 @@ def test_register_session_missing_transcript():
 @pytest.mark.adversarial
 def test_register_session_empty_session_id():
     db_path, conn = fresh_db()
-    import hook_helpers
+    import hooks.hook_helpers as hook_helpers
     original_db = hook_helpers.DB_PATH
     hook_helpers.DB_PATH = db_path
     try:
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         stop_hook.register_session("", "/some/path")
         count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         assert count == 0
@@ -244,11 +242,11 @@ def test_auto_label_project_from_cwd():
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id) VALUES (?)", ("sess-label",))
     conn.commit()
-    import hook_helpers
+    import hooks.hook_helpers as hook_helpers
     original_db = hook_helpers.DB_PATH
     hook_helpers.DB_PATH = db_path
     try:
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         stop_hook.auto_label_project("sess-label", "/home/user/Projects/My-Cool-Project")
         row = conn.execute(
             "SELECT project FROM sessions WHERE session_id = ?", ("sess-label",)
@@ -269,11 +267,11 @@ def test_auto_label_project_skips_if_already_set():
         ("sess-has-proj", "existing-project")
     )
     conn.commit()
-    import hook_helpers
+    import hooks.hook_helpers as hook_helpers
     original_db = hook_helpers.DB_PATH
     hook_helpers.DB_PATH = db_path
     try:
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         stop_hook.auto_label_project("sess-has-proj", "/home/user/different-project")
         row = conn.execute(
             "SELECT project FROM sessions WHERE session_id = ?", ("sess-has-proj",)
@@ -291,11 +289,11 @@ def test_auto_label_project_rejects_root_path():
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id) VALUES (?)", ("sess-root-cwd",))
     conn.commit()
-    import hook_helpers
+    import hooks.hook_helpers as hook_helpers
     original_db = hook_helpers.DB_PATH
     hook_helpers.DB_PATH = db_path
     try:
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         stop_hook.auto_label_project("sess-root-cwd", "/")
         row = conn.execute(
             "SELECT project FROM sessions WHERE session_id = ?", ("sess-root-cwd",)
@@ -315,11 +313,11 @@ def test_auto_label_project_empty_cwd():
     db_path, conn = fresh_db()
     conn.execute("INSERT INTO sessions (session_id) VALUES (?)", ("sess-empty-cwd",))
     conn.commit()
-    import hook_helpers
+    import hooks.hook_helpers as hook_helpers
     original_db = hook_helpers.DB_PATH
     hook_helpers.DB_PATH = db_path
     try:
-        import stop_hook
+        import hooks.stop_hook as stop_hook
         stop_hook.auto_label_project("sess-empty-cwd", "")
         row = conn.execute(
             "SELECT project FROM sessions WHERE session_id = ?", ("sess-empty-cwd",)
@@ -402,8 +400,8 @@ def test_main_context_insufficient_triggers_retrieval():
     msg = "Response.\n<memory>\n- type: fact\n- topic: ctx-insuf\n- content: Testing context retrieval trigger mechanism\n- complete: true\n- context: insufficient\n- context_need: what was decided about database schema\n- keywords: test, context\n</memory>"
     payload = make_payload(message=msg)
 
-    import hook_helpers as hh
-    import stop_hook
+    import hooks.hook_helpers as hh
+    import hooks.stop_hook as stop_hook
     original_db = hh.DB_PATH
     original_log = hh.LOG_PATH
     captured_output = StringIO()
@@ -628,8 +626,8 @@ def test_main_missing_block_continuation_allows_stop():
 # Verifies: malformed JSON on stdin causes crash handler to exit 0 (fail-open) with no stdout
 @pytest.mark.error
 def test_main_invalid_json_stdin_crashes_gracefully():
-    import hook_helpers
-    import stop_hook
+    import hooks.hook_helpers as hook_helpers
+    import hooks.stop_hook as stop_hook
     original_db = hook_helpers.DB_PATH
     original_log = hook_helpers.LOG_PATH
     db_path, conn = fresh_db()
@@ -845,7 +843,7 @@ def test_main_multiple_entries_stored_with_metrics():
 @pytest.mark.adversarial
 def test_main_trailing_intent_blocks():
     db_path, conn = fresh_db()
-    import hook_helpers as hh
+    import hooks.hook_helpers as hh
     mock_emb = _make_mock_embedder()
     mock_emb.cosine_similarity.return_value = 0.95
     mock_emb.embed.return_value = b"\x00" * 384
@@ -855,7 +853,7 @@ def test_main_trailing_intent_blocks():
     )
     payload = make_payload(message=msg)
 
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     original_db = hh.DB_PATH
     original_log = hh.LOG_PATH
     captured_output = StringIO()

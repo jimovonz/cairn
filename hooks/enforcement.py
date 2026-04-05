@@ -5,9 +5,9 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-import hook_helpers
-from hook_helpers import log, get_conn
-from config import TRAILING_INTENT_SIM_THRESHOLD
+import hooks.hook_helpers as hook_helpers
+from hooks.hook_helpers import log, get_conn
+from cairn.config import TRAILING_INTENT_SIM_THRESHOLD
 
 import numpy as np
 

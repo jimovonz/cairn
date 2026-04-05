@@ -14,11 +14,9 @@ import numpy as np
 import pytest
 from unittest.mock import patch, MagicMock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
-import hook_helpers
-import retrieval
+import hooks.hook_helpers as hook_helpers
+import hooks.retrieval as retrieval
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
@@ -115,7 +113,7 @@ def test_get_adaptive_threshold_boost_insufficient_data():
 # Verifies: returns 0.0 when database access raises sqlite3.Error
 @pytest.mark.error
 def test_get_adaptive_threshold_boost_db_error():
-    with patch('retrieval.get_conn', side_effect=sqlite3.OperationalError("locked")):
+    with patch('hooks.retrieval.get_conn', side_effect=sqlite3.OperationalError("locked")):
         boost = retrieval.get_adaptive_threshold_boost()
 
     assert boost == 0.0, f"Expected 0.0 on DB error, got {boost}"
@@ -204,8 +202,8 @@ def test_retrieve_context_no_results_returns_none():
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
-         patch('retrieval.record_metric') as mock_metric, \
-         patch('retrieval.log'), \
+         patch('hooks.retrieval.record_metric') as mock_metric, \
+         patch('hooks.retrieval.log'), \
          patch.object(retrieval, 'get_adaptive_threshold_boost', return_value=0.0):
         result = retrieval.retrieve_context("zzz nonexistent gibberish", session_id="s1")
 
@@ -263,7 +261,7 @@ def test_retrieve_context_only_stopwords():
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
-         patch('retrieval.record_metric') as mock_metric, \
+         patch('hooks.retrieval.record_metric') as mock_metric, \
          patch.object(hook_helpers, 'log'), \
          patch.object(retrieval, 'get_adaptive_threshold_boost', return_value=0.0):
         result = retrieval.retrieve_context("the and or but", session_id="s1")

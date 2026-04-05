@@ -19,11 +19,8 @@ import argparse
 from datetime import datetime, timedelta
 from typing import Optional
 
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
-
-from hook_helpers import DB_PATH
-from storage import _has_negation_mismatch
+from hooks.hook_helpers import DB_PATH
+from hooks.storage import _has_negation_mismatch
 
 
 def parse_since(value: str) -> datetime:
@@ -41,7 +38,7 @@ def parse_since(value: str) -> datetime:
 
 def scan(since: str | None = None, annotate: bool = False) -> list[dict]:
     try:
-        import embeddings as emb
+        from cairn import embeddings as emb
     except ImportError:
         print("Cannot import embeddings module")
         sys.exit(1)

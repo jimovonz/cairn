@@ -54,7 +54,7 @@ def list_recent(limit=20):
 
 def semantic_search(query, limit=10, threshold=0.5):
     try:
-        import embeddings as emb
+        from cairn import embeddings as emb
         conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
         results = emb.find_similar(conn, query, threshold=threshold, limit=limit)
         conn.close()
@@ -433,7 +433,7 @@ def add_memory(mem_type, topic, content, project=None, session_id=None):
     # Generate embedding for semantic search
     embedding_blob = None
     try:
-        import embeddings as emb
+        from cairn import embeddings as emb
         project_prefix = f"{project} " if project else ""
         search_text = f"{project_prefix}{mem_type} {topic} {content}"
         vec = emb.embed(search_text)
@@ -451,7 +451,7 @@ def add_memory(mem_type, topic, content, project=None, session_id=None):
     # Update vec index if embedding was generated
     if embedding_blob:
         try:
-            import embeddings as emb
+            from cairn import embeddings as emb
             emb.upsert_vec_index(conn, new_id, embedding_blob)
         except Exception:
             pass
@@ -714,7 +714,7 @@ def compact(project_name=None, limit=100):
 def backfill_embeddings():
     """Generate embeddings for memories that were stored without them (daemon was unavailable)."""
     try:
-        import embeddings as emb
+        from cairn import embeddings as emb
     except ImportError:
         print("sentence-transformers not available")
         return
@@ -904,7 +904,7 @@ def check():
             ok(f"Running (PID {pid})")
             # Test responsiveness
             try:
-                from daemon import send_request
+                from cairn.daemon import send_request
                 resp = send_request({"action": "ping"})
                 if resp and resp.get("status") == "ok":
                     ok("Responding to ping")
@@ -928,7 +928,7 @@ def check():
         fail("Virtual environment missing (run install.sh)")
 
     try:
-        import embeddings as emb
+        from cairn import embeddings as emb
         vec = emb.embed("health check test", allow_slow=False)
         if vec is not None:
             ok(f"Embedding generated ({len(vec)} dimensions)")
@@ -1248,7 +1248,7 @@ def main_entry():
         project_bootstrap_query(" ".join(sys.argv[2:]) if len(sys.argv) > 2 else None)
     elif cmd == "--dashboard":
         # Launch web dashboard
-        import dashboard
+        from cairn import dashboard
         extra_args = sys.argv[2:]
         sys.argv = [sys.argv[0]] + extra_args
         dashboard.main()

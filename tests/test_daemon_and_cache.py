@@ -11,10 +11,8 @@ import numpy as np
 from unittest.mock import patch, MagicMock
 from io import StringIO
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
-import hook_helpers
+import hooks.hook_helpers as hook_helpers
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
@@ -52,7 +50,7 @@ def fresh_db():
 # Verifies: embed(allow_slow=False) returns None when daemon is down
 def test_embed_allow_slow_false_returns_none():
     """embed(allow_slow=False) should return None when daemon isn't running."""
-    import embeddings as emb
+    import cairn.embeddings as emb
     with patch.object(emb, '_daemon_embed', return_value=None), \
          patch.object(emb, '_daemon_start_attempted', True):
         result = emb.embed("test text", allow_slow=False)
@@ -62,7 +60,7 @@ def test_embed_allow_slow_false_returns_none():
 # Verifies: embed(allow_slow=True) falls back to local model loading
 def test_embed_allow_slow_true_loads_model():
     """embed(allow_slow=True) should fall back to model loading."""
-    import embeddings as emb
+    import cairn.embeddings as emb
     mock_model = MagicMock()
     mock_model.encode.return_value = np.random.randn(384).astype(np.float32)
     with patch.object(emb, '_daemon_embed', return_value=None), \
@@ -74,7 +72,7 @@ def test_embed_allow_slow_true_loads_model():
 # Verifies: daemon response vector is used directly by embed()
 def test_daemon_embed_returns_vector_on_success():
     """When daemon responds, embed should use its vector."""
-    import embeddings as emb
+    import cairn.embeddings as emb
     fake_vec = np.random.randn(384).astype(np.float32)
     fake_hex = fake_vec.tobytes().hex()
 
@@ -90,13 +88,13 @@ def test_daemon_embed_returns_vector_on_success():
 # Verifies: stale PID file detected and cleaned up
 def test_is_running_stale_pid():
     """Stale PID file should return False and clean up."""
-    from daemon import is_running, PID_PATH
+    from cairn.daemon import is_running, PID_PATH
     pid_path = os.path.join(TEST_DIR, ".test_pid")
 
     with open(pid_path, "w") as f:
         f.write("999999999")  # Non-existent PID
 
-    with patch('daemon.PID_PATH', pid_path):
+    with patch('cairn.daemon.PID_PATH', pid_path):
         result = is_running()
     assert result is False
     assert not os.path.exists(pid_path)  # Should clean up stale file
@@ -109,7 +107,7 @@ def test_is_running_stale_pid():
 # Verifies: exact context_need string is recognized as cached
 def test_context_cache_exact_string_match():
     """Exact same context_need should be cached."""
-    from retrieval import is_context_cached, add_to_context_cache
+    from hooks.retrieval import is_context_cached, add_to_context_cache
     served = []
     served = add_to_context_cache("what database did we choose", served, None)
     assert is_context_cached("what database did we choose", served, None) is True
@@ -118,7 +116,7 @@ def test_context_cache_exact_string_match():
 # Verifies: different context_need string is not a cache hit
 def test_context_cache_different_string():
     """Different context_need should not be cached (without embeddings)."""
-    from retrieval import is_context_cached, add_to_context_cache
+    from hooks.retrieval import is_context_cached, add_to_context_cache
     served = []
     served = add_to_context_cache("what database did we choose", served, None)
     assert is_context_cached("how does authentication work", served, None) is False
@@ -144,10 +142,10 @@ def _make_state_db():
 
 # Verifies: continuation counter increments correctly per call
 def test_continuation_counter_increments():
-    from enforcement import get_continuation_count, increment_continuation
+    from hooks.enforcement import get_continuation_count, increment_continuation
     db_path, conn = _make_state_db()
 
-    with patch('hook_helpers.DB_PATH', db_path):
+    with patch('hooks.hook_helpers.DB_PATH', db_path):
         assert get_continuation_count("sess-1") == 0
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 1
@@ -158,10 +156,10 @@ def test_continuation_counter_increments():
 
 # Verifies: continuation counter resets to zero
 def test_continuation_counter_resets():
-    from enforcement import get_continuation_count, increment_continuation, reset_continuation
+    from hooks.enforcement import get_continuation_count, increment_continuation, reset_continuation
     db_path, conn = _make_state_db()
 
-    with patch('hook_helpers.DB_PATH', db_path):
+    with patch('hooks.hook_helpers.DB_PATH', db_path):
         increment_continuation("sess-1")
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 2
@@ -172,11 +170,11 @@ def test_continuation_counter_resets():
 
 # Verifies: continuation counter reaches MAX_CONTINUATIONS cap
 def test_continuation_cap_at_three():
-    from enforcement import get_continuation_count, increment_continuation
-    from config import MAX_CONTINUATIONS
+    from hooks.enforcement import get_continuation_count, increment_continuation
+    from cairn.config import MAX_CONTINUATIONS
     db_path, conn = _make_state_db()
 
-    with patch('hook_helpers.DB_PATH', db_path):
+    with patch('hooks.hook_helpers.DB_PATH', db_path):
         for _ in range(MAX_CONTINUATIONS):
             increment_continuation("sess-1")
         assert get_continuation_count("sess-1") >= MAX_CONTINUATIONS
@@ -185,10 +183,10 @@ def test_continuation_cap_at_three():
 
 # Verifies: continuation counters are isolated between sessions
 def test_continuation_isolated_per_session():
-    from enforcement import get_continuation_count, increment_continuation
+    from hooks.enforcement import get_continuation_count, increment_continuation
     db_path, conn = _make_state_db()
 
-    with patch('hook_helpers.DB_PATH', db_path):
+    with patch('hooks.hook_helpers.DB_PATH', db_path):
         increment_continuation("sess-1")
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 2
@@ -203,7 +201,7 @@ def test_continuation_isolated_per_session():
 # Verifies: hook crash results in exit 0 (fail-open behavior)
 def test_hook_crash_exits_zero():
     """A crash in main() should be caught and exit 0 (fail-open)."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
 
     payload = json.dumps({
         "stop_hook_active": False,
@@ -243,10 +241,10 @@ def test_hook_crash_exits_zero():
 
 # Verifies: record_metric persists event, detail, and value to DB
 def test_record_metric_stores_event():
-    from hook_helpers import record_metric
+    from hooks.hook_helpers import record_metric
     db_path, conn = fresh_db()
 
-    with patch('hook_helpers.DB_PATH', db_path):
+    with patch('hooks.hook_helpers.DB_PATH', db_path):
         record_metric("sess-1", "test_event", "detail", 42.0)
 
     row = conn.execute("SELECT event, detail, value FROM metrics").fetchone()
@@ -259,9 +257,9 @@ def test_record_metric_stores_event():
 # Verifies: record_metric silently handles DB errors
 def test_record_metric_survives_db_error():
     """Metric recording should not crash on DB errors."""
-    from hook_helpers import record_metric
+    from hooks.hook_helpers import record_metric
     # Non-existent DB path — should silently fail
-    with patch('hook_helpers.DB_PATH', '/nonexistent/db.sqlite'):
+    with patch('hooks.hook_helpers.DB_PATH', '/nonexistent/db.sqlite'):
         record_metric("sess-1", "test", "detail", 1.0)  # Should not raise
 
 
@@ -272,7 +270,7 @@ def test_record_metric_survives_db_error():
 # Verifies: low-info context_need 'help' is pre-filtered via main()
 def test_low_info_context_need_filtered_through_main():
     """A context_need of 'help' should be pre-filtered — verified via metric."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path = os.path.join(TEST_DIR, f"prefilter_{_counter[0]}.db")
     conn = sqlite3.connect(db_path)
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY, type TEXT, topic TEXT,
@@ -322,7 +320,7 @@ def test_low_info_context_need_filtered_through_main():
 # Verifies: substantive context_need passes pre-filter to retrieval
 def test_substantive_context_need_not_filtered():
     """A real question should NOT be pre-filtered."""
-    import stop_hook
+    import hooks.stop_hook as stop_hook
     db_path = os.path.join(TEST_DIR, f"subst_{_counter[0]}.db")
     conn = sqlite3.connect(db_path)
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY, type TEXT, topic TEXT,

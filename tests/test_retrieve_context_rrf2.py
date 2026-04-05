@@ -16,12 +16,10 @@ import tempfile
 import pytest
 from unittest.mock import patch, MagicMock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
-import hook_helpers
-import retrieval
-import embeddings as embeddings_mod
+import hooks.hook_helpers as hook_helpers
+import hooks.retrieval as retrieval
+import cairn.embeddings as embeddings_mod
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]

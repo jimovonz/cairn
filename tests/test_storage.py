@@ -9,10 +9,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 # Add hooks and cairn directories to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 
-import storage
+import hooks.storage as storage
 
 
 def _init_db(path):
@@ -109,7 +107,7 @@ def _execute(db_path, sql, params=()):
 # Verifies: corroboration (+) boosts confidence via saturating formula; contradiction (-!) sets archived_reason
 @pytest.mark.behavioural
 def test_apply_confidence_updates_behavioural(db_path):
-    from config import CONFIDENCE_BOOST, CONFIDENCE_DEFAULT, CONFIDENCE_MAX
+    from cairn.config import CONFIDENCE_BOOST, CONFIDENCE_DEFAULT, CONFIDENCE_MAX
     _execute(db_path, "INSERT INTO memories (id, type, topic, content, confidence) VALUES (1, 'fact', 'a', 'content here for testing', ?)", (CONFIDENCE_DEFAULT,))
     _execute(db_path, "INSERT INTO memories (id, type, topic, content, confidence) VALUES (2, 'fact', 'b', 'other content for test', 0.7)")
 

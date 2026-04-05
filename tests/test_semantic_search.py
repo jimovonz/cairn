@@ -11,10 +11,9 @@ from io import StringIO
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 
-import query
-import embeddings as emb
+import cairn.query as query
+import cairn.embeddings as emb
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
@@ -158,16 +157,11 @@ def test_semantic_search_edge_empty_db():
 # Verifies: semantic_search returns None and prints fallback message when embeddings module is unavailable
 def test_semantic_search_error_import():
     # Simulate embeddings module not being importable
-    with patch.dict("sys.modules", {"embeddings": None}):
-        # Need to reload query to trigger fresh import attempt
-        # Instead, directly test the ImportError path by mocking the import inside the function
-        pass
-
     # Better approach: patch the import inside semantic_search
     original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
 
     def mock_import(name, *args, **kwargs):
-        if name == "embeddings":
+        if name == "cairn.embeddings" or (name == "cairn" and "embeddings" in (args[2] if len(args) > 2 and args[2] else [])):
             raise ImportError("no module")
         return original_import(name, *args, **kwargs)
 

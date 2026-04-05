@@ -105,7 +105,7 @@ def type_prefix_fanout(
     misses the type prefix, reducing similarity. Fan out across all types and
     take the best similarity per memory.
     """
-    from embeddings import composite_score, from_blob, cosine_similarity
+    from cairn.embeddings import composite_score, from_blob, cosine_similarity
 
     # Fetch all embeddings once
     rows = conn.execute(
@@ -175,7 +175,7 @@ def corpus_prf(
     3. Augment the query with those terms
     4. Re-embed and search semantically with the expanded query
     """
-    from embeddings import find_similar
+    from cairn.embeddings import find_similar
 
     # Step 1: FTS keyword search
     words = re.findall(r'\w+', query.lower())
@@ -233,7 +233,7 @@ def neighbor_blend(
     3. Blend: new_vec = query_weight * query_vec + (1 - query_weight) * avg(neighbor_vecs)
     4. Re-search with the blended vector
     """
-    from embeddings import composite_score, from_blob, cosine_similarity
+    from cairn.embeddings import composite_score, from_blob, cosine_similarity
 
     query_text = f"{current_project} {query}" if current_project else query
     query_vec = embed_fn(query_text)

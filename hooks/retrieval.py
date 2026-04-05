@@ -6,11 +6,11 @@ import json
 import sqlite3
 from typing import Any, Optional
 
-import hook_helpers
-from hook_helpers import log, get_conn, get_session_project, record_metric
+import hooks.hook_helpers as hook_helpers
+from hooks.hook_helpers import log, get_conn, get_session_project, record_metric
 import re
 
-from config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
+from cairn.config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
                      L3_GLOBAL_SIM_WITHOUT_PROJECT, L3_PROJECT_QUALITY_FLOOR,
                      L3_MAX_PROJECT_RESULTS, L3_MAX_GLOBAL_RESULTS,
                      WEAK_ENTRY_SCORE_FLOOR, RRF_K)
@@ -166,7 +166,7 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
             # If we didn't get this from semantic, use the FTS result
             if result_dict is None:
                 # FTS-only result needs a composite score computed from its metadata
-                from embeddings import composite_score as _cscore
+                from cairn.embeddings import composite_score as _cscore
                 fts_sim = 0.35  # FTS doesn't produce a vector similarity; use baseline
                 fts_result["similarity"] = fts_sim
                 fts_result["score"] = _cscore(
@@ -302,7 +302,7 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
 def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[str] = None) -> None:
     """Layer 2: Search global memories for cross-project relevance using keywords.
     Stages results for the next UserPromptSubmit hook injection."""
-    from config import L2_SIM_THRESHOLD, L2_MAX_RESULTS
+    from cairn.config import L2_SIM_THRESHOLD, L2_MAX_RESULTS
 
     if not keywords_list:
         return

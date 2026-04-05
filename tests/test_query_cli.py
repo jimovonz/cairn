@@ -10,7 +10,6 @@ import shutil
 from unittest.mock import patch
 from io import StringIO
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
 
 TEST_DIR = tempfile.mkdtemp()
 _counter = [0]
@@ -72,7 +71,7 @@ def capture_output(func, *args, **kwargs):
     return captured.getvalue()
 
 
-import query
+import cairn.query as query
 
 
 # ============================================================

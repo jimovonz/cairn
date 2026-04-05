@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import NamedTuple, Optional
 
-from hook_helpers import log
+from hooks.hook_helpers import log
 
 
 class ParseResult(NamedTuple):

@@ -26,8 +26,6 @@ from unittest.mock import patch, MagicMock
 import numpy as np
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 TEST_DIR = tempfile.mkdtemp()
 _db_counter = [0]
@@ -185,7 +183,7 @@ class BenchmarkEmbedder:
             sim = float(np.dot(query_vec, mem_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(mem_vec)))
             if sim < threshold:
                 continue
-            from embeddings import composite_score
+            from cairn.embeddings import composite_score
             score = composite_score(sim, r[7] or 0.7, r[4], r[5], current_project)
             results.append({
                 "id": r[0], "type": r[1], "topic": r[2], "content": r[3],
@@ -338,7 +336,7 @@ class TestHybridRRFPerformance:
     """Benchmarks the full hybrid FTS5 + vector RRF pipeline."""
 
     def _run_rrf(self, db_path, query, n_runs=5):
-        import hook_helpers
+        import hooks.hook_helpers as hook_helpers
         original_db = hook_helpers.DB_PATH
         original_log = hook_helpers.LOG_PATH
         mock_emb = BenchmarkEmbedder()
@@ -359,7 +357,7 @@ class TestHybridRRFPerformance:
                     conn.close()
 
                     start = time.perf_counter()
-                    from retrieval import retrieve_context
+                    from hooks.retrieval import retrieve_context
                     result = retrieve_context(query, session_id="bench-sid")
                     elapsed = (time.perf_counter() - start) * 1000
                     times.append(elapsed)
@@ -404,7 +402,7 @@ class TestQualityGates:
     @pytest.mark.behavioural
     def test_garbage_gate_rejects_unrelated(self, db_1000):
         """Garbage gate should reject results when query is completely unrelated."""
-        from config import MIN_INJECTION_SIMILARITY
+        from cairn.config import MIN_INJECTION_SIMILARITY
         emb = BenchmarkEmbedder()
         conn = sqlite3.connect(db_1000)
         conn.execute("PRAGMA busy_timeout=5000")

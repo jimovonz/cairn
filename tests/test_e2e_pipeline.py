@@ -25,8 +25,6 @@ from io import StringIO
 
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cairn"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
 TEST_DIR = tempfile.mkdtemp()
 _db_counter = [0]
@@ -202,7 +200,7 @@ class MockEmbedder:
             sim = float(np.dot(query_vec, mem_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(mem_vec)))
             if sim < threshold:
                 continue
-            from embeddings import composite_score
+            from cairn.embeddings import composite_score
             score = composite_score(sim, r[7], r[4], r[5], current_project)
             results.append({
                 "id": r[0], "type": r[1], "topic": r[2], "content": r[3],
@@ -225,8 +223,8 @@ def run_prompt_hook(db_path, session_id, user_message, cwd="/home/test/testproje
         "user_message": user_message,
     }
 
-    import hook_helpers
-    import prompt_hook
+    import hooks.hook_helpers as hook_helpers
+    import hooks.prompt_hook as prompt_hook
 
     original_db = hook_helpers.DB_PATH
     original_log = hook_helpers.LOG_PATH
@@ -247,7 +245,7 @@ def run_prompt_hook(db_path, session_id, user_message, cwd="/home/test/testproje
              patch("sys.stdout", captured), \
              patch("sys.exit", mock_exit), \
              patch.object(hook_helpers, "get_embedder", return_value=mock_emb), \
-             patch("prompt_hook.get_embedder", return_value=mock_emb):
+             patch("hooks.prompt_hook.get_embedder", return_value=mock_emb):
             try:
                 prompt_hook.main()
             except SystemExit:
@@ -265,7 +263,7 @@ def run_prompt_hook(db_path, session_id, user_message, cwd="/home/test/testproje
 def run_stop_hook(db_path, session_id, assistant_message, cwd="/home/test/testproject",
                   is_continuation=False, transcript_path=""):
     # Reset cached intent embeddings to avoid cross-test contamination
-    import enforcement
+    import hooks.enforcement as enforcement
     enforcement._intent_embeddings = None
 
     """Run stop_hook.main() and return (exit_code, output_json_or_None)."""
@@ -277,8 +275,8 @@ def run_stop_hook(db_path, session_id, assistant_message, cwd="/home/test/testpr
         "transcript_path": transcript_path or os.path.join(TEST_DIR, "transcript.jsonl"),
     }
 
-    import hook_helpers
-    import stop_hook
+    import hooks.hook_helpers as hook_helpers
+    import hooks.stop_hook as stop_hook
 
     original_db = hook_helpers.DB_PATH
     original_log = hook_helpers.LOG_PATH
@@ -299,7 +297,7 @@ def run_stop_hook(db_path, session_id, assistant_message, cwd="/home/test/testpr
              patch("sys.stdout", captured), \
              patch("sys.exit", mock_exit), \
              patch.object(hook_helpers, "get_embedder", return_value=mock_emb), \
-             patch("stop_hook.get_embedder", return_value=mock_emb):
+             patch("hooks.stop_hook.get_embedder", return_value=mock_emb):
             try:
                 stop_hook.main()
             except SystemExit:
@@ -321,8 +319,8 @@ def run_pretool_hook(db_path, session_id, tool_name, file_path):
         "tool_input": {"file_path": file_path},
     }
 
-    import hook_helpers
-    import pretool_hook
+    import hooks.hook_helpers as hook_helpers
+    import hooks.pretool_hook as pretool_hook
 
     original_db = hook_helpers.DB_PATH
     original_log = hook_helpers.LOG_PATH
