@@ -106,6 +106,9 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Content enforcement** — strict metadata validation, content density checks, anti-fabrication rules
 - **Health check** — `--check` validates the full chain (DB, hooks, daemon, embeddings, rules) post-install
 - **Self-healing embeddings** — auto-starts daemon and backfills when memories are stored without embeddings
+- **Web dashboard** — browser-based UI at `localhost:8420` for monitoring and management; overview stats, memory browser with search, session explorer with transcript viewer, retrieval metrics, embedding performance, token usage estimates, per-session generated-vs-consumed memory flow, config editor
+- **Subagent mode** — automatic detection via `agent_id` in hook input; keeps bootstrap + L1 context injection, skips enforcement/L1.5/L2; stop hook opportunistically stores volunteered memories without blocking
+- **Embedding instrumentation** — per-call timing for daemon, local model, vector search, brute-force search, and fan-out expansion; surfaced in dashboard metrics panel
 - **Env var overrides** — any config value tunable via `CAIRN_<NAME>=value` without editing source
 
 ## Quick start
@@ -152,6 +155,7 @@ Every Claude Code response produces invisible metadata that gets captured and st
 | `/cairn backfill` | Generate embeddings for memories stored without daemon |
 | `/cairn delete <id>` | Delete a memory |
 | `/cairn daemon start\|stop\|status` | Manage the embedding daemon |
+| `/cairn dashboard` | Launch web dashboard in browser |
 
 ## How it works
 
@@ -316,7 +320,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test 
 
 ## Testing
 
-572 tests across 30 test files. Most tests use mock vectors and patched DB paths — no embedding model required. Quality benchmarks (`test_retrieval_quality*.py`, `test_query_expansion.py`) use real embeddings for ground-truth validation.
+571 tests across 30 test files. Most tests use mock vectors and patched DB paths — no embedding model required. Quality benchmarks (`test_retrieval_quality*.py`, `test_query_expansion.py`) use real embeddings for ground-truth validation.
 
 ```bash
 cd ~/cairn

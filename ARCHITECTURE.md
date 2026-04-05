@@ -288,8 +288,10 @@ cairn/
 │   ├── config.py                      # All tunable parameters (thresholds, weights, limits)
 │   ├── init_db.py                     # Schema and migrations
 │   ├── query.py                       # CLI query tool
-│   ├── embeddings.py                  # Sentence-transformers wrapper (daemon-aware, composite scoring)
+│   ├── embeddings.py                  # Sentence-transformers wrapper (daemon-aware, composite scoring, instrumented)
 │   ├── daemon.py                      # Background embedding server (Unix socket)
+│   ├── dashboard.py                   # Flask web dashboard (monitoring, memory browser, config editor)
+│   ├── static/index.html              # Dashboard frontend (vanilla JS, light/dark theme)
 │   └── hook.log                       # Debug log
 ├── hooks/
 │   ├── stop_hook.py                   # Main hook — capture, enforce, retrieve, veracity
@@ -923,6 +925,35 @@ python3 -m pytest tests/
 | `test_query_expansion.py` | 9 | Query expansion strategies — type-prefix fan-out, corpus PRF, neighbor blend, combined; comparative benchmarks against ground truth |
 
 Tests run on every push via GitHub Actions (`.github/workflows/test.yml`).
+
+## Web Dashboard
+
+`cairn/dashboard.py` serves a Flask-based web UI at `localhost:8420`, launched via `/cairn dashboard`.
+
+| Panel | Content |
+|-------|---------|
+| **Overview** | Memory count, sessions, DB size, confidence distribution, type breakdown, daily growth chart, token usage estimates (by project), recent memories |
+| **Memories** | FTS + semantic search with server-side sort/pagination, type/project filters; click to expand: full content, metadata, version history, transcript context with memory blocks highlighted |
+| **Sessions** | Sortable table (project, memories, turns, CWD), hide-empty filter; detail view shows session chain, bidirectional memory flow (consumed vs generated with origin links), full transcript viewer |
+| **Metrics** | Retrieval latency chart, layer activity table, embedding performance (daemon/local/search/fanout timing) |
+| **Usage** | Retrieval rate, delivery by layer, most-retrieved memories, retrieval outcomes (useful/neutral/harmful), per-session generated vs retrieved |
+| **Config** | All ~40 parameters grouped by category, edit and save to `.env` |
+
+Light/dark theme toggle, persisted in localStorage.
+
+Token estimates are derived from transcript text (~4 chars/token). Excludes system prompt, tool schemas, and thinking tokens.
+
+## Subagent Mode
+
+When hooks detect `agent_id` in the hook input (present for Claude Code Agent tool subagents), they switch to a lightweight mode:
+
+| Hook | Interactive mode | Subagent mode |
+|------|-----------------|---------------|
+| **Prompt hook** | Bootstrap + L1 + L1.5 + L2 + memory reminder | Bootstrap + L1 only |
+| **Stop hook** | Full enforcement (memory block, completeness, density, validation, L3, bootstrap) | Opportunistic: store volunteered memories and confidence updates, skip all enforcement |
+| **PreToolUse** | Gotcha injection | Unchanged |
+
+Rationale: subagents are short-lived focused workers where cross-session continuity doesn't apply. Full enforcement wastes their limited token budget on compliance. But memories they volunteer (the LLM produces them habitually) are valuable and worth storing.
 
 ## Limitations and Future Work
 
