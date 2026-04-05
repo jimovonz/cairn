@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cairn-memory"
+version = "0.5.1"
+description = "Persistent memory system for Claude Code — invisible capture, semantic retrieval, cross-session continuity"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "James Ovodenko"},
+]
+keywords = ["claude", "claude-code", "memory", "llm", "ai", "semantic-search", "sqlite"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "sentence-transformers>=5.0,<6.0",
+    "sqlite-vec>=0.1.6,<0.2",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/jimovonz/cairn"
+Repository = "https://github.com/jimovonz/cairn"
+Issues = "https://github.com/jimovonz/cairn/issues"
+
+[project.scripts]
+cairn-query = "cairn.query:main_entry"
+cairn-dashboard = "cairn.dashboard:main"
+
+[tool.setuptools.packages.find]
+include = ["cairn*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

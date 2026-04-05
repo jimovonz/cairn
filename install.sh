@@ -30,7 +30,7 @@ fi
 
 # --- Dependencies ---
 echo "Installing dependencies..."
-"$VENV_PATH/bin/pip" install -q -r "$CAIRN_HOME/requirements.txt" 2>&1 | tail -1
+"$VENV_PATH/bin/pip" install -q -e "$CAIRN_HOME[test]" 2>&1 | tail -1
 
 # --- Database ---
 echo "Initializing database..."

@@ -1160,7 +1160,8 @@ def project_bootstrap_query(project_name=None, limit=5):
     format_rows(rows)
 
 
-if __name__ == "__main__":
+def main_entry():
+    """Entry point for pyproject.toml console_scripts and __main__."""
     if len(sys.argv) < 2:
         print(USAGE)
         sys.exit(1)
@@ -1255,3 +1256,7 @@ if __name__ == "__main__":
         stats()
     else:
         format_rows(search(" ".join(sys.argv[1:])))
+
+
+if __name__ == "__main__":
+    main_entry()
