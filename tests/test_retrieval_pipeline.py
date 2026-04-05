@@ -775,7 +775,8 @@ def test_backfill_starts_daemon_before_backfill():
         return mock
 
     with patch('subprocess.Popen', side_effect=tracking_popen), \
-         patch.object(hook_helpers, 'log'):
+         patch.object(hook_helpers, 'log'), \
+         patch('os.path.exists', return_value=True):
         storage._trigger_background_backfill(5)
 
     # Should have 2 Popen calls: daemon start, then backfill
