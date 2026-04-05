@@ -262,6 +262,8 @@ def find_similar(
     if limit is None:
         limit = MAX_INJECTED_ENTRIES
 
+    from config import QUERY_EXPANSION_FANOUT
+
     # Prefix query with project to match how stored embeddings are augmented
     query_text = f"{current_project} {text}" if current_project else text
     query_vec = embed(query_text)
@@ -276,6 +278,40 @@ def find_similar(
 
     if not candidates:
         candidates = _brute_force_candidates(conn, query_vec, k, current_project)
+
+    # Type-prefix fan-out: search with each memory type prefix, keep max similarity per memory.
+    # Memories are embedded as "{project} {type} {topic} {content}" — a bare query misses the
+    # type prefix. Fan-out closes this gap with ~7x more dot products (no model inference).
+    if QUERY_EXPANSION_FANOUT and candidates:
+        _FANOUT_TYPES = ["fact", "decision", "correction", "skill", "preference", "project", "workflow"]
+        fanout_vecs = []
+        for mtype in _FANOUT_TYPES:
+            ft = f"{current_project} {mtype} {text}" if current_project else f"{mtype} {text}"
+            fanout_vecs.append(embed(ft))
+
+        # Fetch all embeddings once for fan-out scoring
+        all_rows = conn.execute(
+            "SELECT id, embedding, confidence, updated_at, project FROM memories WHERE embedding IS NOT NULL"
+        ).fetchall()
+        fanout_best: dict[int, float] = {}
+        for row in all_rows:
+            mem_vec = from_blob(row[1])
+            max_sim = float(cosine_similarity(query_vec, mem_vec))
+            for fvec in fanout_vecs:
+                sim = float(cosine_similarity(fvec, mem_vec))
+                if sim > max_sim:
+                    max_sim = sim
+            fanout_best[row[0]] = max_sim
+
+        # Update candidates with fan-out similarities where they improved
+        for c in candidates:
+            mid = c["id"]
+            if mid in fanout_best and fanout_best[mid] > c["similarity"]:
+                c["similarity"] = fanout_best[mid]
+                c["score"] = composite_score(
+                    fanout_best[mid], c["confidence"],
+                    c.get("updated_at"), c.get("project"), current_project
+                )
 
     # Filter by similarity threshold only — confidence no longer gates retrieval
     filtered = [r for r in candidates if r["similarity"] >= threshold]

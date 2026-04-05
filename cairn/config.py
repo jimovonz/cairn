@@ -104,6 +104,13 @@ L1_5_ENABLED = True                # Per-prompt semantic injection — disable v
 L1_5_SIM_THRESHOLD = 0.55          # Stricter than Layer 1 (0.30) — only strong mid-session matches
 L1_5_MAX_RESULTS = 3               # Keep injections tight on subsequent prompts
 
+# === Query expansion — Type-prefix fan-out ===
+# Memories are embedded as "{project} {type} {topic} {content}". A bare query misses the
+# type prefix, reducing similarity. Fan-out searches with each type prefix and takes the
+# max similarity per memory. ~7x more dot products per search (no extra model inference).
+# Benchmarked: lifts MRR from 0.969→1.000 on easy benchmark, 0.875→0.881 on hard benchmark.
+QUERY_EXPANSION_FANOUT = True       # Enable type-prefix fan-out in find_similar()
+
 # === RRF (Reciprocal Rank Fusion) ===
 # Fuses FTS5 keyword search with vector semantic search. Higher k smooths rank differences.
 RRF_K = 60                         # Standard RRF constant — prevents single high rank from dominating
