@@ -1127,7 +1127,7 @@ def memories_for_project(project_name, limit=50):
 
 
 def project_bootstrap_query(project_name=None, limit=5):
-    """Output standing-context memories for a project (decisions, preferences, facts, project state).
+    """Output standing-context memories for a project (preferences, facts, project state).
 
     If no project_name given, derives from CWD basename.
     """
@@ -1137,7 +1137,7 @@ def project_bootstrap_query(project_name=None, limit=5):
         print("Cannot determine project from CWD.")
         return
 
-    types = ("project", "decision", "preference", "fact")
+    types = ("project", "preference", "fact")
     placeholders = ",".join("?" * len(types))
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row

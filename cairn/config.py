@@ -94,7 +94,7 @@ BOOTSTRAP_MAX_PER_SCOPE = 3        # Cap bootstrap retrieval results per scope (
 # Independent of prompt content — gives Claude project awareness from CWD alone.
 PROJECT_BOOTSTRAP_ENABLED = True
 PROJECT_BOOTSTRAP_MAX = 5           # Max memories to inject from project bootstrap
-PROJECT_BOOTSTRAP_TYPES = "project,decision,preference,fact"  # Comma-separated types
+PROJECT_BOOTSTRAP_TYPES = "project,preference,fact"  # Comma-separated standing-context types
 
 # === Retrieval — Layer 1.5 (per-prompt push, subsequent prompts) ===
 # Semantic search on every user message after the first. Higher threshold than Layer 1
