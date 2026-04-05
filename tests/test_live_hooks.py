@@ -11,12 +11,21 @@ Run manually: python3 tests/test_live_hooks.py
 Not included in pytest suite (no test_ prefix pattern match by default).
 """
 
+import shutil
 import subprocess
 import json
 import time
 import os
 import sys
 import sqlite3
+
+import pytest
+
+# Skip entire module if claude CLI is not installed
+pytestmark = pytest.mark.skipif(
+    shutil.which("claude") is None,
+    reason="Requires claude CLI installed and authenticated",
+)
 
 CAIRN_DB = os.path.join(os.path.dirname(__file__), "..", "cairn", "cairn.db")
 HOOK_LOG = os.path.join(os.path.dirname(__file__), "..", "cairn", "hook.log")
