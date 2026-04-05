@@ -88,6 +88,14 @@ CONTEXT_BOOTSTRAP_INTERVAL = 20    # Turns without a layer 3 request before forc
 CONTEXT_BOOTSTRAP_FIRST_INTERVAL = 10  # First bootstrap fires earlier to seed context sooner
 BOOTSTRAP_MAX_PER_SCOPE = 3        # Cap bootstrap retrieval results per scope (project/global)
 
+# === Project bootstrap (CWD-based) ===
+# On first prompt, inject top-N memories for the matched project, filtered to
+# "standing context" types (project state, decisions, preferences, facts).
+# Independent of prompt content — gives Claude project awareness from CWD alone.
+PROJECT_BOOTSTRAP_ENABLED = True
+PROJECT_BOOTSTRAP_MAX = 5           # Max memories to inject from project bootstrap
+PROJECT_BOOTSTRAP_TYPES = "project,decision,preference,fact"  # Comma-separated types
+
 # === Retrieval — Layer 1.5 (per-prompt push, subsequent prompts) ===
 # Semantic search on every user message after the first. Higher threshold than Layer 1
 # to avoid mid-session noise. Skips IDs already injected this session.

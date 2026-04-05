@@ -181,6 +181,72 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
     return "\n".join(lines)
 
 
+def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
+    """Project bootstrap: inject standing-context memories for the CWD project.
+
+    Queries directly by project name + type filter — no semantic search needed.
+    Gives Claude project awareness from CWD alone, independent of prompt content.
+    """
+    from config import PROJECT_BOOTSTRAP_ENABLED, PROJECT_BOOTSTRAP_MAX, PROJECT_BOOTSTRAP_TYPES
+
+    if not PROJECT_BOOTSTRAP_ENABLED or not cwd:
+        return None
+
+    project_name = os.path.basename(cwd.rstrip("/")).lower()
+    if not project_name or project_name in (".", "/", "home", "tmp", "temp"):
+        return None
+
+    types = [t.strip() for t in PROJECT_BOOTSTRAP_TYPES.split(",")]
+    placeholders = ",".join("?" * len(types))
+
+    try:
+        conn = get_conn()
+        rows = conn.execute(f"""
+            SELECT id, type, topic, content, updated_at, project, confidence, archived_reason
+            FROM memories
+            WHERE project = ? AND type IN ({placeholders})
+            AND (archived_reason IS NULL OR archived_reason = '')
+            ORDER BY updated_at DESC
+            LIMIT ?
+        """, (project_name, *types, PROJECT_BOOTSTRAP_MAX)).fetchall()
+        conn.close()
+    except Exception as e:
+        log(f"Project bootstrap error: {e}")
+        return None
+
+    if not rows:
+        return None
+
+    lines = [f'<cairn_context query="project standing context" current_project="{project_name}" layer="project-bootstrap">']
+    lines.append('  <instruction>These are standing-context memories for this project — decisions, preferences, and facts that apply regardless of the current task.</instruction>')
+    lines.append(f'  <scope level="project" name="{project_name}" weight="high">')
+
+    for r in rows:
+        mem_id, mem_type, topic, content, updated_at, project, confidence, archived_reason = r
+        conf = confidence if confidence is not None else 0.7
+        days = 0
+        try:
+            updated = datetime.strptime(updated_at[:19], "%Y-%m-%d %H:%M:%S")
+            days = max(0, (datetime.now() - updated).days)
+        except (ValueError, TypeError):
+            pass
+        score = conf  # No similarity score for direct query
+        rel = "strong" if score >= 0.6 else "moderate" if score >= 0.4 else "weak"
+        lines.append(
+            f'    <entry id="{mem_id}" type="{mem_type}" topic="{topic}" '
+            f'project="{project_name}" date="{updated_at}" confidence="{conf:.2f}" '
+            f'recency_days="{days}" reliability="{rel}">'
+            f'{content}</entry>'
+        )
+
+    lines.append('  </scope>')
+    lines.append('</cairn_context>')
+
+    record_metric(session_id, "project_bootstrap_injected", project_name, len(rows))
+    log(f"Project bootstrap: injected {len(rows)} standing-context entries for {project_name}")
+    return "\n".join(lines)
+
+
 def layer1_search(user_message: str, session_id: str) -> Optional[str]:
     """Layer 1: Search cairn using user's first message."""
     from config import L1_SIM_THRESHOLD, L1_MAX_RESULTS, MIN_INJECTION_SIMILARITY
@@ -234,6 +300,7 @@ def main() -> None:
     raw = sys.stdin.read()
     hook_input = json.loads(raw)
     session_id = hook_input.get("session_id", "")
+    cwd = hook_input.get("cwd", "")
     user_message = hook_input.get("user_message") or hook_input.get("prompt", "")
 
     if not user_message or len(user_message) < 3:
@@ -246,6 +313,12 @@ def main() -> None:
     # Layer 1: First-prompt push
     if is_first_prompt(session_id):
         mark_first_prompt_done(session_id)
+
+        # Project bootstrap: inject standing context from CWD-matched project
+        pb_context = project_bootstrap(session_id, cwd)
+        if pb_context:
+            context_parts.append(pb_context)
+
         l1_context = layer1_search(user_message, session_id)
         if l1_context:
             context_parts.append(l1_context)
