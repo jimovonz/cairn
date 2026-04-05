@@ -321,37 +321,48 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test 
 
 ## Testing
 
-571 tests across 30 test files. Most tests use mock vectors and patched DB paths — no embedding model required. Quality benchmarks (`test_retrieval_quality*.py`, `test_query_expansion.py`) use real embeddings for ground-truth validation.
+572 tests across 33 test files. Most tests use mock vectors and patched DB paths — no embedding model required. Quality benchmarks (`test_retrieval_quality*.py`, `test_query_expansion.py`) use real embeddings for ground-truth validation and skip gracefully in CI.
 
 ```bash
 cd ~/cairn
 python3 -m pytest tests/
 ```
 
-| Test file | What it covers |
-|-----------|---------------|
-| `test_parser.py` | Memory block parsing: valid, malformed, unclosed tags, code fences, compact format |
-| `test_scoring.py` | Composite scoring, recency decay, veracity dynamics through real DB, negation heuristics |
-| `test_gates.py` | Quality gates through find_similar, garbage/diversity filtering, boundary conditions |
-| `test_integration.py` | Full pipeline with in-memory DB: insert → dedup → retrieve → gate |
-| `test_hook_e2e.py` | Stop hook main() with patched stdin: storage, blocking, sessions, metrics |
-| `test_prompt_hook.py` | Layer 1/1.5/2: first-prompt detection, per-prompt injection, staged context, short message handling |
-| `test_project_bootstrap.py` | CWD-based project bootstrap: standing context injection, type filtering, archived exclusion, error recovery |
-| `test_daemon_and_cache.py` | Daemon fallback, context cache, loop protection, fail-open, pre-filter through main() |
-| `test_query_cli.py` | CLI commands: search, stats, review, delete, history, compact, projects |
-| `test_query.py` | Query functions: search, semantic, context recovery, backfill, stats |
-| `test_query_functions.py` | Query module internals: date parsing, formatting, project listing, chain traversal |
-| `test_semantic_search.py` | Semantic search pipeline: embedding, similarity, ranking, scope filtering |
-| `test_retrieval_pipeline.py` | Retrieval pipeline: dedup, contradictions, variants, adaptive thresholds, Layer 2, auto-backfill |
-| `test_enforcement_loop.py` | Two-pass enforcement loop, continuation cap, context cache, write throttle |
-| `test_question_enforcement.py` | Question-before-cairn detection and enforcement |
-| `test_trailing_intent.py` | Trailing intent detection, intent: resolved escape, content quality gate |
-| `test_e2e_pipeline.py` | Full round-trip through all 5 layers + gotcha: prompt → stop → prompt multi-turn flow |
-| `test_install_validation.py` | Installation validation: DB schema, templates, settings merge/removal, script syntax, health check, config |
-| `test_retrieval_benchmark.py` | Latency regression: FTS5/vector/RRF at 100/500/1000 scale, dedup throughput, scaling curves |
-| `test_retrieval_quality.py` | Retrieval quality (easy): ground-truth P/R/MRR for semantic, FTS5, hybrid RRF across 5 clean clusters |
-| `test_retrieval_quality_hard.py` | Retrieval quality (hard): overlapping clusters, temporal spread, cross-project, distractors, graded difficulty |
-| `test_query_expansion.py` | Query expansion strategies: type-prefix fan-out, corpus PRF, neighbor blend, combined — comparative benchmarks |
+| Test file | Tests | What it covers |
+|-----------|------:|---------------|
+| `test_parser.py` | 18 | Memory block parsing: valid, malformed, unclosed tags, code fences, compact format |
+| `test_parser_stranded.py` | 22 | Parser edge cases: 4-strand format, adversarial inputs |
+| `test_scoring.py` | 20 | Composite scoring, recency decay, veracity dynamics through real DB, negation heuristics |
+| `test_gates.py` | 20 | Quality gates through find_similar, garbage/diversity filtering, boundary conditions |
+| `test_integration.py` | 12 | Full pipeline with in-memory DB: insert → dedup → retrieve → gate |
+| `test_stop_hook.py` | 34 | Stop hook main(): register_session, auto_label_project, storage, blocking, metrics |
+| `test_hook_e2e.py` | 16 | Stop hook main() with patched stdin: storage, blocking, sessions, metrics |
+| `test_prompt_hook.py` | 24 | Layer 1/1.5/2: first-prompt detection, per-prompt injection, staged context |
+| `test_project_bootstrap.py` | 8 | CWD-based project bootstrap: standing context injection, type filtering, archived exclusion |
+| `test_pretool_hook.py` | 8 | PreToolUse gotcha injection: find_memories_for_file and main() |
+| `test_storage.py` | 12 | Memory storage, deduplication, confidence updates, quality gates |
+| `test_daemon_and_cache.py` | 14 | Daemon fallback, context cache, loop protection, fail-open, pre-filter |
+| `test_query_cli.py` | 8 | CLI commands: search, stats, review, delete, history, compact, projects |
+| `test_query.py` | 14 | Query functions: search, semantic, context recovery, backfill, stats |
+| `test_query_functions.py` | 68 | Query module internals: date parsing, formatting, project listing, chain traversal |
+| `test_semantic_search.py` | 7 | Semantic search pipeline: embedding, similarity, ranking, scope filtering |
+| `test_retrieval_pipeline.py` | 40 | Retrieval pipeline: dedup, contradictions, variants, adaptive thresholds, Layer 2 |
+| `test_retrieval_hooks.py` | 28 | retrieve_context, layer2_cross_project_search, adaptive thresholds, context cache |
+| `test_retrieve_context.py` | 8 | retrieve_context RRF fusion, thresholds, XML output |
+| `test_retrieve_context_rrf.py` | 4 | RRF fusion: dual-match ranking, same-session exclusion, score paths |
+| `test_retrieve_context_rrf2.py` | 4 | RRF fusion: additional coverage |
+| `test_rrf_and_gotcha.py` | 25 | RRF fusion, correction-file association, PreToolUse gotcha injection |
+| `test_hash_verify.py` | 15 | Response hash computation and verification |
+| `test_enforcement_loop.py` | 22 | Two-pass enforcement loop, continuation cap, context cache, write throttle |
+| `test_question_enforcement.py` | 7 | Question-before-cairn detection and enforcement |
+| `test_trailing_intent.py` | 24 | Trailing intent detection, intent: resolved escape, content quality gate |
+| `test_e2e_pipeline.py` | 14 | Full round-trip through all 5 layers + gotcha: prompt → stop → prompt |
+| `test_install_validation.py` | 21 | Installation validation: DB schema, templates, settings merge, health check |
+| `test_live_hooks.py` | 1 | Live integration: real prompt through claude -p, verifies hook pipeline |
+| `test_retrieval_benchmark.py` | 17 | Latency regression: FTS5/vector/RRF at 100/500/1000 scale, scaling curves |
+| `test_retrieval_quality.py` | 13 | Retrieval quality (easy): ground-truth P/R/MRR across 5 clean clusters |
+| `test_retrieval_quality_hard.py` | 12 | Retrieval quality (hard): overlapping clusters, distractors, graded difficulty |
+| `test_query_expansion.py` | 9 | Query expansion: type-prefix fan-out, corpus PRF, neighbor blend, combined |
 
 ## License
 
