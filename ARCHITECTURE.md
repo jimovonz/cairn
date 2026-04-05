@@ -521,6 +521,142 @@ This is a system-level learning signal recorded in the metrics table, distinct f
 
 The original design used confidence as both a veracity signal and a ranking factor. This created a feedback loop: frequently retrieved memories got boosted, which made them rank higher, which got them retrieved more often — regardless of whether they were actually true. Reframing confidence as pure veracity breaks this loop. The LLM sees the confidence score and can calibrate trust (strong corroboration vs. unverified), but retrieval is driven by similarity and recency.
 
+## Memory Block Schema
+
+The LLM embeds a `<memory>` block at the end of every response. The stop hook parses it. Two formats are supported — verbose (default) and compact.
+
+### Verbose format
+
+```xml
+<memory>
+- type: decision
+- topic: auth-strategy
+- content: JWT with RS256 refresh tokens chosen over session cookies — CORS complexity with mobile clients ruled out cookies
+- complete: true
+- remaining: implement token rotation        (required when complete: false)
+- context: insufficient
+- context_need: prior auth discussions        (required when context: insufficient)
+- confidence_update: 42:+                     (corroborate memory 42)
+- confidence_update: 17:-! replaced by OAuth  (contradict memory 17 with reason)
+- retrieval_outcome: useful                   (rate last retrieval: useful|neutral|harmful)
+- intent: resolved                            (only on re-prompt when nothing to do)
+- keywords: auth, jwt, cookies, decision
+- depth: 5                                    (conversation turns back)
+</memory>
+```
+
+**Fields:**
+
+| Field | Required | Values | Description |
+|-------|----------|--------|-------------|
+| `type` | per entry | `decision`, `preference`, `fact`, `correction`, `person`, `project`, `skill`, `workflow` | Memory category. Unknown types accepted. |
+| `topic` | per entry | short key | Dedup key — same type+topic triggers update, not insert |
+| `content` | per entry | single line, ≥20 chars | The memory itself. Must be self-sufficient — a future session reads just this line. |
+| `complete` | always | `true` / `false` | `false` blocks the response and re-prompts with `remaining` text |
+| `remaining` | when incomplete | free text | What still needs doing — becomes the re-prompt |
+| `context` | always | `sufficient` / `insufficient` | `insufficient` triggers Layer 3 retrieval with `context_need` as query |
+| `context_need` | when insufficient | free text | Semantic search query for cairn retrieval |
+| `confidence_update` | optional | `id:+`, `id:-`, `id:-! reason` | `+` corroborates, `-` irrelevant (no-op), `-!` contradicts with annotation |
+| `retrieval_outcome` | optional | `useful`, `neutral`, `harmful` | System-level learning signal on last retrieval quality |
+| `intent` | optional | `resolved` | Signals nothing to do on re-prompt |
+| `keywords` | always | comma-separated | Used for Layer 2 cross-project keyword search |
+| `depth` | optional | integer | Conversation turns back — used by `--context` recovery |
+
+**Validation rules** (enforced by stop hook):
+- `complete`, `context`, and `keywords` must be explicitly declared
+- `remaining` required when `complete: false`
+- `context_need` required when `context: insufficient`
+- Each entry must have `type`, `topic`, and `content`
+- Content minimum 20 characters
+- Substantive responses (>1000 chars) with zero entries trigger density enforcement
+- Maximum 5 entries per response (`MAX_MEMORIES_PER_RESPONSE`)
+
+### Compact format
+
+Shorter alternative for reduced token overhead:
+
+```xml
+<memory>
+fact/auth-strategy: JWT chosen over cookies for CORS reasons [k: auth, jwt]
++ c h:4A2F
+</memory>
+```
+
+**Compact syntax:**
+
+| Pattern | Meaning |
+|---------|---------|
+| `type/topic: content [k: kw1, kw2]` | Memory entry with inline keywords |
+| `+` / `-` | complete: true / false |
+| `c` | context: sufficient (implicit) |
+| `c?:query text` | context: insufficient + context_need |
+| `- :remaining text` | complete: false + remaining |
+| `h:HEX` | Response hash (hex, log-only verification) |
+| `.` | No-op (nothing learned) |
+| `confidence_update: id:+` | Same as verbose |
+
+**No-op block** (minimum valid — nothing learned):
+
+```xml
+<memory>
+.
+</memory>
+```
+
+Or verbose equivalent:
+
+```xml
+<memory>
+- complete: true
+- context: sufficient
+- keywords: topic, of, conversation
+</memory>
+```
+
+### Retrieval injection format
+
+When cairn injects context (any layer), the LLM receives:
+
+```xml
+<cairn_context query="search text" current_project="projectname" layer="per-prompt">
+  <instruction>...</instruction>
+  <scope level="project" name="projectname" weight="high">
+    <entry id="42" type="decision" topic="auth-strategy"
+           project="myapp" date="2026-04-01 12:00:00" confidence="0.73"
+           score="0.62" recency_days="4" reliability="strong" similarity="0.82">
+      JWT chosen over cookies for CORS reasons
+    </entry>
+  </scope>
+  <scope level="global" weight="low">
+    <entry id="99" type="fact" topic="jwt-expiry" ...>...</entry>
+  </scope>
+</cairn_context>
+```
+
+**Entry attributes:**
+
+| Attribute | Description |
+|-----------|-------------|
+| `id` | Memory ID — used for `confidence_update` and `--context` recovery |
+| `type`, `topic`, `project` | Memory metadata |
+| `date` | Last updated timestamp |
+| `confidence` | Veracity score (0.0–1.0) |
+| `score` | Composite retrieval score (similarity + recency + scope) |
+| `recency_days` | Days since last update |
+| `reliability` | `strong` (score≥0.6), `moderate` (≥0.4), `weak` (<0.4) |
+| `similarity` | Cosine similarity to query |
+| `superseded` | `"true"` if archived — includes `reason` attribute |
+
+**Scope levels:**
+- `project` (weight=high) — matches current working directory
+- `global` (weight=low) — cross-project, broader matches
+
+**Layer attribute** on `<cairn_context>`:
+- `first-prompt` — Layer 1
+- `per-prompt` — Layer 1.5
+- `project-bootstrap` — CWD-based standing context
+- (Layer 2 and 3 injections also use this format)
+
 ## Context Retrieval — Five-Layer Design
 
 Five retrieval layers operate at different points, each covering a different blind spot:
