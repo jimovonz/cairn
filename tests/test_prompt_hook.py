@@ -45,6 +45,7 @@ def run_prompt_hook(db_path, payload):
 
     orig_db = prompt_hook.DB_PATH
     orig_log = prompt_hook.LOG_PATH
+    orig_hh_db = hook_helpers.DB_PATH
 
     def mock_exit(code=0):
         exit_code[0] = code
@@ -53,6 +54,7 @@ def run_prompt_hook(db_path, payload):
     try:
         prompt_hook.DB_PATH = db_path
         prompt_hook.LOG_PATH = os.path.join(TEST_DIR, "prompt.log")
+        hook_helpers.DB_PATH = db_path  # Ensure get_conn() uses test DB
 
         with patch('sys.stdin', StringIO(payload_json)), \
              patch('sys.stdout', captured), \
@@ -64,6 +66,7 @@ def run_prompt_hook(db_path, payload):
     finally:
         prompt_hook.DB_PATH = orig_db
         prompt_hook.LOG_PATH = orig_log
+        hook_helpers.DB_PATH = orig_hh_db
 
     output = captured.getvalue()
     return json.loads(output) if output.strip() else None
@@ -192,14 +195,17 @@ def test_short_message_skipped():
 
 # Verifies: empty database produces no context injection
 def test_empty_db_no_injection():
-    """Empty DB should not inject anything."""
+    """Empty DB should only inject the memory block reminder, no actual memories."""
     db_path, conn = fresh_env()
     result = run_prompt_hook(db_path, {
         "session_id": "sess-empty",
         "user_message": "what decisions have we made about the authentication system?"
     })
-    # No memories in DB → nothing to inject (Layer 1 finds nothing)
-    assert result is None
+    # No memories in DB → only the memory block reminder is injected (no L1/L2 context)
+    assert result is not None
+    ctx = result["hookSpecificOutput"]["additionalContext"]
+    assert "MEMORY BLOCK" in ctx
+    assert "<cairn_context" not in ctx  # No actual memory entries
     conn.close()
 
 
