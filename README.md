@@ -262,6 +262,7 @@ cairn/
 - [Claude Code](https://claude.com/claude-code) v2.1+
 - Python 3.10+
 - ~1GB disk (embedding model + venv)
+- ~400MB download on first install (PyTorch CPU, sentence-transformers, embedding model)
 - ~500MB RAM (when embedding daemon is running; auto-shuts down after 30min idle)
 
 **Platform:** Developed and tested on Ubuntu 22.04. Linux and macOS should work. Windows requires WSL — the installer is bash, and the embedding daemon uses Unix sockets. The core hooks work without the daemon (slower embedding, no daemon acceleration) but `install.sh` must run in a Unix shell.
