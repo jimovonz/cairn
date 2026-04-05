@@ -406,6 +406,10 @@ def main() -> None:
         except Exception as e:
             log(f"Failed to store retrieved IDs: {e}")
 
+    # Record original user message and injection size for benchmark data collection
+    record_metric(session_id, "retrieval_query", user_message[:200])
+    record_metric(session_id, "retrieval_tokens_est", None, len(combined) // 4)
+
     output: dict[str, Any] = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",

@@ -227,7 +227,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical reference (600+ li
 cairn/
 ├── install.sh              # One-command installer
 ├── uninstall.sh            # Clean removal
-├── requirements.txt        # Python dependencies (2 packages)
+├── pyproject.toml          # Package metadata and dependencies
 ├── CLAUDE.md               # Project-local LLM instructions
 ├── .claude/
 │   ├── settings.json       # Project-local hooks
@@ -237,16 +237,21 @@ cairn/
 │   ├── config.py           # All tunable parameters (env var overrides)
 │   ├── init_db.py          # Schema and migrations
 │   ├── query.py            # CLI query tool (20+ commands)
+│   ├── dashboard.py        # Web dashboard (localhost:8420)
 │   ├── embeddings.py       # Embedding with daemon support + composite scoring
-│   └── daemon.py           # Background embedding server (Unix socket)
+│   ├── daemon.py           # Background embedding server (Unix socket)
+│   ├── benchmark_extract.py # Retrieval benchmark dataset extraction
+│   └── static/
+│       └── index.html      # Dashboard single-page UI
 ├── hooks/
 │   ├── stop_hook.py        # Orchestrator: session, parsing, routing
-│   ├── prompt_hook.py      # Layer 1 + Layer 2 injection
+│   ├── prompt_hook.py      # Layer 1 + Layer 1.5 + Layer 2 injection
 │   ├── hook_helpers.py     # Shared DB access, logging, metrics
 │   ├── parser.py           # Memory block parsing (ParseResult NamedTuple)
 │   ├── storage.py          # Insert, dedup, confidence, quality gates
 │   ├── enforcement.py      # Trailing intent detection, continuation counting
 │   ├── retrieval.py        # Context retrieval with RRF fusion, Layer 2, context cache
+│   ├── query_expansion.py  # Type-prefix fan-out for broader recall
 │   ├── pretool_hook.py     # PreToolUse hook — gotcha injection on file access
 │   └── hash_verify.py      # Response hash verification (log-only, non-blocking)
 └── templates/              # Installer templates for global config
