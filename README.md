@@ -3,6 +3,7 @@
 > **cairn** */kɛːn/* — a mound of stones built as a trail marker, placed one at a time by those who pass, so that those who follow can find their way.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Tests](https://github.com/jimovonz/cairn/actions/workflows/tests.yml/badge.svg)](https://github.com/jimovonz/cairn/actions/workflows/tests.yml)
 
 <p align="center">
   <img src="docs/social-preview.png" alt="Cairn — invisible memory capture, storage, and cross-session retrieval" width="640">
