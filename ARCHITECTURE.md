@@ -297,7 +297,7 @@ cairn/
 │   ├── stop_hook.py                   # Main hook — capture, enforce, retrieve, veracity
 │   ├── prompt_hook.py                 # Project bootstrap + Layer 1/1.5/2 injection
 │   ├── pretool_hook.py                # PreToolUse hook — gotcha injection on file access
-│   ├── hook_helpers.py                # Shared DB access, logging, metrics
+│   ├── hook_helpers.py                # Shared DB, logging, metrics, XML formatting, dedup gate
 │   ├── parser.py                      # Memory block parsing (verbose + compact formats)
 │   ├── storage.py                     # Insert, dedup, confidence, quality gates, file association
 │   ├── enforcement.py                 # Trailing intent detection, continuation counting

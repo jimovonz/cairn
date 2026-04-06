@@ -323,7 +323,7 @@ def test_layer1_5_injects_on_subsequent_prompt():
         config.L1_5_SIM_THRESHOLD = original_thresh
 
 
-# Verifies: Layer 1.5 skips already-injected IDs
+# Verifies: Central dedup gate strips already-injected IDs from output
 def test_layer1_5_skips_already_injected():
     import hooks.prompt_hook as prompt_hook
     import cairn.config as config
@@ -357,9 +357,15 @@ def test_layer1_5_skips_already_injected():
 
         with patch.object(hook_helpers, 'DB_PATH', db_path), \
              patch('hooks.prompt_hook.get_embedder', return_value=mock_emb):
+            # L1.5 returns XML (dedup moved to central gate)
             result = prompt_hook.layer1_5_search("some query", "s1")
+            assert result is not None  # L1.5 builds XML without filtering
 
-        assert result is None  # Already injected — should not re-inject
+            # Central gate strips already-seen entries
+            from hooks.hook_helpers import strip_seen_entries
+            stripped = strip_seen_entries(result, "s1")
+            assert stripped is None  # All entries were already injected
+
         conn.close()
     finally:
         config.L1_5_ENABLED = original
