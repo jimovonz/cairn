@@ -19,7 +19,7 @@ import sys
 import os
 from typing import Optional
 
-from hooks.hook_helpers import log, get_conn, record_metric, get_embedder, get_session_project, DB_PATH
+from hooks.hook_helpers import log, get_conn, record_metric, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery
 from hooks.parser import parse_memory_block
 from hooks.hash_verify import compute_response_hash
 from hooks.storage import apply_confidence_updates, insert_memories
@@ -282,7 +282,7 @@ def main() -> None:
                 density_issues.append(f"entry {i+1} content too short ({len(content)} chars) — be more specific")
     else:
         # No entries — check if the response was substantive enough to warrant a memory
-        stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
+        stripped = strip_memory_block(text)
         if len(stripped) > 1000 and not is_continuation:
             density_issues.append(
                 "Substantive response (>1000 chars) with no memory entries. "
@@ -366,35 +366,24 @@ def main() -> None:
                         record_metric(session_id, "context_served", context_need[:100])
                         log(f"Context retrieval for: {context_need[:50]}...")
 
-                        # Track injected IDs — accumulate across retrievals for
-                        # contradiction enforcement and per-memory dedup
-                        injected_ids = _re.findall(r'id="(\d+)"', retrieved)
-                        if injected_ids:
+                        # Central dedup gate — strip entries already injected
+                        retrieved = strip_seen_entries(retrieved, session_id) or ""
+                        if not retrieved:
+                            log(f"All entries already seen for: {context_need[:50]}...")
+                        else:
+                            # Track newly injected IDs
+                            injected_ids = [int(i) for i in re.findall(r'id="(\d+)"', retrieved)]
                             layer_name = "L3-bootstrap" if _is_bootstrap else "L3"
-                            record_metric(session_id, "layer_delivery", json.dumps({"layer": layer_name, "ids": [int(i) for i in injected_ids]}))
-                            conn2 = get_conn()
-                            import json as _json
-                            existing_row = conn2.execute(
-                                "SELECT value FROM hook_state WHERE session_id = ? AND key = 'retrieved_ids'",
-                                (session_id,)
-                            ).fetchone()
-                            existing_ids = _json.loads(existing_row[0]) if existing_row and existing_row[0] else []
-                            merged = list(set(existing_ids + [int(i) for i in injected_ids]))
-                            conn2.execute(
-                                "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP) "
-                                "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
-                                (session_id, _json.dumps(merged))
-                            )
-                            conn2.commit()
-                            conn2.close()
+                            record_layer_delivery(session_id, layer_name, injected_ids)
+                            save_injected_ids(session_id, injected_ids)
 
-                        increment_continuation(session_id)
-                        result = {
-                            "decision": "block",
-                            "reason": f"CAIRN CONTEXT:\n{retrieved}"
-                        }
-                        print(json.dumps(result))
-                        sys.exit(0)
+                            increment_continuation(session_id)
+                            result = {
+                                "decision": "block",
+                                "reason": f"CAIRN CONTEXT:\n{retrieved}"
+                            }
+                            print(json.dumps(result))
+                            sys.exit(0)
                 else:
                     log(f"No context found for: {context_need}")
             else:
@@ -445,7 +434,7 @@ def main() -> None:
             )
 
             # Check response length — block immediately if short, defer if substantive
-            response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
+            response_stripped = strip_memory_block(text)
             if len(response_stripped) < 200:
                 # Short/empty response — safe to block now
                 log(f"Context bootstrap: {turns_since} turns without layer 3 — blocking (response {len(response_stripped)} chars)")
@@ -471,7 +460,7 @@ def main() -> None:
     # the response before the stop hook fires, so blocking + "restate" causes duplicates.
     # Instead, stage a reminder for the next prompt, same pattern as bootstrap.
     if not is_continuation and context != "insufficient":
-        response_stripped = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
+        response_stripped = strip_memory_block(text)
         # Strip code blocks and quoted strings to avoid false positives
         response_no_code = re.sub(r"```[\s\S]*?```", "", response_stripped)
         response_no_quotes = re.sub(r'"[^"]*\?"', "", response_no_code)

@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 import sys
 import os
-from datetime import datetime
 from typing import Any, Optional
 
-from hooks.hook_helpers import get_conn, get_embedder, get_session_project, record_metric, DB_PATH, LOG_PATH
+from hooks.hook_helpers import (
+    get_conn, get_embedder, get_session_project, record_metric,
+    DB_PATH, LOG_PATH, strip_seen_entries, save_injected_ids,
+    format_entry, split_by_scope, build_context_xml,
+    record_layer_delivery, load_hook_state, save_hook_state, delete_hook_state,
+)
 
 
 def log(msg: str) -> None:
@@ -29,94 +32,27 @@ def log(msg: str) -> None:
 
 def is_first_prompt(session_id: str) -> bool:
     """Check if this is the first prompt of the session."""
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT value FROM hook_state WHERE session_id = ? AND key = 'first_prompt_done'",
-        (session_id,)
-    ).fetchone()
-    conn.close()
-    return row is None
+    return load_hook_state(session_id, "first_prompt_done") is None
 
 
 def mark_first_prompt_done(session_id: str) -> None:
     """Mark that the first prompt has been processed for this session."""
-    conn = get_conn()
-    conn.execute(
-        "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'first_prompt_done', '1')",
-        (session_id,)
-    )
-    conn.commit()
-    conn.close()
+    save_hook_state(session_id, "first_prompt_done", "1")
 
 
 def load_staged_context(session_id: str) -> Optional[str]:
     """Load and consume cross-project context staged by the stop hook."""
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT value FROM hook_state WHERE session_id = ? AND key = 'staged_context'",
-        (session_id,)
-    ).fetchone()
-    if row:
-        conn.execute(
-            "DELETE FROM hook_state WHERE session_id = ? AND key = 'staged_context'",
-            (session_id,)
-        )
-        conn.commit()
-    conn.close()
-    return row[0] if row else None
-
-
-def format_entry(r: dict[str, Any]) -> str:
-    """Format a memory entry for injection."""
-    from cairn.config import MIN_INJECTION_SIMILARITY
-    sim = r.get("similarity", 0)
-    conf = r.get("confidence", 0.7)
-    score = r.get("score", conf)
-    proj = r.get("project") or "global"
-    rel = "strong" if score >= 0.6 else "moderate" if score >= 0.4 else "weak"
-    days = 0
-    try:
-        updated = datetime.strptime(r["updated_at"][:19], "%Y-%m-%d %H:%M:%S")
-        days = max(0, (datetime.now() - updated).days)
-    except (ValueError, TypeError, KeyError):
-        pass
-    reason = r.get("archived_reason")
-    if r.get("archived") or reason:
-        reason = reason or "unknown"
-        return (
-            f'  <entry id="{r["id"]}" type="{r["type"]}" topic="{r["topic"]}" '
-            f'project="{proj}" superseded="true" reason="{reason}" days="{days}">'
-            f'{r["content"]}</entry>'
-        )
-    return (
-        f'  <entry id="{r["id"]}" type="{r["type"]}" topic="{r["topic"]}" '
-        f'project="{proj}" date="{r["updated_at"]}" confidence="{conf:.2f}" '
-        f'score="{score:.2f}" recency_days="{days}" reliability="{rel}" similarity="{sim:.2f}">'
-        f'{r["content"]}</entry>'
-    )
-
-
-def load_injected_ids(session_id: str) -> set[int]:
-    """Load memory IDs already injected this session — avoid re-injecting."""
-    try:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT value FROM hook_state WHERE session_id = ? AND key = 'retrieved_ids'",
-            (session_id,)
-        ).fetchone()
-        conn.close()
-        if row and row[0]:
-            return set(json.loads(row[0]))
-    except Exception:
-        pass
-    return set()
+    raw = load_hook_state(session_id, "staged_context")
+    if raw:
+        delete_hook_state(session_id, "staged_context")
+    return raw
 
 
 def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
     """Layer 1.5: Per-prompt semantic injection for subsequent prompts.
 
     Fires on every message after the first. Higher threshold than Layer 1 (0.55 vs 0.30)
-    to avoid mid-session noise. Skips IDs already injected this session.
+    to avoid mid-session noise.
     """
     from cairn.config import L1_5_ENABLED, L1_5_SIM_THRESHOLD, L1_5_MAX_RESULTS, MIN_INJECTION_SIMILARITY
 
@@ -146,39 +82,17 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
         record_metric(session_id, "layer1_5_no_match", user_message[:80])
         return None
 
-    # Skip memories already injected this session, and memories produced in this session
-    seen_ids = load_injected_ids(session_id)
-    before_dedup = len(results)
-    results = [r for r in results
-               if r["id"] not in seen_ids
-               and r.get("session_id") != session_id]
+    # Skip memories produced in this session (central gate handles cross-layer dedup)
+    results = [r for r in results if r.get("session_id") != session_id]
     if not results:
-        record_metric(session_id, "layer1_5_skipped_all_seen", user_message[:80], before_dedup)
+        record_metric(session_id, "layer1_5_skipped_all_seen", user_message[:80], len(results))
         return None
 
-    project_results = [r for r in results if project and r.get("project") == project]
-    global_results = [r for r in results if not project or r.get("project") != project]
-
-    lines = [f'<cairn_context query="{user_message[:80]}" current_project="{project or "none"}" layer="per-prompt">']
-    lines.append('  <instruction>Before acting on any entry below, run: python3 /home/james/Projects/cairn/cairn/query.py --context &lt;id&gt; to recover the full conversation behind it.</instruction>')
-
-    if project_results:
-        lines.append(f'  <scope level="project" name="{project}" weight="high">')
-        for r in project_results:
-            lines.append("  " + format_entry(r))
-        lines.append("  </scope>")
-    if global_results:
-        lines.append('  <scope level="global" weight="low">')
-        for r in global_results:
-            lines.append("  " + format_entry(r))
-        lines.append("  </scope>")
-
-    lines.append("</cairn_context>")
+    project_results, global_results = split_by_scope(results, project)
     result_ids = [r["id"] for r in project_results + global_results]
     record_metric(session_id, "layer1_5_injected", user_message[:80], len(results))
-    if result_ids:
-        record_metric(session_id, "layer_delivery", json.dumps({"layer": "L1.5", "ids": result_ids}))
-    return "\n".join(lines)
+    record_layer_delivery(session_id, "L1.5", result_ids)
+    return build_context_xml(user_message, project, "per-prompt", project_results, global_results)
 
 
 def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
@@ -188,6 +102,7 @@ def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
     Gives Claude project awareness from CWD alone, independent of prompt content.
     """
     from cairn.config import PROJECT_BOOTSTRAP_ENABLED, PROJECT_BOOTSTRAP_MAX, PROJECT_BOOTSTRAP_TYPES
+    from hooks.hook_helpers import recency_days, reliability_label
 
     if not PROJECT_BOOTSTRAP_ENABLED or not cwd:
         return None
@@ -217,37 +132,27 @@ def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
     if not rows:
         return None
 
-    lines = [f'<cairn_context query="project standing context" current_project="{project_name}" layer="project-bootstrap">']
-    lines.append('  <instruction>These are standing-context memories for this project — decisions, preferences, and facts that apply regardless of the current task.</instruction>')
-    lines.append(f'  <scope level="project" name="{project_name}" weight="high">')
-
+    # Convert rows to dicts for format_entry
+    results = []
     for r in rows:
         mem_id, mem_type, topic, content, updated_at, project, confidence, archived_reason = r
-        conf = confidence if confidence is not None else 0.7
-        days = 0
-        try:
-            updated = datetime.strptime(updated_at[:19], "%Y-%m-%d %H:%M:%S")
-            days = max(0, (datetime.now() - updated).days)
-        except (ValueError, TypeError):
-            pass
-        score = conf  # No similarity score for direct query
-        rel = "strong" if score >= 0.6 else "moderate" if score >= 0.4 else "weak"
-        lines.append(
-            f'    <entry id="{mem_id}" type="{mem_type}" topic="{topic}" '
-            f'project="{project_name}" date="{updated_at}" confidence="{conf:.2f}" '
-            f'recency_days="{days}" reliability="{rel}">'
-            f'{content}</entry>'
-        )
+        results.append({
+            "id": mem_id, "type": mem_type, "topic": topic, "content": content,
+            "updated_at": updated_at, "project": project_name,
+            "confidence": confidence if confidence is not None else 0.7,
+            "score": confidence if confidence is not None else 0.7,
+            "similarity": 0, "archived_reason": archived_reason,
+        })
 
-    lines.append('  </scope>')
-    lines.append('</cairn_context>')
-
-    result_ids = [r[0] for r in rows]  # r[0] is id
+    result_ids = [r["id"] for r in results]
     record_metric(session_id, "project_bootstrap_injected", project_name, len(rows))
-    if result_ids:
-        record_metric(session_id, "layer_delivery", json.dumps({"layer": "bootstrap", "ids": result_ids}))
+    record_layer_delivery(session_id, "bootstrap", result_ids)
     log(f"Project bootstrap: injected {len(rows)} standing-context entries for {project_name}")
-    return "\n".join(lines)
+
+    instruction = ("These are standing-context memories for this project — "
+                   "decisions, preferences, and facts that apply regardless of the current task.")
+    return build_context_xml("project standing context", project_name, "project-bootstrap",
+                             results, [], instruction=instruction)
 
 
 def layer1_search(user_message: str, session_id: str) -> Optional[str]:
@@ -276,30 +181,10 @@ def layer1_search(user_message: str, session_id: str) -> Optional[str]:
     if not results or results[0]["similarity"] < MIN_INJECTION_SIMILARITY:
         return None
 
-    # Split into project and global
-    project_results = [r for r in results if project and r.get("project") == project]
-    global_results = [r for r in results if not project or r.get("project") != project]
-
-    lines = [f'<cairn_context query="{user_message[:80]}" current_project="{project or "none"}" layer="first-prompt">']
-    lines.append('  <instruction>Before acting on any entry below, run: python3 /home/james/Projects/cairn/cairn/query.py --context &lt;id&gt; to recover the full conversation behind it.</instruction>')
-
-    if project_results:
-        lines.append(f'  <scope level="project" name="{project}" weight="high">')
-        for r in project_results:
-            lines.append("  " + format_entry(r))
-        lines.append("  </scope>")
-
-    if global_results:
-        lines.append('  <scope level="global" weight="low">')
-        for r in global_results:
-            lines.append("  " + format_entry(r))
-        lines.append("  </scope>")
-
-    lines.append("</cairn_context>")
+    project_results, global_results = split_by_scope(results, project)
     result_ids = [r["id"] for r in project_results + global_results]
-    if result_ids:
-        record_metric(session_id, "layer_delivery", json.dumps({"layer": "L1", "ids": result_ids}))
-    return "\n".join(lines)
+    record_layer_delivery(session_id, "L1", result_ids)
+    return build_context_xml(user_message, project, "first-prompt", project_results, global_results)
 
 
 def main() -> None:
@@ -384,27 +269,14 @@ def main() -> None:
 
     combined = "\n\n".join(context_parts)
 
-    # Track which memory IDs were injected — accumulate across retrievals for
-    # contradiction enforcement and per-memory dedup
-    injected_ids = re.findall(r'id="(\d+)"', combined)
-    if injected_ids:
-        try:
-            state_conn = get_conn()
-            existing_row = state_conn.execute(
-                "SELECT value FROM hook_state WHERE session_id = ? AND key = 'retrieved_ids'",
-                (session_id,)
-            ).fetchone()
-            existing_ids = json.loads(existing_row[0]) if existing_row and existing_row[0] else []
-            merged = list(set(existing_ids + [int(i) for i in injected_ids]))
-            state_conn.execute(
-                "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, 'retrieved_ids', ?, CURRENT_TIMESTAMP) "
-                "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
-                (session_id, json.dumps(merged))
-            )
-            state_conn.commit()
-            state_conn.close()
-        except Exception as e:
-            log(f"Failed to store retrieved IDs: {e}")
+    # Central dedup gate — strip entries already injected this session
+    combined = strip_seen_entries(combined, session_id) or ""
+    if not combined:
+        sys.exit(0)
+
+    # Track newly injected IDs for downstream dedup
+    injected_ids = [int(i) for i in re.findall(r'id="(\d+)"', combined)]
+    save_injected_ids(session_id, injected_ids)
 
     # Record original user message and injection size for benchmark data collection
     record_metric(session_id, "retrieval_query", user_message[:200])

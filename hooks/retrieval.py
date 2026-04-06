@@ -7,7 +7,11 @@ import sqlite3
 from typing import Any, Optional
 
 import hooks.hook_helpers as hook_helpers
-from hooks.hook_helpers import log, get_conn, get_session_project, record_metric
+from hooks.hook_helpers import (
+    log, get_conn, get_session_project, record_metric,
+    recency_days as _recency_days, reliability_label, record_layer_delivery,
+    format_entry as _shared_format_entry, build_context_xml, save_hook_state,
+)
 import re
 
 from cairn.config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
@@ -245,20 +249,11 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
         record_metric(session_id, "context_empty", context_need[:100])
         return None
 
-    def recency_days(updated_at_str: str) -> int:
-        try:
-            updated = dt.strptime(updated_at_str[:19], "%Y-%m-%d %H:%M:%S")
-            return max(0, (dt.now() - updated).days)
-        except Exception:
-            return -1
-
-    def reliability(r: dict[str, Any]) -> float:
-        return r.get("score", r.get("confidence", 0.7))
-
+    # L3 uses a compact entry format (fewer attributes = fewer tokens in block reason)
     def format_entry(r: dict[str, Any]) -> str:
-        rel = reliability(r)
-        rel_label = "strong" if rel >= 0.6 else "moderate" if rel >= 0.4 else "weak"
-        days = recency_days(r.get("updated_at", ""))
+        score = r.get("score", r.get("confidence", 0.7))
+        rel_label = reliability_label(score)
+        days = _recency_days(r.get("updated_at", ""))
         has_source = r.get("depth") is not None
         source_attr = ' ctx="y"' if has_source else ""
         reason = r.get("archived_reason")
@@ -332,37 +327,12 @@ def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[s
         conn.close()
         return
 
-    from datetime import datetime as dt
-    lines: list[str] = [f'<cairn_context query="cross-project keywords: {query[:60]}" current_project="{project or "none"}" layer="cross-project">']
-    lines.append('  <instruction>Before acting on any entry below, run: python3 /home/james/Projects/cairn/cairn/query.py --context &lt;id&gt; to recover the full conversation behind it.</instruction>')
-    lines.append('  <scope level="global" weight="low">')
-    for r in cross_project:
-        proj: str = r.get("project") or "global"
-        conf: float = r.get("confidence", 0.7)
-        score: float = r.get("score", conf)
-        days: int = 0
-        try:
-            updated = dt.strptime(r["updated_at"][:19], "%Y-%m-%d %H:%M:%S")
-            days = max(0, (dt.now() - updated).days)
-        except Exception:
-            pass
-        rel: str = "strong" if score >= 0.6 else "moderate" if score >= 0.4 else "weak"
-        lines.append(
-            f'    <entry id="{r["id"]}" type="{r["type"]}" topic="{r["topic"]}" '
-            f'project="{proj}" date="{r["updated_at"]}" confidence="{conf:.2f}" '
-            f'score="{score:.2f}" recency_days="{days}" reliability="{rel}" similarity="{r["similarity"]:.2f}">'
-            f'{r["content"]}</entry>'
-        )
-    lines.append('  </scope>')
-    lines.append('</cairn_context>')
-
-    staged_xml: str = "\n".join(lines)
-
-    conn.execute(
-        "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'staged_context', ?)",
-        (session_id, staged_xml)
+    staged_xml = build_context_xml(
+        f"cross-project keywords: {query[:60]}", project, "cross-project",
+        [], cross_project
     )
-    conn.commit()
+
+    save_hook_state(session_id, "staged_context", staged_xml)
     conn.close()
 
     log(f"Layer 2: staged {len(cross_project)} cross-project entries for next prompt")
