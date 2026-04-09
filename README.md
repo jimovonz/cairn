@@ -100,6 +100,12 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Compact memory format** — dual-format parser supports both verbose (`- type: fact`) and compact (`fact/topic: content [k: kw1, kw2]`) memory blocks
 - **Completeness enforcement** — `complete: false` blocks stop and re-prompts with remaining work; trailing intent detection blocks when the LLM promises action without following through
 - **Bootstrap enforcement** — forces context checks every N turns to build the habit of cairn-first reasoning
+- **Active bootstrap trigger** — pattern-based detection of knowledge questions ("what did we decide", "remind me about", "what aspect of my X") fires an immediate context check, not just on the N-turn timer
+- **Thin-retrieval escalation** — when push retrieval returns too few or too-weak results, the next stop hook stages a reminder forcing the LLM to run `query.py` directly or re-declare with a refined need; catches the failure mode where the LLM trusts an empty push as authoritative absence
+- **Query-quality enforcement** — detects phoned-in `context_need` declarations that don't reference the substantive terms from the user's question; staged reminder asks for a refined declaration
+- **Multi-query decomposition** — `|` separator in `find_similar` and `query.py --semantic` runs each subquery independently and merges by best score; tight semantic vectors per topic instead of one blurred embedding
+- **Type-aware scope bias** — `person` and `preference` memory types ignore the project scope penalty so biographical/cross-cutting facts about the user surface in any session, not just the project where they were captured
+- **Project label override** — `CAIRN_PROJECT=name claude` overrides the cwd-based default for catch-all directories or benchmark isolation
 - **Verbatim session recovery** — every memory links back to the exact conversation that produced it; `--context <id>` retrieves the verbatim transcript excerpt from the original session — the actual words spoken, not a summary or reconstruction. No other surveyed system provides this.
 - **Self-improving** — retrieval outcome feedback adaptively tightens thresholds when results are poor
 - **Memory audit** — `/cairn audit` reviews session memories for accuracy, enriches thin entries, fills gaps; background agent (`audit_agent.py`) reads transcripts via `claude -p` for automated review
@@ -117,13 +123,14 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 ```bash
 git clone https://github.com/jimovonz/cairn.git ~/cairn
 cd ~/cairn
-./install.sh
+./install.sh            # CPU embeddings (default, ~200MB PyTorch)
+./install.sh --gpu      # GPU embeddings (CUDA, ~2.3GB PyTorch)
 ```
 
 Restart Claude Code. The system is now active in every session.
 
 The installer:
-1. Creates a Python venv and installs dependencies
+1. Creates a Python venv and installs dependencies (CPU-only PyTorch by default)
 2. Initializes the SQLite database
 3. Deploys global hooks, instructions, and the `/cairn` slash command
 4. Downloads the embedding model (~80MB, one-time)
@@ -262,7 +269,7 @@ cairn/
 - [Claude Code](https://claude.com/claude-code) v2.1+
 - Python 3.10+
 - ~1GB disk (embedding model + venv)
-- ~400MB download on first install (PyTorch CPU, sentence-transformers, embedding model)
+- ~400MB download on first install (PyTorch CPU + sentence-transformers + embedding model; ~2.5GB with `--gpu`)
 - ~500MB RAM (when embedding daemon is running; auto-shuts down after 30min idle)
 
 **Platform:** Developed and tested on Ubuntu 22.04. Linux and macOS should work. Windows requires WSL — the installer is bash, and the embedding daemon uses Unix sockets. The core hooks work without the daemon (slower embedding, no daemon acceleration) but `install.sh` must run in a Unix shell.

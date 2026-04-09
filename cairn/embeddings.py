@@ -151,8 +151,21 @@ def _recency_decay(updated_at_str: str) -> float:
         return 0.5  # Unknown age, neutral
 
 
-def _scope_weight(project: Optional[str], current_project: Optional[str]) -> float:
-    """Return scope weight: 1.0 for project match, 0.3 for global."""
+def _scope_weight(
+    project: Optional[str],
+    current_project: Optional[str],
+    mem_type: Optional[str] = None,
+) -> float:
+    """Return scope weight: 1.0 for project match, 0.3 for global.
+
+    Memory types in SCOPE_BIAS_EXEMPT_TYPES (e.g. person, preference) always
+    receive full weight regardless of project — biographical/cross-cutting
+    facts about the user apply universally, not just in the project where
+    they were captured.
+    """
+    from cairn.config import SCOPE_BIAS_EXEMPT_TYPES
+    if mem_type and mem_type in SCOPE_BIAS_EXEMPT_TYPES:
+        return 1.0
     if current_project and project == current_project:
         return 1.0
     return 0.3
@@ -164,12 +177,13 @@ def composite_score(
     updated_at_str: Optional[str] = None,
     project: Optional[str] = None,
     current_project: Optional[str] = None,
+    mem_type: Optional[str] = None,
 ) -> float:
     """Compute a single scalar retrieval score combining all signals.
     Reduces cognitive load on the LLM by pre-ranking results."""
     from cairn.config import SCORE_W_SIMILARITY, SCORE_W_CONFIDENCE, SCORE_W_RECENCY, SCORE_W_SCOPE
     recency = _recency_decay(updated_at_str) if updated_at_str else 0.5
-    scope = _scope_weight(project, current_project) if project is not None else 0.5
+    scope = _scope_weight(project, current_project, mem_type) if project is not None else 0.5
     return (
         SCORE_W_SIMILARITY * similarity +
         SCORE_W_CONFIDENCE * (confidence ** 2) +  # Non-linear: high confidence gains meaningful advantage
@@ -211,7 +225,7 @@ def _vec_candidates(
             "session_id": row[10],
             "depth": row[8],
             "archived_reason": row[9],
-            "score": composite_score(sim, confidence, row[5], row[6], current_project)
+            "score": composite_score(sim, confidence, row[5], row[6], current_project, row[2])
         })
     return results
 
@@ -244,7 +258,7 @@ def _brute_force_candidates(
             "session_id": row[10],
             "depth": row[8],
             "archived_reason": row[9],
-            "score": composite_score(sim, confidence, row[5], row[6], current_project)
+            "score": composite_score(sim, confidence, row[5], row[6], current_project, row[1])
         })
 
     results.sort(key=lambda x: x["score"], reverse=True)
@@ -277,6 +291,12 @@ def find_similar(
     - Garbage gate (don't return anything if best match is too weak)
     - Composite scoring (pre-ranked by similarity + confidence + recency + scope)
 
+    Multi-query decomposition: if text contains a `|` separator, each part is
+    treated as an independent subquery. Results from all subqueries are merged
+    keeping the best score per memory. This is the right approach for
+    multi-dimensional questions ("user's job AND brother") where a single
+    embedding would blur multiple distinct concepts.
+
     Uses sqlite-vec index if available, falls back to brute-force."""
     from cairn.config import (SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR, RELATIVE_FILTER_RATIO,
                         MIN_INJECTION_SIMILARITY, MAX_INJECTED_ENTRIES, DOMINANCE_EPSILON,
@@ -288,6 +308,21 @@ def find_similar(
         threshold = 0.15  # Permissive floor — quality gates handle the rest
     if limit is None:
         limit = MAX_INJECTED_ENTRIES
+
+    # Multi-query decomposition: split on | and merge results
+    if "|" in text:
+        subqueries = [s.strip() for s in text.split("|") if s.strip()]
+        if len(subqueries) > 1:
+            merged: dict[int, dict[str, Any]] = {}
+            for sq in subqueries:
+                sub_results = find_similar(conn, sq, threshold=threshold,
+                                           limit=limit, current_project=current_project)
+                for r in sub_results:
+                    existing = merged.get(r["id"])
+                    if not existing or r["score"] > existing["score"]:
+                        merged[r["id"]] = r
+            ranked = sorted(merged.values(), key=lambda x: x["score"], reverse=True)
+            return ranked[:limit]
 
     from cairn.config import QUERY_EXPANSION_FANOUT
 
@@ -343,7 +378,7 @@ def find_similar(
                 c["similarity"] = fanout_best[mid]
                 c["score"] = composite_score(
                     fanout_best[mid], c["confidence"],
-                    c.get("updated_at"), c.get("project"), current_project
+                    c.get("updated_at"), c.get("project"), current_project, c.get("type")
                 )
         _record_embed_metric("fanout_ms", (_time.perf_counter() - t_fanout) * 1000)
 

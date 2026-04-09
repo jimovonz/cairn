@@ -95,6 +95,41 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
     return build_context_xml(user_message, project, "per-prompt", project_results, global_results)
 
 
+_KNOWLEDGE_QUESTION_PATTERNS = (
+    # "what did/do/does ... about/with/for X" — past-context probes
+    r"\bwhat (?:did|do|does|have|are) (?:we|i|you|they) ",
+    # "do/did/does/have ... told/said/discussed/mentioned" — recall probes
+    r"\b(?:do|did|does|have) (?:we|i|you) (?:tell|told|say|said|discuss|mention|remember|recall) ",
+    # "what's my/your/our X" — possessive identity probes
+    r"\bwhat'?s (?:my|your|our|the) ",
+    # "remind me ... about" — explicit recall request
+    r"\bremind me ",
+    # "remember when" — episodic recall
+    r"\bremember (?:when|that|how|why|the time)",
+    # "have we ever" — historical existence probes
+    r"\bhave (?:we|i|you) ever ",
+    # "who is/was X" — person identity
+    r"\bwho (?:is|was|are|were) ",
+    # "where (do|did) ... live/work/come from" — biographical
+    r"\bwhere (?:do|did|does) (?:i|we|you|they|he|she) (?:live|work|come|go)",
+    # "what aspect/part of (my|your) X" — personal-context probes (caught the brother/job query)
+    r"\bwhat (?:aspect|part|kind|type) of (?:my|your|our) ",
+    # "tell me about my X" — direct biographical probe
+    r"\btell me about (?:my|your|our|the) ",
+)
+
+
+def _is_knowledge_question(user_message: str) -> bool:
+    """Detect if a user prompt is asking about prior knowledge that should be in cairn.
+
+    Pattern-based heuristic — matches common phrasings of "what do you know about X"
+    questions. False positives are cheap (LLM gets a reminder it can ignore); false
+    negatives miss the active trigger but the timer-based bootstrap still fires.
+    """
+    msg_lower = user_message.lower()
+    return any(re.search(p, msg_lower) for p in _KNOWLEDGE_QUESTION_PATTERNS)
+
+
 def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
     """Project bootstrap: inject standing-context memories for the CWD project.
 
@@ -107,7 +142,8 @@ def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
     if not PROJECT_BOOTSTRAP_ENABLED or not cwd:
         return None
 
-    project_name = os.path.basename(cwd.rstrip("/")).lower()
+    from hooks.hook_helpers import resolve_project
+    project_name = resolve_project(cwd)
     if not project_name or project_name in (".", "/", "home", "tmp", "temp"):
         return None
 
@@ -230,6 +266,21 @@ def main() -> None:
             context_parts.append(l1_5_context)
             log(f"Layer 1.5: injected per-prompt context for: {user_message[:50]}...")
 
+        # Active bootstrap trigger: detect knowledge questions in real time and
+        # nudge the LLM to declare context: insufficient. Closes the gap between
+        # CONTEXT_BOOTSTRAP_INTERVAL timer fires (every 20 turns) by reacting to
+        # specific question shapes that should always trigger a cairn lookup.
+        if _is_knowledge_question(user_message):
+            context_parts.append(
+                "KNOWLEDGE QUESTION DETECTED: this prompt asks about prior context, "
+                "preferences, or facts that may already be stored in cairn. In your "
+                "memory block, declare context: insufficient with a context_need that "
+                "references the substantive nouns/entities from the question. For "
+                "multi-dimensional questions use the | separator in your context_need."
+            )
+            record_metric(session_id, "active_bootstrap_triggered", user_message[:100])
+            log(f"Active bootstrap triggered for knowledge question: {user_message[:80]}")
+
     if not is_subagent:
         # Clean up stale staged context (older than 7 days — sessions unlikely to resume)
         try:
@@ -263,6 +314,45 @@ def main() -> None:
                 log(f"Bootstrap reminder injected (deferred)")
         except Exception as e:
             log(f"Failed to load bootstrap reminder: {e}")
+
+    # Thin-retrieval escalation reminder (deferred from previous stop hook)
+    thin_escalation_file = os.path.join(staged_dir, f"{session_id}_thin_escalation.txt")
+    if os.path.exists(thin_escalation_file):
+        try:
+            with open(thin_escalation_file, "r") as f:
+                escalation_text = f.read().strip()
+            os.remove(thin_escalation_file)
+            if escalation_text:
+                context_parts.append(escalation_text)
+                log(f"Thin-retrieval escalation reminder injected (deferred)")
+        except Exception as e:
+            log(f"Failed to load thin-retrieval escalation reminder: {e}")
+
+    # Query-quality reminder (deferred from previous stop hook — phoned-in context_need)
+    query_quality_file = os.path.join(staged_dir, f"{session_id}_query_quality.txt")
+    if os.path.exists(query_quality_file):
+        try:
+            with open(query_quality_file, "r") as f:
+                qq_text = f.read().strip()
+            os.remove(query_quality_file)
+            if qq_text:
+                context_parts.append(qq_text)
+                log(f"Query-quality reminder injected (deferred)")
+        except Exception as e:
+            log(f"Failed to load query-quality reminder: {e}")
+
+    # Question-before-cairn reminder (deferred from previous stop hook)
+    question_cairn_file = os.path.join(staged_dir, f"{session_id}_question_cairn.txt")
+    if os.path.exists(question_cairn_file):
+        try:
+            with open(question_cairn_file, "r") as f:
+                qc_text = f.read().strip()
+            os.remove(question_cairn_file)
+            if qc_text:
+                context_parts.append(qc_text)
+                log(f"Question-before-cairn reminder injected (deferred)")
+        except Exception as e:
+            log(f"Failed to load question-before-cairn reminder: {e}")
 
     if not context_parts:
         sys.exit(0)

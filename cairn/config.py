@@ -45,6 +45,20 @@ SCORE_W_RECENCY = 0.15
 SCORE_W_SCOPE = 0.05
 RECENCY_HALF_LIFE_DAYS = 30        # Days after which recency weight halves
 
+# Memory types that apply universally regardless of project — biographical/cross-cutting facts
+# about the user, contacts, preferences. These ignore the project scope penalty so they
+# surface in any session, not just sessions in the project where they were captured.
+SCOPE_BIAS_EXEMPT_TYPES = {"person", "preference"}
+
+# === Thin-retrieval escalation ===
+# When push retrieval (Layer 3) returns too few or too-weak results, the next stop hook
+# fire forces escalation: the LLM must run query.py directly or re-declare context:
+# insufficient with a refined need before proceeding. Catches the failure mode where the
+# LLM trusts an empty push as authoritative absence.
+THIN_RETRIEVAL_ESCALATION_ENABLED = True
+THIN_RETRIEVAL_MIN_ENTRIES = 3          # Fewer than this → flag as thin
+THIN_RETRIEVAL_TOP_SIM_THRESHOLD = 0.45 # Max similarity below this → flag as thin
+
 # === Injection quality gates ===
 MIN_INJECTION_SIMILARITY = 0.35    # If max similarity < this, don't inject at all (garbage gate)
 BORDERLINE_SIM_CEILING = 0.35      # If max similarity < this AND top score < BORDERLINE_SCORE_FLOOR, skip
