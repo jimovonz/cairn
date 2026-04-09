@@ -95,6 +95,41 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
     return build_context_xml(user_message, project, "per-prompt", project_results, global_results)
 
 
+_KNOWLEDGE_QUESTION_PATTERNS = (
+    # "what did/do/does ... about/with/for X" — past-context probes
+    r"\bwhat (?:did|do|does|have|are) (?:we|i|you|they) ",
+    # "do/did/does/have ... told/said/discussed/mentioned" — recall probes
+    r"\b(?:do|did|does|have) (?:we|i|you) (?:tell|told|say|said|discuss|mention|remember|recall) ",
+    # "what's my/your/our X" — possessive identity probes
+    r"\bwhat'?s (?:my|your|our|the) ",
+    # "remind me ... about" — explicit recall request
+    r"\bremind me ",
+    # "remember when" — episodic recall
+    r"\bremember (?:when|that|how|why|the time)",
+    # "have we ever" — historical existence probes
+    r"\bhave (?:we|i|you) ever ",
+    # "who is/was X" — person identity
+    r"\bwho (?:is|was|are|were) ",
+    # "where (do|did) ... live/work/come from" — biographical
+    r"\bwhere (?:do|did|does) (?:i|we|you|they|he|she) (?:live|work|come|go)",
+    # "what aspect/part of (my|your) X" — personal-context probes (caught the brother/job query)
+    r"\bwhat (?:aspect|part|kind|type) of (?:my|your|our) ",
+    # "tell me about my X" — direct biographical probe
+    r"\btell me about (?:my|your|our|the) ",
+)
+
+
+def _is_knowledge_question(user_message: str) -> bool:
+    """Detect if a user prompt is asking about prior knowledge that should be in cairn.
+
+    Pattern-based heuristic — matches common phrasings of "what do you know about X"
+    questions. False positives are cheap (LLM gets a reminder it can ignore); false
+    negatives miss the active trigger but the timer-based bootstrap still fires.
+    """
+    msg_lower = user_message.lower()
+    return any(re.search(p, msg_lower) for p in _KNOWLEDGE_QUESTION_PATTERNS)
+
+
 def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
     """Project bootstrap: inject standing-context memories for the CWD project.
 
@@ -230,6 +265,21 @@ def main() -> None:
         if l1_5_context:
             context_parts.append(l1_5_context)
             log(f"Layer 1.5: injected per-prompt context for: {user_message[:50]}...")
+
+        # Active bootstrap trigger: detect knowledge questions in real time and
+        # nudge the LLM to declare context: insufficient. Closes the gap between
+        # CONTEXT_BOOTSTRAP_INTERVAL timer fires (every 20 turns) by reacting to
+        # specific question shapes that should always trigger a cairn lookup.
+        if _is_knowledge_question(user_message):
+            context_parts.append(
+                "KNOWLEDGE QUESTION DETECTED: this prompt asks about prior context, "
+                "preferences, or facts that may already be stored in cairn. In your "
+                "memory block, declare context: insufficient with a context_need that "
+                "references the substantive nouns/entities from the question. For "
+                "multi-dimensional questions use the | separator in your context_need."
+            )
+            record_metric(session_id, "active_bootstrap_triggered", user_message[:100])
+            log(f"Active bootstrap triggered for knowledge question: {user_message[:80]}")
 
     if not is_subagent:
         # Clean up stale staged context (older than 7 days — sessions unlikely to resume)
