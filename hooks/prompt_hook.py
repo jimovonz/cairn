@@ -278,6 +278,19 @@ def main() -> None:
         except Exception as e:
             log(f"Failed to load thin-retrieval escalation reminder: {e}")
 
+    # Query-quality reminder (deferred from previous stop hook — phoned-in context_need)
+    query_quality_file = os.path.join(staged_dir, f"{session_id}_query_quality.txt")
+    if os.path.exists(query_quality_file):
+        try:
+            with open(query_quality_file, "r") as f:
+                qq_text = f.read().strip()
+            os.remove(query_quality_file)
+            if qq_text:
+                context_parts.append(qq_text)
+                log(f"Query-quality reminder injected (deferred)")
+        except Exception as e:
+            log(f"Failed to load query-quality reminder: {e}")
+
     # Question-before-cairn reminder (deferred from previous stop hook)
     question_cairn_file = os.path.join(staged_dir, f"{session_id}_question_cairn.txt")
     if os.path.exists(question_cairn_file):

@@ -77,6 +77,47 @@ def query_py_invoked_since(transcript_path: str, since_iso: str) -> bool:
     return False
 
 
+def last_user_message(transcript_path: str) -> str:
+    """Return the most recent user message text from the transcript JSONL.
+
+    Skips command messages (slash commands) and tool results — only returns
+    actual user-typed prompts. Returns empty string if no user message exists
+    or transcript is unreadable.
+    """
+    if not transcript_path or not os.path.exists(transcript_path):
+        return ""
+    last = ""
+    try:
+        with open(transcript_path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    msg = entry.get("message", {})
+                    if not isinstance(msg, dict) or msg.get("role") != "user":
+                        continue
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        text = " ".join(
+                            b.get("text", "") for b in content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    elif isinstance(content, str):
+                        text = content
+                    else:
+                        continue
+                    # Skip command messages and tool results — only real user prompts
+                    if "<command-message>" in text or "<tool_use_id>" in text:
+                        continue
+                    text = text.strip()
+                    if text:
+                        last = text
+                except (json.JSONDecodeError, AttributeError, KeyError):
+                    continue
+    except OSError:
+        pass
+    return last
+
+
 def resolve_project(cwd: str) -> str:
     """Resolve the project label for a session.
 

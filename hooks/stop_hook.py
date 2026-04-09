@@ -90,6 +90,47 @@ def register_session(session_id: str, transcript_path: str) -> None:
         log(f"Session {session_id[:8]}... (root)")
 
 
+_QUERY_QUALITY_STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of",
+    "with", "by", "from", "is", "it", "its", "was", "are", "be", "has", "had",
+    "have", "do", "did", "does", "will", "can", "could", "would", "should",
+    "may", "might", "not", "no", "what", "when", "where", "who", "how", "why",
+    "that", "this", "these", "those", "i", "me", "my", "you", "your", "we",
+    "us", "our", "they", "them", "their", "context", "need", "needs", "needed",
+    "information", "info", "general", "any", "some", "all", "more", "about",
+    "regarding", "related", "concerning",
+})
+
+
+def _is_phoned_in_context_need(context_need: str, transcript_path: str) -> bool:
+    """L2 query-quality check: does context_need reference the user's actual question?
+
+    Phoned-in declarations (made just to satisfy the bootstrap) typically contain
+    generic words like "context", "general project state" with no overlap to the
+    substantive nouns/entities the user asked about. Real declarations include
+    keywords from the question.
+
+    Returns True if the LLM's context_need doesn't share any substantive terms
+    with the most recent user message — indicating a generic placeholder rather
+    than a real query.
+    """
+    from hooks.hook_helpers import last_user_message
+    user_msg = last_user_message(transcript_path)
+    if not user_msg:
+        return False  # No user message to compare against
+    # Extract substantive words (4+ chars, not stopwords) from each
+    user_words = {w for w in re.findall(r"\b[a-z]{4,}\b", user_msg.lower())
+                  if w not in _QUERY_QUALITY_STOPWORDS}
+    need_words = {w for w in re.findall(r"\b[a-z]{4,}\b", context_need.lower())
+                  if w not in _QUERY_QUALITY_STOPWORDS}
+    if not user_words:
+        return False  # User message has no substantive terms — give benefit of doubt
+    if not need_words:
+        return True  # context_need has zero substantive content — most phoned-in possible
+    overlap = user_words & need_words
+    return len(overlap) == 0  # Zero overlap → phoned in
+
+
 def auto_label_project(session_id: str, cwd: str) -> None:
     """Heuristically label a session's project based on the working directory."""
     if not session_id or not cwd:
@@ -333,6 +374,26 @@ def main() -> None:
         if len(context_need) < 8 or need_words <= LOW_INFO_STOPLIST:
             log(f"Pre-filter: skipping low-info context_need: {context_need}")
             record_metric(session_id, "context_prefiltered", context_need[:100])
+        elif _is_phoned_in_context_need(context_need, transcript_path):
+            # L2 query-quality check: context_need should reference the user's actual question.
+            # If keyword overlap is too low, the LLM is phoning in a generic declaration.
+            log(f"L2 query-quality: context_need doesn't match user prompt — flagging")
+            record_metric(session_id, "context_phoned_in", context_need[:100])
+            try:
+                staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+                os.makedirs(staged_dir, exist_ok=True)
+                staged_file = os.path.join(staged_dir, f"{session_id}_query_quality.txt")
+                with open(staged_file, "w") as f:
+                    f.write(
+                        f"Your context_need '{context_need[:80]}' doesn't reference the substantive "
+                        f"terms from the user's question. This looks like a generic declaration to "
+                        f"satisfy the bootstrap rather than a real query. Re-declare context: "
+                        f"insufficient with a context_need that includes the actual nouns/entities "
+                        f"from the user's question. For multi-dimensional questions use the | separator."
+                    )
+                log(f"L2 query-quality reminder staged for next prompt")
+            except Exception as e:
+                log(f"Failed to stage query-quality reminder: {e}")
         else:
             record_metric(session_id, "context_requested", context_need[:100])
             emb = get_embedder()
