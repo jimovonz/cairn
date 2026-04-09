@@ -377,6 +377,95 @@ def api_metrics(params):
     }, 200
 
 
+def api_enforcement(params):
+    """Enforcement metrics — surfaces which mechanical guards are firing in real use.
+
+    Returns counts and ratios for the enforcement events captured by the hook layer.
+    Most useful number: thin_retrieval satisfied/staged ratio — directly answers
+    "is the LLM actually escalating when prompted, or ignoring reminders?"
+    """
+    conn = get_conn()
+    ENFORCEMENT_EVENTS = (
+        # L5 thin-retrieval escalation
+        "thin_retrieval_detected",
+        "thin_retrieval_escalation_staged",
+        "thin_retrieval_escalation_satisfied",
+        "thin_retrieval_escalation_abandoned",
+        # L2 query-quality
+        "context_phoned_in",
+        # Active bootstrap trigger
+        "active_bootstrap_triggered",
+        # Existing bootstrap mechanisms (for comparison)
+        "context_bootstrap_triggered",
+        "context_requested",
+        "question_before_cairn",
+    )
+    placeholders = ",".join("?" * len(ENFORCEMENT_EVENTS))
+
+    # Per-event totals
+    totals = rows_to_list(conn.execute(f"""
+        SELECT event, COUNT(*) as count
+        FROM metrics WHERE event IN ({placeholders})
+        GROUP BY event ORDER BY count DESC
+    """, ENFORCEMENT_EVENTS).fetchall())
+    totals_map = {r["event"]: r["count"] for r in totals}
+
+    # Daily series for the last 14 days
+    series = rows_to_list(conn.execute(f"""
+        SELECT DATE(created_at) as date, event, COUNT(*) as count
+        FROM metrics
+        WHERE event IN ({placeholders})
+        AND created_at >= datetime('now', '-14 days')
+        GROUP BY DATE(created_at), event ORDER BY date
+    """, ENFORCEMENT_EVENTS).fetchall())
+
+    # L5 satisfaction ratio (the key health metric)
+    detected = totals_map.get("thin_retrieval_detected", 0)
+    staged = totals_map.get("thin_retrieval_escalation_staged", 0)
+    satisfied = totals_map.get("thin_retrieval_escalation_satisfied", 0)
+    abandoned = totals_map.get("thin_retrieval_escalation_abandoned", 0)
+    l5_ratio = round(satisfied / (satisfied + abandoned), 3) if (satisfied + abandoned) > 0 else None
+
+    # Recent abandoned escalations (with context_need so user can see what got ignored)
+    abandoned_recent = rows_to_list(conn.execute("""
+        SELECT detail, value, created_at
+        FROM metrics WHERE event = 'thin_retrieval_escalation_abandoned'
+        ORDER BY created_at DESC LIMIT 20
+    """).fetchall())
+
+    # Recent phoned-in detections
+    phoned_in_recent = rows_to_list(conn.execute("""
+        SELECT detail, created_at
+        FROM metrics WHERE event = 'context_phoned_in'
+        ORDER BY created_at DESC LIMIT 20
+    """).fetchall())
+
+    # Recent active bootstrap triggers
+    active_bootstrap_recent = rows_to_list(conn.execute("""
+        SELECT detail, created_at
+        FROM metrics WHERE event = 'active_bootstrap_triggered'
+        ORDER BY created_at DESC LIMIT 20
+    """).fetchall())
+
+    conn.close()
+    return {
+        "totals": totals_map,
+        "series": series,
+        "l5_health": {
+            "detected": detected,
+            "staged": staged,
+            "satisfied": satisfied,
+            "abandoned": abandoned,
+            "satisfaction_ratio": l5_ratio,
+        },
+        "recent": {
+            "abandoned": abandoned_recent,
+            "phoned_in": phoned_in_recent,
+            "active_bootstrap": active_bootstrap_recent,
+        },
+    }, 200
+
+
 _token_cache: dict = {}
 
 
@@ -672,6 +761,7 @@ _ROUTES: list[tuple[str, str, callable]] = [
     ("GET", "/api/session/{session_id}/transcript", lambda p, **kw: api_session_transcript(p, kw["session_id"])),
     ("GET", "/api/session/{session_id}", lambda p, **kw: api_session_detail(p, kw["session_id"])),
     ("GET", "/api/metrics", lambda p, **kw: api_metrics(p)),
+    ("GET", "/api/enforcement", lambda p, **kw: api_enforcement(p)),
     ("GET", "/api/token-stats", lambda p, **kw: api_token_stats(p)),
     ("GET", "/api/memory-usage", lambda p, **kw: api_memory_usage(p)),
     ("GET", "/api/projects", lambda p, **kw: api_projects(p)),

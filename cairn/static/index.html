@@ -426,6 +426,7 @@ a:hover { text-decoration: underline; }
     <button data-panel="memories">Memories</button>
     <button data-panel="sessions">Sessions</button>
     <button data-panel="metrics">Metrics</button>
+    <button data-panel="enforcement">Enforcement</button>
     <button data-panel="usage">Usage</button>
     <button data-panel="config">Config</button>
   </nav>
@@ -529,6 +530,43 @@ a:hover { text-decoration: underline; }
     </div>
   </div>
 
+  <!-- Enforcement Panel -->
+  <div id="panel-enforcement" class="panel">
+    <p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">
+      Surfaces which mechanical guards are firing. The L5 satisfaction ratio is the key health metric — directly answers
+      "is the LLM actually escalating when prompted, or ignoring reminders?"
+    </p>
+    <div class="stats-grid" id="enforcement-summary"></div>
+    <div class="card">
+      <h2>L5 Thin-Retrieval Health</h2>
+      <p style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
+        Detected → staged (reminder issued) → satisfied (LLM escalated) or abandoned (LLM kept ignoring).
+      </p>
+      <div id="l5-health"></div>
+    </div>
+    <div class="card">
+      <h2>Firing Counts (all enforcement events)</h2>
+      <div id="enforcement-totals"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="card">
+        <h2>Recent Abandoned Escalations</h2>
+        <p style="color:var(--text-dim);font-size:12px;margin-bottom:8px">L5 reminders the LLM ignored to the cap.</p>
+        <div id="abandoned-recent"></div>
+      </div>
+      <div class="card">
+        <h2>Recent Phoned-In Declarations</h2>
+        <p style="color:var(--text-dim);font-size:12px;margin-bottom:8px">L2 caught context_need that didn't match the user's question.</p>
+        <div id="phoned-in-recent"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Recent Active Bootstrap Triggers</h2>
+      <p style="color:var(--text-dim);font-size:12px;margin-bottom:8px">User prompts detected as knowledge questions in real time.</p>
+      <div id="active-bootstrap-recent"></div>
+    </div>
+  </div>
+
   <!-- Usage Panel -->
   <div id="panel-usage" class="panel">
     <div class="stats-grid" id="usage-summary"></div>
@@ -596,6 +634,7 @@ document.querySelectorAll('.header nav button').forEach(btn => {
     else if (panel === 'memories') loadMemories();
     else if (panel === 'sessions') loadSessions();
     else if (panel === 'metrics') loadMetrics();
+    else if (panel === 'enforcement') loadEnforcement();
     else if (panel === 'usage') loadUsage();
     else if (panel === 'config') loadConfig();
   });
@@ -1291,6 +1330,82 @@ async function loadMetrics() {
   } else {
     embedEl.innerHTML = '<div class="loading">No embedding metrics yet. Metrics will appear after the next retrieval.</div>';
   }
+}
+
+// ─── Enforcement Panel ────────────────────────────────────────────────────
+async function loadEnforcement() {
+  const data = await api('/api/enforcement');
+  const totals = data.totals || {};
+  const l5 = data.l5_health || {};
+  const recent = data.recent || {};
+
+  // Top stats — focus on the most important numbers
+  const ratioPct = l5.satisfaction_ratio !== null && l5.satisfaction_ratio !== undefined
+    ? Math.round(l5.satisfaction_ratio * 100) + '%'
+    : 'n/a';
+  const stats = [
+    { v: l5.detected || 0, l: 'Thin Retrievals' },
+    { v: l5.staged || 0, l: 'L5 Reminders Staged' },
+    { v: l5.satisfied || 0, l: 'L5 Satisfied' },
+    { v: l5.abandoned || 0, l: 'L5 Abandoned' },
+    { v: ratioPct, l: 'L5 Satisfaction Ratio' },
+    { v: totals.context_phoned_in || 0, l: 'L2 Phoned-In Caught' },
+    { v: totals.active_bootstrap_triggered || 0, l: 'Active Bootstrap Hits' },
+    { v: totals.context_bootstrap_triggered || 0, l: 'Timer Bootstrap Fires' },
+  ];
+  document.getElementById('enforcement-summary').innerHTML = stats.map(s =>
+    `<div class="stat"><div class="stat-value">${s.v}</div><div class="stat-label">${s.l}</div></div>`
+  ).join('');
+
+  // L5 health detail block
+  const ratioColor = l5.satisfaction_ratio === null || l5.satisfaction_ratio === undefined
+    ? 'var(--text-dim)'
+    : l5.satisfaction_ratio >= 0.7 ? 'var(--green)'
+    : l5.satisfaction_ratio >= 0.4 ? 'var(--orange)'
+    : 'var(--red, #d04040)';
+  document.getElementById('l5-health').innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;font-family:var(--font-mono);font-size:13px">
+      <div><span style="color:var(--text-dim)">Detected</span><br/>${l5.detected || 0}</div>
+      <div><span style="color:var(--text-dim)">Staged</span><br/>${l5.staged || 0}</div>
+      <div><span style="color:var(--text-dim)">Satisfied</span><br/><span style="color:var(--green)">${l5.satisfied || 0}</span></div>
+      <div><span style="color:var(--text-dim)">Abandoned</span><br/><span style="color:${ratioColor}">${l5.abandoned || 0}</span></div>
+    </div>
+    <div style="margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:6px">
+      <span style="color:var(--text-dim)">Satisfaction ratio:</span>
+      <span style="color:${ratioColor};font-weight:600;font-size:18px">${ratioPct}</span>
+      <span style="color:var(--text-dim);font-size:12px;margin-left:8px">
+        — fraction of escalations the LLM acted on (vs ignored to the cap)
+      </span>
+    </div>
+  `;
+
+  // Firing counts table
+  const totalsRows = Object.entries(totals).sort((a, b) => b[1] - a[1]);
+  if (totalsRows.length > 0) {
+    let html = '<table class="mem-table"><thead><tr><th>Event</th><th style="text-align:right">Count</th></tr></thead><tbody>';
+    totalsRows.forEach(([event, count]) => {
+      html += `<tr><td style="font-family:var(--font-mono);font-size:12px">${event}</td><td style="text-align:right;font-family:var(--font-mono)">${count}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    document.getElementById('enforcement-totals').innerHTML = html;
+  } else {
+    document.getElementById('enforcement-totals').innerHTML = '<div class="loading">No enforcement events yet.</div>';
+  }
+
+  // Recent events tables
+  const renderRecent = (rows, dateField) => {
+    if (!rows || rows.length === 0) return '<div class="loading">None</div>';
+    let html = '<table class="mem-table"><thead><tr><th>Detail</th><th style="text-align:right">When</th></tr></thead><tbody>';
+    rows.forEach(r => {
+      const detail = (r.detail || '').slice(0, 100);
+      html += `<tr><td style="font-size:12px">${detail || '<em style="color:var(--text-dim)">no detail</em>'}</td><td style="text-align:right;font-size:11px;color:var(--text-dim)">${formatDate(r.created_at)}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    return html;
+  };
+  document.getElementById('abandoned-recent').innerHTML = renderRecent(recent.abandoned);
+  document.getElementById('phoned-in-recent').innerHTML = renderRecent(recent.phoned_in);
+  document.getElementById('active-bootstrap-recent').innerHTML = renderRecent(recent.active_bootstrap);
 }
 
 // ─── Usage Panel ──────────────────────────────────────────────────────────
