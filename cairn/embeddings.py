@@ -291,6 +291,12 @@ def find_similar(
     - Garbage gate (don't return anything if best match is too weak)
     - Composite scoring (pre-ranked by similarity + confidence + recency + scope)
 
+    Multi-query decomposition: if text contains a `|` separator, each part is
+    treated as an independent subquery. Results from all subqueries are merged
+    keeping the best score per memory. This is the right approach for
+    multi-dimensional questions ("user's job AND brother") where a single
+    embedding would blur multiple distinct concepts.
+
     Uses sqlite-vec index if available, falls back to brute-force."""
     from cairn.config import (SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR, RELATIVE_FILTER_RATIO,
                         MIN_INJECTION_SIMILARITY, MAX_INJECTED_ENTRIES, DOMINANCE_EPSILON,
@@ -302,6 +308,21 @@ def find_similar(
         threshold = 0.15  # Permissive floor — quality gates handle the rest
     if limit is None:
         limit = MAX_INJECTED_ENTRIES
+
+    # Multi-query decomposition: split on | and merge results
+    if "|" in text:
+        subqueries = [s.strip() for s in text.split("|") if s.strip()]
+        if len(subqueries) > 1:
+            merged: dict[int, dict[str, Any]] = {}
+            for sq in subqueries:
+                sub_results = find_similar(conn, sq, threshold=threshold,
+                                           limit=limit, current_project=current_project)
+                for r in sub_results:
+                    existing = merged.get(r["id"])
+                    if not existing or r["score"] > existing["score"]:
+                        merged[r["id"]] = r
+            ranked = sorted(merged.values(), key=lambda x: x["score"], reverse=True)
+            return ranked[:limit]
 
     from cairn.config import QUERY_EXPANSION_FANOUT
 

@@ -52,7 +52,7 @@ def list_recent(limit=20):
     return rows
 
 
-def semantic_search(query, limit=10, threshold=0.5):
+def semantic_search(query, limit=10, threshold=0.3):
     try:
         from cairn import embeddings as emb
         conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
