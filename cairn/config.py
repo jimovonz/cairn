@@ -58,6 +58,7 @@ SCOPE_BIAS_EXEMPT_TYPES = {"person", "preference"}
 THIN_RETRIEVAL_ESCALATION_ENABLED = True
 THIN_RETRIEVAL_MIN_ENTRIES = 3          # Fewer than this → flag as thin
 THIN_RETRIEVAL_TOP_SIM_THRESHOLD = 0.45 # Max similarity below this → flag as thin
+THIN_RETRIEVAL_MAX_REMINDERS = 4        # Re-stage limit; abandons after this many ignored reminders
 
 # === Injection quality gates ===
 MIN_INJECTION_SIMILARITY = 0.35    # If max similarity < this, don't inject at all (garbage gate)

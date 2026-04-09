@@ -551,40 +551,64 @@ def main() -> None:
                 log(f"Failed to stage question-before-cairn reminder: {e}")
 
     # Thin-retrieval escalation — if a previous turn's L3 retrieval was thin (too few
-    # entries or all weak), and the LLM hasn't actively run query.py since, force an
-    # escalation reminder. Catches the failure mode where the LLM trusts an empty push
-    # as authoritative absence. Two valid escalation paths: query.py invocation OR
-    # re-declaring context: insufficient (which the next stop hook will handle).
-    if not is_continuation and context != "insufficient":
-        from cairn.config import THIN_RETRIEVAL_ESCALATION_ENABLED
+    # entries or all weak), force escalation until either query.py is actively invoked
+    # OR a refined context: insufficient is declared. The flag PERSISTS across stop hook
+    # fires until satisfied — single-fire reminders are too easy for the LLM to ignore.
+    # Capped at THIN_RETRIEVAL_MAX_REMINDERS to prevent infinite loops.
+    if not is_continuation:
+        from cairn.config import THIN_RETRIEVAL_ESCALATION_ENABLED, THIN_RETRIEVAL_MAX_REMINDERS
         if THIN_RETRIEVAL_ESCALATION_ENABLED:
-            from hooks.hook_helpers import load_hook_state, delete_hook_state, query_py_invoked_since
+            from hooks.hook_helpers import load_hook_state, save_hook_state, delete_hook_state, query_py_invoked_since
             pending = load_hook_state(session_id, "pending_thin_retrieval")
             if pending:
                 try:
                     pending_data = json.loads(pending)
                     since_ts = pending_data.get("timestamp", "")
-                    if query_py_invoked_since(transcript_path, since_ts):
-                        # LLM escalated via query.py — clear the flag
+                    prior_need = pending_data.get("context_need", "")
+                    reminder_count = int(pending_data.get("reminder_count", 0))
+
+                    # Path 1: query.py invoked → satisfied
+                    satisfied_by_query = query_py_invoked_since(transcript_path, since_ts)
+                    # Path 2: refined context: insufficient with a DIFFERENT context_need → satisfied
+                    satisfied_by_refinement = (
+                        context == "insufficient"
+                        and context_need
+                        and context_need.strip().lower() != prior_need.strip().lower()
+                    )
+
+                    if satisfied_by_query or satisfied_by_refinement:
                         delete_hook_state(session_id, "pending_thin_retrieval")
-                        record_metric(session_id, "thin_retrieval_escalation_satisfied", None, 1)
-                        log("Thin-retrieval escalation satisfied — query.py was invoked")
+                        record_metric(
+                            session_id,
+                            "thin_retrieval_escalation_satisfied",
+                            "query_py" if satisfied_by_query else "refined_redeclaration",
+                            1,
+                        )
+                        log(f"Thin-retrieval escalation satisfied via "
+                            f"{'query.py' if satisfied_by_query else 'refined re-declaration'}")
+                    elif reminder_count >= THIN_RETRIEVAL_MAX_REMINDERS:
+                        # Hit the cap — give up to prevent infinite loop, but log it
+                        delete_hook_state(session_id, "pending_thin_retrieval")
+                        record_metric(session_id, "thin_retrieval_escalation_abandoned", prior_need[:80], reminder_count)
+                        log(f"Thin-retrieval escalation abandoned after {reminder_count} ignored reminders")
                     else:
-                        # No escalation taken — stage reminder for next prompt
-                        prior_need = pending_data.get("context_need", "")
+                        # Re-stage reminder — flag PERSISTS until satisfied or capped
                         diag = pending_data.get("diagnostics", {})
+                        urgency = "URGENT: " if reminder_count >= 1 else ""
                         escalation_reminder = (
-                            f"Your previous context request \"{prior_need[:80]}\" returned thin results "
+                            f"{urgency}Your context request \"{prior_need[:80]}\" returned thin results "
                             f"({diag.get('reason', '?')}, {diag.get('count', 0)} entries, "
-                            f"max_sim={diag.get('max_sim', '?')}). Push retrieval is opportunistic, not "
-                            f"exhaustive — absence in push does not mean absence in the corpus. Before "
-                            f"concluding the information isn't stored, run direct searches:\n"
-                            f"  python3 $CAIRN_HOME/cairn/query.py <keyword>\n"
-                            f"  python3 $CAIRN_HOME/cairn/query.py --semantic '<paraphrase>'\n"
-                            f"For multi-dimensional questions use the | separator:\n"
-                            f"  python3 $CAIRN_HOME/cairn/query.py --semantic 'topic A | topic B | topic C'\n"
-                            f"Or re-declare context: insufficient with a refined need that approaches "
-                            f"the question from a different angle."
+                            f"max_sim={diag.get('max_sim', '?')}). "
+                            f"This is reminder #{reminder_count + 1} — you have ignored {reminder_count} prior "
+                            f"reminder(s). Push retrieval is opportunistic, not exhaustive. To clear this flag "
+                            f"you MUST either:\n"
+                            f"  (a) Run query.py directly:\n"
+                            f"      python3 $CAIRN_HOME/cairn/query.py <keyword>\n"
+                            f"      python3 $CAIRN_HOME/cairn/query.py --semantic 'paraphrase'\n"
+                            f"      For compound questions: --semantic 'topic A | topic B | topic C'\n"
+                            f"  (b) Re-declare context: insufficient with a DIFFERENT context_need than "
+                            f"      the previous one (refine the angle, change vocabulary, decompose).\n"
+                            f"Continuing to ignore this will be logged as 'escalation_abandoned'."
                         )
                         try:
                             staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
@@ -592,10 +616,11 @@ def main() -> None:
                             staged_file = os.path.join(staged_dir, f"{session_id}_thin_escalation.txt")
                             with open(staged_file, "w") as f:
                                 f.write(escalation_reminder)
-                            # Clear the flag — staged once, won't fire again until next thin retrieval
-                            delete_hook_state(session_id, "pending_thin_retrieval")
-                            record_metric(session_id, "thin_retrieval_escalation_staged", None, 1)
-                            log(f"Thin-retrieval escalation reminder staged for next prompt")
+                            # Increment reminder count and re-save flag (PERSIST, do NOT delete)
+                            pending_data["reminder_count"] = reminder_count + 1
+                            save_hook_state(session_id, "pending_thin_retrieval", json.dumps(pending_data))
+                            record_metric(session_id, "thin_retrieval_escalation_staged", None, reminder_count + 1)
+                            log(f"Thin-retrieval escalation reminder #{reminder_count + 1} staged (persistent)")
                         except Exception as e:
                             log(f"Failed to stage thin-retrieval escalation: {e}")
                 except (json.JSONDecodeError, KeyError) as e:

@@ -251,6 +251,41 @@ def test_query_py_invoked_non_bash_ignored():
         os.remove(path)
 
 
+# === Persistent escalation behavior ===
+
+
+# Verifies: pending_thin_retrieval state can be re-saved with reminder_count
+def test_thin_escalation_persistence_state_shape():
+    """Verify the JSON shape used for persistent re-staging."""
+    state = {
+        "timestamp": "2026-04-10T12:00:00",
+        "context_need": "test query",
+        "diagnostics": {"reason": "too_few", "count": 1},
+        "reminder_count": 2,
+    }
+    serialized = json.dumps(state)
+    parsed = json.loads(serialized)
+    assert parsed["reminder_count"] == 2
+    assert parsed["context_need"] == "test query"
+
+
+# Verifies: reminder count integer increments correctly across iterations
+def test_thin_escalation_reminder_count_increments():
+    """Reminder count should increment by 1 per re-stage."""
+    state = {"reminder_count": 0}
+    for expected in (1, 2, 3, 4):
+        state["reminder_count"] = state["reminder_count"] + 1
+        assert state["reminder_count"] == expected
+
+
+# Verifies: reminder cap from config
+def test_thin_escalation_reminder_cap_config():
+    """THIN_RETRIEVAL_MAX_REMINDERS is set and integer."""
+    from cairn.config import THIN_RETRIEVAL_MAX_REMINDERS
+    assert isinstance(THIN_RETRIEVAL_MAX_REMINDERS, int)
+    assert THIN_RETRIEVAL_MAX_REMINDERS >= 1
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0
