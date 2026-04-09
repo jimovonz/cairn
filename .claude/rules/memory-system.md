@@ -140,6 +140,29 @@ A memory that summarizes repo state (activity logs, architecture snapshots) is f
 
 When a retrieved memory will actively inform your next action — writing code, making a recommendation, giving advice — run `python3 $CAIRN_HOME/cairn/query.py --context <memory_id>` first to recover the full conversation that produced it. The one-liner is a summary; the context shows the reasoning, the alternatives discussed, and the nuances that didn't fit in one line.
 
+## When to escalate to direct search
+
+Push retrieval (Layer 1, Layer 1.5, project bootstrap) is **opportunistic, not exhaustive**. It surfaces what the system's automatic semantic + project-scope query happens to match. Absence in the injected `<cairn_context>` does NOT mean "Cairn has no memory of X" — it means "the auto-query didn't surface anything." Those are very different statements.
+
+When the user asks about prior knowledge that should plausibly exist (their preferences, personal details, project history, prior decisions, family, work) — and the auto-retrieved context contains only meta-statements about gaps (e.g. "no memory of X exists", "should be captured when shared", "cairn has limited info on Y") — DO NOT trust the absence. Actively run direct searches before concluding the information isn't stored:
+
+```
+python3 $CAIRN_HOME/cairn/query.py <keyword>           # FTS5 keyword search
+python3 $CAIRN_HOME/cairn/query.py --semantic "<paraphrase>"   # vector search
+```
+
+Try multiple query variations — different keywords, different phrasings, different angles on the same question. Project-scoped retrieval can downweight cross-project memories (especially `person`/`preference` types tagged to other projects), so the direct CLI which has no scope penalty often finds what the push layer missed.
+
+False-negative push retrievals are a known failure mode. Every time you trust an empty push as authoritative, you silently underutilize Cairn — the system has the answer but you give up before finding it. The user has to repeat themselves, the autonomy gain is lost, and the failure is invisible. **Belt and braces: declare `context: insufficient` AND immediately run a direct query in the same response.** Both are cheap. They catch each other's failure modes.
+
+This rule applies most strongly to:
+- Personal/biographical questions about the user, family, contacts
+- "What did we decide about X" questions
+- "Have we discussed Y before" questions
+- Any question whose answer would benefit from prior session knowledge
+
+Push retrieval is for efficiency. Active search is for thoroughness. Use both.
+
 ## Confidence Feedback
 
 Each retrieved memory entry has an `id` and a `confidence` score (0.0 to 1.0). Confidence represents **veracity** — how well-corroborated a memory is across sessions. It does NOT influence retrieval ranking (similarity, recency, and scope handle that). You can provide feedback on memories you were shown by including `confidence_update` lines in your memory block:

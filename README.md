@@ -117,13 +117,14 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 ```bash
 git clone https://github.com/jimovonz/cairn.git ~/cairn
 cd ~/cairn
-./install.sh
+./install.sh            # CPU embeddings (default, ~200MB PyTorch)
+./install.sh --gpu      # GPU embeddings (CUDA, ~2.3GB PyTorch)
 ```
 
 Restart Claude Code. The system is now active in every session.
 
 The installer:
-1. Creates a Python venv and installs dependencies
+1. Creates a Python venv and installs dependencies (CPU-only PyTorch by default)
 2. Initializes the SQLite database
 3. Deploys global hooks, instructions, and the `/cairn` slash command
 4. Downloads the embedding model (~80MB, one-time)
@@ -262,7 +263,7 @@ cairn/
 - [Claude Code](https://claude.com/claude-code) v2.1+
 - Python 3.10+
 - ~1GB disk (embedding model + venv)
-- ~400MB download on first install (PyTorch CPU, sentence-transformers, embedding model)
+- ~400MB download on first install (PyTorch CPU + sentence-transformers + embedding model; ~2.5GB with `--gpu`)
 - ~500MB RAM (when embedding daemon is running; auto-shuts down after 30min idle)
 
 **Platform:** Developed and tested on Ubuntu 22.04. Linux and macOS should work. Windows requires WSL — the installer is bash, and the embedding daemon uses Unix sockets. The core hooks work without the daemon (slower embedding, no daemon acceleration) but `install.sh` must run in a Unix shell.
