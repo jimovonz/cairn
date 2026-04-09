@@ -45,6 +45,11 @@ SCORE_W_RECENCY = 0.15
 SCORE_W_SCOPE = 0.05
 RECENCY_HALF_LIFE_DAYS = 30        # Days after which recency weight halves
 
+# Memory types that apply universally regardless of project — biographical/cross-cutting facts
+# about the user, contacts, preferences. These ignore the project scope penalty so they
+# surface in any session, not just sessions in the project where they were captured.
+SCOPE_BIAS_EXEMPT_TYPES = {"person", "preference"}
+
 # === Injection quality gates ===
 MIN_INJECTION_SIMILARITY = 0.35    # If max similarity < this, don't inject at all (garbage gate)
 BORDERLINE_SIM_CEILING = 0.35      # If max similarity < this AND top score < BORDERLINE_SCORE_FLOOR, skip

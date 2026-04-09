@@ -31,6 +31,48 @@ def test_composite_score_project_scope_boost():
     assert s_proj > s_glob
 
 
+# Verifies: person-type memories ignore scope penalty (universal applicability)
+def test_composite_score_person_type_ignores_scope():
+    """person-type memories should score the same regardless of project — biographical facts apply universally."""
+    s_in_proj = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="myproject", current_project="myproject", mem_type="person")
+    s_other_proj = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="other", current_project="myproject", mem_type="person")
+    assert abs(s_in_proj - s_other_proj) < 1e-6, f"person type should ignore scope: {s_in_proj} vs {s_other_proj}"
+
+
+# Verifies: preference-type memories ignore scope penalty
+def test_composite_score_preference_type_ignores_scope():
+    """preference-type memories should score the same regardless of project."""
+    s_in_proj = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="myproject", current_project="myproject", mem_type="preference")
+    s_other_proj = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="other", current_project="myproject", mem_type="preference")
+    assert abs(s_in_proj - s_other_proj) < 1e-6, f"preference type should ignore scope: {s_in_proj} vs {s_other_proj}"
+
+
+# Verifies: fact-type memories STILL get scope penalty (not exempt by default)
+def test_composite_score_fact_type_keeps_scope_penalty():
+    """fact type is project-bound by default — only person/preference are exempt."""
+    s_proj = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="myproject", current_project="myproject", mem_type="fact")
+    s_glob = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="other", current_project="myproject", mem_type="fact")
+    assert s_proj > s_glob, "fact type should still receive scope penalty when cross-project"
+
+
+# Verifies: person-type cross-project ties with project-scoped non-person at same similarity
+def test_composite_score_person_cross_project_matches_local():
+    """A person memory in another project should score the same as a project-scoped non-person."""
+    s_person_global = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="other", current_project="myproject", mem_type="person")
+    s_local_decision = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="myproject", current_project="myproject", mem_type="decision")
+    assert abs(s_person_global - s_local_decision) < 0.001, "person cross-project should match local-project full weight"
+
+
+# Verifies: person-type with no current_project still gets full weight
+def test_composite_score_person_type_no_current_project():
+    """person type with no current_project should not be penalised."""
+    s_person = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="someproject", current_project=None, mem_type="person")
+    s_decision = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="someproject", current_project=None, mem_type="decision")
+    # Both should fall through to scope=0.3 since current_project is None and decision isn't exempt
+    # but person should get scope=1.0 via type exemption
+    assert s_person > s_decision, "person type should still get exemption when no current_project set"
+
+
 # Verifies: very recent entries have decay near 1.0
 def test_recency_decay_recent():
     """Very recent entries should have decay near 1.0."""

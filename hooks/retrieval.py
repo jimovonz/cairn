@@ -220,14 +220,20 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
     global_threshold: float = (L3_GLOBAL_SIM_WITH_PROJECT if quality_project_count > 0
                                else L3_GLOBAL_SIM_WITHOUT_PROJECT) + threshold_boost
 
+    from cairn.config import SCOPE_BIAS_EXEMPT_TYPES
     for r in fused:
         mid = r["id"]
         if mid in seen_ids:
             continue
         sim = r.get("similarity", 0)
+        # Type-exempt entries (person, preference) use the project threshold even cross-project
+        # because biographical/cross-cutting facts apply universally regardless of which project
+        # they were captured in.
+        is_exempt = r.get("type") in SCOPE_BIAS_EXEMPT_TYPES
+        effective_threshold = project_threshold if is_exempt else global_threshold
         # FTS-only results (sim=0.35) pass through if their fused score is strong enough
         # Use a relaxed threshold for FTS-only: if RRF boosted score >= global threshold, allow
-        if sim >= global_threshold or (r.get("_source") == "fts" and r["score"] >= WEAK_ENTRY_SCORE_FLOOR):
+        if sim >= effective_threshold or (r.get("_source") == "fts" and r["score"] >= WEAK_ENTRY_SCORE_FLOOR):
             global_results.append(r)
             seen_ids.add(mid)
 
