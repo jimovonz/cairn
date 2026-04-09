@@ -107,7 +107,8 @@ def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
     if not PROJECT_BOOTSTRAP_ENABLED or not cwd:
         return None
 
-    project_name = os.path.basename(cwd.rstrip("/")).lower()
+    from hooks.hook_helpers import resolve_project
+    project_name = resolve_project(cwd)
     if not project_name or project_name in (".", "/", "home", "tmp", "temp"):
         return None
 

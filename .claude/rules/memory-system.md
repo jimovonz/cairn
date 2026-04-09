@@ -163,6 +163,28 @@ This rule applies most strongly to:
 
 Push retrieval is for efficiency. Active search is for thoroughness. Use both.
 
+## Retrieval is iterative
+
+If your `context: insufficient` declaration returns thin or off-topic results,
+re-declare with a refined `context_need`. Don't mark `context: sufficient` and
+give up after one round. Two or three iterations beat one broad query.
+
+## Multi-dimensional questions need multiple searches
+
+If the user's question references multiple distinct topics (job AND brother;
+project state AND deadline; preference AND history), decompose into atomic
+searches — one per topic — and combine results. Either run multiple
+`query.py` calls, or use the `|` separator in a single call:
+
+```
+python3 $CAIRN_HOME/cairn/query.py --semantic "James role | James family | surveyor profession"
+```
+
+The system splits on `|`, runs each subquery independently, merges results.
+A single broad query produces a blurred embedding that matches nothing
+strongly. Targeted queries each produce tight vectors that surface the right
+memory.
+
 ## Confidence Feedback
 
 Each retrieved memory entry has an `id` and a `confidence` score (0.0 to 1.0). Confidence represents **veracity** — how well-corroborated a memory is across sessions. It does NOT influence retrieval ranking (similarity, recency, and scope handle that). You can provide feedback on memories you were shown by including `confidence_update` lines in your memory block:

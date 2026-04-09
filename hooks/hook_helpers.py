@@ -30,6 +30,20 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def resolve_project(cwd: str) -> str:
+    """Resolve the project label for a session.
+
+    Precedence: CAIRN_PROJECT environment variable (explicit override) →
+    basename of cwd (current behaviour). Set CAIRN_PROJECT before launching
+    Claude Code to override the cwd-based default — useful for catch-all
+    directories like ~/Projects/temp/ or for benchmark isolation.
+    """
+    override = os.environ.get("CAIRN_PROJECT", "").strip().lower()
+    if override:
+        return override
+    return os.path.basename(cwd.rstrip("/")).lower() if cwd else ""
+
+
 def record_metric(session_id: str, event: str, detail: Optional[str] = None,
                   value: Optional[float] = None) -> None:
     try:

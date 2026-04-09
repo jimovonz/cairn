@@ -100,7 +100,8 @@ def auto_label_project(session_id: str, cwd: str) -> None:
         conn.close()
         return
 
-    project_name: str = os.path.basename(cwd.rstrip("/")).lower()
+    from hooks.hook_helpers import resolve_project
+    project_name: str = resolve_project(cwd)
     if not project_name or project_name in (".", "/", "home"):
         conn.close()
         return
