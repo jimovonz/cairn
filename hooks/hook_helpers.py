@@ -30,6 +30,53 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def query_py_invoked_since(transcript_path: str, since_iso: str) -> bool:
+    """Scan transcript for substantive Bash tool calls invoking query.py.
+
+    Returns True if any non-trivial query.py call appears after since_iso.
+    Trivial subcommands (--stats, --check, --recent, --projects, --today) don't
+    count as "actively searching" — they're status queries, not knowledge probes.
+    """
+    if not transcript_path or not os.path.exists(transcript_path):
+        return False
+    TRIVIAL = ("--stats", "--check", "--recent", "--projects", "--today", "--bootstrap")
+    SUBSTANTIVE_FLAGS = ("--semantic", "--type", "--project", "--since", "--context",
+                         "--history", "--compact")
+    try:
+        with open(transcript_path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    ts = entry.get("timestamp", "")
+                    if not ts or ts < since_iso:
+                        continue
+                    msg = entry.get("message", {})
+                    if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                        continue
+                    content = msg.get("content", [])
+                    if not isinstance(content, list):
+                        continue
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") != "tool_use" or block.get("name") != "Bash":
+                            continue
+                        cmd = block.get("input", {}).get("command", "")
+                        if "query.py" not in cmd:
+                            continue
+                        # Substantive flag → counts
+                        if any(flag in cmd for flag in SUBSTANTIVE_FLAGS):
+                            return True
+                        # Bare positional search (e.g. query.py "brother") → counts
+                        if not any(t in cmd for t in TRIVIAL):
+                            return True
+                except (json.JSONDecodeError, AttributeError, KeyError):
+                    continue
+    except OSError:
+        pass
+    return False
+
+
 def resolve_project(cwd: str) -> str:
     """Resolve the project label for a session.
 

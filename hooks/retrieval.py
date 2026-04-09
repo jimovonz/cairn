@@ -23,6 +23,40 @@ from cairn.config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
 CONTEXT_CACHE_SIM_THRESHOLD: float = 0.9
 
 
+def _is_thin_retrieval(entries: list[dict[str, Any]]) -> tuple[bool, dict[str, Any]]:
+    """Detect whether retrieved entries are too thin to be a useful answer.
+
+    Two principled signals (no hand-curated meta-pattern lists):
+
+    1. Score-based: max similarity below THIN_TOP_SIM threshold means the
+       embedding model didn't find a strong match for the query.
+    2. Count-based: fewer than THIN_MIN_ENTRIES entries means there's not
+       enough material to be confident.
+
+    A thin flag triggers stop-hook escalation on the next turn — forces the
+    LLM to run query.py directly or re-declare context: insufficient with a
+    refined need before proceeding.
+    """
+    from cairn.config import THIN_RETRIEVAL_MIN_ENTRIES, THIN_RETRIEVAL_TOP_SIM_THRESHOLD
+    if not entries:
+        return True, {"reason": "empty", "count": 0}
+    if len(entries) < THIN_RETRIEVAL_MIN_ENTRIES:
+        return True, {"reason": "too_few", "count": len(entries)}
+    similarities = [e.get("similarity", 0) for e in entries]
+    max_sim = max(similarities) if similarities else 0
+    if max_sim < THIN_RETRIEVAL_TOP_SIM_THRESHOLD:
+        return True, {
+            "reason": "top_too_weak",
+            "count": len(entries),
+            "max_sim": round(max_sim, 3),
+        }
+    return False, {
+        "reason": "ok",
+        "count": len(entries),
+        "max_sim": round(max_sim, 3),
+    }
+
+
 def get_adaptive_threshold_boost() -> float:
     """Check recent retrieval outcomes. If harmful/neutral rate is high, boost the similarity floor."""
     try:
@@ -250,6 +284,25 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
     record_metric(session_id, "context_retrieval", context_need[:100], total)
     record_metric(session_id, "retrieval_latency_ms", context_need[:50], elapsed_ms)
     log(f"Retrieval: {len(project_results)} project + {len(global_results)} global in {elapsed_ms:.0f}ms")
+
+    # Thin-retrieval detection — record a flag if results are too few or all weak.
+    # Stop hook will use this on the next turn to force escalation if the LLM
+    # doesn't run query.py or re-declare with a refined need.
+    is_thin, thin_diag = _is_thin_retrieval(project_results + global_results)
+    if is_thin:
+        from datetime import datetime
+        from hooks.hook_helpers import save_hook_state
+        save_hook_state(session_id, "pending_thin_retrieval", json.dumps({
+            "timestamp": datetime.now().isoformat(),
+            "context_need": context_need[:200],
+            "diagnostics": thin_diag,
+        }))
+        record_metric(session_id, "thin_retrieval_detected", context_need[:100], thin_diag.get("count", 0))
+        log(f"Thin retrieval flagged: {thin_diag}")
+    else:
+        # Healthy retrieval — clear any prior pending flag
+        from hooks.hook_helpers import delete_hook_state
+        delete_hook_state(session_id, "pending_thin_retrieval")
 
     if not project_results and not global_results:
         record_metric(session_id, "context_empty", context_need[:100])

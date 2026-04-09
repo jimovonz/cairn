@@ -489,6 +489,58 @@ def main() -> None:
             except Exception as e:
                 log(f"Failed to stage question-before-cairn reminder: {e}")
 
+    # Thin-retrieval escalation — if a previous turn's L3 retrieval was thin (too few
+    # entries or all weak), and the LLM hasn't actively run query.py since, force an
+    # escalation reminder. Catches the failure mode where the LLM trusts an empty push
+    # as authoritative absence. Two valid escalation paths: query.py invocation OR
+    # re-declaring context: insufficient (which the next stop hook will handle).
+    if not is_continuation and context != "insufficient":
+        from cairn.config import THIN_RETRIEVAL_ESCALATION_ENABLED
+        if THIN_RETRIEVAL_ESCALATION_ENABLED:
+            from hooks.hook_helpers import load_hook_state, delete_hook_state, query_py_invoked_since
+            pending = load_hook_state(session_id, "pending_thin_retrieval")
+            if pending:
+                try:
+                    pending_data = json.loads(pending)
+                    since_ts = pending_data.get("timestamp", "")
+                    if query_py_invoked_since(transcript_path, since_ts):
+                        # LLM escalated via query.py — clear the flag
+                        delete_hook_state(session_id, "pending_thin_retrieval")
+                        record_metric(session_id, "thin_retrieval_escalation_satisfied", None, 1)
+                        log("Thin-retrieval escalation satisfied — query.py was invoked")
+                    else:
+                        # No escalation taken — stage reminder for next prompt
+                        prior_need = pending_data.get("context_need", "")
+                        diag = pending_data.get("diagnostics", {})
+                        escalation_reminder = (
+                            f"Your previous context request \"{prior_need[:80]}\" returned thin results "
+                            f"({diag.get('reason', '?')}, {diag.get('count', 0)} entries, "
+                            f"max_sim={diag.get('max_sim', '?')}). Push retrieval is opportunistic, not "
+                            f"exhaustive — absence in push does not mean absence in the corpus. Before "
+                            f"concluding the information isn't stored, run direct searches:\n"
+                            f"  python3 $CAIRN_HOME/cairn/query.py <keyword>\n"
+                            f"  python3 $CAIRN_HOME/cairn/query.py --semantic '<paraphrase>'\n"
+                            f"For multi-dimensional questions use the | separator:\n"
+                            f"  python3 $CAIRN_HOME/cairn/query.py --semantic 'topic A | topic B | topic C'\n"
+                            f"Or re-declare context: insufficient with a refined need that approaches "
+                            f"the question from a different angle."
+                        )
+                        try:
+                            staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+                            os.makedirs(staged_dir, exist_ok=True)
+                            staged_file = os.path.join(staged_dir, f"{session_id}_thin_escalation.txt")
+                            with open(staged_file, "w") as f:
+                                f.write(escalation_reminder)
+                            # Clear the flag — staged once, won't fire again until next thin retrieval
+                            delete_hook_state(session_id, "pending_thin_retrieval")
+                            record_metric(session_id, "thin_retrieval_escalation_staged", None, 1)
+                            log(f"Thin-retrieval escalation reminder staged for next prompt")
+                        except Exception as e:
+                            log(f"Failed to stage thin-retrieval escalation: {e}")
+                except (json.JSONDecodeError, KeyError) as e:
+                    log(f"Thin-retrieval escalation check error: {e}")
+                    delete_hook_state(session_id, "pending_thin_retrieval")
+
     # Inline contradiction enforcement — DISABLED
     # False positive rate too high despite sentence-level fix, quote stripping, threshold tuning.
     # Causes re-prompt loops that block real work. Voluntary -! annotations plus the offline

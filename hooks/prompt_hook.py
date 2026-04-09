@@ -265,6 +265,32 @@ def main() -> None:
         except Exception as e:
             log(f"Failed to load bootstrap reminder: {e}")
 
+    # Thin-retrieval escalation reminder (deferred from previous stop hook)
+    thin_escalation_file = os.path.join(staged_dir, f"{session_id}_thin_escalation.txt")
+    if os.path.exists(thin_escalation_file):
+        try:
+            with open(thin_escalation_file, "r") as f:
+                escalation_text = f.read().strip()
+            os.remove(thin_escalation_file)
+            if escalation_text:
+                context_parts.append(escalation_text)
+                log(f"Thin-retrieval escalation reminder injected (deferred)")
+        except Exception as e:
+            log(f"Failed to load thin-retrieval escalation reminder: {e}")
+
+    # Question-before-cairn reminder (deferred from previous stop hook)
+    question_cairn_file = os.path.join(staged_dir, f"{session_id}_question_cairn.txt")
+    if os.path.exists(question_cairn_file):
+        try:
+            with open(question_cairn_file, "r") as f:
+                qc_text = f.read().strip()
+            os.remove(question_cairn_file)
+            if qc_text:
+                context_parts.append(qc_text)
+                log(f"Question-before-cairn reminder injected (deferred)")
+        except Exception as e:
+            log(f"Failed to load question-before-cairn reminder: {e}")
+
     if not context_parts:
         sys.exit(0)
 
