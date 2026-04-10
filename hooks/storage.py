@@ -9,6 +9,7 @@ from typing import Optional
 
 import hooks.hook_helpers as hook_helpers
 from hooks.hook_helpers import log, get_conn, get_session_project, record_metric
+from hooks import hook_helpers
 from cairn.config import (DEDUP_THRESHOLD, CONFIDENCE_BOOST,
                      CONFIDENCE_MIN, CONFIDENCE_MAX, CONFIDENCE_DEFAULT,
                      DISTINCT_VARIANT_SIM_THRESHOLD, NEGATION_SIM_FLOOR)
@@ -345,46 +346,56 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
 
     conn.commit()
 
-    # Auto-backfill: if any memories lack embeddings, trigger background backfill
-    missing = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NULL").fetchone()[0]
+    # Inline backfill: fill up to BACKFILL_INLINE_MAX missing embeddings synchronously
+    # via the daemon socket. Previously this spawned a detached subprocess that held
+    # a write lock after the parent stop_hook exited — a classic concurrent-writer
+    # pattern that contributed to DB corruption. Inline keeps all writes within the
+    # current transaction boundary; remaining missing embeddings get picked up on
+    # subsequent responses. Brute-force fallback handles retrieval for memories
+    # still missing embeddings.
+    _inline_backfill(conn)
     conn.close()
-    if missing > 0:
-        _trigger_background_backfill(missing)
 
     return inserted
 
 
-def _trigger_background_backfill(missing_count: int) -> None:
-    """Start the daemon (if not running) and backfill memories without embeddings.
-
-    Starting the daemon is preferred over a standalone backfill because:
-    1. The daemon keeps the model resident — future embeds are instant
-    2. Backfill uses the daemon for embedding, no duplicate model load
-    """
-    import subprocess
-    import os as _os
-    venv_python = _os.path.join(_os.path.dirname(__file__), "..", ".venv", "bin", "python3")
-    daemon_py = _os.path.join(_os.path.dirname(__file__), "..", "cairn", "daemon.py")
-    query_py = _os.path.join(_os.path.dirname(__file__), "..", "cairn", "query.py")
-    if not _os.path.exists(venv_python):
-        log(f"Auto-backfill: {missing_count} missing but venv not found")
-        return
-
-    # Start daemon first (if not already running) — it auto-checks
-    if _os.path.exists(daemon_py):
-        subprocess.Popen(
-            [venv_python, daemon_py, "start"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-
-    # Then backfill via the daemon
-    if _os.path.exists(query_py):
-        log(f"Auto-backfill: {missing_count} memories without embeddings — starting daemon + backfill")
-        subprocess.Popen(
-            [venv_python, query_py, "--backfill"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+def _inline_backfill(conn) -> None:
+    """Fill a bounded number of missing embeddings inline via the daemon socket.
+    Bounded so a single response can't turn into a long-running transaction."""
+    BACKFILL_INLINE_MAX = 5
+    try:
+        rows = conn.execute(
+            "SELECT id, type, topic, content, project FROM memories "
+            "WHERE embedding IS NULL LIMIT ?",
+            (BACKFILL_INLINE_MAX,)
+        ).fetchall()
+        if not rows:
+            return
+        emb = hook_helpers.get_embedder()
+        if emb is None:
+            return
+        filled = 0
+        for row in rows:
+            mem_id, mem_type, topic, content, project = row
+            project_prefix = f"{project} " if project else ""
+            search_text = f"{project_prefix}{mem_type} {topic} {content}"
+            try:
+                vec = emb.embed(search_text, allow_slow=False)
+            except Exception:
+                vec = None
+            if vec is None:
+                # Daemon unavailable; skip, let brute-force handle retrieval and
+                # try again on the next response
+                continue
+            blob = emb.to_blob(vec)
+            conn.execute("UPDATE memories SET embedding = ? WHERE id = ?", (blob, mem_id))
+            try:
+                emb.upsert_vec_index(conn, mem_id, blob)
+            except Exception:
+                pass
+            filled += 1
+        if filled:
+            conn.commit()
+            log(f"Inline backfill: filled {filled} missing embeddings")
+    except Exception as exc:
+        log(f"Inline backfill error: {exc}")
