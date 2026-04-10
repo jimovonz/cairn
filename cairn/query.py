@@ -844,6 +844,57 @@ def check():
                 ok("WAL mode enabled")
             else:
                 warn(f"Journal mode is '{wal}', expected 'wal'")
+
+            # Schema integrity — verify triggers, FTS5 schema, and indexes
+            # Drift detection catches situations where an ad-hoc recovery left
+            # the DB structurally incomplete (e.g. missing sync triggers).
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            if integrity == "ok":
+                ok("Integrity check passed")
+            else:
+                fail(f"Integrity check failed: {integrity[:80]}")
+
+            required_triggers = {"memories_ai", "memories_au", "memories_ad", "memories_version"}
+            existing_triggers = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger'"
+            ).fetchall()}
+            missing_triggers = required_triggers - existing_triggers
+            if not missing_triggers:
+                ok("All FTS sync triggers present")
+            else:
+                fail(f"Missing triggers: {sorted(missing_triggers)} (run init_db.py)")
+
+            fts_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_fts'"
+            ).fetchone()
+            if fts_sql:
+                # Extract the column list from CREATE VIRTUAL TABLE ... USING fts5(...)
+                import re as _re
+                m = _re.search(r"fts5\s*\(\s*([^)]*?)\)", fts_sql[0], _re.IGNORECASE | _re.DOTALL)
+                if m:
+                    cols_text = m.group(1)
+                    # Keep only leading column names before the first `content=` option
+                    before_opts = cols_text.split("content=")[0]
+                    cols = [c.strip() for c in before_opts.split(",") if c.strip() and "=" not in c]
+                    if cols == ["topic", "content"]:
+                        ok("FTS5 schema correct")
+                    else:
+                        fail(f"FTS5 schema drifted: cols={cols}, expected ['topic', 'content']")
+                else:
+                    fail("FTS5 schema unparseable")
+            else:
+                fail("memories_fts table missing")
+
+            required_indexes = {"idx_memories_type", "idx_memories_topic", "idx_memories_project", "idx_metrics_event", "idx_history_memory_id"}
+            existing_indexes = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+            ).fetchall()}
+            missing_indexes = required_indexes - existing_indexes
+            if not missing_indexes:
+                ok("All required indexes present")
+            else:
+                warn(f"Missing indexes: {sorted(missing_indexes)} (run init_db.py)")
+
             conn.close()
         except Exception as e:
             fail(f"Database error: {e}")

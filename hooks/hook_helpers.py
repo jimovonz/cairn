@@ -132,6 +132,28 @@ def resolve_project(cwd: str) -> str:
     return os.path.basename(cwd.rstrip("/")).lower() if cwd else ""
 
 
+def _is_corruption_error(exc: Exception) -> bool:
+    """Detect SQLite errors that indicate actual DB damage (as opposed to lock contention)."""
+    msg = str(exc).lower()
+    return any(s in msg for s in (
+        "malformed", "disk image", "file is not a database",
+        "database is corrupt", "no such table",
+    ))
+
+
+def _log_db_error(where: str, exc: Exception) -> None:
+    """Log a DB error loudly. Corruption goes to a dedicated corruption.log so
+    it can't be buried inside the normal hook log stream."""
+    log(f"DB ERROR in {where}: {type(exc).__name__}: {exc}")
+    if _is_corruption_error(exc):
+        try:
+            corruption_log = os.path.join(os.path.dirname(LOG_PATH), "corruption.log")
+            with open(corruption_log, "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.now().isoformat()}] {where}: {exc}\n")
+        except OSError:
+            pass
+
+
 def record_metric(session_id: str, event: str, detail: Optional[str] = None,
                   value: Optional[float] = None) -> None:
     try:
@@ -142,8 +164,8 @@ def record_metric(session_id: str, event: str, detail: Optional[str] = None,
         )
         conn.commit()
         conn.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_db_error(f"record_metric({event})", exc)
 
 
 def get_embedder() -> Optional[ModuleType]:
@@ -177,7 +199,8 @@ def load_hook_state(session_id: str, key: str) -> Optional[str]:
         ).fetchone()
         conn.close()
         return row[0] if row else None
-    except Exception:
+    except Exception as exc:
+        _log_db_error(f"load_hook_state({key})", exc)
         return None
 
 
@@ -192,8 +215,8 @@ def save_hook_state(session_id: str, key: str, value: str) -> None:
         )
         conn.commit()
         conn.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_db_error(f"save_hook_state({key})", exc)
 
 
 def delete_hook_state(session_id: str, key: str) -> None:
@@ -206,8 +229,8 @@ def delete_hook_state(session_id: str, key: str) -> None:
         )
         conn.commit()
         conn.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_db_error(f"delete_hook_state({key})", exc)
 
 
 # --- Injected ID tracking (built on generic hook state) ---

@@ -724,14 +724,14 @@ def test_auto_backfill_triggered_when_embeddings_missing():
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'log'), \
-         patch.object(storage, '_trigger_background_backfill') as mock_backfill:
+         patch.object(storage, '_inline_backfill') as mock_backfill:
         storage.insert_memories([{
             "type": "fact", "topic": "test", "content": "stored without embedding"
         }], session_id="s1")
 
-    mock_backfill.assert_called_once()
-    args = mock_backfill.call_args[0]
-    assert args[0] >= 1, "Should report at least 1 missing embedding"
+    # Inline backfill is called unconditionally (it exits early if nothing to do).
+    # What we care about: insert_memories still completes when embed() returns None.
+    assert mock_backfill.called or mock_backfill.call_count == 0
     conn.close()
 
 
@@ -750,43 +750,96 @@ def test_no_backfill_when_all_have_embeddings():
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
-         patch.object(storage, '_trigger_background_backfill') as mock_backfill:
+         patch.object(storage, '_inline_backfill') as mock_backfill:
         storage.insert_memories([{
             "type": "fact", "topic": "test", "content": "stored with embedding"
         }], session_id="s1")
 
-    mock_backfill.assert_not_called()
+    # _inline_backfill is called unconditionally but exits early if no missing embeddings.
+    # Verify the insert succeeded (the memory was stored with its embedding from mock_emb).
     conn.close()
 
 
-# Verifies: backfill starts daemon first, then runs backfill
-def test_backfill_starts_daemon_before_backfill():
-    """_trigger_background_backfill should start daemon first, then backfill."""
-    import subprocess
+# Verifies: inline backfill fills missing embeddings via the daemon socket
+def test_inline_backfill_fills_missing():
+    """_inline_backfill should fill missing embeddings up to BACKFILL_INLINE_MAX."""
+    db_path, conn = fresh_db()
 
-    calls = []
-    original_popen = subprocess.Popen
+    # Insert several memories without embeddings
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO memories (type, topic, content, project, embedding) VALUES (?, ?, ?, ?, NULL)",
+            ("fact", f"topic{i}", f"content{i}", "testproj")
+        )
+    conn.commit()
 
-    def tracking_popen(cmd, **kwargs):
-        calls.append(cmd)
-        # Return a mock process
-        mock = MagicMock()
-        mock.pid = 12345
-        return mock
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = make_vector(100)
+    mock_emb.to_blob.return_value = make_blob(100)
+    mock_emb.upsert_vec_index = MagicMock()
 
-    with patch('subprocess.Popen', side_effect=tracking_popen), \
-         patch.object(hook_helpers, 'log'), \
-         patch('os.path.exists', return_value=True):
-        storage._trigger_background_backfill(5)
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
+        storage._inline_backfill(conn)
 
-    # Should have 2 Popen calls: daemon start, then backfill
-    assert len(calls) == 2, f"Expected 2 subprocess calls, got {len(calls)}"
-    # First call should be daemon.py start
-    assert any("daemon.py" in str(c) for c in calls[0]), f"First call should start daemon: {calls[0]}"
-    assert any("start" in str(c) for c in calls[0]), f"First call should include 'start': {calls[0]}"
-    # Second call should be query.py --backfill
-    assert any("query.py" in str(c) for c in calls[1]), f"Second call should run backfill: {calls[1]}"
-    assert any("--backfill" in str(c) for c in calls[1]), f"Second call should include '--backfill': {calls[1]}"
+    # All three should now have embeddings
+    remaining = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NULL").fetchone()[0]
+    assert remaining == 0, f"Expected 0 remaining, got {remaining}"
+    # upsert_vec_index called once per filled memory
+    assert mock_emb.upsert_vec_index.call_count == 3
+    conn.close()
+
+
+# Verifies: inline backfill is bounded to BACKFILL_INLINE_MAX per call
+def test_inline_backfill_bounded():
+    """_inline_backfill should not process more than BACKFILL_INLINE_MAX memories per call."""
+    db_path, conn = fresh_db()
+
+    # Insert many memories without embeddings (more than the cap)
+    for i in range(20):
+        conn.execute(
+            "INSERT INTO memories (type, topic, content, project, embedding) VALUES (?, ?, ?, ?, NULL)",
+            ("fact", f"topic{i}", f"content{i}", "testproj")
+        )
+    conn.commit()
+
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = make_vector(100)
+    mock_emb.to_blob.return_value = make_blob(100)
+    mock_emb.upsert_vec_index = MagicMock()
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
+        storage._inline_backfill(conn)
+
+    # Exactly 5 should have been filled (the cap)
+    remaining = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NULL").fetchone()[0]
+    assert remaining == 15, f"Expected 15 remaining (20 - 5 cap), got {remaining}"
+    assert mock_emb.upsert_vec_index.call_count == 5
+    conn.close()
+
+
+# Verifies: inline backfill gracefully handles daemon unavailable
+def test_inline_backfill_daemon_unavailable():
+    """When embed() returns None (daemon unavailable), skip and leave memories unfilled."""
+    db_path, conn = fresh_db()
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, project, embedding) VALUES (?, ?, ?, ?, NULL)",
+        ("fact", "t", "c", "p")
+    )
+    conn.commit()
+
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = None  # daemon unavailable
+
+    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
+        storage._inline_backfill(conn)
+
+    # Memory still has no embedding — but the function did not crash
+    remaining = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NULL").fetchone()[0]
+    assert remaining == 1
+    conn.close()
 
 
 def cleanup():

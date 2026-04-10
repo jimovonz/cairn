@@ -16,5 +16,9 @@ cairn/.continuation_count
 logs/
 .staged_context/
 cairn/cairn.db.backup-*
+cairn/cairn.db.bak-*
+cairn/cairn.db.corrupt-*
+cairn/cairn.db.recover-*
 cairn/cairn.db.test-*
+cairn/corruption.log
 cairn_memory.egg-info/
