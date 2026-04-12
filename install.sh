@@ -88,11 +88,8 @@ echo "Installed global rules."
 
 # --- Global settings (hooks) ---
 if [ -f "$CLAUDE_DIR/settings.json" ]; then
-    if grep -q "stop_hook.py" "$CLAUDE_DIR/settings.json" 2>/dev/null; then
-        echo "Global hooks already configured."
-    else
-        echo "Merging Cairn hooks into existing settings.json..."
-        python3 -c "
+    echo "Syncing Cairn hooks into existing settings.json..."
+    python3 -c "
 import json, sys
 
 cairn_hooks = json.loads('''$(sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" "$CAIRN_HOME/templates/global-settings.json")''')
@@ -101,21 +98,37 @@ with open('$CLAUDE_DIR/settings.json') as f:
     settings = json.load(f)
 
 hooks = settings.setdefault('hooks', {})
+changed = False
 for event, groups in cairn_hooks.get('hooks', {}).items():
     if event not in hooks:
-        hooks[event] = []
-    hooks[event].extend(groups)
+        hooks[event] = groups
+        changed = True
+    else:
+        # Check if each cairn hook command is already present
+        existing_cmds = set()
+        for g in hooks[event]:
+            for h in g.get('hooks', []):
+                existing_cmds.add(h.get('command', ''))
+        for g in groups:
+            for h in g.get('hooks', []):
+                if h.get('command', '') not in existing_cmds:
+                    hooks[event].append(g)
+                    changed = True
+                    break
 
-with open('$CLAUDE_DIR/settings.json', 'w') as f:
-    json.dump(settings, f, indent=2)
-    f.write('\n')
-" && echo "Merged hooks into settings.json." || {
-            echo ""
-            echo "WARNING: Could not auto-merge hooks. Add them manually from:"
-            echo "  $CAIRN_HOME/templates/global-settings.json"
-            echo ""
-        }
-    fi
+if changed:
+    with open('$CLAUDE_DIR/settings.json', 'w') as f:
+        json.dump(settings, f, indent=2)
+        f.write('\n')
+    print('Updated hooks in settings.json.')
+else:
+    print('All hooks already configured.')
+" || {
+        echo ""
+        echo "WARNING: Could not auto-merge hooks. Add them manually from:"
+        echo "  $CAIRN_HOME/templates/global-settings.json"
+        echo ""
+    }
 else
     sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" \
         "$CAIRN_HOME/templates/global-settings.json" > "$CLAUDE_DIR/settings.json"
@@ -144,8 +157,34 @@ echo "Starting embedding daemon..."
 
 # --- Health check ---
 echo ""
-"$VENV_PYTHON" "$CAIRN_HOME/cairn/query.py" --check \
-    || { echo "Health check failed — see above for details."; exit 1; }
+if ! "$VENV_PYTHON" "$CAIRN_HOME/cairn/query.py" --check; then
+    echo ""
+    echo "Health check detected issues."
+    # Check if it's DB corruption specifically
+    if "$VENV_PYTHON" -c "
+import sys
+sys.path.insert(0, '$CAIRN_HOME')
+from hooks.hook_helpers import get_conn
+conn = get_conn()
+r = conn.execute('PRAGMA quick_check').fetchone()
+conn.close()
+sys.exit(0 if r and r[0] == 'ok' else 1)
+" 2>/dev/null; then
+        echo "Database integrity OK — other issues detected (see above)."
+    else
+        echo ""
+        echo "DATABASE CORRUPTION DETECTED."
+        echo "Run the recovery script to repair:"
+        echo ""
+        echo "  $VENV_PYTHON $CAIRN_HOME/cairn/recover.py"
+        echo ""
+        read -p "Run recovery now? [y/N] " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            "$VENV_PYTHON" "$CAIRN_HOME/cairn/recover.py"
+        fi
+    fi
+fi
 
 echo ""
 echo "=== Cairn installed successfully ==="
