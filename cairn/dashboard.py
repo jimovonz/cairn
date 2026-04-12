@@ -411,6 +411,8 @@ def api_enforcement(params):
         # PostToolUse checkpoints
         "checkpoint_nudge",
         "memory_notes_stored",
+        # Context recovery (LLM digs into full conversation behind a memory)
+        "context_recovery_invoked",
     )
     placeholders = ",".join("?" * len(ENFORCEMENT_EVENTS))
 
@@ -485,6 +487,14 @@ def api_enforcement(params):
         GROUP BY tool ORDER BY count DESC
     """).fetchall()) if nudge_count > 0 else []
 
+    # Context recovery — LLM proactively requesting full conversation behind memories
+    recovery_count = totals_map.get("context_recovery_invoked", 0)
+    recovery_recent = rows_to_list(conn.execute("""
+        SELECT detail as memory_id, created_at
+        FROM metrics WHERE event = 'context_recovery_invoked'
+        ORDER BY created_at DESC LIMIT 20
+    """).fetchall()) if recovery_count > 0 else []
+
     conn.close()
     return {
         "totals": totals_map,
@@ -509,6 +519,10 @@ def api_enforcement(params):
             "nudges": nudge_count,
             "notes_stored": notes_count,
             "by_tool": nudge_by_tool,
+        },
+        "context_recovery": {
+            "count": recovery_count,
+            "recent": recovery_recent,
         },
         "recent": {
             "abandoned": abandoned_recent,
@@ -619,6 +633,20 @@ def api_memory_usage(params):
         SELECT event, COUNT(*) as count FROM metrics
         WHERE event IN ('retrieval_useful', 'retrieval_neutral', 'retrieval_harmful') GROUP BY event
     """).fetchall())
+
+    # Retrieval quality funnel: context_need → requested → served → outcome
+    funnel_events = (
+        "context_requested", "context_served", "context_cache_hit",
+        "context_prefiltered", "context_weak_suppressed",
+        "retrieval_useful", "retrieval_neutral", "retrieval_harmful",
+        "gotcha_injected", "file_context_injected", "project_bootstrap_injected",
+    )
+    funnel_rows = conn.execute("""
+        SELECT event, COUNT(*) as count FROM metrics
+        WHERE event IN ({}) GROUP BY event
+    """.format(",".join("?" * len(funnel_events))), funnel_events).fetchall()
+    funnel = {r["event"]: r["count"] for r in funnel_rows}
+
     conn.close()
     return {
         "summary": {
@@ -629,6 +657,7 @@ def api_memory_usage(params):
             "outcomes": {o["event"].replace("retrieval_", ""): o["count"] for o in outcomes},
         },
         "top_retrieved": top_retrieved, "layer_counts": layer_counts, "sessions": generated[:100],
+        "funnel": funnel,
     }, 200
 
 

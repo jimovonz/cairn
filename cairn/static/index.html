@@ -110,6 +110,35 @@ a:hover { text-decoration: underline; }
 .stat-box .value { font-size: 28px; font-weight: 700; color: var(--text-bright); }
 .stat-box .label { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
 
+/* Tooltips on headings and labels */
+[data-tip] { position: relative; cursor: help; }
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: normal;
+  width: max-content;
+  max-width: 320px;
+  line-height: 1.4;
+  z-index: 100;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+[data-tip]:hover::after { opacity: 1; }
+
 /* Confidence bar */
 .conf-bar {
   display: flex;
@@ -439,17 +468,17 @@ a:hover { text-decoration: underline; }
   <div id="panel-overview" class="panel active">
     <div class="stats-grid" id="stats-grid"></div>
     <div class="card">
-      <h2>Confidence Distribution</h2>
+      <h2 data-tip="How well-corroborated memories are across sessions. High confidence = verified by multiple sessions. Low = unverified or contradicted.">Confidence Distribution</h2>
       <div id="conf-bar-container"></div>
       <div id="conf-legend" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--text-dim)"></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
       <div class="card">
-        <h2>Memory Types</h2>
+        <h2 data-tip="Breakdown by type: decisions, facts, corrections (mistakes learned from), preferences, skills, etc.">Memory Types</h2>
         <div id="types-chart"></div>
       </div>
       <div class="card">
-        <h2>Growth</h2>
+        <h2 data-tip="New memories created per day. Spikes indicate active sessions; plateaus indicate idle periods.">Growth</h2>
         <div class="chart-container" id="growth-chart"></div>
       </div>
     </div>
@@ -515,15 +544,15 @@ a:hover { text-decoration: underline; }
   <div id="panel-metrics" class="panel">
     <div class="stats-grid" id="metrics-summary"></div>
     <div class="card">
-      <h2>Retrieval Latency (daily avg)</h2>
+      <h2 data-tip="Time to search and rank memories per retrieval request. Includes embedding generation, vector search, scoring, and filtering.">Retrieval Latency (daily avg)</h2>
       <div class="chart-container" id="latency-chart"></div>
     </div>
     <div class="card">
-      <h2>Layer Activity</h2>
+      <h2 data-tip="Which retrieval layers are firing. L1=first prompt, L1.5=per-prompt, L2=cross-project keywords, L3=on-demand pull, Bootstrap=project standing context.">Layer Activity</h2>
       <div id="layer-activity"></div>
     </div>
     <div class="card">
-      <h2>Embedding Performance</h2>
+      <h2 data-tip="Timing for the local embedding model (all-MiniLM-L6-v2). Daemon=socket call, Local=in-process fallback, Vec=sqlite-vec search, Brute=full scan, Fan-out=type-prefix expansion.">Embedding Performance</h2>
       <p style="color:var(--text-dim);font-size:12px;margin-bottom:12px">Per-call timing for embedding generation, vector search, and fan-out expansion.</p>
       <div id="embed-stats"></div>
       <div class="chart-container" id="embed-chart" style="margin-top:12px"></div>
@@ -538,35 +567,35 @@ a:hover { text-decoration: underline; }
     </p>
     <div class="stats-grid" id="enforcement-summary"></div>
     <div class="card">
-      <h2>L5 Thin-Retrieval Health</h2>
+      <h2 data-tip="When push retrieval returns too few results, the system escalates — nudging the LLM to search cairn directly. Satisfaction ratio = how often the LLM complies vs ignores.">L5 Thin-Retrieval Health</h2>
       <p style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
         Detected → staged (reminder issued) → satisfied (LLM escalated) or abandoned (LLM kept ignoring).
       </p>
       <div id="l5-health"></div>
     </div>
     <div class="card">
-      <h2>Firing Counts (all enforcement events)</h2>
+      <h2 data-tip="Raw counts of every enforcement mechanism that has fired. Higher counts indicate active guards; zero counts indicate dormant or disabled mechanisms.">Firing Counts (all enforcement events)</h2>
       <div id="enforcement-totals"></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
       <div class="card">
-        <h2>Recent Abandoned Escalations</h2>
+        <h2 data-tip="L5 reminders the LLM ignored until hitting the reminder cap. These represent failed enforcement — the LLM didn't search cairn despite being told to.">Recent Abandoned Escalations</h2>
         <p style="color:var(--text-dim);font-size:12px;margin-bottom:8px">L5 reminders the LLM ignored to the cap.</p>
         <div id="abandoned-recent"></div>
       </div>
       <div class="card">
-        <h2>Recent Phoned-In Declarations</h2>
+        <h2 data-tip="LLM declared 'context: insufficient' but the query had zero keyword overlap with the user's actual question — a generic placeholder rather than a real search.">Recent Phoned-In Declarations</h2>
         <p style="color:var(--text-dim);font-size:12px;margin-bottom:8px">L2 caught context_need that didn't match the user's question.</p>
         <div id="phoned-in-recent"></div>
       </div>
     </div>
     <div class="card">
-      <h2>Recent Active Bootstrap Triggers</h2>
+      <h2 data-tip="User prompts detected as knowledge questions ('what did we decide about...', 'remind me...') that trigger an immediate cairn lookup nudge.">Recent Active Bootstrap Triggers</h2>
       <p style="color:var(--text-dim);font-size:12px;margin-bottom:8px">User prompts detected as knowledge questions in real time.</p>
       <div id="active-bootstrap-recent"></div>
     </div>
     <div class="card">
-      <h2>Trailing Intent Enforcement</h2>
+      <h2 data-tip="Detects when the LLM says 'let me do X' at the end of a response without following through. Blocks the stop and forces completion or explicit acknowledgment.">Trailing Intent Enforcement</h2>
       <p style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
         Detects when the LLM states "let me do X" without following through. Blocks the response and forces completion.
       </p>
@@ -574,34 +603,46 @@ a:hover { text-decoration: underline; }
       <div id="trailing-intent-recent"></div>
     </div>
     <div class="card">
-      <h2>PostToolUse Checkpoints</h2>
+      <h2 data-tip="After high-signal tool calls (errors, large output, file edits), the LLM is nudged to emit a brief memory note capturing what it observed. Notes are collected and stored at the end of the response.">PostToolUse Checkpoints</h2>
       <p style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
         Mid-response memory capture — nudges the LLM to emit &lt;memory_note&gt; tags after high-signal tool calls.
       </p>
       <div id="checkpoint-summary" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;font-family:var(--font-mono);font-size:13px;margin-bottom:12px"></div>
       <div id="checkpoint-by-tool"></div>
     </div>
+    <div class="card">
+      <h2 data-tip="When the LLM proactively runs 'query.py --context' to recover the full conversation behind a memory — going beyond the one-liner summary to understand the original reasoning.">Context Recovery (LLM Deep Dives)</h2>
+      <p style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
+        Times the LLM requested the full conversation context behind a stored memory.
+      </p>
+      <div id="context-recovery-summary" style="margin-bottom:12px"></div>
+      <div id="context-recovery-recent"></div>
+    </div>
   </div>
 
   <!-- Usage Panel -->
   <div id="panel-usage" class="panel">
     <div class="stats-grid" id="usage-summary"></div>
+    <div class="card">
+      <h2 data-tip="The full retrieval pipeline: LLM requests context → system searches → results filtered → injected → LLM rates quality. Shows where context gets lost at each stage.">Retrieval Quality Funnel</h2>
+      <div id="retrieval-funnel"></div>
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
       <div class="card">
-        <h2>Delivery by Layer</h2>
+        <h2 data-tip="How memories reach the LLM. Bootstrap=project context on session start, L1=first prompt, L1.5=per-prompt, L2=cross-project keywords, L3=LLM-requested pull, Gotcha=file-associated corrections.">Delivery by Layer</h2>
         <div id="layer-delivery"></div>
       </div>
       <div class="card">
-        <h2>Retrieval Outcomes</h2>
+        <h2 data-tip="LLM self-reported assessment of whether retrieved context was useful, neutral (irrelevant), or harmful (misleading). Key quality signal.">Retrieval Outcomes</h2>
         <div id="retrieval-outcomes"></div>
       </div>
     </div>
     <div class="card">
-      <h2>Most Retrieved Memories</h2>
+      <h2 data-tip="Memories delivered to the LLM most frequently across all sessions. High retrieval count indicates a broadly relevant memory.">Most Retrieved Memories</h2>
       <div id="top-retrieved"></div>
     </div>
     <div class="card">
-      <h2>Per-Session: Generated vs Retrieved</h2>
+      <h2 data-tip="For each session: how many memories were created vs how many existing memories were injected. Healthy ratio is roughly 1:3 (more retrieval than creation).">Per-Session: Generated vs Retrieved</h2>
       <div id="session-gen-ret"></div>
     </div>
   </div>
@@ -738,13 +779,13 @@ async function loadOverview() {
   const data = await api('/api/stats');
 
   document.getElementById('stats-grid').innerHTML = [
-    { v: data.total_memories, l: 'Total Memories' },
-    { v: data.with_embeddings, l: 'With Embeddings' },
-    { v: data.tracked_sessions, l: 'Sessions' },
-    { v: data.history_entries, l: 'History Entries' },
-    { v: formatBytes(data.db_size_bytes), l: 'Database Size' },
-    { v: data.confidence.average.toFixed(3), l: 'Avg Confidence' },
-  ].map(s => `<div class="stat-box"><div class="value">${s.v}</div><div class="label">${s.l}</div></div>`).join('');
+    { v: data.total_memories, l: 'Total Memories', t: 'All stored memories across all projects and sessions' },
+    { v: data.with_embeddings, l: 'With Embeddings', t: 'Memories with vector embeddings — required for semantic search' },
+    { v: data.tracked_sessions, l: 'Sessions', t: 'Claude Code sessions that have produced memories' },
+    { v: data.history_entries, l: 'History Entries', t: 'Version history — each update to a memory creates a history entry' },
+    { v: formatBytes(data.db_size_bytes), l: 'Database Size', t: 'Total size of cairn.db including memories, embeddings, and indexes' },
+    { v: data.confidence.average.toFixed(3), l: 'Avg Confidence', t: 'Mean veracity score. 0.7=default (unverified), higher=corroborated across sessions' },
+  ].map(s => `<div class="stat-box"><div class="value">${s.v}</div><div class="label" data-tip="${s.t}">${s.l}</div></div>`).join('');
 
   // Confidence bar
   const c = data.confidence;
@@ -1360,17 +1401,17 @@ async function loadEnforcement() {
     ? Math.round(l5.satisfaction_ratio * 100) + '%'
     : 'n/a';
   const stats = [
-    { v: l5.detected || 0, l: 'Thin Retrievals' },
-    { v: l5.staged || 0, l: 'L5 Reminders Staged' },
-    { v: l5.satisfied || 0, l: 'L5 Satisfied' },
-    { v: l5.abandoned || 0, l: 'L5 Abandoned' },
-    { v: ratioPct, l: 'L5 Satisfaction Ratio' },
-    { v: totals.context_phoned_in || 0, l: 'L2 Phoned-In Caught' },
-    { v: totals.active_bootstrap_triggered || 0, l: 'Active Bootstrap Hits' },
-    { v: totals.context_bootstrap_triggered || 0, l: 'Timer Bootstrap Fires' },
+    { v: l5.detected || 0, l: 'Thin Retrievals', t: 'Push retrieval returned too few or too-weak results' },
+    { v: l5.staged || 0, l: 'L5 Reminders Staged', t: 'Escalation reminders sent to the LLM' },
+    { v: l5.satisfied || 0, l: 'L5 Satisfied', t: 'LLM complied — ran query.py or refined its search' },
+    { v: l5.abandoned || 0, l: 'L5 Abandoned', t: 'LLM ignored reminders up to the cap' },
+    { v: ratioPct, l: 'L5 Satisfaction Ratio', t: 'Satisfied / (Satisfied + Abandoned) — key health metric' },
+    { v: totals.context_phoned_in || 0, l: 'L2 Phoned-In Caught', t: 'Generic context declarations with no keyword overlap to user prompt' },
+    { v: totals.active_bootstrap_triggered || 0, l: 'Active Bootstrap Hits', t: 'Knowledge questions detected in real time (who/what/remind me)' },
+    { v: totals.context_bootstrap_triggered || 0, l: 'Timer Bootstrap Fires', t: 'Forced context check after N turns without an LLM-initiated lookup' },
   ];
   document.getElementById('enforcement-summary').innerHTML = stats.map(s =>
-    `<div class="stat"><div class="stat-value">${s.v}</div><div class="stat-label">${s.l}</div></div>`
+    `<div class="stat-box"><div class="value">${s.v}</div><div class="label" data-tip="${s.t}">${s.l}</div></div>`
   ).join('');
 
   // L5 health detail block
@@ -1461,6 +1502,23 @@ async function loadEnforcement() {
   } else {
     document.getElementById('checkpoint-by-tool').innerHTML = '';
   }
+
+  // Context recovery section
+  const cr = data.context_recovery || {};
+  const crCount = cr.count || 0;
+  document.getElementById('context-recovery-summary').innerHTML =
+    `<div class="stats-grid"><div class="stat-box"><div class="value">${crCount}</div><div class="label" data-tip="Total times the LLM ran query.py --context to dig deeper into a memory's origin">Deep Dives</div></div></div>`;
+  if (cr.recent && cr.recent.length > 0) {
+    let crHtml = '<table class="mem-table"><thead><tr><th>Memory ID</th><th style="text-align:right">When</th></tr></thead><tbody>';
+    cr.recent.forEach(r => {
+      crHtml += `<tr><td style="font-family:var(--font-mono);font-size:12px">#${r.memory_id}</td><td style="text-align:right;font-size:11px;color:var(--text-dim)">${formatDate(r.created_at)}</td></tr>`;
+    });
+    crHtml += '</tbody></table>';
+    document.getElementById('context-recovery-recent').innerHTML = crHtml;
+  } else {
+    document.getElementById('context-recovery-recent').innerHTML =
+      '<div class="loading">No context recovery invocations yet. These appear when the LLM runs <code>query.py --context</code> to understand the full reasoning behind a memory.</div>';
+  }
 }
 
 // ─── Usage Panel ──────────────────────────────────────────────────────────
@@ -1470,12 +1528,71 @@ async function loadUsage() {
 
   // Summary stats
   document.getElementById('usage-summary').innerHTML = [
-    { v: s.total_memories, l: 'Total Memories' },
-    { v: s.unique_retrieved, l: 'Unique Retrieved' },
-    { v: s.never_retrieved, l: 'Never Retrieved' },
-    { v: s.retrieval_rate + '%', l: 'Retrieval Rate' },
-    { v: s.total_retrieval_events.toLocaleString(), l: 'Total Retrievals' },
-  ].map(x => `<div class="stat-box"><div class="value">${x.v}</div><div class="label">${x.l}</div></div>`).join('');
+    { v: s.total_memories, l: 'Total Memories', t: 'All stored memories' },
+    { v: s.unique_retrieved, l: 'Unique Retrieved', t: 'Distinct memories that have been injected into at least one session' },
+    { v: s.never_retrieved, l: 'Never Retrieved', t: 'Memories created but never surfaced to any session — potential dead weight' },
+    { v: s.retrieval_rate + '%', l: 'Retrieval Rate', t: 'Percentage of memories retrieved at least once. Higher = better utilisation' },
+    { v: s.total_retrieval_events.toLocaleString(), l: 'Total Retrievals', t: 'Sum of all memory injection events across all sessions and layers' },
+  ].map(x => `<div class="stat-box"><div class="value">${x.v}</div><div class="label" data-tip="${x.t}">${x.l}</div></div>`).join('');
+
+  // Retrieval quality funnel
+  const f = data.funnel || {};
+  const requested = f.context_requested || 0;
+  const served = f.context_served || 0;
+  const cached = f.context_cache_hit || 0;
+  const prefiltered = f.context_prefiltered || 0;
+  const weak = f.context_weak_suppressed || 0;
+  const useful = f.retrieval_useful || 0;
+  const neutral = f.retrieval_neutral || 0;
+  const harmful = f.retrieval_harmful || 0;
+  const gotcha = f.gotcha_injected || 0;
+  const fileCtx = f.file_context_injected || 0;
+  const bootstrap = f.project_bootstrap_injected || 0;
+  const outcomeTotal = useful + neutral + harmful;
+  const funnelSteps = [
+    { label: 'Context Requested', value: requested, color: 'var(--accent)', tip: 'LLM declared context: insufficient' },
+    { label: 'Context Served', value: served, color: 'var(--green)', tip: 'Results found and injected' },
+    { label: 'Cache Hit (skipped)', value: cached, color: 'var(--text-dim)', tip: 'Same query already served this session' },
+    { label: 'Prefiltered (too vague)', value: prefiltered, color: 'var(--yellow)', tip: 'Query was too short or generic' },
+    { label: 'Weak Suppressed', value: weak, color: 'var(--orange)', tip: 'Results found but similarity too low to inject' },
+  ];
+  const funnelMax = Math.max(requested, 1);
+  let funnelHtml = '<div style="display:flex;flex-direction:column;gap:6px">';
+  funnelSteps.forEach(step => {
+    const pct = requested > 0 ? Math.round(step.value / funnelMax * 100) : 0;
+    const barW = Math.max(pct, 2);
+    funnelHtml += `<div style="display:flex;align-items:center;gap:10px">
+      <div style="width:180px;font-size:12px;color:var(--text-dim);text-align:right" data-tip="${step.tip}">${step.label}</div>
+      <div style="flex:1;background:var(--bg);border-radius:4px;height:22px;position:relative">
+        <div style="width:${barW}%;height:100%;background:${step.color};border-radius:4px;opacity:0.7"></div>
+      </div>
+      <div style="width:50px;font-family:var(--font-mono);font-size:13px;text-align:right">${step.value}</div>
+    </div>`;
+  });
+  // Outcome breakdown as sub-bar
+  if (outcomeTotal > 0) {
+    funnelHtml += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Retrieval outcomes (LLM self-rated):</div>
+      <div style="display:flex;gap:16px;font-size:13px;font-family:var(--font-mono)">
+        <span style="color:var(--green)" data-tip="Context was relevant and helpful">Useful: ${useful}</span>
+        <span style="color:var(--text-dim)" data-tip="Context was not relevant to the task">Neutral: ${neutral}</span>
+        <span style="color:var(--red)" data-tip="Context was misleading or caused confusion">Harmful: ${harmful}</span>
+      </div>
+    </div>`;
+  }
+  // Side channels
+  if (gotcha + fileCtx + bootstrap > 0) {
+    funnelHtml += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Side channels (non-L3 injection):</div>
+      <div style="display:flex;gap:16px;font-size:13px;font-family:var(--font-mono)">
+        <span data-tip="Project standing context injected on session start">Bootstrap: ${bootstrap}</span>
+        <span data-tip="Correction warnings injected when accessing files with known gotchas">Gotcha: ${gotcha}</span>
+        <span data-tip="Context injected when accessing files with associated memories">File: ${fileCtx}</span>
+      </div>
+    </div>`;
+  }
+  funnelHtml += '</div>';
+  document.getElementById('retrieval-funnel').innerHTML = funnelHtml;
 
   // Layer delivery breakdown
   const layers = data.layer_counts || {};

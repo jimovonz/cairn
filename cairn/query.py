@@ -141,6 +141,19 @@ def show_context(memory_id, margin=5):
     Uses the memory's created_at timestamp to locate the position in the JSONL
     transcript, then looks back by depth turns (LLM-estimated) or a default margin.
     """
+    # Record that context recovery was invoked — surfaces in dashboard
+    try:
+        mc = sqlite3.connect(DB_PATH)
+        mc.execute("PRAGMA busy_timeout=5000")
+        mc.execute(
+            "INSERT INTO metrics (event, detail, value) VALUES (?, ?, ?)",
+            ("context_recovery_invoked", str(memory_id), memory_id)
+        )
+        mc.commit()
+        mc.close()
+    except Exception:
+        pass
+
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     row = conn.execute(
         "SELECT id, type, topic, content, session_id, created_at, depth FROM memories WHERE id = ?",
