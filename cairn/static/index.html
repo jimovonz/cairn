@@ -1548,7 +1548,7 @@ async function loadUsage() {
   const gotcha = f.gotcha_injected || 0;
   const fileCtx = f.file_context_injected || 0;
   const bootstrap = f.project_bootstrap_injected || 0;
-  const outcomeTotal = useful + neutral + harmful;
+  const funnelOutcomeTotal = useful + neutral + harmful;
   const funnelSteps = [
     { label: 'Context Requested', value: requested, color: 'var(--accent)', tip: 'LLM declared context: insufficient' },
     { label: 'Context Served', value: served, color: 'var(--green)', tip: 'Results found and injected' },
@@ -1570,7 +1570,7 @@ async function loadUsage() {
     </div>`;
   });
   // Outcome breakdown as sub-bar
-  if (outcomeTotal > 0) {
+  if (funnelOutcomeTotal > 0) {
     funnelHtml += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
       <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Retrieval outcomes (LLM self-rated):</div>
       <div style="display:flex;gap:16px;font-size:13px;font-family:var(--font-mono)">
