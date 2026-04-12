@@ -565,6 +565,22 @@ a:hover { text-decoration: underline; }
       <p style="color:var(--text-dim);font-size:12px;margin-bottom:8px">User prompts detected as knowledge questions in real time.</p>
       <div id="active-bootstrap-recent"></div>
     </div>
+    <div class="card">
+      <h2>Trailing Intent Enforcement</h2>
+      <p style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
+        Detects when the LLM states "let me do X" without following through. Blocks the response and forces completion.
+      </p>
+      <div id="trailing-intent-summary" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;font-family:var(--font-mono);font-size:13px;margin-bottom:12px"></div>
+      <div id="trailing-intent-recent"></div>
+    </div>
+    <div class="card">
+      <h2>PostToolUse Checkpoints</h2>
+      <p style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
+        Mid-response memory capture — nudges the LLM to emit &lt;memory_note&gt; tags after high-signal tool calls.
+      </p>
+      <div id="checkpoint-summary" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;font-family:var(--font-mono);font-size:13px;margin-bottom:12px"></div>
+      <div id="checkpoint-by-tool"></div>
+    </div>
   </div>
 
   <!-- Usage Panel -->
@@ -1406,6 +1422,45 @@ async function loadEnforcement() {
   document.getElementById('abandoned-recent').innerHTML = renderRecent(recent.abandoned);
   document.getElementById('phoned-in-recent').innerHTML = renderRecent(recent.phoned_in);
   document.getElementById('active-bootstrap-recent').innerHTML = renderRecent(recent.active_bootstrap);
+
+  // Trailing intent section
+  const ti = data.trailing_intent || {};
+  const tiTotal = (ti.detected || 0) + (ti.clear || 0);
+  const tiRate = tiTotal > 0 ? Math.round((ti.detected || 0) / tiTotal * 100) + '%' : 'n/a';
+  const tiRateColor = ti.detection_rate === null || ti.detection_rate === undefined
+    ? 'var(--text-dim)' : ti.detection_rate > 0.3 ? 'var(--yellow)' : 'var(--green)';
+  document.getElementById('trailing-intent-summary').innerHTML = [
+    `<div><span style="color:var(--text-dim)">Detected</span><br/><span style="color:var(--yellow)">${ti.detected || 0}</span></div>`,
+    `<div><span style="color:var(--text-dim)">Blocked</span><br/><span style="color:var(--red)">${ti.blocked || 0}</span></div>`,
+    `<div><span style="color:var(--text-dim)">Clear</span><br/><span style="color:var(--green)">${ti.clear || 0}</span></div>`,
+    `<div><span style="color:var(--text-dim)">Skipped</span><br/>${ti.skipped || 0}</div>`,
+    `<div><span style="color:var(--text-dim)">Escaped</span><br/>${ti.escaped || 0}</div>`,
+  ].join('');
+  if (ti.recent && ti.recent.length > 0) {
+    document.getElementById('trailing-intent-recent').innerHTML =
+      '<p style="color:var(--text-dim);font-size:12px;margin-bottom:6px">Recent blocks:</p>' +
+      renderRecent(ti.recent);
+  } else {
+    document.getElementById('trailing-intent-recent').innerHTML = '';
+  }
+
+  // Checkpoint section
+  const cp = data.checkpoints || {};
+  document.getElementById('checkpoint-summary').innerHTML = [
+    `<div><span style="color:var(--text-dim)">Nudges Fired</span><br/>${cp.nudges || 0}</div>`,
+    `<div><span style="color:var(--text-dim)">Notes Stored</span><br/><span style="color:var(--green)">${cp.notes_stored || 0}</span></div>`,
+    `<div><span style="color:var(--text-dim)">Capture Rate</span><br/>${cp.nudges > 0 ? Math.round((cp.notes_stored || 0) / cp.nudges * 100) + '%' : 'n/a'}</div>`,
+  ].join('');
+  if (cp.by_tool && cp.by_tool.length > 0) {
+    let toolHtml = '<table class="mem-table"><thead><tr><th>Tool</th><th style="text-align:right">Nudges</th></tr></thead><tbody>';
+    cp.by_tool.forEach(t => {
+      toolHtml += `<tr><td style="font-family:var(--font-mono);font-size:12px">${t.tool}</td><td style="text-align:right;font-family:var(--font-mono)">${t.count}</td></tr>`;
+    });
+    toolHtml += '</tbody></table>';
+    document.getElementById('checkpoint-by-tool').innerHTML = toolHtml;
+  } else {
+    document.getElementById('checkpoint-by-tool').innerHTML = '';
+  }
 }
 
 // ─── Usage Panel ──────────────────────────────────────────────────────────
