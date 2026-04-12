@@ -57,6 +57,8 @@ def run_hook(db_path, payload):
                 posttool_hook.main()
             except SystemExit:
                 pass
+            finally:
+                hook_helpers.flush_metrics()
     finally:
         hook_helpers.DB_PATH = original_db
 

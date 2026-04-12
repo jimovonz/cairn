@@ -25,7 +25,7 @@ except ImportError:
 import sys
 from typing import Any, Optional
 
-from hooks.hook_helpers import log, get_conn, record_metric
+from hooks.hook_helpers import log, get_conn, record_metric, flush_metrics
 
 # Max entries to inject per file access (avoid flooding context)
 MAX_GOTCHA_INJECTIONS = 3

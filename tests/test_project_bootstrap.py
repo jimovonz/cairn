@@ -98,6 +98,7 @@ def test_project_bootstrap_behavioural():
 
     with patch.object(hook_helpers, 'DB_PATH', db_path):
         result = project_bootstrap("sess-beh", "/home/user/Projects/myproject")
+        hook_helpers.flush_metrics()
 
     # Structural: starts with XML tag, contains required layers
     assert result.startswith('<cairn_context')

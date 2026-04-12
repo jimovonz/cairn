@@ -76,6 +76,8 @@ def run_hook(db_path, payload):
                 stop_hook.main()
             except SystemExit:
                 pass
+            finally:
+                hook_helpers.flush_metrics()
     finally:
         hook_helpers.DB_PATH = original_db
         hook_helpers.LOG_PATH = original_log
@@ -469,6 +471,8 @@ def test_contradiction_enforcement_blocks():
                 stop_hook.main()
             except SystemExit:
                 pass
+            finally:
+                hook_helpers.flush_metrics()
     finally:
         hook_helpers.DB_PATH = original_db
         hook_helpers.LOG_PATH = original_log
@@ -551,6 +555,8 @@ def test_contradiction_enforcement_skips_when_annotated():
                 stop_hook.main()
             except SystemExit:
                 pass
+            finally:
+                hook_helpers.flush_metrics()
     finally:
         hook_helpers.DB_PATH = original_db
         hook_helpers.LOG_PATH = original_log

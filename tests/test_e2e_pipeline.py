@@ -250,6 +250,8 @@ def run_prompt_hook(db_path, session_id, user_message, cwd="/home/test/testproje
                 prompt_hook.main()
             except SystemExit:
                 pass
+            finally:
+                hook_helpers.flush_metrics()
     finally:
         hook_helpers.DB_PATH = original_db
         hook_helpers.LOG_PATH = original_log
@@ -302,6 +304,8 @@ def run_stop_hook(db_path, session_id, assistant_message, cwd="/home/test/testpr
                 stop_hook.main()
             except SystemExit:
                 pass
+            finally:
+                hook_helpers.flush_metrics()
     finally:
         hook_helpers.DB_PATH = original_db
         hook_helpers.LOG_PATH = original_log
@@ -342,6 +346,8 @@ def run_pretool_hook(db_path, session_id, tool_name, file_path):
                 pretool_hook.main()
             except SystemExit:
                 pass
+            finally:
+                hook_helpers.flush_metrics()
     finally:
         hook_helpers.DB_PATH = original_db
         hook_helpers.LOG_PATH = original_log

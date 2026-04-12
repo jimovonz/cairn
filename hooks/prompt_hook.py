@@ -18,7 +18,7 @@ import os
 from typing import Any, Optional
 
 from hooks.hook_helpers import (
-    get_conn, get_embedder, get_session_project, record_metric,
+    get_conn, get_embedder, get_session_project, record_metric, flush_metrics,
     DB_PATH, LOG_PATH, strip_seen_entries, save_injected_ids,
     format_entry, split_by_scope, build_context_xml,
     record_layer_delivery, load_hook_state, save_hook_state, delete_hook_state,

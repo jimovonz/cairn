@@ -241,11 +241,12 @@ def test_hook_crash_exits_zero():
 
 # Verifies: record_metric persists event, detail, and value to DB
 def test_record_metric_stores_event():
-    from hooks.hook_helpers import record_metric
+    from hooks.hook_helpers import record_metric, flush_metrics
     db_path, conn = fresh_db()
 
     with patch('hooks.hook_helpers.DB_PATH', db_path):
         record_metric("sess-1", "test_event", "detail", 42.0)
+        flush_metrics()
 
     row = conn.execute("SELECT event, detail, value FROM metrics").fetchone()
     assert row[0] == "test_event"
@@ -257,10 +258,11 @@ def test_record_metric_stores_event():
 # Verifies: record_metric silently handles DB errors
 def test_record_metric_survives_db_error():
     """Metric recording should not crash on DB errors."""
-    from hooks.hook_helpers import record_metric
+    from hooks.hook_helpers import record_metric, flush_metrics
     # Non-existent DB path — should silently fail
     with patch('hooks.hook_helpers.DB_PATH', '/nonexistent/db.sqlite'):
         record_metric("sess-1", "test", "detail", 1.0)  # Should not raise
+        flush_metrics()  # Flush also should not raise
 
 
 # ============================================================
@@ -311,6 +313,8 @@ def test_low_info_context_need_filtered_through_main():
             stop_hook.main()
         except SystemExit:
             pass
+        finally:
+            hook_helpers.flush_metrics()
 
     hit = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'context_prefiltered'").fetchone()[0]
     assert hit >= 1, "Low-info context_need 'help' should trigger context_prefiltered metric"
@@ -361,6 +365,8 @@ def test_substantive_context_need_not_filtered():
             stop_hook.main()
         except SystemExit:
             pass
+        finally:
+            hook_helpers.flush_metrics()
 
     prefiltered = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'context_prefiltered'").fetchone()[0]
     requested = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'context_requested'").fetchone()[0]

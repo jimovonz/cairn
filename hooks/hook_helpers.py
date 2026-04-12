@@ -161,18 +161,39 @@ def _log_db_error(where: str, exc: Exception) -> None:
             pass
 
 
+# --- Metric batching ---
+# Instead of one connection per metric write (caused WAL contention and corruption),
+# batch metrics in memory and flush once per hook invocation via flush_metrics().
+_metric_buffer: list[tuple[str, str, Optional[str], Optional[float]]] = []
+
+
 def record_metric(session_id: str, event: str, detail: Optional[str] = None,
                   value: Optional[float] = None) -> None:
+    _metric_buffer.append((event, session_id, detail, value))
+
+
+def flush_metrics() -> None:
+    """Write all buffered metrics in a single transaction. Call once at the end of each hook."""
+    global _metric_buffer
+    if not _metric_buffer:
+        return
+    batch = _metric_buffer[:]
+    _metric_buffer = []
     try:
         conn = get_conn()
-        conn.execute(
+        conn.executemany(
             "INSERT INTO metrics (event, session_id, detail, value) VALUES (?, ?, ?, ?)",
-            (event, session_id, detail, value)
+            batch
         )
         conn.commit()
         conn.close()
     except Exception as exc:
-        _log_db_error(f"record_metric({event})", exc)
+        _log_db_error(f"flush_metrics({len(batch)} events)", exc)
+
+
+# Auto-flush: register atexit so metrics flush on process exit (covers sys.exit in hooks)
+import atexit as _atexit
+_atexit.register(flush_metrics)
 
 
 def get_embedder() -> Optional[ModuleType]:

@@ -88,6 +88,8 @@ def run_hook(db_path, payload):
                 stop_hook.main()
             except SystemExit:
                 pass
+            finally:
+                hook_helpers.flush_metrics()
     finally:
         for k, v in orig.items():
             setattr(hook_helpers, k, v)

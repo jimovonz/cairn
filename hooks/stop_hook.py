@@ -22,7 +22,7 @@ import sys
 import os
 from typing import Optional
 
-from hooks.hook_helpers import log, get_conn, record_metric, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery
+from hooks.hook_helpers import log, get_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery
 from hooks.parser import parse_memory_block, parse_memory_notes
 from hooks.hash_verify import compute_response_hash
 from hooks.storage import apply_confidence_updates, insert_memories

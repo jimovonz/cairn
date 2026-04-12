@@ -104,6 +104,8 @@ def run_hook(db_path, payload, env_override=None):
                 stop_hook.main()
             except SystemExit:
                 pass
+            finally:
+                hook_helpers.flush_metrics()
         finally:
             for cm in reversed(ctx_managers):
                 cm.__exit__(None, None, None)
@@ -429,6 +431,8 @@ def test_main_context_insufficient_triggers_retrieval():
                 stop_hook.main()
             except SystemExit:
                 pass
+            finally:
+                hh.flush_metrics()
     finally:
         hh.DB_PATH = original_db
         hh.LOG_PATH = original_log
@@ -874,6 +878,8 @@ def test_main_trailing_intent_blocks():
                 stop_hook.main()
             except SystemExit:
                 pass
+            finally:
+                hh.flush_metrics()
     finally:
         hh.DB_PATH = original_db
         hh.LOG_PATH = original_log

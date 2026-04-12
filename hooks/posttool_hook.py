@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Optional
 
-from hooks.hook_helpers import log, record_metric, load_hook_state, save_hook_state
+from hooks.hook_helpers import log, record_metric, flush_metrics, load_hook_state, save_hook_state
 from cairn.config import (
     CHECKPOINT_ENABLED,
     CHECKPOINT_COOLDOWN,
