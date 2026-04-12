@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Initialize the Cairn SQLite database."""
 
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import os
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")

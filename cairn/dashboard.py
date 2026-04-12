@@ -7,7 +7,10 @@ Zero external dependencies — uses Python stdlib http.server only.
 import json
 import os
 import re
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import sys
 import webbrowser
 from collections import Counter
@@ -399,6 +402,15 @@ def api_enforcement(params):
         "context_bootstrap_triggered",
         "context_requested",
         "question_before_cairn",
+        # Trailing intent enforcement
+        "trailing_intent_blocked",
+        "trailing_intent_detected",
+        "trailing_intent_clear",
+        "trailing_intent_skipped",
+        "trailing_intent_resolved_escape",
+        # PostToolUse checkpoints
+        "checkpoint_nudge",
+        "memory_notes_stored",
     )
     placeholders = ",".join("?" * len(ENFORCEMENT_EVENTS))
 
@@ -447,6 +459,32 @@ def api_enforcement(params):
         ORDER BY created_at DESC LIMIT 20
     """).fetchall())
 
+    # Trailing intent health
+    intent_blocked = totals_map.get("trailing_intent_blocked", 0)
+    intent_detected = totals_map.get("trailing_intent_detected", 0)
+    intent_clear = totals_map.get("trailing_intent_clear", 0)
+    intent_skipped = totals_map.get("trailing_intent_skipped", 0)
+    intent_escaped = totals_map.get("trailing_intent_resolved_escape", 0)
+    intent_total_checked = intent_detected + intent_clear
+    intent_detection_rate = round(intent_detected / intent_total_checked, 3) if intent_total_checked > 0 else None
+
+    # Recent trailing intent blocks
+    intent_recent = rows_to_list(conn.execute("""
+        SELECT detail, value, created_at
+        FROM metrics WHERE event = 'trailing_intent_blocked'
+        ORDER BY created_at DESC LIMIT 20
+    """).fetchall())
+
+    # Checkpoint health
+    nudge_count = totals_map.get("checkpoint_nudge", 0)
+    notes_count = totals_map.get("memory_notes_stored", 0)
+    nudge_by_tool = rows_to_list(conn.execute("""
+        SELECT SUBSTR(detail, 1, INSTR(detail, ':') - 1) as tool,
+               COUNT(*) as count
+        FROM metrics WHERE event = 'checkpoint_nudge'
+        GROUP BY tool ORDER BY count DESC
+    """).fetchall()) if nudge_count > 0 else []
+
     conn.close()
     return {
         "totals": totals_map,
@@ -457,6 +495,20 @@ def api_enforcement(params):
             "satisfied": satisfied,
             "abandoned": abandoned,
             "satisfaction_ratio": l5_ratio,
+        },
+        "trailing_intent": {
+            "blocked": intent_blocked,
+            "detected": intent_detected,
+            "clear": intent_clear,
+            "skipped": intent_skipped,
+            "escaped": intent_escaped,
+            "detection_rate": intent_detection_rate,
+            "recent": intent_recent,
+        },
+        "checkpoints": {
+            "nudges": nudge_count,
+            "notes_stored": notes_count,
+            "by_tool": nudge_by_tool,
         },
         "recent": {
             "abandoned": abandoned_recent,

@@ -27,6 +27,7 @@ classifiers = [
 dependencies = [
     "sentence-transformers>=5.0,<6.0",
     "sqlite-vec>=0.1.6,<0.2",
+    "pysqlite3-binary>=0.5.4",
 ]
 
 [project.optional-dependencies]

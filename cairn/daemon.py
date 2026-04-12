@@ -49,7 +49,10 @@ def handle_client(conn, emb):
             text = request["text"]
             threshold = request.get("threshold", 0.5)
             limit = request.get("limit", 10)
-            import sqlite3
+            try:
+                import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+            except ImportError:
+                import sqlite3
             DB_PATH = os.path.join(CAIRN_DIR, "cairn.db")
             conn_db = sqlite3.connect(DB_PATH)
             results = emb.find_similar(conn_db, text, threshold=threshold, limit=limit)

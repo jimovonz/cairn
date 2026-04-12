@@ -5,11 +5,18 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 import sys
 from datetime import datetime
 from types import ModuleType
 from typing import Any, Optional
+
+# Prefer pysqlite3 (ships SQLite 3.51.1) over stdlib sqlite3 (3.37.2 on Ubuntu 22.04).
+# The system SQLite has known WAL checkpoint race conditions fixed in 3.39-3.44.
+# pysqlite3-binary is a drop-in replacement — same DB format, same API.
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 
 CAIRN_DIR = os.path.join(os.path.dirname(__file__), "..", "cairn")
 DB_PATH = os.environ.get("CAIRN_DB_PATH", os.path.join(CAIRN_DIR, "cairn.db"))
