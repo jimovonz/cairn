@@ -264,3 +264,27 @@ def _parse_verbose(block: str) -> ParseResult:
     return ParseResult(entries, complete, remaining, context, context_need,
                        confidence_updates, retrieval_outcome, keywords, intent,
                        complete_set, context_set, keywords_set, hash_claimed, False)
+
+
+def parse_memory_notes(text: str) -> list[dict[str, str]]:
+    """Extract <memory_note> tags from text.
+
+    Format: <memory_note>type/topic: content</memory_note>
+
+    Returns a list of dicts with type, topic, content keys.
+    Silently skips malformed notes.
+    """
+    notes: list[dict[str, str]] = []
+    for match in re.finditer(r"<memory_note>(.*?)</memory_note>", text, re.DOTALL):
+        body = match.group(1).strip()
+        # Parse type/topic: content
+        entry_match = re.match(r"^(\w+)/([^:]+):\s*(.+)$", body, re.DOTALL)
+        if entry_match:
+            notes.append({
+                "type": entry_match.group(1).strip(),
+                "topic": entry_match.group(2).strip(),
+                "content": entry_match.group(3).strip(),
+            })
+        else:
+            log(f"Skipping malformed memory_note: {body[:60]}")
+    return notes
