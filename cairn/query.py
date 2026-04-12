@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Query the Cairn database. Used by Claude Code to retrieve context."""
 
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import sys
 import os
 
@@ -607,6 +610,43 @@ def stats():
             print(f"\n=== Layer 1.5 (per-prompt injection) ===")
             print(f"  Total fired: {l15_fired}  Injected: {l15_injected[0]} ({hit_rate:.0f}%)  No match: {l15_no_match}  Skipped (seen): {l15_skipped}")
             print(f"  Avg results when injected: {avg_results:.1f}")
+
+        # PostToolUse checkpoint stats
+        checkpoint_nudges = conn.execute(
+            "SELECT COUNT(*) FROM metrics WHERE event = 'checkpoint_nudge'"
+        ).fetchone()[0]
+        if checkpoint_nudges > 0:
+            nudge_by_tool = conn.execute("""
+                SELECT SUBSTR(detail, 1, INSTR(detail, ':') - 1) as tool,
+                       COUNT(*) as c
+                FROM metrics WHERE event = 'checkpoint_nudge'
+                GROUP BY tool ORDER BY c DESC
+            """).fetchall()
+            notes_stored = conn.execute(
+                "SELECT COUNT(*), SUM(value) FROM metrics WHERE event = 'memory_notes_stored'"
+            ).fetchone()
+            print(f"\n=== PostToolUse Checkpoints ===")
+            print(f"  Nudges fired: {checkpoint_nudges} ({', '.join(f'{t[0]}={t[1]}' for t in nudge_by_tool)})")
+            notes_total = int(notes_stored[1] or 0)
+            print(f"  Memory notes stored: {notes_total} (across {notes_stored[0]} sessions)")
+
+        # Trailing intent enforcement stats
+        intent_events = conn.execute("""
+            SELECT event, COUNT(*) FROM metrics
+            WHERE event LIKE 'trailing_intent_%'
+            GROUP BY event ORDER BY COUNT(*) DESC
+        """).fetchall()
+        if intent_events:
+            print(f"\n=== Trailing Intent Enforcement ===")
+            for event, count in intent_events:
+                label = event.replace("trailing_intent_", "")
+                print(f"  {label}: {count}")
+            avg_sim = conn.execute(
+                "SELECT AVG(value) FROM metrics WHERE event = 'trailing_intent_detected' AND value IS NOT NULL"
+            ).fetchone()[0]
+            if avg_sim:
+                print(f"  Avg similarity on detection: {avg_sim:.3f}")
+
     except Exception:
         pass  # metrics table may not exist yet
 

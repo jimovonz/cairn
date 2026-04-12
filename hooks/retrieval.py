@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 from typing import Any, Optional
 
 import hooks.hook_helpers as hook_helpers

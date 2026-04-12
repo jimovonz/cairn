@@ -130,6 +130,17 @@ QUERY_EXPANSION_FANOUT = True       # Enable type-prefix fan-out in find_similar
 # Fuses FTS5 keyword search with vector semantic search. Higher k smooths rank differences.
 RRF_K = 60                         # Standard RRF constant — prevents single high rank from dominating
 
+# === Mid-response memory checkpoints ===
+# PostToolUse hook nudges the LLM to emit <memory_note> tags after high-signal tool calls.
+# The stop hook collects and stores these notes. No extra LLM calls — the agent is already
+# generating its next response; the note is just an inline tag.
+CHECKPOINT_ENABLED = True
+CHECKPOINT_COOLDOWN = 3            # Skip nudge if one fired within this many tool calls
+CHECKPOINT_TOOLS = "Bash,Edit,Write"  # Tool types that can trigger a checkpoint nudge
+CHECKPOINT_ERROR_PATTERNS = "error,failed,traceback,denied,not found,exception,fatal,panic"
+CHECKPOINT_MIN_OUTPUT_LINES = 30   # Bash output above this line count triggers a nudge (even without errors)
+CHECKPOINT_MAX_NOTES_PER_SESSION = 20  # Hard cap on memory_notes stored per session
+
 # === Concurrency ===
 DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for lock release
 

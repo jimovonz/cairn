@@ -14,13 +14,16 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import sys
 import os
 from typing import Optional
 
 from hooks.hook_helpers import log, get_conn, record_metric, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery
-from hooks.parser import parse_memory_block
+from hooks.parser import parse_memory_block, parse_memory_notes
 from hooks.hash_verify import compute_response_hash
 from hooks.storage import apply_confidence_updates, insert_memories
 from hooks.enforcement import check_trailing_intent, get_continuation_count, increment_continuation, reset_continuation
@@ -36,7 +39,89 @@ AMEND_ONLY_SUFFIX = (
 from hooks.retrieval import (retrieve_context, layer2_cross_project_search,
                         load_context_cache, save_context_cache, is_context_cached, add_to_context_cache,
                         CONTEXT_CACHE_SIM_THRESHOLD)
-from cairn.config import MAX_CONTINUATIONS, WEAK_ENTRY_SCORE_FLOOR, CONTEXT_BOOTSTRAP_INTERVAL
+from cairn.config import MAX_CONTINUATIONS, WEAK_ENTRY_SCORE_FLOOR, CONTEXT_BOOTSTRAP_INTERVAL, CHECKPOINT_MAX_NOTES_PER_SESSION
+
+
+def collect_memory_notes(transcript_path: str, session_id: str,
+                         final_entries: Optional[list[dict[str, str]]]) -> int:
+    """Scan transcript for <memory_note> tags in assistant messages and store them.
+
+    Memory notes are lightweight inline observations emitted mid-response after
+    PostToolUse checkpoint nudges. They capture intermediate discoveries that
+    might be lost by the time the final <memory> block fires.
+
+    Deduplicates against the final <memory> block entries by type+topic match.
+    Returns the number of notes stored.
+    """
+    if not transcript_path or not os.path.exists(transcript_path):
+        return 0
+
+    # Collect all memory_notes from assistant messages in the transcript
+    all_notes: list[dict[str, str]] = []
+    try:
+        with open(transcript_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = entry.get("message", {})
+                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                    continue
+                content = msg.get("content", [])
+                if isinstance(content, str):
+                    all_notes.extend(parse_memory_notes(content))
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            all_notes.extend(parse_memory_notes(block.get("text", "")))
+    except (OSError, PermissionError) as e:
+        log(f"Memory note collection error: {e}")
+        return 0
+
+    if not all_notes:
+        return 0
+
+    # Deduplicate against final <memory> block entries (same type+topic = already captured)
+    final_keys: set[tuple[str, str]] = set()
+    if final_entries:
+        for e in final_entries:
+            final_keys.add((e.get("type", ""), e.get("topic", "")))
+
+    unique_notes: list[dict[str, str]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for note in all_notes:
+        key = (note["type"], note["topic"])
+        if key in final_keys or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique_notes.append(note)
+
+    if not unique_notes:
+        log(f"Memory notes: {len(all_notes)} found, all duplicates of final block")
+        return 0
+
+    # Cap per session
+    from hooks.hook_helpers import load_hook_state, save_hook_state
+    raw_count = load_hook_state(session_id, "memory_notes_stored")
+    notes_stored = int(raw_count) if raw_count else 0
+    remaining_budget = max(0, CHECKPOINT_MAX_NOTES_PER_SESSION - notes_stored)
+
+    if remaining_budget == 0:
+        log(f"Memory notes: session cap reached ({notes_stored}/{CHECKPOINT_MAX_NOTES_PER_SESSION})")
+        return 0
+
+    to_store = unique_notes[:remaining_budget]
+    count = insert_memories(to_store, session_id=session_id, transcript_path=transcript_path)
+
+    save_hook_state(session_id, "memory_notes_stored", str(notes_stored + count))
+    log(f"Memory notes: stored {count} of {len(all_notes)} found ({len(all_notes) - len(unique_notes)} deduped)")
+    record_metric(session_id, "memory_notes_stored", None, count)
+
+    return count
 
 
 def register_session(session_id: str, transcript_path: str) -> None:
@@ -663,8 +748,9 @@ def main() -> None:
     # Trailing intent detection — block if response ends with unfulfilled action intent
     if intent == "resolved":
         log("Intent explicitly resolved via memory block — skipping trailing intent check")
+        record_metric(session_id, "trailing_intent_resolved_escape")
     elif not is_continuation:
-        intent_result: Optional[str] = check_trailing_intent(text)
+        intent_result: Optional[str] = check_trailing_intent(text, session_id=session_id)
         if intent_result:
             log(f"Trailing intent detected: {intent_result}")
             record_metric(session_id, "trailing_intent_blocked", intent_result)
@@ -679,6 +765,9 @@ def main() -> None:
             }
             print(json.dumps(result))
             sys.exit(0)
+
+    # Collect mid-response memory notes from the transcript
+    collect_memory_notes(transcript_path, session_id, entries)
 
     # All good — reset continuation counter and allow stop
     reset_continuation(session_id)

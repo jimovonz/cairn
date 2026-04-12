@@ -12,7 +12,10 @@ Strategies:
 from __future__ import annotations
 
 import re
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 from typing import Any, Optional
 
 import numpy as np

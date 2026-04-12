@@ -24,6 +24,24 @@ TRAILING_INTENT_REFS: list[str] = [
     "I'll look into it",
     "I'm going to test this",
     "I'm going to check",
+    # Implementation/creation intent
+    "let me implement that",
+    "I'll add that now",
+    "let me create that",
+    "I'll build that next",
+    # Review/analysis intent
+    "let me review that",
+    "I'll examine the code",
+    "let me inspect that",
+    "let me analyze this",
+    # Debug/verify intent
+    "let me debug this",
+    "I'll verify that works",
+    "let me try that",
+    "I'll take a look",
+    # Refactor/cleanup intent
+    "let me refactor that",
+    "I'll clean that up",
 ]
 
 _intent_embeddings: Optional[list[tuple[str, np.ndarray]]] = None
@@ -51,11 +69,14 @@ def _extract_last_sentence(text: str) -> Optional[str]:
     return sentences[-1] if sentences else None
 
 
-def check_trailing_intent(text: str) -> Optional[str]:
+def check_trailing_intent(text: str, session_id: str = "") -> Optional[str]:
     """Check if response ends with unfulfilled action intent.
 
     Returns the matched trailing sentence if intent detected, None otherwise.
+    Records metrics for all outcomes (detected, clear, skipped).
     """
+    from hooks.hook_helpers import record_metric
+
     # Questions are not intent — check before extracting
     cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
     if cleaned.rstrip().endswith("?"):
@@ -67,11 +88,20 @@ def check_trailing_intent(text: str) -> Optional[str]:
 
     refs = _get_intent_embeddings()
     if not refs:
+        log("Trailing intent: embedder unavailable — skipping check")
+        record_metric(session_id, "trailing_intent_skipped", "embedder_unavailable")
         return None
 
     emb = hook_helpers.get_embedder()
+    if not emb:
+        log("Trailing intent: embedder unavailable for last sentence — skipping check")
+        record_metric(session_id, "trailing_intent_skipped", "embedder_unavailable")
+        return None
+
     last_vec = emb.embed(last)
     if last_vec is None:
+        log("Trailing intent: embedding failed for last sentence — skipping check")
+        record_metric(session_id, "trailing_intent_skipped", "embedding_failed")
         return None
 
     max_sim = 0.0
@@ -82,8 +112,10 @@ def check_trailing_intent(text: str) -> Optional[str]:
 
     if max_sim > TRAILING_INTENT_SIM_THRESHOLD:
         log(f"Trailing intent match: sim={max_sim:.3f} last='{last[:60]}'")
+        record_metric(session_id, "trailing_intent_detected", f"sim={max_sim:.3f}", max_sim)
         return last[:100]
 
+    record_metric(session_id, "trailing_intent_clear", f"sim={max_sim:.3f}", max_sim)
     return None
 
 

@@ -130,6 +130,33 @@ def _is_knowledge_question(user_message: str) -> bool:
     return any(re.search(p, msg_lower) for p in _KNOWLEDGE_QUESTION_PATTERNS)
 
 
+def _check_db_integrity(session_id: str) -> Optional[str]:
+    """Lightweight corruption check — runs once per session on first prompt.
+
+    Uses PRAGMA quick_check (faster than full integrity_check — samples pages
+    rather than scanning every btree). If corruption is detected, warns the
+    user via additionalContext and records a metric.
+    """
+    try:
+        conn = get_conn()
+        result = conn.execute("PRAGMA quick_check").fetchone()
+        conn.close()
+        if result and result[0] == "ok":
+            return None
+        # Corruption detected
+        detail = result[0][:200] if result else "unknown"
+        log(f"DB CORRUPTION DETECTED: {detail}")
+        record_metric(session_id, "db_corruption_detected", detail)
+        return (
+            "WARNING — Cairn database corruption detected. Memories may be incomplete or unreliable. "
+            "Run `python3 $CAIRN_HOME/cairn/recover.py` to repair. "
+            "Until repaired, treat retrieved memories with extra caution."
+        )
+    except Exception as e:
+        log(f"Integrity check error: {e}")
+        return None
+
+
 def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
     """Project bootstrap: inject standing-context memories for the CWD project.
 
@@ -242,6 +269,11 @@ def main() -> None:
     # Layer 1: First-prompt push (+ bootstrap)
     if is_first_prompt(session_id):
         mark_first_prompt_done(session_id)
+
+        # Lightweight corruption check on first prompt of each session
+        corruption_warning = _check_db_integrity(session_id)
+        if corruption_warning:
+            context_parts.append(corruption_warning)
 
         # Project bootstrap: inject standing context from CWD-matched project
         pb_context = project_bootstrap(session_id, cwd)

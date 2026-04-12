@@ -35,6 +35,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{VENV_PYTHON}} {{CAIRN_HOME}}/hooks/posttool_hook.py",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }
