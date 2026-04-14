@@ -21,7 +21,7 @@ def search(query, limit=10):
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
-        SELECT m.id, m.type, m.topic, m.content, m.updated_at
+        SELECT m.id, m.type, m.topic, m.content, m.updated_at, m.keywords
         FROM memories_fts f
         JOIN memories m ON f.rowid = m.id
         WHERE memories_fts MATCH ?
@@ -36,7 +36,7 @@ def list_by_type(memory_type, limit=20):
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
-        SELECT id, type, topic, content, updated_at
+        SELECT id, type, topic, content, updated_at, keywords
         FROM memories WHERE type = ?
         ORDER BY updated_at DESC LIMIT ?
     """, (memory_type, limit)).fetchall()
@@ -48,7 +48,7 @@ def list_recent(limit=20):
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
-        SELECT id, type, topic, content, updated_at
+        SELECT id, type, topic, content, updated_at, keywords
         FROM memories ORDER BY updated_at DESC LIMIT ?
     """, (limit,)).fetchall()
     conn.close()
@@ -115,7 +115,7 @@ def list_by_date(since=None, until=None, limit=50):
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
     params.append(limit)
     rows = conn.execute(f"""
-        SELECT id, type, topic, content, updated_at
+        SELECT id, type, topic, content, updated_at, keywords
         FROM memories {where}
         ORDER BY updated_at DESC LIMIT ?
     """, params).fetchall()
@@ -127,7 +127,7 @@ def list_by_session(session_id, limit=50):
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
-        SELECT id, type, topic, content, updated_at
+        SELECT id, type, topic, content, updated_at, keywords
         FROM memories WHERE session_id LIKE ?
         ORDER BY updated_at DESC LIMIT ?
     """, (f"{session_id}%", limit)).fetchall()
@@ -802,12 +802,18 @@ def format_rows(rows):
         print("No results.")
         return
     for r in rows:
+        keywords = None
+        try:
+            keywords = r['keywords'] if isinstance(r, dict) else r['keywords']
+        except (KeyError, IndexError):
+            pass
+        kw_suffix = f"  [k: {keywords}]" if keywords else ""
         if isinstance(r, dict):
             print(f"[{r['id']}] {r['type']}/{r['topic']} (sim={r.get('similarity', 'N/A'):.3f}, {r['updated_at']})")
-            print(f"    {r['content']}")
+            print(f"    {r['content']}{kw_suffix}")
         else:
             print(f"[{r['id']}] {r['type']}/{r['topic']} ({r['updated_at']})")
-            print(f"    {r['content']}")
+            print(f"    {r['content']}{kw_suffix}")
 
 
 USAGE = """Usage: query.py <command> [args]
@@ -1221,7 +1227,7 @@ def memories_for_project(project_name, limit=50):
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
-        SELECT id, type, topic, content, updated_at
+        SELECT id, type, topic, content, updated_at, keywords
         FROM memories
         WHERE project = ?
         ORDER BY updated_at DESC
@@ -1247,7 +1253,7 @@ def project_bootstrap_query(project_name=None, limit=5):
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     rows = conn.execute(f"""
-        SELECT id, type, topic, content, updated_at
+        SELECT id, type, topic, content, updated_at, keywords
         FROM memories
         WHERE project = ? AND type IN ({placeholders})
         AND (archived_reason IS NULL OR archived_reason = '')

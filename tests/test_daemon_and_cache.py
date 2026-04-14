@@ -25,7 +25,7 @@ def fresh_db():
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT, topic TEXT, content TEXT, embedding BLOB, session_id TEXT,
         project TEXT, confidence REAL DEFAULT 0.7, source_start INTEGER,
-        source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT, keywords TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE sessions (session_id TEXT PRIMARY KEY,
         parent_session_id TEXT, project TEXT, transcript_path TEXT,
@@ -277,7 +277,7 @@ def test_low_info_context_need_filtered_through_main():
     conn = sqlite3.connect(db_path)
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY, type TEXT, topic TEXT,
         content TEXT, embedding BLOB, session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
-        source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT,
+        source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT, keywords TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE sessions (session_id TEXT PRIMARY KEY,
         parent_session_id TEXT, project TEXT, transcript_path TEXT,
@@ -289,9 +289,9 @@ def test_low_info_context_need_filtered_through_main():
         value TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (session_id, key))""")
     conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-        topic, content, content=memories, content_rowid=id)""")
+        topic, content, keywords, content=memories, content_rowid=id)""")
     conn.execute("""CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
-        INSERT INTO memories_fts(rowid, topic, content) VALUES (new.id, new.topic, new.content); END""")
+        INSERT INTO memories_fts(rowid, topic, content, keywords) VALUES (new.id, new.topic, new.content, new.keywords); END""")
     conn.commit()
 
     payload = json.dumps({
@@ -329,7 +329,7 @@ def test_substantive_context_need_not_filtered():
     conn = sqlite3.connect(db_path)
     conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY, type TEXT, topic TEXT,
         content TEXT, embedding BLOB, session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
-        source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT,
+        source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT, keywords TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE sessions (session_id TEXT PRIMARY KEY,
         parent_session_id TEXT, project TEXT, transcript_path TEXT,
@@ -341,9 +341,9 @@ def test_substantive_context_need_not_filtered():
         value TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (session_id, key))""")
     conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-        topic, content, content=memories, content_rowid=id)""")
+        topic, content, keywords, content=memories, content_rowid=id)""")
     conn.execute("""CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
-        INSERT INTO memories_fts(rowid, topic, content) VALUES (new.id, new.topic, new.content); END""")
+        INSERT INTO memories_fts(rowid, topic, content, keywords) VALUES (new.id, new.topic, new.content, new.keywords); END""")
     conn.commit()
 
     payload = json.dumps({

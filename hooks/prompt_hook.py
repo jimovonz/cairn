@@ -218,6 +218,58 @@ def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
                              results, [], instruction=instruction)
 
 
+def correction_bootstrap(session_id: str) -> Optional[str]:
+    """Inject top behavioural corrections into every session.
+
+    Corrections are about patterns of behaviour — they don't match specific queries
+    semantically. Without unconditional injection, 96% of corrections never surface
+    cross-session. This ensures the highest-value corrections are always present.
+    """
+    from cairn.config import CORRECTION_BOOTSTRAP_MAX
+    from hooks.hook_helpers import recency_days, reliability_label
+
+    try:
+        conn = get_conn()
+        # Pull top corrections by confidence (most corroborated = most validated)
+        # then recency as tiebreaker. Exclude archived.
+        rows = conn.execute("""
+            SELECT id, type, topic, content, updated_at, project, confidence, archived_reason
+            FROM memories
+            WHERE type = 'correction'
+            AND (archived_reason IS NULL OR archived_reason = '')
+            ORDER BY confidence DESC, updated_at DESC
+            LIMIT ?
+        """, (CORRECTION_BOOTSTRAP_MAX,)).fetchall()
+        conn.close()
+    except Exception as e:
+        log(f"Correction bootstrap error: {e}")
+        return None
+
+    if not rows:
+        return None
+
+    results = []
+    for r in rows:
+        mem_id, mem_type, topic, content, updated_at, project, confidence, archived_reason = r
+        results.append({
+            "id": mem_id, "type": mem_type, "topic": topic, "content": content,
+            "updated_at": updated_at, "project": project or "",
+            "confidence": confidence if confidence is not None else 0.7,
+            "score": confidence if confidence is not None else 0.7,
+            "similarity": 0, "archived_reason": archived_reason,
+        })
+
+    result_ids = [r["id"] for r in results]
+    record_metric(session_id, "correction_bootstrap_injected", None, len(rows))
+    record_layer_delivery(session_id, "correction-bootstrap", result_ids)
+    log(f"Correction bootstrap: injected {len(rows)} corrections")
+
+    instruction = ("These are behavioural corrections from past sessions — mistakes made and lessons learned. "
+                   "Apply these to avoid repeating the same errors.")
+    return build_context_xml("behavioural corrections", None, "correction-bootstrap",
+                             [], results, instruction=instruction)
+
+
 def layer1_search(user_message: str, session_id: str) -> Optional[str]:
     """Layer 1: Search cairn using user's first message."""
     from cairn.config import L1_SIM_THRESHOLD, L1_MAX_RESULTS, MIN_INJECTION_SIMILARITY

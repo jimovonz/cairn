@@ -1,7 +1,9 @@
-"""Enforcement mechanisms — trailing intent detection and continuation counting."""
+"""Enforcement mechanisms — trailing intent, declined-without-trying, and continuation counting."""
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from typing import Optional
 
@@ -155,3 +157,188 @@ def reset_continuation(session_id: str) -> None:
     )
     conn.commit()
     conn.close()
+
+
+# --- Declined-without-trying detection ---
+
+# Patterns that indicate the LLM is pushing work back to the user
+_DECLINE_PATTERNS: list[re.Pattern] = [
+    re.compile(r"you.ll need to .{3,40}yourself", re.IGNORECASE),
+    re.compile(r"you.ll have to .{3,40}yourself", re.IGNORECASE),
+    re.compile(r"you.?ll need to .{0,15}(run|do|try|execute|restart|start|launch)", re.IGNORECASE),
+    re.compile(r"you.?d need to .{0,15}(run|do|try|execute|restart|start|contact)", re.IGNORECASE),
+    re.compile(r"i can.t .{0,30}(from here|from this)", re.IGNORECASE),
+    re.compile(r"i.m (not able|unable) to .{3,30}(from|in this)", re.IGNORECASE),
+    re.compile(r"i don.t have (access|the ability|permission) to", re.IGNORECASE),
+    re.compile(r"you should .{0,10}(run|do|try|execute|restart) .{3,30} yourself", re.IGNORECASE),
+]
+
+# Action tools that indicate the LLM actually tried something
+_ACTION_TOOLS: set[str] = {"Bash", "Edit", "Write", "MultiEdit", "Agent"}
+
+
+def _response_has_tool_calls(transcript_path: str) -> bool:
+    """Check if the current (last) assistant turn includes action tool calls."""
+    if not transcript_path or not os.path.exists(transcript_path):
+        return False
+    try:
+        with open(transcript_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        # Scan backwards from end — find tool calls after the last user message
+        found_assistant = False
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            # Stop at the last user message — everything after is current turn
+            msg = entry.get("message", {})
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                break
+            tool_name = entry.get("tool_name", "")
+            if tool_name in _ACTION_TOOLS:
+                return True
+            # Also check for tool_use in assistant message content blocks
+            if entry.get("type") == "assistant" and isinstance(msg, dict):
+                for block in msg.get("content", []):
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        if block.get("name", "") in _ACTION_TOOLS:
+                            return True
+        return found_assistant  # False — no action tools found
+    except (IOError, OSError):
+        return False
+
+
+def check_declined_without_trying(text: str, transcript_path: str,
+                                   session_id: str = "") -> Optional[str]:
+    """Detect when the LLM declines to do something without attempting it first.
+
+    Returns the matched decline phrase if detected, None otherwise.
+    Only fires when: (1) response contains declining language, AND
+    (2) transcript shows no action tool calls in current turn.
+
+    Cost of false positive: one extra turn where LLM clarifies.
+    Cost of false negative: user has to manually correct an imagined barrier.
+    """
+    from hooks.hook_helpers import record_metric
+
+    # Strip memory block and code blocks before checking
+    cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"```.*?```", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"`[^`]+`", "", cleaned)
+    cleaned = cleaned.strip()
+
+    # Check for decline patterns
+    matched_phrase = None
+    for pat in _DECLINE_PATTERNS:
+        m = pat.search(cleaned)
+        if m:
+            matched_phrase = m.group()
+            break
+
+    if not matched_phrase:
+        return None
+
+    # Decline language found — did the LLM try anything first?
+    if _response_has_tool_calls(transcript_path):
+        log(f"Decline detected but tool calls present — allowing: '{matched_phrase[:60]}'")
+        record_metric(session_id, "decline_with_tools", matched_phrase[:80])
+        return None
+
+    # Declined without trying
+    log(f"Declined without trying: '{matched_phrase[:60]}'")
+    record_metric(session_id, "declined_without_trying", matched_phrase[:80])
+    return matched_phrase
+
+
+# --- Correction trigger matching ---
+
+def check_correction_triggers(text: str, session_id: str = "") -> Optional[tuple[str, str]]:
+    """Check if response matches any stored correction triggers.
+
+    Compares the response text against embedded correction triggers.
+    Returns (trigger_text, correction_content) if matched, None otherwise.
+
+    Triggers are phrases describing what the bad response looks like,
+    written by the LLM at correction time. Each new correction with a trigger
+    automatically expands detection coverage.
+    """
+    from cairn.config import CORRECTION_TRIGGER_ENABLED, CORRECTION_TRIGGER_SIM_THRESHOLD
+    from hooks.hook_helpers import record_metric
+
+    if not CORRECTION_TRIGGER_ENABLED:
+        return None
+
+    emb = hook_helpers.get_embedder()
+    if not emb:
+        return None
+
+    # Strip memory/code blocks — match against actual response content
+    cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"```.*?```", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"`[^`]+`", "", cleaned)
+    cleaned = cleaned.strip()
+
+    if len(cleaned) < 30:
+        return None
+
+    # Embed the response tail (last ~500 chars — where decline/mistake language tends to be)
+    response_tail = cleaned[-500:] if len(cleaned) > 500 else cleaned
+    try:
+        response_vec = emb.embed(response_tail, allow_slow=False)
+        if response_vec is None:
+            return None
+    except Exception:
+        return None
+
+    # Load all correction triggers with embeddings
+    conn = get_conn()
+    try:
+        rows = conn.execute("""
+            SELECT ct.trigger, ct.embedding, m.content, m.id
+            FROM correction_triggers ct
+            JOIN memories m ON ct.memory_id = m.id
+            WHERE ct.embedding IS NOT NULL
+            AND (m.archived_reason IS NULL OR m.archived_reason = '')
+        """).fetchall()
+    except Exception as e:
+        log(f"Correction trigger query error: {e}")
+        conn.close()
+        return None
+    conn.close()
+
+    if not rows:
+        return None
+
+    # Compare response against each trigger
+    best_sim = 0.0
+    best_trigger = ""
+    best_correction = ""
+    best_id = 0
+
+    for trigger_text, trigger_blob, correction_content, memory_id in rows:
+        try:
+            trigger_vec = emb.from_blob(trigger_blob)
+            sim = float(emb.cosine_similarity(response_vec, trigger_vec))
+            if sim > best_sim:
+                best_sim = sim
+                best_trigger = trigger_text
+                best_correction = correction_content
+                best_id = memory_id
+        except Exception:
+            continue
+
+    if best_sim >= CORRECTION_TRIGGER_SIM_THRESHOLD:
+        log(f"Correction trigger matched: sim={best_sim:.3f} trigger='{best_trigger[:60]}' memory={best_id}")
+        record_metric(session_id, "correction_trigger_matched",
+                      f"sim={best_sim:.3f} id={best_id} trigger={best_trigger[:60]}", best_sim)
+        return (best_trigger, best_correction)
+
+    if best_sim > 0.3:
+        record_metric(session_id, "correction_trigger_near_miss",
+                      f"sim={best_sim:.3f} id={best_id}", best_sim)
+
+    return None

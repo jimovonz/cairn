@@ -356,49 +356,135 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
     return "\n".join(lines)
 
 
+def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str],
+                          limit: int) -> list[dict]:
+    """Find cross-project memories that share exact keywords.
+
+    Uses the persisted keywords column for precise matching — no embedding needed.
+    Scores by keyword overlap count. Complements semantic search by catching
+    cross-project connections that embedding similarity misses (different domains,
+    same concept).
+    """
+    if not keywords_list:
+        return []
+
+    # Build LIKE conditions for each keyword (case-insensitive, comma-separated field)
+    conditions = []
+    params = []
+    for kw in keywords_list:
+        kw_clean = kw.strip().lower()
+        if kw_clean:
+            conditions.append("LOWER(keywords) LIKE ?")
+            params.append(f"%{kw_clean}%")
+
+    if not conditions:
+        return []
+
+    # Find memories matching at least one keyword, from OTHER projects
+    where_kw = " OR ".join(conditions)
+    project_filter = "AND project != ?" if project else "AND project IS NOT NULL"
+    if project:
+        params.append(project)
+    params.append(limit * 3)  # Over-fetch for scoring
+
+    try:
+        rows = conn.execute(f"""
+            SELECT id, type, topic, content, updated_at, project, confidence, keywords
+            FROM memories
+            WHERE keywords IS NOT NULL
+            AND ({where_kw})
+            AND (archived_reason IS NULL OR archived_reason = '')
+            {project_filter}
+            ORDER BY updated_at DESC
+            LIMIT ?
+        """, params).fetchall()
+    except Exception:
+        return []
+
+    # Score by keyword overlap count
+    kw_set = {k.strip().lower() for k in keywords_list if k.strip()}
+    results = []
+    for r in rows:
+        mem_id, mem_type, topic, content, updated_at, mem_project, confidence, mem_keywords = r
+        mem_kw_set = {k.strip().lower() for k in (mem_keywords or "").split(",") if k.strip()}
+        overlap = len(kw_set & mem_kw_set)
+        if overlap == 0:
+            continue  # LIKE matched substring but not a real keyword overlap
+        results.append({
+            "id": mem_id, "type": mem_type, "topic": topic, "content": content,
+            "updated_at": updated_at, "project": mem_project,
+            "confidence": confidence if confidence is not None else 0.7,
+            "similarity": 0.0,  # Not semantic
+            "score": overlap / max(len(kw_set), 1),  # Overlap ratio
+            "keyword_overlap": overlap,
+        })
+
+    results.sort(key=lambda x: (-x["keyword_overlap"], x["updated_at"] or ""), reverse=False)
+    results.sort(key=lambda x: x["keyword_overlap"], reverse=True)
+    return results[:limit]
+
+
 def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[str] = None) -> None:
     """Layer 2: Search global memories for cross-project relevance using keywords.
-    Stages results for the next UserPromptSubmit hook injection."""
+
+    Uses two complementary methods:
+    1. Exact keyword matching on persisted keywords column — catches cross-project
+       connections that embeddings miss (same concept, different domain language)
+    2. Semantic search on keyword text — catches conceptually related memories
+
+    Merges and deduplicates results, stages for next UserPromptSubmit injection.
+    """
     from cairn.config import L2_SIM_THRESHOLD, L2_MAX_RESULTS
 
     if not keywords_list:
         return
 
-    emb = hook_helpers.get_embedder()
-    if not emb:
-        return
-
     conn = get_conn()
     project = get_session_project(conn, session_id)
 
-    query = " ".join(keywords_list)
-    try:
-        results = emb.find_similar(conn, query, threshold=L2_SIM_THRESHOLD,
-                                   limit=L2_MAX_RESULTS * 2, current_project=project)
-    except Exception as e:
-        log(f"Layer 2 search error: {e}")
-        conn.close()
-        return
+    # Method 1: Exact keyword matching (no embedder needed)
+    keyword_results = _keyword_match_search(conn, keywords_list, project, L2_MAX_RESULTS)
+    seen_ids = {r["id"] for r in keyword_results}
 
-    cross_project = [r for r in results
-                     if r.get("project") != project
-                     and r["similarity"] >= L2_SIM_THRESHOLD][:L2_MAX_RESULTS]
+    if keyword_results:
+        log(f"Layer 2 keyword match: {len(keyword_results)} cross-project hits")
+        record_metric(session_id, "layer2_keyword_matches", None, len(keyword_results))
+
+    # Method 2: Semantic search (existing path)
+    semantic_results = []
+    emb = hook_helpers.get_embedder()
+    if emb:
+        query = " ".join(keywords_list)
+        try:
+            results = emb.find_similar(conn, query, threshold=L2_SIM_THRESHOLD,
+                                       limit=L2_MAX_RESULTS * 2, current_project=project)
+            semantic_results = [r for r in results
+                                if r.get("project") != project
+                                and r["similarity"] >= L2_SIM_THRESHOLD
+                                and r["id"] not in seen_ids][:L2_MAX_RESULTS]
+        except Exception as e:
+            log(f"Layer 2 semantic search error: {e}")
+
+    # Merge: keyword matches first (exact relevance), then semantic
+    cross_project = keyword_results + semantic_results
+    cross_project = cross_project[:L2_MAX_RESULTS]
 
     if not cross_project:
-        log(f"Layer 2: no cross-project matches for keywords: {query[:50]}")
+        log(f"Layer 2: no cross-project matches for keywords: {' '.join(keywords_list)[:50]}")
         conn.close()
         return
 
     staged_xml = build_context_xml(
-        f"cross-project keywords: {query[:60]}", project, "cross-project",
+        f"cross-project keywords: {' '.join(keywords_list)[:60]}", project, "cross-project",
         [], cross_project
     )
 
     save_hook_state(session_id, "staged_context", staged_xml)
     conn.close()
 
-    log(f"Layer 2: staged {len(cross_project)} cross-project entries for next prompt")
-    record_metric(session_id, "layer2_staged", query[:100], len(cross_project))
+    log(f"Layer 2: staged {len(cross_project)} cross-project entries "
+        f"({len(keyword_results)} keyword, {len(semantic_results)} semantic)")
+    record_metric(session_id, "layer2_staged", " ".join(keywords_list)[:100], len(cross_project))
     result_ids = [r["id"] for r in cross_project if "id" in r]
     if result_ids:
         import json as _json

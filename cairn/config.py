@@ -110,6 +110,13 @@ BOOTSTRAP_MAX_PER_SCOPE = 3        # Cap bootstrap retrieval results per scope (
 PROJECT_BOOTSTRAP_ENABLED = True
 PROJECT_BOOTSTRAP_MAX = 5           # Max memories to inject from project bootstrap
 PROJECT_BOOTSTRAP_TYPES = "project,preference,fact"  # Comma-separated standing-context types
+CORRECTION_BOOTSTRAP_MAX = 5        # Max behavioural corrections to inject per session
+
+# === Correction trigger matching ===
+# Stop hook compares response against stored correction triggers (embedded phrases
+# describing what the bad response looks like). Blocks on match so the LLM can self-correct.
+CORRECTION_TRIGGER_ENABLED = True
+CORRECTION_TRIGGER_SIM_THRESHOLD = 0.45  # Similarity threshold for trigger match (tuned from real data)
 
 # === Retrieval — Layer 1.5 (per-prompt push, subsequent prompts) ===
 # Semantic search on every user message after the first. Higher threshold than Layer 1

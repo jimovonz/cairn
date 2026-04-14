@@ -33,6 +33,7 @@ def fresh_db():
         topic TEXT NOT NULL,
         content TEXT NOT NULL,
         associated_files TEXT,
+        keywords TEXT,
         confidence REAL DEFAULT 0.7,
         archived_reason TEXT
     )""")

@@ -217,6 +217,7 @@ init_db.init()
         conn.execute("""CREATE TABLE memories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT NOT NULL, topic TEXT NOT NULL, content TEXT NOT NULL,
+            keywords TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""")

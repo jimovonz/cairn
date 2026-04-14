@@ -120,7 +120,7 @@ def api_memories(params):
                 "id": r["id"], "type": r.get("type", ""), "topic": r.get("topic", ""),
                 "content": r.get("content", ""), "similarity": round(r.get("similarity", 0), 3),
                 "confidence": r.get("confidence", 0.7), "project": r.get("project", ""),
-                "updated_at": r.get("updated_at", ""),
+                "updated_at": r.get("updated_at", ""), "keywords": r.get("keywords", ""),
             } for r in results]
             return {"memories": memories, "total": len(memories)}, 200
         except Exception as e:
@@ -132,7 +132,7 @@ def api_memories(params):
         fts_order = "rank" if sort == "updated_at" and order == "desc" else f"m.{sort} {order_dir}"
         rows = conn.execute(f"""
             SELECT m.id, m.type, m.topic, m.content, m.confidence, m.project,
-                   m.session_id, m.updated_at, m.created_at, m.archived_reason
+                   m.session_id, m.updated_at, m.created_at, m.archived_reason, m.keywords
             FROM memories_fts f JOIN memories m ON f.rowid = m.id
             WHERE memories_fts MATCH ? ORDER BY {fts_order} LIMIT ? OFFSET ?
         """, (q, limit, offset)).fetchall()
@@ -149,7 +149,7 @@ def api_memories(params):
         total = conn.execute(f"SELECT COUNT(*) FROM memories{where_clause}", sql_params).fetchone()[0]
         rows = conn.execute(f"""
             SELECT id, type, topic, content, confidence, project,
-                   session_id, updated_at, created_at, archived_reason
+                   session_id, updated_at, created_at, archived_reason, keywords
             FROM memories{where_clause} ORDER BY {sort} {order_dir} LIMIT ? OFFSET ?
         """, sql_params + [limit, offset]).fetchall()
 
@@ -157,6 +157,7 @@ def api_memories(params):
         "id": r["id"], "type": r["type"], "topic": r["topic"], "content": r["content"],
         "confidence": r["confidence"], "project": r["project"], "session_id": r["session_id"],
         "updated_at": r["updated_at"], "created_at": r["created_at"], "archived_reason": r["archived_reason"],
+        "keywords": r["keywords"],
     } for r in rows]
     conn.close()
     return {"memories": memories, "total": total}, 200
@@ -166,7 +167,7 @@ def api_memory_detail(params, memory_id):
     conn = get_conn()
     row = conn.execute("""
         SELECT id, type, topic, content, confidence, project, session_id,
-               updated_at, created_at, archived_reason, depth, associated_files
+               updated_at, created_at, archived_reason, depth, associated_files, keywords
         FROM memories WHERE id = ?
     """, (memory_id,)).fetchone()
     if not row:

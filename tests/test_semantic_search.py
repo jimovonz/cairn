@@ -53,7 +53,7 @@ def fresh_db():
         type TEXT, topic TEXT, content TEXT, embedding BLOB,
         session_id TEXT, project TEXT, confidence REAL DEFAULT 0.7,
         source_start INTEGER, source_end INTEGER, anchor_line INTEGER,
-        depth INTEGER, archived_reason TEXT,
+        depth INTEGER, archived_reason TEXT, keywords TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE memory_history (
@@ -73,9 +73,9 @@ def fresh_db():
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (session_id, key))""")
     conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-        topic, content, content=memories, content_rowid=id)""")
+        topic, content, keywords, content=memories, content_rowid=id)""")
     conn.execute("""CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
-        INSERT INTO memories_fts(rowid, topic, content) VALUES (new.id, new.topic, new.content);
+        INSERT INTO memories_fts(rowid, topic, content, keywords) VALUES (new.id, new.topic, new.content, new.keywords);
     END""")
     conn.commit()
     return db_path, conn
