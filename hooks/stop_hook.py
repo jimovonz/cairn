@@ -26,7 +26,7 @@ from hooks.hook_helpers import log, get_conn, record_metric, flush_metrics, get_
 from hooks.parser import parse_memory_block, parse_memory_notes
 from hooks.hash_verify import compute_response_hash
 from hooks.storage import apply_confidence_updates, insert_memories
-from hooks.enforcement import check_trailing_intent, get_continuation_count, increment_continuation, reset_continuation
+from hooks.enforcement import check_trailing_intent, check_declined_without_trying, check_correction_triggers, get_continuation_count, increment_continuation, reset_continuation
 
 # Appended to block reasons that are purely about memory format — the user already saw the
 # response in interactive mode, so restating it is wasteful.  Only used for format/density
@@ -761,6 +761,47 @@ def main() -> None:
                     f"Your response ends with a stated intent to act: \"{intent_result}\". "
                     "Either follow through now, or remove the promise. "
                     "If you genuinely have nothing more to do, add 'intent: resolved' to your <memory> block."
+                )
+            }
+            print(json.dumps(result))
+            sys.exit(0)
+
+    # Declined-without-trying detection — catch "I can't do X" when no tool calls attempted
+    if not is_continuation and not is_subagent:
+        decline_result: Optional[str] = check_declined_without_trying(
+            text, transcript_path, session_id=session_id)
+        if decline_result:
+            log(f"Declined without trying: {decline_result}")
+            record_metric(session_id, "declined_without_trying_blocked", decline_result)
+            increment_continuation(session_id)
+            result = {
+                "decision": "block",
+                "reason": (
+                    f"Your response appears to decline an action without attempting it: \"{decline_result}\". "
+                    "Before telling the user they need to do something themselves, try it first — "
+                    "use Bash, check with pgrep/ps, or investigate whether it's actually possible. "
+                    "If you've confirmed it genuinely can't be done from here, explain what you tried."
+                )
+            }
+            print(json.dumps(result))
+            sys.exit(0)
+
+    # Correction trigger matching — check response against stored behavioural triggers
+    if not is_continuation and not is_subagent:
+        trigger_result = check_correction_triggers(text, session_id=session_id)
+        if trigger_result:
+            trigger_phrase, correction_content = trigger_result
+            log(f"Correction trigger fired: '{trigger_phrase[:60]}'")
+            record_metric(session_id, "correction_trigger_blocked", trigger_phrase[:80])
+            increment_continuation(session_id)
+            result = {
+                "decision": "block",
+                "reason": (
+                    f"Your response matched a known behavioural correction pattern.\n\n"
+                    f"Pattern: \"{trigger_phrase}\"\n"
+                    f"Correction: {correction_content}\n\n"
+                    "Review your response and adjust if this correction applies. "
+                    "If it doesn't apply here, proceed as-is."
                 )
             }
             print(json.dumps(result))

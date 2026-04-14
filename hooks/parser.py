@@ -118,12 +118,23 @@ def _parse_compact(block: str) -> ParseResult:
             topic = entry_match.group(2).strip()
             content = entry_match.group(3).strip()
             # Extract [k: ...] keywords suffix
+            entry_keywords: list[str] = []
             km = re.search(r'\[k:\s*([^\]]+)\]', content)
             if km:
-                keywords = [k.strip() for k in km.group(1).split(",") if k.strip()]
+                entry_keywords = [k.strip() for k in km.group(1).split(",") if k.strip()]
+                keywords = entry_keywords  # block-level for L2 search
                 keywords_set = True
                 content = re.sub(r'\s*\[k:[^\]]+\]', '', content).strip()
-            entries.append({"type": entry_type, "topic": topic, "content": content})
+            # Extract [t: ...] trigger suffix (corrections only)
+            entry_trigger: str = ""
+            tm = re.search(r'\[t:\s*([^\]]+)\]', content)
+            if tm:
+                entry_trigger = tm.group(1).strip()
+                content = re.sub(r'\s*\[t:[^\]]+\]', '', content).strip()
+            entry_dict = {"type": entry_type, "topic": topic, "content": content, "keywords": entry_keywords}
+            if entry_trigger:
+                entry_dict["trigger"] = entry_trigger
+            entries.append(entry_dict)
             continue
 
         # Standalone incomplete: - :remaining text or -:remaining text
@@ -245,6 +256,8 @@ def _parse_verbose(block: str) -> ParseResult:
             keywords_set = True
         elif key == "intent":
             intent = value.lower()
+        elif key == "trigger":
+            current["trigger"] = value
         elif key == "depth":
             try:
                 current["depth"] = int(value.strip())
@@ -260,6 +273,12 @@ def _parse_verbose(block: str) -> ParseResult:
     if current and "type" in current and "topic" in current:
         current.setdefault("content", current.get("topic", ""))
         entries.append(current.copy())
+
+    # Attach block-level keywords to all entries that don't have their own
+    if keywords:
+        for entry in entries:
+            if "keywords" not in entry:
+                entry["keywords"] = keywords
 
     return ParseResult(entries, complete, remaining, context, context_need,
                        confidence_updates, retrieval_outcome, keywords, intent,

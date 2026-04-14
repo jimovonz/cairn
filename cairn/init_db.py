@@ -26,7 +26,7 @@ def init():
         )
     """)
     # Migration: add columns to existing DB
-    for col, coltype in [("embedding", "BLOB"), ("session_id", "TEXT"), ("project", "TEXT"), ("confidence", "REAL DEFAULT 0.7"), ("source_start", "INTEGER"), ("source_end", "INTEGER"), ("archived_reason", "TEXT"), ("anchor_line", "INTEGER"), ("depth", "INTEGER"), ("associated_files", "TEXT")]:
+    for col, coltype in [("embedding", "BLOB"), ("session_id", "TEXT"), ("project", "TEXT"), ("confidence", "REAL DEFAULT 0.7"), ("source_start", "INTEGER"), ("source_end", "INTEGER"), ("archived_reason", "TEXT"), ("anchor_line", "INTEGER"), ("depth", "INTEGER"), ("associated_files", "TEXT"), ("keywords", "TEXT")]:
         try:
             conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {coltype}")
         except sqlite3.OperationalError:
@@ -84,6 +84,18 @@ def init():
             PRIMARY KEY (session_id, key)
         )
     """)
+    # Correction triggers — behavioural pattern detection
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS correction_triggers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL,
+            trigger TEXT NOT NULL,
+            embedding BLOB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (memory_id) REFERENCES memories(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_triggers_memory ON correction_triggers(memory_id)")
     # Vector search index via sqlite-vec
     try:
         import sqlite_vec
@@ -110,32 +122,56 @@ def init():
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_memories_topic ON memories(topic)
     """)
+    # FTS5 index — migrate from (topic, content) to (topic, content, keywords)
+    # Check if existing FTS table needs migration by inspecting its columns
+    _fts_needs_rebuild = False
+    try:
+        # If keywords column doesn't exist in FTS, we need to rebuild
+        conn.execute("SELECT keywords FROM memories_fts LIMIT 0")
+    except sqlite3.OperationalError:
+        # Column missing or table doesn't exist — rebuild
+        _fts_needs_rebuild = True
+
+    if _fts_needs_rebuild:
+        # Drop old FTS table and triggers, recreate with keywords
+        conn.execute("DROP TRIGGER IF EXISTS memories_ai")
+        conn.execute("DROP TRIGGER IF EXISTS memories_ad")
+        conn.execute("DROP TRIGGER IF EXISTS memories_au")
+        conn.execute("DROP TABLE IF EXISTS memories_fts")
+
     conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-            topic, content, content=memories, content_rowid=id
+            topic, content, keywords, content=memories, content_rowid=id
         )
     """)
     # Triggers to keep FTS in sync
+    conn.execute("DROP TRIGGER IF EXISTS memories_ai")
     conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-            INSERT INTO memories_fts(rowid, topic, content)
-            VALUES (new.id, new.topic, new.content);
+        CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+            INSERT INTO memories_fts(rowid, topic, content, keywords)
+            VALUES (new.id, new.topic, new.content, new.keywords);
         END
     """)
+    conn.execute("DROP TRIGGER IF EXISTS memories_ad")
     conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-            INSERT INTO memories_fts(memories_fts, rowid, topic, content)
-            VALUES ('delete', old.id, old.topic, old.content);
+        CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, topic, content, keywords)
+            VALUES ('delete', old.id, old.topic, old.content, old.keywords);
         END
     """)
+    conn.execute("DROP TRIGGER IF EXISTS memories_au")
     conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-            INSERT INTO memories_fts(memories_fts, rowid, topic, content)
-            VALUES ('delete', old.id, old.topic, old.content);
-            INSERT INTO memories_fts(rowid, topic, content)
-            VALUES (new.id, new.topic, new.content);
+        CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, topic, content, keywords)
+            VALUES ('delete', old.id, old.topic, old.content, old.keywords);
+            INSERT INTO memories_fts(rowid, topic, content, keywords)
+            VALUES (new.id, new.topic, new.content, new.keywords);
         END
     """)
+    # Rebuild FTS index if we migrated
+    if _fts_needs_rebuild:
+        conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+        print("FTS index rebuilt with keywords column")
     conn.commit()
     conn.close()
     print(f"Database initialized at {DB_PATH}")

@@ -35,7 +35,7 @@ def setup_test_db():
             type TEXT NOT NULL, topic TEXT NOT NULL, content TEXT NOT NULL,
             embedding BLOB, session_id TEXT, project TEXT,
             confidence REAL DEFAULT 0.7,
-            source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT,
+            source_start INTEGER, source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT, keywords TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )

@@ -32,6 +32,7 @@ def _init_db(path):
             depth INTEGER,
             archived_reason TEXT,
             associated_files TEXT,
+            keywords TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )

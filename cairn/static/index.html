@@ -916,7 +916,7 @@ function renderMemoryTable(memories, container, serverSort) {
       <td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">${m.id}</td>
       <td>${badge(m.type)}</td>
       <td class="topic-cell">${escapeHtml(m.topic || '')}</td>
-      <td class="content-cell">${escapeHtml(m.content || '')}</td>
+      <td class="content-cell">${escapeHtml(m.content || '')}${m.keywords ? `<div style="margin-top:3px">${m.keywords.split(',').map(k => `<span style="display:inline-block;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;padding:0 4px;margin:1px 2px;font-size:11px;color:var(--text-dim)">${escapeHtml(k.trim())}</span>`).join('')}</div>` : ''}</td>
       <td class="conf-cell" style="color:${confColor(m.confidence)}">${(m.confidence||0).toFixed(2)}</td>
       <td class="date-cell">${formatDate(m.updated_at)}</td>
     </tr>`).join('')}</tbody>
@@ -994,6 +994,9 @@ async function showMemory(id) {
   html += `<span style="color:var(--text-dim)">Updated</span><span>${formatDate(m.updated_at)}</span>`;
   if (m.archived_reason) {
     html += `<span style="color:var(--red)">Archived</span><span style="color:var(--red)">${escapeHtml(m.archived_reason)}</span>`;
+  }
+  if (m.keywords) {
+    html += `<span style="color:var(--text-dim)">Keywords</span><span>${m.keywords.split(',').map(k => `<span style="display:inline-block;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;padding:0 4px;margin:1px 2px;font-size:12px">${escapeHtml(k.trim())}</span>`).join('')}</span>`;
   }
   if (m.associated_files) {
     html += `<span style="color:var(--text-dim)">Files</span><span style="font-family:var(--font-mono);font-size:12px">${escapeHtml(m.associated_files)}</span>`;

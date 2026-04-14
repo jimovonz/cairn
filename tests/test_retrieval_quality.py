@@ -157,7 +157,7 @@ def build_quality_db():
         embedding BLOB, session_id TEXT, project TEXT,
         confidence REAL DEFAULT 0.7,
         source_start INTEGER, source_end INTEGER, anchor_line INTEGER,
-        depth INTEGER, archived_reason TEXT, associated_files TEXT,
+        depth INTEGER, archived_reason TEXT, associated_files TEXT, keywords TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""")
@@ -189,21 +189,21 @@ def build_quality_db():
         VALUES (old.id, old.content, old.session_id, old.updated_at);
     END""")
     conn.execute("""CREATE VIRTUAL TABLE memories_fts USING fts5(
-        topic, content, content=memories, content_rowid=id
+        topic, content, keywords, content=memories, content_rowid=id
     )""")
     conn.execute("""CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
-        INSERT INTO memories_fts(rowid, topic, content)
-        VALUES (new.id, new.topic, new.content);
+        INSERT INTO memories_fts(rowid, topic, content, keywords)
+        VALUES (new.id, new.topic, new.content, new.keywords);
     END""")
     conn.execute("""CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
-        INSERT INTO memories_fts(memories_fts, rowid, topic, content)
-        VALUES ('delete', old.id, old.topic, old.content);
+        INSERT INTO memories_fts(memories_fts, rowid, topic, content, keywords)
+        VALUES ('delete', old.id, old.topic, old.content, old.keywords);
     END""")
     conn.execute("""CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
-        INSERT INTO memories_fts(memories_fts, rowid, topic, content)
-        VALUES ('delete', old.id, old.topic, old.content);
-        INSERT INTO memories_fts(rowid, topic, content)
-        VALUES (new.id, new.topic, new.content);
+        INSERT INTO memories_fts(memories_fts, rowid, topic, content, keywords)
+        VALUES ('delete', old.id, old.topic, old.content, old.keywords);
+        INSERT INTO memories_fts(rowid, topic, content, keywords)
+        VALUES (new.id, new.topic, new.content, new.keywords);
     END""")
 
     # Register a session for project scoping

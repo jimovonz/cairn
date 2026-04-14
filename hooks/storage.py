@@ -215,6 +215,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
         topic: str = entry.get("topic", "unknown")
         content: str = entry.get("content", "")
         depth: Optional[int] = entry.get("depth")
+        entry_keywords: Optional[list[str]] = entry.get("keywords")
+        keywords_csv: Optional[str] = ",".join(entry_keywords) if entry_keywords else None
 
         # Content quality gate: reject memories with no retrievable knowledge
         if _is_empty_memory(content):
@@ -270,8 +272,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
                 log(f"Distinct variant: type={mem_type} topic={topic} (sim={old_sim:.2f}) — inserting as new")
                 conn.execute(
-                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (mem_type, topic, content, embedding_blob, session_id, project, depth)
+                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv)
                 )
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -286,8 +288,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     log(f"Contradiction: type={mem_type} topic={topic} (sim={old_sim:.2f}) — old annotated as superseded")
                     record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
                 conn.execute(
-                    "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, confidence = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (content, embedding_blob, session_id, project, CONFIDENCE_DEFAULT, same_topic[0])
+                    "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, confidence = ?, keywords = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (content, embedding_blob, session_id, project, CONFIDENCE_DEFAULT, keywords_csv, same_topic[0])
                 )
                 if embedding_blob and emb:
                     emb.upsert_vec_index(conn, same_topic[0], embedding_blob)
@@ -302,8 +304,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                         match = nearest[0]
                         log(f"Dedup: '{content[:50]}' ~= '{match['content'][:50]}' (sim={match['similarity']:.3f})")
                         conn.execute(
-                            "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                            (content, embedding_blob, session_id, project, match["id"])
+                            "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, keywords = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                            (content, embedding_blob, session_id, project, keywords_csv, match["id"])
                         )
                         emb.upsert_vec_index(conn, match["id"], embedding_blob)
                         deduped = True
@@ -321,8 +323,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
 
             if not deduped:
                 conn.execute(
-                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (mem_type, topic, content, embedding_blob, session_id, project, depth)
+                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv)
                 )
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -343,6 +345,28 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     (files_json, last_id[0])
                 )
                 log(f"Associated {len(_associated_files)} files with {mem_type} {last_id[0]}: {_associated_files[:3]}")
+
+        # Store correction trigger if present
+        trigger_text: Optional[str] = entry.get("trigger")
+        if trigger_text and mem_type == "correction":
+            last_id_row = conn.execute(
+                "SELECT id FROM memories WHERE type = ? AND topic = ? ORDER BY updated_at DESC LIMIT 1",
+                (mem_type, topic)
+            ).fetchone()
+            if last_id_row:
+                trigger_emb_blob: Optional[bytes] = None
+                if emb:
+                    try:
+                        trigger_vec = emb.embed(trigger_text, allow_slow=False)
+                        if trigger_vec is not None:
+                            trigger_emb_blob = emb.to_blob(trigger_vec)
+                    except Exception as e:
+                        log(f"Trigger embedding error: {e}")
+                conn.execute(
+                    "INSERT INTO correction_triggers (memory_id, trigger, embedding) VALUES (?, ?, ?)",
+                    (last_id_row[0], trigger_text, trigger_emb_blob)
+                )
+                log(f"Stored correction trigger for memory {last_id_row[0]}: '{trigger_text[:60]}'")
 
     conn.commit()
 

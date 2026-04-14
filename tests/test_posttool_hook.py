@@ -295,7 +295,7 @@ class TestMemoryNoteCollection:
         conn = sqlite3.connect(db_path)
         conn.execute("""CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT, topic TEXT, content TEXT, embedding BLOB, session_id TEXT,
-            project TEXT, confidence REAL DEFAULT 0.7, associated_files TEXT,
+            project TEXT, confidence REAL DEFAULT 0.7, associated_files TEXT, keywords TEXT,
             depth INTEGER, archived_reason TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")

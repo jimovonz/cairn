@@ -193,7 +193,7 @@ def test_parse_memory_block_verbose_full_entry():
         "</memory>"
     )
     result = parse_memory_block(text)
-    assert result.entries[0] == {"type": "correction", "topic": "bug-fix", "content": "Off-by-one in loop"}
+    assert result.entries[0] == {"type": "correction", "topic": "bug-fix", "content": "Off-by-one in loop", "keywords": ["bugfix", "loop"]}
     assert result.complete is True
     assert result.complete_explicit is True
     assert result.context == "sufficient"

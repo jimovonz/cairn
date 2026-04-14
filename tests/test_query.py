@@ -418,7 +418,8 @@ def backfill_env(tmp_path):
             topic TEXT,
             content TEXT,
             project TEXT,
-            embedding BLOB
+            embedding BLOB,
+            keywords TEXT
         )
     """)
     conn.commit()
