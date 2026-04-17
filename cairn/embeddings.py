@@ -495,20 +495,25 @@ def find_similar(
             diverse.append(r)
 
     # Cross-encoder re-ranking: score (query, memory) pairs jointly
-    from cairn.config import CROSS_ENCODER_ENABLED, CROSS_ENCODER_MIN_CANDIDATES, CROSS_ENCODER_WEIGHT
+    from cairn.config import CROSS_ENCODER_ENABLED, CROSS_ENCODER_MIN_CANDIDATES, CROSS_ENCODER_WEIGHT, CROSS_ENCODER_SCORE_FLOOR
     if CROSS_ENCODER_ENABLED and len(diverse) >= CROSS_ENCODER_MIN_CANDIDATES:
         t_rerank = _time.perf_counter()
         candidate_texts = [f"{r.get('type', '')} {r.get('topic', '')}: {r.get('content', '')}" for r in diverse]
         ce_scores = _daemon_rerank(text, candidate_texts)
         if ce_scores and len(ce_scores) == len(diverse):
-            ce_min = min(ce_scores)
-            ce_max = max(ce_scores)
-            ce_range = ce_max - ce_min if ce_max > ce_min else 1.0
             for i, r in enumerate(diverse):
-                ce_norm = (ce_scores[i] - ce_min) / ce_range
                 r["ce_score"] = ce_scores[i]
+            pre_filter = len(diverse)
+            above_floor = [r for r in diverse if r["ce_score"] >= CROSS_ENCODER_SCORE_FLOOR]
+            diverse = above_floor if len(above_floor) >= CROSS_ENCODER_MIN_CANDIDATES else diverse
+            ce_min = min(r["ce_score"] for r in diverse) if diverse else 0
+            ce_max = max(r["ce_score"] for r in diverse) if diverse else 1
+            ce_range = ce_max - ce_min if ce_max > ce_min else 1.0
+            for r in diverse:
+                ce_norm = (r["ce_score"] - ce_min) / ce_range
                 r["score"] = (1 - CROSS_ENCODER_WEIGHT) * r["score"] + CROSS_ENCODER_WEIGHT * ce_norm
             diverse.sort(key=lambda x: x["score"], reverse=True)
+            _record_embed_metric("rerank_filtered", pre_filter - len(diverse))
         _record_embed_metric("rerank_ms", (_time.perf_counter() - t_rerank) * 1000)
 
     results = diverse[:limit]

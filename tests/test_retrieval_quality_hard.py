@@ -456,9 +456,13 @@ def evaluate_by_difficulty(strategy_fn, db_path, memory_ids):
 
 @pytest.fixture(scope="module")
 def hard_db():
+    import cairn.config as config
+    orig = config.CROSS_ENCODER_ENABLED
+    config.CROSS_ENCODER_ENABLED = False
     db_path, conn, memory_ids = build_hard_db()
     conn.close()
     yield db_path, memory_ids
+    config.CROSS_ENCODER_ENABLED = orig
 
 
 # --- Tests ---

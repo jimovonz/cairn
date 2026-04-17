@@ -158,6 +158,7 @@ CROSS_ENCODER_ENABLED = True
 CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 CROSS_ENCODER_WEIGHT = 0.6         # Blend: (1-w)*composite + w*cross_encoder
 CROSS_ENCODER_MIN_CANDIDATES = 3   # Skip re-ranking if fewer candidates than this
+CROSS_ENCODER_SCORE_FLOOR = 0.0    # Drop candidates scoring below this (raw CE score, not normalized)
 
 # === Concurrency ===
 DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for lock release
