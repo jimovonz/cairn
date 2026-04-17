@@ -1358,6 +1358,11 @@ def main_entry():
         extra_args = sys.argv[2:]
         sys.argv = [sys.argv[0]] + extra_args
         dashboard.main()
+    elif cmd == "--consolidate":
+        from cairn.consolidate import run_consolidation
+        execute = "--execute" in sys.argv
+        use_llm = "--no-llm" not in sys.argv
+        run_consolidation(execute=execute, use_llm=use_llm)
     elif cmd == "--stats":
         stats()
     else:
