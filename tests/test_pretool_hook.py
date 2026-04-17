@@ -38,7 +38,14 @@ def fresh_db():
         associated_files TEXT,
         keywords TEXT,
         confidence REAL DEFAULT 0.7,
-        archived_reason TEXT
+        archived_reason TEXT,
+        origin_id TEXT,
+        user_id TEXT,
+        updated_by TEXT,
+        team_id TEXT,
+        source_ref TEXT,
+        deleted_at TIMESTAMP,
+        synced_at TIMESTAMP
     )""")
     conn.execute("""CREATE TABLE metrics (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

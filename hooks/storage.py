@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from types import ModuleType
 from typing import Optional
 
@@ -243,7 +244,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
         # Step 1: Check type+topic match first — catches same-topic contradictions
         # that embedding nearest-neighbour might miss (if a closer global match exists)
         same_topic = conn.execute(
-            "SELECT id, content FROM memories WHERE type = ? AND topic = ?",
+            "SELECT id, content FROM memories WHERE type = ? AND topic = ? AND deleted_at IS NULL",
             (mem_type, topic)
         ).fetchone()
 
@@ -271,8 +272,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
                 log(f"Distinct variant: type={mem_type} topic={topic} (sim={old_sim:.2f}) — inserting as new")
                 conn.execute(
-                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv)
+                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords, origin_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv, str(uuid.uuid4()))
                 )
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -322,8 +323,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
 
             if not deduped:
                 conn.execute(
-                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv)
+                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords, origin_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv, str(uuid.uuid4()))
                 )
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -389,7 +390,7 @@ def _inline_backfill(conn) -> None:
     try:
         rows = conn.execute(
             "SELECT id, type, topic, content, project FROM memories "
-            "WHERE embedding IS NULL LIMIT ?",
+            "WHERE embedding IS NULL AND deleted_at IS NULL LIMIT ?",
             (BACKFILL_INLINE_MAX,)
         ).fetchall()
         if not rows:

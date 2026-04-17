@@ -136,8 +136,8 @@ def find_clusters(
     Returns a list of clusters, each a list of memory dicts sorted by recency.
     """
     rows = conn.execute(
-        "SELECT id, type, topic, content, embedding, updated_at, project, confidence "
-        "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '')"
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, session_id "
+        "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '') AND deleted_at IS NULL"
     ).fetchall()
 
     entries = []
@@ -146,6 +146,7 @@ def find_clusters(
         entries.append({
             "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
             "vec": vec, "updated_at": row[5], "project": row[6], "confidence": row[7] or 0.7,
+            "session_id": row[8],
         })
 
     assigned: set[int] = set()
@@ -335,6 +336,7 @@ def _vec_candidates(
         JOIN memories m ON v.memory_id = m.id
         WHERE v.embedding MATCH ?
           AND k = ?
+          AND m.deleted_at IS NULL
     """, (query_blob, k)).fetchall()
 
     results: list[dict[str, Any]] = []
@@ -376,7 +378,7 @@ def _brute_force_candidates(
     """Get top-k candidates via brute-force scan."""
     rows = conn.execute(
         "SELECT id, type, topic, content, embedding, updated_at, project, confidence, depth, archived_reason, session_id, keywords "
-        "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '')"
+        "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '') AND deleted_at IS NULL"
     ).fetchall()
     if len(rows) >= _BRUTE_FORCE_WARN_THRESHOLD:
         _log_embed(
@@ -508,7 +510,7 @@ def find_similar(
 
         # Fetch all embeddings once for fan-out scoring
         all_rows = conn.execute(
-            "SELECT id, embedding, confidence, updated_at, project FROM memories WHERE embedding IS NOT NULL"
+            "SELECT id, embedding, confidence, updated_at, project FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
         ).fetchall()
         fanout_best: dict[int, float] = {}
         for row in all_rows:
@@ -615,7 +617,7 @@ def find_similar(
             archived = conn.execute(
                 "SELECT id, type, topic, content, embedding, updated_at, project, confidence, "
                 "depth, archived_reason "
-                "FROM memories WHERE archived_reason IS NOT NULL AND embedding IS NOT NULL"
+                "FROM memories WHERE archived_reason IS NOT NULL AND embedding IS NOT NULL AND deleted_at IS NULL"
             ).fetchall()
             for row in archived:
                 if row[0] in active_ids:
@@ -661,7 +663,7 @@ def find_nearest(conn: sqlite3.Connection, text: str, limit: int = 1) -> list[di
 
     # Brute-force fallback
     rows = conn.execute(
-        "SELECT id, type, topic, content, embedding, updated_at, project, confidence FROM memories WHERE embedding IS NOT NULL"
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
     ).fetchall()
 
     results: list[dict[str, Any]] = []

@@ -60,6 +60,7 @@ def find_memories_for_file(
             WHERE {type_filter}
               AND associated_files IS NOT NULL
               AND archived_reason IS NULL
+              AND deleted_at IS NULL
         """).fetchall()
     except sqlite3.Error as e:
         log(f"File context query error: {e}")

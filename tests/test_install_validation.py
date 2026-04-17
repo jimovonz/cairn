@@ -222,7 +222,14 @@ init_db.init()
             type TEXT NOT NULL, topic TEXT NOT NULL, content TEXT NOT NULL,
             keywords TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            origin_id TEXT,
+            user_id TEXT,
+            updated_by TEXT,
+            team_id TEXT,
+            source_ref TEXT,
+            deleted_at TIMESTAMP,
+            synced_at TIMESTAMP
         )""")
         conn.commit()
         conn.close()
