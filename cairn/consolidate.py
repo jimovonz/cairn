@@ -357,23 +357,65 @@ def find_contradiction_pairs(conn: sqlite3.Connection) -> list[dict]:
             "vec": vec, "created_at": row[5], "project": row[6], "confidence": row[7] or 0.7,
         })
 
-    # Build pairs above similarity threshold
-    # Prioritise same type+topic pairs, then cross-topic
-    pairs = []
-    for i in range(len(entries)):
-        for j in range(i + 1, len(entries)):
-            a, b = entries[i], entries[j]
-            sim = cosine_similarity(a["vec"], b["vec"])
-            if sim >= CONTRADICTION_SIMILARITY_THRESHOLD:
-                older, newer = (a, b) if a["id"] < b["id"] else (b, a)
-                same_topic = a["type"] == b["type"] and a["topic"] == b["topic"]
-                pairs.append({
-                    "older": older, "newer": newer,
-                    "similarity": float(sim), "same_topic": same_topic,
-                })
+    # Build pairs in two tiers:
+    # Tier 1 (always included): Same type+topic pairs — highest signal for contradictions
+    # Tier 2 (fill remaining budget): Cross-topic pairs, spread across similarity bands
+    same_topic_pairs = []
+    cross_topic_pairs = []
 
-    pairs.sort(key=lambda p: p["similarity"], reverse=True)
-    return pairs[:CONTRADICTION_MAX_PAIRS]
+    # Build topic index for fast same-topic lookup
+    by_key: dict[tuple[str, str], list[int]] = {}
+    for i, e in enumerate(entries):
+        key = (e["type"], e["topic"])
+        by_key.setdefault(key, []).append(i)
+
+    # Tier 1: Same type+topic pairs
+    for key, indices in by_key.items():
+        if len(indices) < 2:
+            continue
+        for a_idx in range(len(indices)):
+            for b_idx in range(a_idx + 1, len(indices)):
+                a, b = entries[indices[a_idx]], entries[indices[b_idx]]
+                sim = cosine_similarity(a["vec"], b["vec"])
+                if sim >= CONTRADICTION_SIMILARITY_THRESHOLD:
+                    older, newer = (a, b) if a["id"] < b["id"] else (b, a)
+                    same_topic_pairs.append({
+                        "older": older, "newer": newer,
+                        "similarity": float(sim), "same_topic": True,
+                    })
+
+    # Tier 2: Cross-topic pairs — sample across similarity bands to catch
+    # contradictions at lower similarity (not just near-duplicates at 0.95+)
+    seen_ids = {(p["older"]["id"], p["newer"]["id"]) for p in same_topic_pairs}
+    remaining_budget = CONTRADICTION_MAX_PAIRS - len(same_topic_pairs)
+
+    if remaining_budget > 0:
+        for i in range(len(entries)):
+            for j in range(i + 1, len(entries)):
+                a, b = entries[i], entries[j]
+                if a["type"] == b["type"] and a["topic"] == b["topic"]:
+                    continue
+                pair_key = (min(a["id"], b["id"]), max(a["id"], b["id"]))
+                if pair_key in seen_ids:
+                    continue
+                sim = cosine_similarity(a["vec"], b["vec"])
+                if sim >= CONTRADICTION_SIMILARITY_THRESHOLD:
+                    older, newer = (a, b) if a["id"] < b["id"] else (b, a)
+                    cross_topic_pairs.append({
+                        "older": older, "newer": newer,
+                        "similarity": float(sim), "same_topic": False,
+                    })
+
+        # Sort cross-topic by similarity but sample evenly across bands
+        cross_topic_pairs.sort(key=lambda p: p["similarity"], reverse=True)
+        if len(cross_topic_pairs) > remaining_budget:
+            # Take every Nth pair to spread across similarity range
+            step = max(1, len(cross_topic_pairs) // remaining_budget)
+            cross_topic_pairs = cross_topic_pairs[::step][:remaining_budget]
+
+    all_pairs = same_topic_pairs + cross_topic_pairs
+    all_pairs.sort(key=lambda p: (not p["same_topic"], -p["similarity"]))
+    return all_pairs[:CONTRADICTION_MAX_PAIRS]
 
 
 def score_contradictions_nli(pairs: list[dict]) -> list[dict]:
@@ -564,7 +606,7 @@ def run_contradiction_detection(execute: bool = False) -> dict:
 
     Phase 1: Bi-encoder candidate pairs (cosine >= 0.55)
     Phase 2: NLI contradiction scoring (filters to genuine contradictions)
-    Phase 3: Haiku assessment (SUPERSEDED/SEQUENTIAL/COMPLEMENTARY)
+    Phase 3: Haiku assessment in batches (SUPERSEDED/SEQUENTIAL/COMPLEMENTARY)
     Phase 4: Archive superseded memories (if --execute)
     """
     conn = sqlite3.connect(DB_PATH)
@@ -572,7 +614,9 @@ def run_contradiction_detection(execute: bool = False) -> dict:
 
     print("Phase 1: Finding candidate pairs via bi-encoder similarity...")
     pairs = find_contradiction_pairs(conn)
-    print(f"  Found {len(pairs)} candidate pairs above similarity threshold")
+    same = sum(1 for p in pairs if p["same_topic"])
+    cross = len(pairs) - same
+    print(f"  Found {len(pairs)} candidate pairs ({same} same-topic, {cross} cross-topic)")
 
     if not pairs:
         print("  No contradiction candidates found.")
@@ -588,8 +632,17 @@ def run_contradiction_detection(execute: bool = False) -> dict:
         conn.close()
         return {"pairs_found": len(pairs), "nli_confirmed": 0, "superseded": 0}
 
-    print(f"\nPhase 3: Haiku assessment...")
-    superseded = assess_contradictions_haiku(contradictions)
+    # Batch Haiku assessment — 50 pairs per batch to stay within prompt limits
+    BATCH_SIZE = 50
+    print(f"\nPhase 3: Haiku assessment ({len(contradictions)} pairs in {(len(contradictions) + BATCH_SIZE - 1) // BATCH_SIZE} batches)...")
+    all_superseded = []
+    for batch_start in range(0, len(contradictions), BATCH_SIZE):
+        batch = contradictions[batch_start:batch_start + BATCH_SIZE]
+        print(f"  Batch {batch_start // BATCH_SIZE + 1}: pairs {batch_start + 1}-{batch_start + len(batch)}")
+        superseded = assess_contradictions_haiku(batch)
+        all_superseded.extend(superseded)
+
+    superseded = all_superseded
     print(f"  {len(superseded)} pairs classified as SUPERSEDED")
 
     archived = 0
