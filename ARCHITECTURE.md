@@ -219,6 +219,19 @@ Confidence represents **veracity** — how well-corroborated a memory is across 
   └────────────┬───────────────────┘
                │ pass
                ▼
+  ┌─ Diversity filter ─────────────┐
+  │  cosine > 0.9 to selected?    │──yes──▶ DROP
+  └────────────┬───────────────────┘
+               │ pass
+               ▼
+  ┌─ Cross-encoder re-ranking ─────┐
+  │  Joint (query, memory) scoring │
+  │  Score floor filter            │
+  │  Blend: 0.4×composite +       │
+  │         0.6×cross_encoder      │
+  └────────────┬───────────────────┘
+               │
+               ▼
   ┌─ Dominance suppression ────────┐
   │  top1 - top2 < 0.05?          │──yes──▶ Include both
   └────────────┬───────────────────┘
@@ -289,7 +302,9 @@ cairn/
 │   ├── init_db.py                     # Schema and migrations
 │   ├── query.py                       # CLI query tool
 │   ├── embeddings.py                  # Sentence-transformers wrapper (daemon-aware, composite scoring, instrumented)
-│   ├── daemon.py                      # Background embedding server (Unix socket)
+│   ├── daemon.py                      # Background server (embeddings, cross-encoder, NLI via Unix socket)
+│   ├── consolidate.py                 # Memory consolidation + contradiction detection pipeline
+│   ├── contradiction_scan.py          # Legacy contradiction scanner
 │   ├── dashboard.py                   # Flask web dashboard (monitoring, memory browser, config editor)
 │   ├── static/index.html              # Dashboard frontend (vanilla JS, light/dark theme)
 │   └── hook.log                       # Debug log
@@ -364,6 +379,18 @@ Sessions chain via `parent_session_id`. When Claude Code compacts context and cr
 | created_at | TIMESTAMP | When recorded |
 
 Tracked events: `hook_fired`, `memories_stored`, `missing_memory_block`, `malformed_memory_block`, `context_requested`, `context_served`, `context_empty`, `context_cache_hit`, `context_retrieval`, `retrieval_latency_ms`, `confidence_updates`, `continuation_cap_hit`, `completeness_cap_hit`, `hook_crash`.
+
+**pair_assessments** — consolidation/contradiction cache
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id1 | INTEGER | First memory ID (smaller) |
+| id2 | INTEGER | Second memory ID (larger) |
+| mode | TEXT | Assessment type: `consolidation` or `contradiction` |
+| result | TEXT | Assessment outcome (e.g. `skip`, `SUPERSEDED`, `CONSOLIDATE`) |
+| assessed_at | TIMESTAMP | When the pair was assessed |
+
+Primary key: `(id1, id2, mode)`. Stores the result of NLI + Haiku assessment for each memory pair, enabling incremental runs — only pairs involving memories written since the last run need assessment. Backfilled with all pairs above the similarity threshold for the full corpus.
 
 ## Concurrency
 
@@ -441,10 +468,15 @@ The detection is embedding-based rather than regex-based to handle paraphrasing 
 `all-MiniLM-L6-v2` via sentence-transformers, running locally in a Python venv. Produces 384-dimensional normalised float32 vectors.
 
 The embedding layer supports two modes:
-- **Daemon mode** — a background process (`cairn/daemon.py`) keeps the model resident in RAM, accepting requests over a Unix socket. Eliminates cold start latency. Start with `python3 cairn/daemon.py start`.
-- **Direct mode** — falls back to loading the model in-process if the daemon isn't running. ~3 second cold start on first embedding per hook invocation.
+- **Daemon mode** — a background process (`cairn/daemon.py`) keeps models resident in RAM, accepting requests over a Unix socket. Eliminates cold start latency. Start with `python3 cairn/daemon.py start`.
+- **Direct mode** — falls back to loading models in-process if the daemon isn't running. ~3 second cold start on first embedding per hook invocation.
 
 `embeddings.py` transparently tries the daemon first (auto-starting it on first failure), falling back to direct loading.
+
+The daemon serves three models, all lazily loaded on first use:
+1. **Bi-encoder** (`all-MiniLM-L6-v2`) — embedding generation for storage and search
+2. **Cross-encoder** (`cross-encoder/ms-marco-MiniLM-L-6-v2`) — retrieval re-ranking, jointly scoring (query, memory) pairs
+3. **NLI model** (`cross-encoder/nli-MiniLM2-L6-H768`) — entailment/contradiction scoring for the consolidation pipeline
 
 ### Vector search
 
@@ -762,15 +794,24 @@ Critically, the LLM must **never ask the user** whether to check memory. The Sto
 Results are pre-ranked hook-side using a single composite score rather than passing multiple signals for the LLM to combine:
 
 ```
-score = 0.50 * similarity + 0.15 * recency_decay + 0.05 * scope_weight
+score = 0.50 * similarity + 0.15 * keyword_overlap + 0.05 * recency_decay + 0.05 * scope_weight
 ```
 
 Where:
 - `similarity` — cosine similarity between query and memory embeddings
+- `keyword_overlap` — overlap between query terms and memory keywords
 - `recency_decay` — exponential decay with 30-day half-life (`e^(-0.693 * age_days / 30)`)
 - `scope_weight` — 1.0 for current project, 0.3 for global
 
-Confidence is deliberately excluded from scoring — it represents veracity (corroboration), not query relevance. A memory can be highly corroborated but irrelevant to the current query, or uncorroborated but exactly what's needed.
+Confidence is deliberately excluded from scoring (weight 0.0) — it represents veracity (corroboration), not query relevance. A memory can be highly corroborated but irrelevant to the current query, or uncorroborated but exactly what's needed.
+
+When cross-encoder re-ranking is enabled, results are re-scored after diversity filtering:
+
+```
+final_score = (1 - CROSS_ENCODER_WEIGHT) * composite + CROSS_ENCODER_WEIGHT * ce_normalized
+```
+
+The cross-encoder jointly reads the (query, memory) pair, catching semantic relationships that independent embeddings miss (paraphrase, entailment, implicit relevance). A score floor (`CROSS_ENCODER_SCORE_FLOOR`) drops candidates the cross-encoder considers irrelevant.
 
 All weights are configurable in `cairn/config.py`.
 
@@ -785,6 +826,8 @@ Before injection, results pass through multiple quality filters (all configurabl
 | **Borderline gate** | max_similarity < 0.45 AND top_score < 0.50 → reject | Eliminates weak-but-coherent matches that pass the garbage gate |
 | **Adaptive threshold** | +0.05–0.10 boost if recent retrieval outcomes are poor | Self-tightening based on harmful/neutral rate over last 7 days |
 | **Relative filter** | similarity < 0.7 × max_similarity → drop | Removes tail noise, keeps only the locally relevant cluster |
+| **Diversity filter** | cosine > 0.9 to already-selected → drop | Deduplicates near-identical results |
+| **Cross-encoder re-ranking** | joint (query, memory) scoring; score floor filter | Catches semantic relationships independent embeddings miss; blends with composite score |
 | **Dominance suppression** | if top1 - top2 < 0.05 → include both | Prevents false certainty from weak leaders |
 | **Weak-entry suppression** | top result score < 0.4 → don't inject | Prevents single weak matches from biasing answers |
 | **Hard cap** | max 5 entries | Bounds context window cost |
@@ -993,8 +1036,8 @@ LLMs are inconsistent at multi-factor ranking under token pressure. Passing simi
 ### Why embedding augmentation with project name?
 Prepending the project name to the embedding text (e.g. `"webshop decision use-postgres ..."`) pushes memories from unrelated domains apart in vector space. This reduces cross-project bleed naturally — without changing the schema, queries, or adding filtering logic. It's a zero-cost signal that improves retrieval precision as the database grows across multiple projects.
 
-### Why negation-based contradiction dampening?
-Full NLI (natural language inference) classifiers are a significant dependency. But a lightweight heuristic — checking for negation words like "not", "never", "instead of" in semantically similar entries — catches the most common contradiction pattern: "X is Y" vs "X is not Y". When detected, both entries' confidence is reduced slightly rather than one being overwritten, preserving ambiguity where it genuinely exists.
+### Why both write-time heuristics and batch NLI?
+Write-time negation dampening (checking for "not", "never", "instead of" in similar entries) catches the most common contradiction pattern immediately — "X is Y" vs "X is not Y" — at zero latency cost. The daily NLI-based contradiction scan (`consolidate.py --contradictions`) catches subtler cross-type contradictions that heuristics miss, using a proper NLI model with Haiku assessment for disambiguation. The heuristic is the fast path; NLI is the thorough sweep.
 
 ### Why retrieval outcome feedback?
 Per-memory `confidence_update` signals tell the system which individual memories are good or bad. But `retrieval_outcome` tells the system whether the *query → results* mapping was useful. This is a system-level signal: if a particular type of query repeatedly yields "neutral" or "harmful" outcomes, the retrieval logic itself may need tuning. The distinction is: confidence improves individual memories, retrieval outcome improves the search process. The adaptive threshold mechanism uses this signal to automatically tighten similarity floors when poor outcomes accumulate.
@@ -1017,15 +1060,25 @@ All tunable parameters are centralised in `cairn/config.py`:
 | `DEDUP_THRESHOLD` | 0.95 | Cosine similarity for near-identical dedup |
 | `CONFIDENCE_DEFAULT` | 0.7 | Starting confidence for new memories |
 | `CONFIDENCE_BOOST` / `PENALTY` | 0.1 / 0.2 | Base rates for saturating adjustments (actual: `base × (1-conf)` / `base × (1+conf)`) |
-| `SCORE_W_*` | 0.50/0.30/0.15/0.05 | Composite scoring weights |
+| `SCORE_W_*` | 0.50/0.00/0.15/0.05/0.05 | Composite scoring weights (similarity/confidence/keywords/recency/scope) |
 | `RECENCY_HALF_LIFE_DAYS` | 30 | Recency decay rate |
 | `MIN_INJECTION_SIMILARITY` | 0.35 | Garbage gate — reject all if best < this |
 | `BORDERLINE_SIM_CEILING` | 0.45 | Borderline gate similarity ceiling |
 | `BORDERLINE_SCORE_FLOOR` | 0.50 | Borderline gate minimum composite score |
 | `RELATIVE_FILTER_RATIO` | 0.7 | Drop entries below 70% of best similarity |
 | `MAX_INJECTED_ENTRIES` | 5 | Hard cap on injected entries |
-| `SOFT_SIM_OVERRIDE` | 0.60 | High similarity overrides low confidence |
-| `SOFT_CONF_FLOOR` | 0.30 | Minimum confidence unless similarity override |
+| `CROSS_ENCODER_ENABLED` | True | Enable cross-encoder re-ranking of retrieval results |
+| `CROSS_ENCODER_MODEL` | `ms-marco-MiniLM-L-6-v2` | Cross-encoder model for joint query-memory scoring |
+| `CROSS_ENCODER_WEIGHT` | 0.6 | Blend weight: `(1-w)*composite + w*cross_encoder` |
+| `CROSS_ENCODER_SCORE_FLOOR` | 0.0 | Drop candidates scoring below this (raw CE score) |
+| `NLI_ENABLED` | True | Enable NLI model for consolidation/contradiction |
+| `NLI_MODEL` | `nli-MiniLM2-L6-H768` | NLI cross-encoder for entailment/contradiction |
+| `NLI_ENTAILMENT_THRESHOLD` | 0.7 | Score above this = memories say the same thing |
+| `NLI_CONTRADICTION_THRESHOLD` | 0.0 | Raw logit above this = possible contradiction |
+| `CONSOLIDATION_SIMILARITY_THRESHOLD` | 0.85 | Bi-encoder cosine threshold for candidate clustering |
+| `CONSOLIDATION_MIN_CLUSTER_SIZE` | 2 | Minimum entries to form a consolidation cluster |
+| `CONSOLIDATION_MAX_CLUSTER_SIZE` | 10 | Cap cluster size for LLM summarisation prompt |
+| `CONTRADICTION_SIMILARITY_THRESHOLD` | 0.70 | Bi-encoder cosine threshold for contradiction pairs |
 | `DOMINANCE_EPSILON` | 0.05 | Gap threshold for including runner-up |
 | `MAX_CONTINUATIONS` | 3 | Hard cap on consecutive re-prompts |
 | `DB_BUSY_TIMEOUT_MS` | 5000 | SQLite busy timeout for concurrent access |
@@ -1091,11 +1144,80 @@ When hooks detect `agent_id` in the hook input (present for Claude Code Agent to
 
 Rationale: subagents are short-lived focused workers where cross-session continuity doesn't apply. Full enforcement wastes their limited token budget on compliance. But memories they volunteer (the LLM produces them habitually) are valuable and worth storing.
 
+## Memory Consolidation & Contradiction Detection
+
+`cairn/consolidate.py` provides automated memory maintenance via two pipelines, both running daily as cron jobs installed by `install.sh`.
+
+### Consolidation (dedup merge)
+
+Finds and merges semantically duplicate memories that evaded write-time dedup (which uses a conservative 0.95 threshold).
+
+```
+Phase 1: Bi-encoder clustering
+  Find groups of active memories with cosine similarity ≥ 0.85
+  Skip pairs already assessed (pair_assessments cache)
+      │
+Phase 2: NLI entailment scoring (via daemon)
+  For each cluster, score all pairs for bidirectional entailment
+  Keep pairs where both directions exceed NLI_ENTAILMENT_THRESHOLD (0.7)
+      │
+Phase 3: LLM consolidation (Haiku)
+  Batched Haiku calls generate a single merged memory from each confirmed cluster
+  Preserves all distinct information from the sources
+      │
+Phase 4: Execute (if --execute)
+  Insert consolidated memory, archive source memories with "consolidated into #N" reason
+  Record pair assessments for incremental future runs
+```
+
+### Contradiction detection
+
+Finds unflagged contradictions — memories that say opposite things but weren't caught at write time (different type/topic, or below negation heuristic threshold).
+
+```
+Phase 1: Bi-encoder candidate pairs
+  Find pairs of active memories with cosine similarity ≥ 0.70
+  Skip pairs already assessed (pair_assessments cache)
+      │
+Phase 2: NLI contradiction scoring (via daemon)
+  Score pairs for contradiction signal using NLI model
+  Keep pairs above NLI_CONTRADICTION_THRESHOLD
+      │
+Phase 3: Haiku assessment (batched)
+  Haiku judges each NLI-flagged pair: COEXIST, SUPERSEDED, or AMBIGUOUS
+  For SUPERSEDED, identifies which memory is newer/more accurate
+      │
+Phase 4: Archive (if --execute)
+  Archive the superseded memory with reason from Haiku
+  Record pair assessments for incremental future runs
+```
+
+### Incremental operation
+
+The `pair_assessments` table caches the result of every assessed pair. On subsequent runs, only pairs involving memories written since the last assessment need processing. After the initial full-corpus scan, daily runs typically assess zero to a handful of pairs — completing in seconds.
+
+### Cron schedule
+
+Installed by `install.sh`, tagged `# cairn-maintenance` for clean removal:
+- **3:00 AM** — `consolidate.py --execute` (dedup merge)
+- **3:30 AM** — `consolidate.py --contradictions --execute` (contradiction scan)
+
+Both ensure the daemon is running first (NLI inference requires it). Logs to `logs/consolidation.log` and `logs/contradiction.log`.
+
+### Manual usage
+
+```bash
+python3 cairn/consolidate.py                              # dry-run consolidation
+python3 cairn/consolidate.py --execute                    # execute consolidation
+python3 cairn/consolidate.py --contradictions              # dry-run contradiction scan
+python3 cairn/consolidate.py --contradictions --execute    # execute contradiction scan
+```
+
 ## Limitations and Future Work
 
 - **LLM compliance with "ask first" posture is imperfect** — despite prominent instructions, the LLM tends to skip `context: insufficient` declarations and default to file reading or answering from training data. Layer 1 (first-prompt push) mitigates cold-start. Context bootstrapping (every `CONTEXT_BOOTSTRAP_INTERVAL` turns) forces Layer 3 usage to build the habit. Inline `<instruction>` tags in retrieval XML drive `--context` recovery. These mechanisms reduce but don't eliminate compliance gaps.
 - **Stop hook output is visible to user** — when the hook blocks and re-prompts, Claude Code shows the block reason (including cairn_context XML) behind a collapsible "Ran 1 stop hook (ctrl+o to expand)" element. The `reason` field is the only way to pass data to the LLM on a Stop hook block — there is no `additionalContext` support for Stop hooks. The data is collapsed by default but labelled "Stop hook error:" which can look alarming.
 - **No `last_retrieved_at` tracking** — would enable smarter decay and usage-based pruning. Low-effort schema addition, deferred until decay mechanism is implemented.
 - **Tag invisibility is behaviour-dependent** — relies on Claude Code stripping angle bracket tags in LLM responses only. Tags in Stop hook output are NOT stripped. If Anthropic changes LLM response rendering, memory blocks would become visible to users.
-- **No cross-type contradiction detection** — contradictions are only detected within the same type+topic. A `decision` that contradicts a `fact` on a different topic would not be caught automatically.
+- **Cross-type contradiction detection is batch-only** — write-time contradictions are only detected within the same type+topic. Cross-type contradictions (a `decision` contradicting a `fact` on a different topic) are caught by the daily NLI-based contradiction scan, not in real-time.
 - **No PostToolUse capture** — intermediate tool output between turns is not indexed. The LLM distils relevant observations in the final memory block, but raw tool results (file contents, command output) are not stored. This is a deliberate trade-off of completeness for signal quality.

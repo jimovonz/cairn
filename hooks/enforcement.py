@@ -124,14 +124,14 @@ def _get_intent_embeddings() -> Optional[list[tuple[str, np.ndarray]]]:
     return _intent_embeddings if _intent_embeddings else None
 
 
-def _extract_last_sentence(text: str) -> Optional[str]:
-    """Extract the last non-empty, non-memory-block sentence from the response."""
+def _extract_tail_sentences(text: str, n: int = 3) -> list[str]:
+    """Extract the last *n* non-empty, non-memory-block sentences from the response."""
     cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL)
     cleaned = re.sub(r"^\[(?:cm|cairn-memory)\]:\s*#\s*'.*'$", "", cleaned, flags=re.MULTILINE).strip()
     cleaned = re.sub(r"\s*```\s*$", "", cleaned).strip()
     sentences = re.split(r"[.!?\n]", cleaned)
     sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
-    return sentences[-1] if sentences else None
+    return sentences[-n:] if sentences else []
 
 
 def _strip_memory_and_code(text: str) -> str:
@@ -224,8 +224,8 @@ def check_trailing_intent(text: str, session_id: str = "") -> Optional[str]:
     if cleaned.rstrip().endswith("?") and not _has_deferral_language(cleaned):
         return None
 
-    last = _extract_last_sentence(text)
-    if not last:
+    tail = _extract_tail_sentences(text, n=3)
+    if not tail:
         return None
 
     refs = _get_intent_embeddings()
@@ -236,28 +236,40 @@ def check_trailing_intent(text: str, session_id: str = "") -> Optional[str]:
 
     emb = hook_helpers.get_embedder()
     if not emb:
-        log("Trailing intent: embedder unavailable for last sentence — skipping check")
+        log("Trailing intent: embedder unavailable for tail sentences — skipping check")
         record_metric(session_id, "trailing_intent_skipped", "embedder_unavailable")
         return None
 
-    last_vec = emb.embed(last)
-    if last_vec is None:
-        log("Trailing intent: embedding failed for last sentence — skipping check")
-        record_metric(session_id, "trailing_intent_skipped", "embedding_failed")
-        return None
+    # Fast keyword pre-check: sentences starting with intent markers are
+    # flagged directly — semantic similarity misses content-heavy sentences
+    # like "Let me revise the plan to strip out the old code" (max sim 0.43).
+    _INTENT_PREFIX = re.compile(
+        r"^(?:let me|i'll|i will|let's|i'm going to)\b", re.IGNORECASE
+    )
+    for sentence in tail:
+        if _INTENT_PREFIX.match(sentence):
+            log(f"Trailing intent prefix match: '{sentence[:60]}'")
+            record_metric(session_id, "trailing_intent_detected", f"prefix_match", 1.0)
+            return sentence[:100]
 
-    max_sim = 0.0
-    for ref_text, ref_vec in refs:
-        sim = emb.cosine_similarity(last_vec, ref_vec)
-        if sim > max_sim:
-            max_sim = sim
+    best_sim = 0.0
+    best_sentence = tail[-1]
+    for sentence in tail:
+        sent_vec = emb.embed(sentence)
+        if sent_vec is None:
+            continue
+        for _ref_text, ref_vec in refs:
+            sim = emb.cosine_similarity(sent_vec, ref_vec)
+            if sim > best_sim:
+                best_sim = sim
+                best_sentence = sentence
 
-    if max_sim > TRAILING_INTENT_SIM_THRESHOLD:
-        log(f"Trailing intent match: sim={max_sim:.3f} last='{last[:60]}'")
-        record_metric(session_id, "trailing_intent_detected", f"sim={max_sim:.3f}", max_sim)
-        return last[:100]
+    if best_sim > TRAILING_INTENT_SIM_THRESHOLD:
+        log(f"Trailing intent match: sim={best_sim:.3f} sent='{best_sentence[:60]}'")
+        record_metric(session_id, "trailing_intent_detected", f"sim={best_sim:.3f}", best_sim)
+        return best_sentence[:100]
 
-    record_metric(session_id, "trailing_intent_clear", f"sim={max_sim:.3f}", max_sim)
+    record_metric(session_id, "trailing_intent_clear", f"sim={best_sim:.3f}", best_sim)
     return None
 
 

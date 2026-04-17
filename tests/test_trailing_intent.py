@@ -104,41 +104,50 @@ def run_hook(db_path, payload):
 
 # --- Unit tests for extraction and detection ---
 
-class TestExtractLastSentence:
+class TestExtractTailSentences:
     # Verifies: memory block is stripped before sentence extraction
     def test_strips_memory_block(self):
-        import hooks.stop_hook as stop_hook
         text = "Here is my answer.\n<memory>\n- type: fact\n- topic: test\n- content: test\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
-        result = enforcement._extract_last_sentence(text)
-        assert result == "Here is my answer"
+        result = enforcement._extract_tail_sentences(text)
+        assert result == ["Here is my answer"]
 
     # Verifies: trailing code fences are stripped from extraction
     def test_strips_trailing_code_fence(self):
-        import hooks.stop_hook as stop_hook
         text = "Some code here.\n```\ncode block\n```"
-        result = enforcement._extract_last_sentence(text)
-        assert isinstance(result, str) and len(result) > 0
-        assert "```" not in result
+        result = enforcement._extract_tail_sentences(text)
+        assert len(result) > 0
+        assert all("```" not in s for s in result)
 
-    # Verifies: empty/whitespace input returns None
-    def test_returns_none_for_empty(self):
-        import hooks.stop_hook as stop_hook
-        assert enforcement._extract_last_sentence("") is None
-        assert enforcement._extract_last_sentence("   ") is None
+    # Verifies: empty/whitespace input returns empty list
+    def test_returns_empty_for_empty(self):
+        assert enforcement._extract_tail_sentences("") == []
+        assert enforcement._extract_tail_sentences("   ") == []
 
-    # Verifies: short fragments are skipped (returns None)
+    # Verifies: short fragments are skipped (returns empty list)
     def test_skips_short_fragments(self):
-        import hooks.stop_hook as stop_hook
         text = "Done. Ok. Yes."
-        assert enforcement._extract_last_sentence(text) is None
+        assert enforcement._extract_tail_sentences(text) == []
 
     # Verifies: last meaningful sentence is correctly extracted
     def test_extracts_last_meaningful_sentence(self):
-        import hooks.stop_hook as stop_hook
         text = "First I did this. Then I checked the logs. Let me investigate the error further."
-        result = enforcement._extract_last_sentence(text)
-        assert result == "Let me investigate the error further", \
+        result = enforcement._extract_tail_sentences(text, n=1)
+        assert result == ["Let me investigate the error further"], \
             f"Expected exact last sentence (period stripped); got: {result!r}"
+
+    # Verifies: returns up to n tail sentences
+    def test_returns_multiple_tail_sentences(self):
+        text = "First sentence here. Second sentence here. Third sentence here. Fourth sentence here."
+        result = enforcement._extract_tail_sentences(text, n=3)
+        assert len(result) == 3
+        assert result[0] == "Second sentence here"
+        assert result[-1] == "Fourth sentence here"
+
+    # Verifies: intent in non-final sentence is captured
+    def test_captures_intent_in_penultimate(self):
+        text = "Let me revise the plan to strip out the old code. The only mechanism that matters is re-ingestion."
+        result = enforcement._extract_tail_sentences(text, n=3)
+        assert any("revise the plan" in s for s in result)
 
 
 class TestCheckTrailingIntent:
@@ -198,6 +207,20 @@ class TestCheckTrailingIntent:
             # Questions to the user are borderline — the key is we don't
             # false-positive on conversational endings
             # This is acceptable either way, but shouldn't crash
+
+    # Verifies: intent in non-final sentence is still detected
+    def test_detects_intent_in_penultimate_sentence(self):
+        emb = self._get_embedder()
+        if emb is None:
+            return
+        enforcement._intent_embeddings = None
+        with patch.object(hook_helpers, 'get_embedder', return_value=emb):
+            result = enforcement.check_trailing_intent(
+                "Let me revise the plan to strip out the old code. "
+                "The only mechanism that matters is re-ingestion.\n"
+                "[cm]: # '{\"ok\":true,\"ctx\":\"s\",\"kw\":[\"test\"]}'"
+            )
+            assert result is not None, "Should detect intent in second-to-last sentence"
 
     # Verifies: missing embedder gracefully returns None
     def test_no_embedder_returns_none(self):

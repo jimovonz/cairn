@@ -69,6 +69,14 @@ sys.exit(0 if changed else 1)
 " 2>/dev/null && echo "Removed hooks from settings.json." || echo "No cairn hooks found in settings.json."
 fi
 
+# --- Remove cron jobs ---
+if crontab -l 2>/dev/null | grep -q "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan"; then
+    crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan" | crontab -
+    echo "Removed cairn cron jobs."
+else
+    echo "No cairn cron jobs found."
+fi
+
 # --- Clean up runtime state files ---
 for f in ".context_cache" ".staged_context" ".first_prompt_done" ".continuation_count"; do
     if [ -f "$CAIRN_HOME/cairn/$f" ]; then

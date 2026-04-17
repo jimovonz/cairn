@@ -88,12 +88,15 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Hybrid FTS5 + vector search with RRF** — exact keyword matches (error codes, function names) fused with semantic similarity via Reciprocal Rank Fusion; dual-method matches ranked higher than single-method
 - **Type-prefix fan-out** — query expansion that searches with each memory type prefix (fact, decision, correction, etc.) and takes the max similarity per memory; closes the embedding gap between bare queries and type-prefixed stored memories
 - **Veracity tracking** — confidence represents corroboration, not retrieval rank; `+` corroborates, `-!` annotates contradictions with reasons that persist for future sessions
+- **Cross-encoder re-ranking** — after diversity filtering, a cross-encoder (`ms-marco-MiniLM-L-6-v2`) jointly scores (query, memory) pairs, catching semantic relationships that independent embeddings miss; blended with composite score at configurable weight
+- **Memory consolidation** — automated pipeline merges duplicate memories using NLI entailment scoring, with Haiku generating consolidated entries; runs daily via cron
+- **Contradiction detection** — NLI-based contradiction scoring with Haiku assessment identifies superseded memories and auto-archives them; incremental via pair assessment cache
 - **Semantic search** — local embeddings via `all-MiniLM-L6-v2` with sqlite-vec indexed vector search; no API key required
 - **Project bootstrap** — on session start, injects standing-context memories (preferences, facts, project state) for the current working directory; gives Claude project awareness from CWD alone, independent of prompt content
 - **Per-prompt context injection** — on every subsequent prompt, searches for relevant past context mid-conversation; catches cases where relevant memories exist but the LLM didn't know to ask
 - **Project scoping** — memories auto-labelled by working directory, retrievable per-project or globally
 - **Invisible** — metadata tags are stripped from user display; the system operates transparently
-- **Quality gates** — 9 configurable filters including garbage, borderline, relative, dominance, and diversity
+- **Quality gates** — 10 configurable filters including garbage, borderline, relative, dominance, diversity, and cross-encoder re-ranking
 - **Contradiction handling** — same-topic updates suppress the old entry; negation heuristics dampen conflicting memories; `-!` annotations preserve why something was wrong
 - **Correction-file association** — when a correction is stored, surrounding file paths are automatically extracted from the transcript and linked; future access to those files injects the correction proactively
 - **Gotcha injection** — PreToolUse hook surfaces corrections and relevant context before Read/Edit/Write tool calls on associated files
@@ -133,8 +136,9 @@ The installer:
 1. Creates a Python venv and installs dependencies (CPU-only PyTorch by default)
 2. Initializes the SQLite database
 3. Deploys global hooks, instructions, and the `/cairn` slash command
-4. Downloads the embedding model (~80MB, one-time)
+4. Downloads 3 models (~250MB total, one-time): embedding (`all-MiniLM-L6-v2`), cross-encoder (`ms-marco-MiniLM-L-6-v2`), NLI (`nli-MiniLM2-L6-H768`)
 5. Starts the embedding daemon
+6. Installs daily cron jobs for memory consolidation (3:00 AM) and contradiction detection (3:30 AM)
 
 ## Usage
 
@@ -204,16 +208,18 @@ Memories start at 0.7 (unverified). No passive decay — important but rarely ac
 
 ### Quality gates
 
-Retrieved results pass through 9 configurable gates before injection:
+Retrieved results pass through 10 configurable gates before injection:
 
 1. Low-information pre-filter (skip generic queries)
 2. Garbage gate (reject if best similarity < 0.35)
 3. Borderline gate (reject weak similarity + low score)
 4. Adaptive threshold (auto-tighten if recent retrievals were poor)
 5. Relative filter (drop entries far below the best match)
-6. Dominance suppression (include runner-up if close to leader)
-7. Weak-entry suppression (don't inject if top result is unreliable)
-8. Hard cap (max 5 entries)
+6. Diversity filter (deduplicate near-identical results)
+7. Cross-encoder re-ranking (joint query-memory scoring with score floor)
+8. Dominance suppression (include runner-up if close to leader)
+9. Weak-entry suppression (don't inject if top result is unreliable)
+10. Hard cap (max 5 entries)
 
 All thresholds configurable in `cairn/config.py`.
 
@@ -246,10 +252,13 @@ cairn/
 │   ├── query.py            # CLI query tool (20+ commands)
 │   ├── dashboard.py        # Web dashboard (localhost:8420)
 │   ├── embeddings.py       # Embedding with daemon support + composite scoring
-│   ├── daemon.py           # Background embedding server (Unix socket)
+│   ├── daemon.py           # Background server (embeddings, cross-encoder, NLI)
+│   ├── consolidate.py      # Memory consolidation + contradiction detection pipeline
+│   ├── contradiction_scan.py # Legacy contradiction scanner
 │   ├── benchmark_extract.py # Retrieval benchmark dataset extraction
 │   └── static/
 │       └── index.html      # Dashboard single-page UI
+├── logs/                   # Cron job output (consolidation, contradiction)
 ├── hooks/
 │   ├── stop_hook.py        # Orchestrator: session, parsing, routing
 │   ├── prompt_hook.py      # Layer 1 + Layer 1.5 + Layer 2 injection
@@ -268,8 +277,8 @@ cairn/
 
 - [Claude Code](https://claude.com/claude-code) v2.1+
 - Python 3.10+
-- ~1GB disk (embedding model + venv)
-- ~400MB download on first install (PyTorch CPU + sentence-transformers + embedding model; ~2.5GB with `--gpu`)
+- ~1.5GB disk (3 models + venv)
+- ~500MB download on first install (PyTorch CPU + sentence-transformers + 3 models; ~2.5GB with `--gpu`)
 - ~500MB RAM (when embedding daemon is running; auto-shuts down after 30min idle)
 
 **Platform:** Developed and tested on Ubuntu 22.04. Linux and macOS should work. Windows requires WSL — the installer is bash, and the embedding daemon uses Unix sockets. The core hooks work without the daemon (slower embedding, no daemon acceleration) but `install.sh` must run in a Unix shell.
@@ -285,6 +294,9 @@ All tunable parameters are in `cairn/config.py`. Any value can be overridden via
 - Confidence boost/penalty rates
 - Quality gate thresholds
 - Deduplication sensitivity
+- Cross-encoder re-ranking (`CROSS_ENCODER_ENABLED`, `CROSS_ENCODER_WEIGHT`, `CROSS_ENCODER_SCORE_FLOOR`)
+- NLI consolidation/contradiction (`NLI_ENABLED`, `NLI_ENTAILMENT_THRESHOLD`, `NLI_CONTRADICTION_THRESHOLD`)
+- Consolidation clustering (`CONSOLIDATION_SIMILARITY_THRESHOLD`, `CONSOLIDATION_MIN_CLUSTER_SIZE`)
 - Query expansion (`QUERY_EXPANSION_FANOUT` — type-prefix fan-out, default on)
 - Trailing intent detection threshold
 - Loop protection limits
@@ -295,7 +307,7 @@ All tunable parameters are in `cairn/config.py`. Any value can be overridden via
 |----------|-----------|
 | **No MCP** | Claude Code has direct filesystem access — MCP adds a protocol layer for capabilities already available natively |
 | **Pull-based retrieval** | The LLM decides when it needs context — more token-efficient than injecting on every prompt |
-| **Local embeddings** | No API keys, no network latency, no ongoing costs. `all-MiniLM-L6-v2` is 80MB and fast |
+| **Local models** | No API keys, no network latency, no ongoing costs. 3 local models: embedding, cross-encoder re-ranking, NLI for consolidation |
 | **Veracity over ranking** | Confidence tracks corroboration, not retrieval relevance — similarity and recency handle ranking |
 | **Invisible tags** | User sees clean output; hook infrastructure sees structured metadata — no UX compromise |
 | **sqlite-vec** | Indexed vector KNN search that scales, with transparent brute-force fallback |
@@ -325,7 +337,7 @@ Things that can go wrong and how the system handles them:
 | Hook crashes | Fail-open design: crash → exit 0 → response reaches user normally | Crash logged to metrics; no user impact |
 | Retrieval returns irrelevant context | 8 quality gates filter noise; adaptive thresholds tighten if outcomes are poor | LLM can rate retrieval as `harmful`, raising thresholds automatically |
 | Infinite re-prompt loop | Continuation cap (max 3) forces a stop after 3 consecutive re-prompts | Context cache prevents same query being served twice |
-| Contradictory memories | Same type+topic overwrites with confidence suppression; negation heuristics dampen semantic conflicts | Old content preserved in version history |
+| Contradictory memories | Same type+topic overwrites with confidence suppression; NLI-based contradiction detection auto-archives superseded memories daily | Old content preserved in version history; daily cron catches cross-type contradictions |
 | Database grows large | sqlite-vec provides indexed vector search; brute-force fallback for small DBs | All quality gates reduce injected volume regardless of DB size |
 
 ## Contributing
