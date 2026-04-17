@@ -22,12 +22,12 @@ from hooks.hook_helpers import (
     DB_PATH, LOG_PATH, strip_seen_entries, save_injected_ids,
     format_entry, split_by_scope, build_context_xml,
     record_layer_delivery, load_hook_state, save_hook_state, delete_hook_state,
+    log as _base_log,
 )
 
 
 def log(msg: str) -> None:
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
-        f.write(f"[prompt] {msg}\n")
+    _base_log(f"[prompt] {msg}")
 
 
 def is_first_prompt(session_id: str) -> bool:
@@ -377,8 +377,8 @@ def main() -> None:
             )
             cleanup_conn.commit()
             cleanup_conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"Staged context cleanup failed: {e}")
 
         # Layer 2: Staged cross-project context from previous stop hook
         staged = load_staged_context(session_id)

@@ -11,7 +11,7 @@
 
 **Every Claude Code response secretly writes structured metadata about itself. The user never sees it. A hook captures it. A database stores it. The next session remembers.**
 
-Cairn exploits the gap between Claude Code's raw LLM output and its rendered display. Angle bracket tags in LLM responses are stripped from the terminal — but they're preserved in the hook system. This creates an invisible control plane where the LLM self-annotates every response with structured memory data, and the infrastructure enforces it mechanically.
+Cairn exploits the gap between raw LLM output and rendered display in **Claude Code** and **VS Code Copilot Chat**. Memory metadata is invisible to the user — angle bracket tags are stripped from the CLI, markdown link definitions don't render in Copilot's chat panel — but preserved in the hook system. This creates an invisible control plane where the LLM self-annotates every response with structured memory data, and the infrastructure enforces it mechanically.
 
 No cloud. No API keys. No MCP. One SQLite file. Two hooks. **No additional LLM calls** — memory is written as part of the normal response, not via a separate extraction step.
 
@@ -100,6 +100,7 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Contradiction handling** — same-topic updates suppress the old entry; negation heuristics dampen conflicting memories; `-!` annotations preserve why something was wrong
 - **Correction-file association** — when a correction is stored, surrounding file paths are automatically extracted from the transcript and linked; future access to those files injects the correction proactively
 - **Gotcha injection** — PreToolUse hook surfaces corrections and relevant context before Read/Edit/Write tool calls on associated files
+- **Dual-platform support** — works with both Claude Code CLI (`<memory>` tags, stripped from terminal) and VS Code Copilot Chat (`[cm]:` markdown link definitions, invisible in chat panel); transcript adapter normalizes both formats transparently
 - **Compact memory format** — dual-format parser supports both verbose (`- type: fact`) and compact (`fact/topic: content [k: kw1, kw2]`) memory blocks
 - **Completeness enforcement** — `complete: false` blocks stop and re-prompts with remaining work; trailing intent detection blocks when the LLM promises action without following through
 - **Bootstrap enforcement** — forces context checks every N turns to build the habit of cairn-first reasoning
@@ -130,7 +131,7 @@ cd ~/cairn
 ./install.sh --gpu      # GPU embeddings (CUDA, ~2.3GB PyTorch)
 ```
 
-Restart Claude Code. The system is now active in every session.
+Restart Claude Code (or VS Code with Copilot). The system is now active in every session.
 
 The installer:
 1. Creates a Python venv and installs dependencies (CPU-only PyTorch by default)

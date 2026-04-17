@@ -521,8 +521,8 @@ def main() -> None:
                     _bc.close()
                     if _brow:
                         _is_bootstrap = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    log(f"Bootstrap check failed: {type(e).__name__}: {e}")
                 from cairn.config import BOOTSTRAP_MAX_PER_SCOPE
                 _max_scope = BOOTSTRAP_MAX_PER_SCOPE if _is_bootstrap else None
                 retrieved: Optional[str] = retrieve_context(context_need, session_id=session_id, max_per_scope=_max_scope)

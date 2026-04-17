@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import logging.handlers
 import os
 import re
 import sys
@@ -24,10 +26,34 @@ LOG_PATH = os.path.join(CAIRN_DIR, "hook.log")
 
 # cairn package available via pip install -e .
 
+# --- Structured logging with rotation ---
+_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB per file
+_LOG_BACKUP_COUNT = 3             # Keep 3 rotated backups (20 MB total max)
+
+_logger = logging.getLogger("cairn")
+if not _logger.handlers:
+    _logger.setLevel(logging.DEBUG)
+    _handler = logging.handlers.RotatingFileHandler(
+        LOG_PATH, maxBytes=_LOG_MAX_BYTES, backupCount=_LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    _handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    ))
+    _logger.addHandler(_handler)
+    _logger.propagate = False
+
 
 def log(msg: str) -> None:
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
-        f.write(f"{msg}\n")
+    _logger.info(msg)
+
+
+def log_warning(msg: str) -> None:
+    _logger.warning(msg)
+
+
+def log_error(msg: str) -> None:
+    _logger.error(msg)
 
 
 def get_conn() -> sqlite3.Connection:
@@ -180,7 +206,7 @@ def _is_corruption_error(exc: Exception) -> bool:
 def _log_db_error(where: str, exc: Exception) -> None:
     """Log a DB error loudly. Corruption goes to a dedicated corruption.log so
     it can't be buried inside the normal hook log stream."""
-    log(f"DB ERROR in {where}: {type(exc).__name__}: {exc}")
+    log_error(f"DB ERROR in {where}: {type(exc).__name__}: {exc}")
     if _is_corruption_error(exc):
         try:
             corruption_log = os.path.join(os.path.dirname(LOG_PATH), "corruption.log")
