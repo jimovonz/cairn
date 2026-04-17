@@ -81,6 +81,18 @@ def _daemon_embed(text: str) -> Optional[np.ndarray]:
     return None
 
 
+def _daemon_rerank(query: str, candidates: list[str]) -> Optional[list[float]]:
+    """Re-rank candidates via the daemon's cross-encoder. Returns scores or None."""
+    try:
+        from cairn.daemon import send_request
+        resp = send_request({"action": "rerank", "query": query, "candidates": candidates})
+        if resp and resp.get("scores") is not None:
+            return resp["scores"]
+    except Exception:
+        pass
+    return None
+
+
 def get_model() -> Any:
     global _model
     if _model is None:
@@ -481,6 +493,23 @@ def find_similar(
                     break
         if not is_dup:
             diverse.append(r)
+
+    # Cross-encoder re-ranking: score (query, memory) pairs jointly
+    from cairn.config import CROSS_ENCODER_ENABLED, CROSS_ENCODER_MIN_CANDIDATES, CROSS_ENCODER_WEIGHT
+    if CROSS_ENCODER_ENABLED and len(diverse) >= CROSS_ENCODER_MIN_CANDIDATES:
+        t_rerank = _time.perf_counter()
+        candidate_texts = [f"{r.get('type', '')} {r.get('topic', '')}: {r.get('content', '')}" for r in diverse]
+        ce_scores = _daemon_rerank(text, candidate_texts)
+        if ce_scores and len(ce_scores) == len(diverse):
+            ce_min = min(ce_scores)
+            ce_max = max(ce_scores)
+            ce_range = ce_max - ce_min if ce_max > ce_min else 1.0
+            for i, r in enumerate(diverse):
+                ce_norm = (ce_scores[i] - ce_min) / ce_range
+                r["ce_score"] = ce_scores[i]
+                r["score"] = (1 - CROSS_ENCODER_WEIGHT) * r["score"] + CROSS_ENCODER_WEIGHT * ce_norm
+            diverse.sort(key=lambda x: x["score"], reverse=True)
+        _record_embed_metric("rerank_ms", (_time.perf_counter() - t_rerank) * 1000)
 
     results = diverse[:limit]
 

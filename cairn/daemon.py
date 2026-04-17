@@ -17,12 +17,32 @@ import signal
 import socket
 import sys
 import threading
+from typing import Any
 
 SOCKET_PATH = os.path.join(os.path.dirname(__file__), ".daemon.sock")
 PID_PATH = os.path.join(os.path.dirname(__file__), ".daemon.pid")
 CAIRN_DIR = os.path.dirname(__file__)
 
 # cairn package is on sys.path via pip install -e .
+
+
+_cross_encoder: Any = None
+
+
+def _get_cross_encoder() -> Any:
+    """Lazily load the cross-encoder model. Returns None if disabled or unavailable."""
+    global _cross_encoder
+    if _cross_encoder is not None:
+        return _cross_encoder
+    try:
+        from cairn.config import CROSS_ENCODER_ENABLED, CROSS_ENCODER_MODEL
+        if not CROSS_ENCODER_ENABLED:
+            return None
+        from sentence_transformers import CrossEncoder
+        _cross_encoder = CrossEncoder(CROSS_ENCODER_MODEL)
+        return _cross_encoder
+    except Exception:
+        return None
 
 
 def handle_client(conn, emb):
@@ -44,6 +64,17 @@ def handle_client(conn, emb):
             model = emb.get_model()
             vec = model.encode(text, normalize_embeddings=True)
             response = {"vector": emb.to_blob(vec).hex()}
+
+        elif action == "rerank":
+            query = request["query"]
+            candidates = request["candidates"]
+            ce = _get_cross_encoder()
+            if ce is None:
+                response = {"scores": None}
+            else:
+                pairs = [(query, c) for c in candidates]
+                scores = ce.predict(pairs).tolist()
+                response = {"scores": scores}
 
         elif action == "similarity":
             text = request["text"]

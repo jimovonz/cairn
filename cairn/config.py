@@ -150,6 +150,15 @@ CHECKPOINT_ERROR_PATTERNS = "error,failed,traceback,denied,not found,exception,f
 CHECKPOINT_MIN_OUTPUT_LINES = 30   # Bash output above this line count triggers a nudge (even without errors)
 CHECKPOINT_MAX_NOTES_PER_SESSION = 20  # Hard cap on memory_notes stored per session
 
+# === Cross-encoder re-ranking ===
+# After diversity filtering, re-score candidates using a cross-encoder that reads
+# (query, memory) pairs jointly. Catches semantic relationships that cosine
+# similarity on independent embeddings misses (paraphrase, entailment).
+CROSS_ENCODER_ENABLED = True
+CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+CROSS_ENCODER_WEIGHT = 0.6         # Blend: (1-w)*composite + w*cross_encoder
+CROSS_ENCODER_MIN_CANDIDATES = 3   # Skip re-ranking if fewer candidates than this
+
 # === Concurrency ===
 DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for lock release
 
