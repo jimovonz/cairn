@@ -23,48 +23,47 @@ def extract_associated_files(transcript_path: str, lookback: int = 30) -> list[s
     """
     if not transcript_path:
         return []
+    from hooks.transcript_adapter import iter_normalized_entries
     try:
-        # Read all lines and take the last N
-        with open(transcript_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        recent = lines[-lookback:] if len(lines) > lookback else lines
+        entries = list(iter_normalized_entries(transcript_path))
+        recent = entries[-lookback:] if len(entries) > lookback else entries
 
         files: list[str] = []
         seen: set[str] = set()
-        for line in recent:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
 
-            # Tool use entries have tool_name and parameters
-            tool_name = entry.get("tool_name") or ""
+        def _record_file(fp: str) -> None:
+            if fp and fp not in seen:
+                files.append(fp)
+                seen.add(fp)
+
+        def _scan_tool_use(tool_name: str, params: dict) -> None:
             if tool_name in ("Read", "Edit", "Write", "MultiEdit"):
-                params = entry.get("parameters") or entry.get("input") or {}
-                fp = params.get("file_path") or params.get("filePath") or ""
-                if fp and fp not in seen:
-                    files.append(fp)
-                    seen.add(fp)
-                # MultiEdit may have multiple file edits
-                edits = params.get("edits") or []
-                for edit in edits:
-                    efp = edit.get("file_path") or edit.get("filePath") or ""
-                    if efp and efp not in seen:
-                        files.append(efp)
-                        seen.add(efp)
-
-            # Also check Bash tool calls for file paths in commands
+                _record_file(params.get("file_path") or params.get("filePath") or "")
+                for edit in params.get("edits") or []:
+                    if isinstance(edit, dict):
+                        _record_file(edit.get("file_path") or edit.get("filePath") or "")
             if tool_name == "Bash":
-                bash_params = entry.get("parameters") or entry.get("input") or {}
-                cmd = bash_params.get("command", "") if isinstance(bash_params, dict) else ""
-                # Extract paths that look like file references
+                cmd = params.get("command", "") if isinstance(params, dict) else ""
                 for match in re.findall(r'(?:^|\s)(/[^\s;|&>]+\.[a-zA-Z0-9]+)', str(cmd)):
-                    if match not in seen:
-                        files.append(match)
-                        seen.add(match)
+                    _record_file(match)
+
+        for entry in recent:
+            # Legacy/CLI top-level shape: tool_name + parameters/input on the entry
+            top_tool = entry.get("tool_name") or ""
+            if top_tool:
+                top_params = entry.get("parameters") or entry.get("input") or {}
+                if isinstance(top_params, dict):
+                    _scan_tool_use(top_tool, top_params)
+            # Canonical shape (CLI + Copilot via adapter): tool_use blocks inside
+            # assistant message content. The adapter maps Copilot tool names like
+            # read_file → Read, run_in_terminal → Bash, so this branch catches both.
+            msg = entry.get("message", {})
+            if entry.get("type") == "assistant" and isinstance(msg, dict):
+                for block in msg.get("content", []) or []:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        block_input = block.get("input") or {}
+                        if isinstance(block_input, dict):
+                            _scan_tool_use(block.get("name", ""), block_input)
 
         return files
     except (FileNotFoundError, PermissionError, OSError):

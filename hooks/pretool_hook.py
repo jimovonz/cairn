@@ -95,7 +95,7 @@ def main() -> None:
     hook_input = json.loads(raw)
 
     tool_name = hook_input.get("tool_name", "")
-    session_id = hook_input.get("session_id", "")
+    session_id = hook_input.get("session_id", "") or hook_input.get("sessionId", "")
 
     # Only fire for file-access tools
     if tool_name not in ("Read", "Edit", "Write", "MultiEdit"):

@@ -49,38 +49,32 @@ def query_py_invoked_since(transcript_path: str, since_iso: str) -> bool:
     TRIVIAL = ("--stats", "--check", "--recent", "--projects", "--today", "--bootstrap")
     SUBSTANTIVE_FLAGS = ("--semantic", "--type", "--project", "--since", "--context",
                          "--history", "--compact")
-    try:
-        with open(transcript_path, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                    ts = entry.get("timestamp", "")
-                    if not ts or ts < since_iso:
-                        continue
-                    msg = entry.get("message", {})
-                    if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                        continue
-                    content = msg.get("content", [])
-                    if not isinstance(content, list):
-                        continue
-                    for block in content:
-                        if not isinstance(block, dict):
-                            continue
-                        if block.get("type") != "tool_use" or block.get("name") != "Bash":
-                            continue
-                        cmd = block.get("input", {}).get("command", "")
-                        if "query.py" not in cmd:
-                            continue
-                        # Substantive flag → counts
-                        if any(flag in cmd for flag in SUBSTANTIVE_FLAGS):
-                            return True
-                        # Bare positional search (e.g. query.py "brother") → counts
-                        if not any(t in cmd for t in TRIVIAL):
-                            return True
-                except (json.JSONDecodeError, AttributeError, KeyError):
+    from hooks.transcript_adapter import iter_normalized_entries
+    for entry in iter_normalized_entries(transcript_path):
+        try:
+            ts = entry.get("timestamp", "")
+            if not ts or ts < since_iso:
+                continue
+            msg = entry.get("message", {})
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", [])
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
                     continue
-    except OSError:
-        pass
+                if block.get("type") != "tool_use" or block.get("name") != "Bash":
+                    continue
+                cmd = block.get("input", {}).get("command", "")
+                if "query.py" not in cmd:
+                    continue
+                if any(flag in cmd for flag in SUBSTANTIVE_FLAGS):
+                    return True
+                if not any(t in cmd for t in TRIVIAL):
+                    return True
+        except (AttributeError, KeyError):
+            continue
     return False
 
 
@@ -94,49 +88,84 @@ def last_user_message(transcript_path: str) -> str:
     if not transcript_path or not os.path.exists(transcript_path):
         return ""
     last = ""
-    try:
-        with open(transcript_path, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                    msg = entry.get("message", {})
-                    if not isinstance(msg, dict) or msg.get("role") != "user":
-                        continue
-                    content = msg.get("content", "")
-                    if isinstance(content, list):
-                        text = " ".join(
-                            b.get("text", "") for b in content
-                            if isinstance(b, dict) and b.get("type") == "text"
-                        )
-                    elif isinstance(content, str):
-                        text = content
-                    else:
-                        continue
-                    # Skip command messages and tool results — only real user prompts
-                    if "<command-message>" in text or "<tool_use_id>" in text:
-                        continue
-                    text = text.strip()
-                    if text:
-                        last = text
-                except (json.JSONDecodeError, AttributeError, KeyError):
-                    continue
-    except OSError:
-        pass
+    from hooks.transcript_adapter import iter_normalized_entries
+    for entry in iter_normalized_entries(transcript_path):
+        try:
+            msg = entry.get("message", {})
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text = " ".join(
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            elif isinstance(content, str):
+                text = content
+            else:
+                continue
+            if "<command-message>" in text or "<tool_use_id>" in text:
+                continue
+            text = text.strip()
+            if text:
+                last = text
+        except (AttributeError, KeyError):
+            continue
     return last
 
 
-def resolve_project(cwd: str) -> str:
+def _resolve_workspace_from_transcript(transcript_path: str) -> str:
+    """Derive workspace folder from VS Code's workspace.json adjacent to a
+    Copilot transcript path.
+
+    Copilot transcripts live at:
+        <workspaceStorage>/<hash>/GitHub.copilot-chat/transcripts/<session>.jsonl
+
+    The workspace.json at <workspaceStorage>/<hash>/workspace.json maps the
+    hash back to the actual folder (e.g. file:///home/user/Projects/myproject).
+    """
+    if not transcript_path:
+        return ""
+    try:
+        parts = transcript_path.split("/")
+        idx = parts.index("GitHub.copilot-chat")
+        ws_dir = "/".join(parts[:idx])
+        ws_json = os.path.join(ws_dir, "workspace.json")
+        if os.path.isfile(ws_json):
+            with open(ws_json, encoding="utf-8") as f:
+                data = json.loads(f.read())
+            folder = data.get("folder", "")
+            if folder.startswith("file:///"):
+                folder = folder[7:]
+            return folder.rstrip("/")
+    except (ValueError, OSError, json.JSONDecodeError, KeyError):
+        pass
+    return ""
+
+
+def resolve_project(cwd: str, transcript_path: str = "") -> str:
     """Resolve the project label for a session.
 
     Precedence: CAIRN_PROJECT environment variable (explicit override) →
-    basename of cwd (current behaviour). Set CAIRN_PROJECT before launching
-    Claude Code to override the cwd-based default — useful for catch-all
-    directories like ~/Projects/temp/ or for benchmark isolation.
+    basename of cwd (if it's a specific project, not a generic home dir) →
+    workspace folder from VS Code workspace.json (Copilot sessions) →
+    basename of cwd as final fallback.
     """
     override = os.environ.get("CAIRN_PROJECT", "").strip().lower()
     if override:
         return override
-    return os.path.basename(cwd.rstrip("/")).lower() if cwd else ""
+
+    home = os.path.expanduser("~")
+    cwd_clean = cwd.rstrip("/") if cwd else ""
+
+    if cwd_clean and cwd_clean != home:
+        return os.path.basename(cwd_clean).lower()
+
+    ws_folder = _resolve_workspace_from_transcript(transcript_path)
+    if ws_folder and ws_folder != home:
+        return os.path.basename(ws_folder).lower()
+
+    return os.path.basename(cwd_clean).lower() if cwd_clean else ""
 
 
 def _is_corruption_error(exc: Exception) -> bool:
@@ -306,8 +335,10 @@ def record_layer_delivery(session_id: str, layer: str, ids: list[int]) -> None:
 
 
 def strip_memory_block(text: str) -> str:
-    """Remove <memory>...</memory> block from response text."""
-    return re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
+    """Remove memory blocks from response text (both <memory> tags and [cm] link-defs)."""
+    text = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL)
+    text = re.sub(r"^\[(?:cm|cairn-memory)\]:\s*#\s*'.*'$", "", text, flags=re.MULTILINE)
+    return text.strip()
 
 
 def format_entry(r: dict[str, Any]) -> str:

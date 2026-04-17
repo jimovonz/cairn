@@ -1,7 +1,16 @@
-"""Memory block parser for Cairn stop hook."""
+"""Memory block parser for Cairn stop hook.
+
+Supports three memory block formats:
+1. Verbose: <memory>- type: fact\n- topic: ...\n- complete: true\n...</memory>
+2. Compact: <memory>fact/topic: content [k: kw1]\n+ c h:52</memory>
+3. Link-definition (JSON): [cairn-memory]: # '{"entries":[...],"complete":true,...}'
+   Invisible in Copilot chat panel (markdown link defs produce no rendered output).
+   Uses single-quoted title with greedy match to last quote on line.
+"""
 
 from __future__ import annotations
 
+import json as _json
 import re
 from typing import NamedTuple, Optional
 
@@ -31,16 +40,153 @@ NO_BLOCK = ParseResult(None, None, None, None, None, [], None, [], None, False, 
 NOOP_BLOCK = ParseResult([], True, None, "sufficient", None, [], None, [], None, True, True, False, None, False)
 
 
-def parse_memory_block(text: str) -> ParseResult:
-    """Extract memory entries, completeness, and context needs from a <memory> block.
+def _g(d: dict, *keys, default=None):
+    """Get first matching key from dict — supports short/long key aliases."""
+    for k in keys:
+        if k in d:
+            return d[k]
+    return default
 
-    Robust parser that handles:
-    - Malformed/unclosed tags (tries to find content after last <memory>)
-    - Unknown fields (ignored gracefully)
-    - Unknown types (accepted as-is)
-    - Extra whitespace, missing dashes, inconsistent formatting
+
+# Context value shortcuts: "s" → "sufficient", "i" → "insufficient"
+_CTX_EXPAND = {"s": "sufficient", "i": "insufficient"}
+
+
+def _parse_linkdef(text: str) -> Optional[ParseResult]:
+    """Try to parse a link-definition JSON memory block from text.
+
+    Format: [cm]: # '{"e":[{"t":"fact","to":"...","c":"..."}],"ok":true,"ctx":"s","kw":["k1"]}'
+
+    Accepts both short and long JSON keys for token economy:
+        e/entries, t/type, to/topic, c/content, kw/keywords,
+        ok/complete, ctx/context, cn/context_need, rem/remaining,
+        cu/confidence_updates, ro/retrieval_outcome, int/intent, tr/trigger, d/depth
+
+    Uses greedy match to the last single-quote on the line so that JSON
+    content containing literal single quotes (e.g. "it's") is handled
+    without escaping. Returns None if no link-definition block found.
+
+    Accepts [cairn-memory] or [cm] as the link label.
     """
-    # Try closed tags first, fall back to unclosed
+    # Scan for the link definition line(s) — take the last one if multiple
+    matches = re.findall(
+        r"^\[(?:cairn-memory|cm)\]:\s*#\s*'(.+)'\s*$",
+        text, re.MULTILINE
+    )
+    if not matches:
+        return None
+
+    raw_json = matches[-1]
+    try:
+        data = _json.loads(raw_json)
+    except (_json.JSONDecodeError, ValueError) as e:
+        log(f"Link-def JSON parse error: {e} — raw: {raw_json[:120]}")
+        return None
+
+    if not isinstance(data, dict):
+        log(f"Link-def JSON is not a dict: {type(data)}")
+        return None
+
+    # Extract entries (e or entries)
+    raw_entries = _g(data, "e", "entries", default=[])
+    entries: list[dict[str, str]] = []
+    if isinstance(raw_entries, list):
+        for e in raw_entries:
+            if not isinstance(e, dict):
+                continue
+            e_type = _g(e, "t", "type")
+            e_topic = _g(e, "to", "topic")
+            if not e_type or not e_topic:
+                continue
+            entry = {
+                "type": str(e_type),
+                "topic": str(e_topic),
+                "content": str(_g(e, "c", "content", default=e_topic)),
+            }
+            kw = _g(e, "kw", "keywords")
+            if kw is not None:
+                entry["keywords"] = kw if isinstance(kw, list) else [k.strip() for k in str(kw).split(",")]
+            trigger = _g(e, "tr", "trigger")
+            if trigger:
+                entry["trigger"] = str(trigger)
+            depth = _g(e, "d", "depth")
+            if depth is not None:
+                try:
+                    entry["depth"] = int(depth)
+                except (ValueError, TypeError):
+                    pass
+            entries.append(entry)
+
+    # Extract metadata (short/long keys)
+    complete = _g(data, "ok", "complete", default=True)
+    if isinstance(complete, str):
+        complete = complete.lower() == "true"
+    remaining = _g(data, "rem", "remaining")
+    raw_ctx = str(_g(data, "ctx", "context", default="sufficient")).lower()
+    context = _CTX_EXPAND.get(raw_ctx, raw_ctx)
+    context_need = _g(data, "cn", "context_need")
+    retrieval_outcome = _g(data, "ro", "retrieval_outcome")
+    if retrieval_outcome:
+        retrieval_outcome = str(retrieval_outcome).lower()
+    intent = _g(data, "int", "intent")
+    if intent:
+        intent = str(intent).lower()
+
+    # Keywords — block-level (kw or keywords)
+    raw_kw = _g(data, "kw", "keywords", default=[])
+    if isinstance(raw_kw, list):
+        keywords = [str(k).strip() for k in raw_kw if str(k).strip()]
+    elif isinstance(raw_kw, str):
+        keywords = [k.strip() for k in raw_kw.split(",") if k.strip()]
+    else:
+        keywords = []
+
+    # Attach block-level keywords to entries that don't have their own
+    if keywords:
+        for entry in entries:
+            if "keywords" not in entry:
+                entry["keywords"] = keywords
+
+    # Confidence updates — accept "42:+" or "17:-! reason" strings (cu or confidence_updates)
+    confidence_updates: list[tuple[int, str, Optional[str]]] = []
+    for cu in _g(data, "cu", "confidence_updates", default=[]):
+        if isinstance(cu, str):
+            m = re.match(r"(\d+)\s*:\s*(-!|[+-])\s*(.*)?$", cu)
+            if m:
+                reason = m.group(3).strip() if m.group(3) else None
+                confidence_updates.append((int(m.group(1)), m.group(2), reason))
+
+    return ParseResult(
+        entries=entries,
+        complete=complete,
+        remaining=remaining,
+        context=context,
+        context_need=context_need,
+        confidence_updates=confidence_updates,
+        retrieval_outcome=retrieval_outcome,
+        keywords=keywords,
+        intent=intent,
+        complete_explicit=True,
+        context_explicit=True,
+        keywords_explicit=bool(keywords),
+        hash_claimed=None,
+        is_compact=False,
+    )
+
+
+def parse_memory_block(text: str) -> ParseResult:
+    """Extract memory entries, completeness, and context needs from a memory block.
+
+    Tries formats in order:
+    1. Link-definition JSON ([cairn-memory]: # '{...}') — invisible in Copilot
+    2. <memory> block (verbose or compact) — the original format
+    """
+    # Try link-definition format first (invisible in Copilot chat panel)
+    linkdef_result = _parse_linkdef(text)
+    if linkdef_result is not None:
+        return linkdef_result
+
+    # Fall back to <memory> block parsing
     pattern = r"<memory>(.*?)</memory>"
     matches = re.findall(pattern, text, re.DOTALL)
     if not matches:
@@ -286,17 +432,20 @@ def _parse_verbose(block: str) -> ParseResult:
 
 
 def parse_memory_notes(text: str) -> list[dict[str, str]]:
-    """Extract <memory_note> tags from text.
+    """Extract memory notes from text.
 
-    Format: <memory_note>type/topic: content</memory_note>
+    Accepts two formats:
+    1. <memory_note>type/topic: content</memory_note>  (original, visible in Copilot)
+    2. [cairn-note]: # '{"type":"...","topic":"...","content":"..."}'  (invisible in Copilot)
 
     Returns a list of dicts with type, topic, content keys.
     Silently skips malformed notes.
     """
     notes: list[dict[str, str]] = []
+
+    # Format 1: <memory_note> tags
     for match in re.finditer(r"<memory_note>(.*?)</memory_note>", text, re.DOTALL):
         body = match.group(1).strip()
-        # Parse type/topic: content
         entry_match = re.match(r"^(\w+)/([^:]+):\s*(.+)$", body, re.DOTALL)
         if entry_match:
             notes.append({
@@ -306,4 +455,19 @@ def parse_memory_notes(text: str) -> list[dict[str, str]]:
             })
         else:
             log(f"Skipping malformed memory_note: {body[:60]}")
+
+    # Format 2: [cairn-note] link definitions (invisible in Copilot)
+    for match in re.finditer(r"^\[(?:cairn-note|cn)\]:\s*#\s*'(.+)'\s*$", text, re.MULTILINE):
+        raw = match.group(1)
+        try:
+            data = _json.loads(raw)
+            if isinstance(data, dict) and "type" in data and "topic" in data:
+                notes.append({
+                    "type": str(data["type"]),
+                    "topic": str(data["topic"]),
+                    "content": str(data.get("content", data.get("topic", ""))),
+                })
+        except (_json.JSONDecodeError, ValueError):
+            log(f"Skipping malformed cairn-note JSON: {raw[:60]}")
+
     return notes

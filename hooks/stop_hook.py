@@ -26,7 +26,7 @@ from hooks.hook_helpers import log, get_conn, record_metric, flush_metrics, get_
 from hooks.parser import parse_memory_block, parse_memory_notes
 from hooks.hash_verify import compute_response_hash
 from hooks.storage import apply_confidence_updates, insert_memories
-from hooks.enforcement import check_trailing_intent, check_declined_without_trying, check_correction_triggers, get_continuation_count, increment_continuation, reset_continuation
+from hooks.enforcement import check_trailing_intent, check_deferral, check_declined_without_trying, check_correction_triggers, get_continuation_count, increment_continuation, reset_continuation
 
 # Appended to block reasons that are purely about memory format — the user already saw the
 # response in interactive mode, so restating it is wasteful.  Only used for format/density
@@ -58,26 +58,19 @@ def collect_memory_notes(transcript_path: str, session_id: str,
 
     # Collect all memory_notes from assistant messages in the transcript
     all_notes: list[dict[str, str]] = []
+    from hooks.transcript_adapter import iter_normalized_entries
     try:
-        with open(transcript_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                msg = entry.get("message", {})
-                if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                    continue
-                content = msg.get("content", [])
-                if isinstance(content, str):
-                    all_notes.extend(parse_memory_notes(content))
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            all_notes.extend(parse_memory_notes(block.get("text", "")))
+        for entry in iter_normalized_entries(transcript_path):
+            msg = entry.get("message", {})
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", [])
+            if isinstance(content, str):
+                all_notes.extend(parse_memory_notes(content))
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        all_notes.extend(parse_memory_notes(block.get("text", "")))
     except (OSError, PermissionError) as e:
         log(f"Memory note collection error: {e}")
         return 0
@@ -136,21 +129,14 @@ def register_session(session_id: str, transcript_path: str) -> None:
 
     # Extract parent session from first user message in transcript
     parent_session_id: Optional[str] = None
+    from hooks.transcript_adapter import iter_normalized_entries
     try:
-        with open(transcript_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if entry.get("type") in ("user", "assistant"):
-                    entry_session = entry.get("sessionId", "")
-                    if entry_session and entry_session != session_id:
-                        parent_session_id = entry_session
-                    break
+        for entry in iter_normalized_entries(transcript_path):
+            if entry.get("type") in ("user", "assistant"):
+                entry_session = entry.get("sessionId", "")
+                if entry_session and entry_session != session_id:
+                    parent_session_id = entry_session
+                break
     except (FileNotFoundError, PermissionError):
         pass
 
@@ -216,9 +202,9 @@ def _is_phoned_in_context_need(context_need: str, transcript_path: str) -> bool:
     return len(overlap) == 0  # Zero overlap → phoned in
 
 
-def auto_label_project(session_id: str, cwd: str) -> None:
+def auto_label_project(session_id: str, cwd: str, transcript_path: str = "") -> None:
     """Heuristically label a session's project based on the working directory."""
-    if not session_id or not cwd:
+    if not session_id:
         return
     conn = get_conn()
     row = conn.execute("SELECT project FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
@@ -227,7 +213,7 @@ def auto_label_project(session_id: str, cwd: str) -> None:
         return
 
     from hooks.hook_helpers import resolve_project
-    project_name: str = resolve_project(cwd)
+    project_name: str = resolve_project(cwd, transcript_path)
     if not project_name or project_name in (".", "/", "home"):
         conn.close()
         return
@@ -245,7 +231,7 @@ def main() -> None:
 
     is_continuation: bool = hook_input.get("stop_hook_active", False)
     transcript_path: str = hook_input.get("transcript_path", "")
-    session_id: str = hook_input.get("session_id", "")
+    session_id: str = hook_input.get("session_id", "") or hook_input.get("sessionId", "")
     cwd: str = hook_input.get("cwd", "")
     is_subagent: bool = bool(hook_input.get("agent_id"))
 
@@ -253,7 +239,7 @@ def main() -> None:
     register_session(session_id, transcript_path)
 
     # Auto-label project from working directory
-    auto_label_project(session_id, cwd)
+    auto_label_project(session_id, cwd, transcript_path)
 
     # Check continuation cap
     if is_continuation:
@@ -264,11 +250,31 @@ def main() -> None:
             reset_continuation(session_id)
             sys.exit(0)
 
-    # Use last_assistant_message — this is the current response
+    # Use last_assistant_message — this is the current response.
+    # Copilot's chatHooks payload omits last_assistant_message; fall back to
+    # reading the last assistant message from the transcript file via the adapter.
     text: str = hook_input.get("last_assistant_message", "")
 
+    if not text and transcript_path:
+        from hooks.transcript_adapter import iter_normalized_entries
+        for entry in iter_normalized_entries(transcript_path):
+            msg = entry.get("message", {})
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    t = "\n".join(
+                        b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                elif isinstance(content, str):
+                    t = content
+                else:
+                    continue
+                if t.strip():
+                    text = t
+
     if not text:
-        log(f"No text found in hook input. Keys: {list(hook_input.keys())}")
+        log(f"No text found in hook input or transcript. Keys: {list(hook_input.keys())}")
         sys.exit(0)
 
     # Headless assessment sessions (e.g. contradiction scanner) — skip all enforcement
@@ -276,7 +282,8 @@ def main() -> None:
         log("Headless mode — skipping enforcement")
         sys.exit(0)
 
-    log(f"Text length: {len(text)}, has <memory>: {'<memory>' in text}, continuation: {is_continuation}, subagent: {is_subagent}")
+    has_block = '<memory>' in text or bool(re.search(r'^\[(?:cm|cairn-memory)\]:', text, re.MULTILINE))
+    log(f"Text length: {len(text)}, has memory block: {has_block}, continuation: {is_continuation}, subagent: {is_subagent}")
 
     # Parse memory block
     parsed = parse_memory_block(text)
@@ -327,19 +334,18 @@ def main() -> None:
 
         increment_continuation(session_id)
 
-        has_open_tag: bool = "<memory>" in text
-        has_close_tag: bool = "</memory>" in text
-        if has_open_tag:
+        has_legacy_tag: bool = "<memory>" in text
+        has_linkdef: bool = bool(re.search(r'^\[(?:cm|cairn-memory)\]:', text, re.MULTILINE))
+        if has_legacy_tag or has_linkdef:
             record_metric(session_id, "malformed_memory_block")
-            hint: str = "Your <memory> block could not be parsed. "
-            if not has_close_tag:
-                hint += "Missing closing </memory> tag. "
-            hint += "Use this exact format:\n<memory>\n- type: fact\n- topic: example\n- content: one line description\n- complete: true\n</memory>"
+            hint: str = "Your memory block could not be parsed. "
+            hint += 'Use this format:\n[cm]: # \'{"e":[{"t":"fact","to":"short key","c":"one line"}],"ok":true,"ctx":"s","kw":["relevant","words"]}\''
             result: dict = {"decision": "block", "reason": hint + AMEND_ONLY_SUFFIX}
         else:
             result = {
                 "decision": "block",
-                "reason": "Response missing required <memory> block. Add a <memory> block with at least complete: true before finishing." + AMEND_ONLY_SUFFIX
+                "reason": "Response missing required memory block. Add a [cm]: # '{...}' block. "
+                    'Minimum: [cm]: # \'{"ok":true,"ctx":"s","kw":["topic"]}\'' + AMEND_ONLY_SUFFIX
             }
         print(json.dumps(result))
         sys.exit(0)
@@ -379,10 +385,7 @@ def main() -> None:
             hints.append(f"Memory block is missing: {', '.join(missing_fields)}.")
         if incomplete_entries:
             hints.append(f"Incomplete entries: {'; '.join(incomplete_entries)}.")
-        if parsed.is_compact:
-            hint_text = " ".join(hints) + " Use this format:\n<memory>\ntype/topic: content [k: keyword1, keyword2]\n+ c h:NNN\n</memory>"
-        else:
-            hint_text = " ".join(hints) + " All fields are required. Use this format:\n<memory>\n- type: fact\n- topic: short key\n- content: one line\n- complete: true\n- context: sufficient\n- keywords: relevant, topic, words\n</memory>"
+        hint_text = " ".join(hints) + ' All fields are required. Use this format:\n[cm]: # \'{"e":[{"t":"fact","to":"short key","c":"one line"}],"ok":true,"ctx":"s","kw":["relevant","topic","words"]}\''
         log(f"Strict validation failed: {hint_text[:200]}")
         record_metric(session_id, "strict_validation_failed", hint_text[:100])
         increment_continuation(session_id)
@@ -403,6 +406,9 @@ def main() -> None:
     # Content density validation — reject lazy/thin entries
     density_issues: list[str] = []
     if entries:
+        # Reset consecutive no-entry counter when entries are present
+        from hooks.hook_helpers import save_hook_state
+        save_hook_state(session_id, "consecutive_no_entry_turns", "0")
         for i, entry in enumerate(entries):
             content = entry.get("content", "")
             if len(content) < 20:
@@ -410,11 +416,25 @@ def main() -> None:
     else:
         # No entries — check if the response was substantive enough to warrant a memory
         stripped = strip_memory_block(text)
-        if len(stripped) > 1000 and not is_continuation:
+        if len(stripped) > 300 and not is_continuation:
             density_issues.append(
-                "Substantive response (>1000 chars) with no memory entries. "
+                "Substantive response (>300 chars) with no memory entries. "
                 "Capture what was discussed, decided, or learned."
             )
+        else:
+            # Track consecutive no-entry turns; block after 3 regardless of length
+            from hooks.hook_helpers import load_hook_state, save_hook_state
+            try:
+                no_entry_count = int(load_hook_state(session_id, "consecutive_no_entry_turns") or "0")
+            except (ValueError, TypeError):
+                no_entry_count = 0
+            no_entry_count += 1
+            save_hook_state(session_id, "consecutive_no_entry_turns", str(no_entry_count))
+            if no_entry_count >= 3 and not is_continuation:
+                density_issues.append(
+                    f"{no_entry_count} consecutive turns with no memory entries. "
+                    "Capture at least one observation from this conversation."
+                )
 
     if density_issues and not is_continuation:
         hint_text = " ".join(density_issues)
@@ -761,6 +781,26 @@ def main() -> None:
                     f"Your response ends with a stated intent to act: \"{intent_result}\". "
                     "Either follow through now, or remove the promise. "
                     "If you genuinely have nothing more to do, add 'intent: resolved' to your <memory> block."
+                )
+            }
+            print(json.dumps(result))
+            sys.exit(0)
+
+    # Deferral detection — catch fabricated session/scope boundaries.
+    # Runs even with ok:true — deferral + complete is the exact contradiction to catch.
+    if not is_continuation and not is_subagent:
+        deferral_result: Optional[str] = check_deferral(text, complete=bool(complete), session_id=session_id)
+        if deferral_result:
+            log(f"Deferral detected: {deferral_result[:100]}")
+            record_metric(session_id, "deferral_blocked", deferral_result[:80])
+            increment_continuation(session_id)
+            result = {
+                "decision": "block",
+                "reason": (
+                    "Your response contains scope-deferral language — inventing session boundaries, "
+                    "deferring work to 'next session', or framing remaining work as 'multi-session scope'. "
+                    "There are no session limits. Context compression is automatic. "
+                    "Either continue the work now, or set ok:false with rem: describing what remains."
                 )
             }
             print(json.dumps(result))

@@ -288,7 +288,7 @@ class TestTemplateFiles:
         with open(rules_path) as f:
             content = f.read()
         assert "Cairn Memory System" in content, "Rules file should contain system documentation"
-        assert "<memory>" in content, "Rules file should document memory block format"
+        assert "[cm]" in content or "<memory>" in content, "Rules file should document memory block format"
 
     @pytest.mark.behavioural
     def test_cairn_command_template_exists(self):
