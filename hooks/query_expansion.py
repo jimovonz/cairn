@@ -108,12 +108,14 @@ def type_prefix_fanout(
     misses the type prefix, reducing similarity. Fan out across all types and
     take the best similarity per memory.
     """
-    from cairn.embeddings import composite_score, from_blob, cosine_similarity
+    from cairn.embeddings import composite_score, from_blob, cosine_similarity, extract_query_terms, keyword_overlap
+
+    qt = extract_query_terms(query)
 
     # Fetch all embeddings once
     rows = conn.execute(
         "SELECT id, type, topic, content, embedding, updated_at, project, "
-        "confidence, session_id, depth, archived_reason "
+        "confidence, session_id, depth, archived_reason, keywords "
         "FROM memories WHERE embedding IS NOT NULL"
     ).fetchall()
 
@@ -148,7 +150,8 @@ def type_prefix_fanout(
             if sim > max_sim:
                 max_sim = sim
 
-        score = composite_score(max_sim, confidence, row[5], row[6], current_project)
+        kw_ov = keyword_overlap(qt, row[11])
+        score = composite_score(max_sim, confidence, row[5], row[6], current_project, kw_overlap=kw_ov)
 
         if mem_id not in best or score > best[mem_id]["score"]:
             best[mem_id] = {
@@ -236,15 +239,16 @@ def neighbor_blend(
     3. Blend: new_vec = query_weight * query_vec + (1 - query_weight) * avg(neighbor_vecs)
     4. Re-search with the blended vector
     """
-    from cairn.embeddings import composite_score, from_blob, cosine_similarity
+    from cairn.embeddings import composite_score, from_blob, cosine_similarity, extract_query_terms, keyword_overlap
 
+    qt = extract_query_terms(query)
     query_text = f"{current_project} {query}" if current_project else query
     query_vec = embed_fn(query_text)
 
     # Fetch all embeddings
     rows = conn.execute(
         "SELECT id, type, topic, content, embedding, updated_at, project, "
-        "confidence, session_id, depth, archived_reason "
+        "confidence, session_id, depth, archived_reason, keywords "
         "FROM memories WHERE embedding IS NOT NULL"
     ).fetchall()
 
@@ -276,7 +280,8 @@ def neighbor_blend(
         mem_vec = from_blob(row[4])
         sim = float(cosine_similarity(blended, mem_vec))
         confidence = row[7] if row[7] is not None else 0.7
-        score = composite_score(sim, confidence, row[5], row[6], current_project)
+        kw_ov = keyword_overlap(qt, row[11])
+        score = composite_score(sim, confidence, row[5], row[6], current_project, kw_overlap=kw_ov)
         results.append({
             "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
             "updated_at": row[5], "project": row[6], "session_id": row[8],
