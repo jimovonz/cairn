@@ -545,6 +545,13 @@ def find_similar(
         except sqlite3.OperationalError:
             pass  # archived_reason column not yet added
         archived_candidates.sort(key=lambda x: x["similarity"], reverse=True)
+        if CROSS_ENCODER_ENABLED and archived_candidates:
+            arch_texts = [f"{r.get('type', '')} {r.get('topic', '')}: {r.get('content', '')}" for r in archived_candidates]
+            arch_ce = _daemon_rerank(text, arch_texts)
+            if arch_ce and len(arch_ce) == len(archived_candidates):
+                for i, r in enumerate(archived_candidates):
+                    r["ce_score"] = arch_ce[i]
+                archived_candidates = [r for r in archived_candidates if r["ce_score"] >= CROSS_ENCODER_SCORE_FLOOR]
         results.extend(archived_candidates[:limit])
 
     return results
