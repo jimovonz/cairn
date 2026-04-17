@@ -282,6 +282,12 @@ def main() -> None:
         log("Headless mode — skipping enforcement")
         sys.exit(0)
 
+    # Read-only mode: context injection (prompt hook) runs, but no memory writes or enforcement.
+    # Set CAIRN_MODE=read-only for scheduled tasks that need context but shouldn't accumulate memories.
+    if os.environ.get("CAIRN_MODE", "").lower() == "read-only":
+        log("Read-only mode — skipping memory storage and enforcement")
+        sys.exit(0)
+
     has_block = '<memory>' in text or bool(re.search(r'^\[(?:cm|cairn-memory)\]:', text, re.MULTILINE))
     log(f"Text length: {len(text)}, has memory block: {has_block}, continuation: {is_continuation}, subagent: {is_subagent}")
 
