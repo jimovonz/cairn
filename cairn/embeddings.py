@@ -17,6 +17,20 @@ _model: Any = None
 _metrics_conn: Optional[sqlite3.Connection] = None
 
 
+def _log_embed(msg: str, level: str = "info") -> None:
+    """Log from embeddings module. Uses cairn logger if available, falls back to stderr."""
+    try:
+        import logging
+        logger = logging.getLogger("cairn")
+        if logger.handlers:
+            getattr(logger, level, logger.info)(f"[embeddings] {msg}")
+            return
+    except Exception:
+        pass
+    import sys
+    print(f"[cairn/embeddings] {msg}", file=sys.stderr)
+
+
 def _record_embed_metric(event: str, value: float) -> None:
     """Record an embedding performance metric to the DB. Best-effort, never raises."""
     global _metrics_conn
@@ -32,7 +46,8 @@ def _record_embed_metric(event: str, value: float) -> None:
             (event, value)
         )
         _metrics_conn.commit()
-    except Exception:
+    except Exception as exc:
+        _log_embed(f"metric write failed ({event}): {type(exc).__name__}: {exc}", "warning")
         _metrics_conn = None
 
 
@@ -72,12 +87,10 @@ def _daemon_embed(text: str) -> Optional[np.ndarray]:
         resp = send_request({"action": "embed", "text": text})
         if resp and "vector" in resp:
             return np.frombuffer(bytes.fromhex(resp["vector"]), dtype=np.float32)
-    except (ConnectionError, TimeoutError, OSError, ValueError):
-        pass
+    except (ConnectionError, TimeoutError, OSError, ValueError) as e:
+        _log_embed(f"daemon embed unavailable: {type(e).__name__}: {e}", "warning")
     except Exception as e:
-        # Unexpected error — log for debugging but don't crash
-        import sys
-        print(f"[cairn] daemon embed error: {type(e).__name__}: {e}", file=sys.stderr)
+        _log_embed(f"daemon embed unexpected error: {type(e).__name__}: {e}", "error")
     return None
 
 
@@ -88,8 +101,10 @@ def _daemon_rerank(query: str, candidates: list[str]) -> Optional[list[float]]:
         resp = send_request({"action": "rerank", "query": query, "candidates": candidates})
         if resp and resp.get("scores") is not None:
             return resp["scores"]
-    except Exception:
-        pass
+    except (ConnectionError, TimeoutError, OSError) as e:
+        _log_embed(f"daemon rerank unavailable: {type(e).__name__}: {e}", "warning")
+    except Exception as e:
+        _log_embed(f"daemon rerank error: {type(e).__name__}: {e}", "error")
     return None
 
 
@@ -103,8 +118,10 @@ def _daemon_nli(pairs: list[list[str]]) -> Optional[list[list[float]]]:
         resp = send_request({"action": "nli", "pairs": pairs})
         if resp and resp.get("scores") is not None:
             return resp["scores"]
-    except Exception:
-        pass
+    except (ConnectionError, TimeoutError, OSError) as e:
+        _log_embed(f"daemon NLI unavailable: {type(e).__name__}: {e}", "warning")
+    except Exception as e:
+        _log_embed(f"daemon NLI error: {type(e).__name__}: {e}", "error")
     return None
 
 
@@ -347,6 +364,8 @@ def _vec_candidates(
     return results
 
 
+_BRUTE_FORCE_WARN_THRESHOLD = 10000
+
 def _brute_force_candidates(
     conn: sqlite3.Connection,
     query_vec: np.ndarray,
@@ -359,6 +378,11 @@ def _brute_force_candidates(
         "SELECT id, type, topic, content, embedding, updated_at, project, confidence, depth, archived_reason, session_id, keywords "
         "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '')"
     ).fetchall()
+    if len(rows) >= _BRUTE_FORCE_WARN_THRESHOLD:
+        _log_embed(
+            f"brute-force scan over {len(rows)} memories — consider enabling sqlite-vec index",
+            "warning",
+        )
 
     results: list[dict[str, Any]] = []
     qt = query_terms or set()
@@ -393,8 +417,8 @@ def upsert_vec_index(conn: sqlite3.Connection, memory_id: int, embedding_blob: b
         conn.execute("DELETE FROM memories_vec WHERE memory_id = ?", (memory_id,))
         conn.execute("INSERT INTO memories_vec (memory_id, embedding) VALUES (?, ?)",
                      (memory_id, embedding_blob))
-    except Exception:
-        pass  # Vec table may not exist
+    except Exception as e:
+        _log_embed(f"vec index upsert failed for memory {memory_id}: {type(e).__name__}: {e}", "warning")
 
 
 def find_similar(
@@ -463,8 +487,8 @@ def find_similar(
         try:
             candidates = _vec_candidates(conn, query_vec, k, current_project, qt)
             search_method = "vec"
-        except Exception:
-            pass
+        except Exception as e:
+            _log_embed(f"vec search failed, falling back to brute-force: {type(e).__name__}: {e}", "warning")
 
     if not candidates:
         candidates = _brute_force_candidates(conn, query_vec, k, current_project, qt)
@@ -632,8 +656,8 @@ def find_nearest(conn: sqlite3.Connection, text: str, limit: int = 1) -> list[di
             if candidates:
                 candidates.sort(key=lambda x: x["similarity"], reverse=True)
                 return candidates[:limit]
-        except Exception:
-            pass
+        except Exception as e:
+            _log_embed(f"vec nearest search failed, falling back to brute-force: {type(e).__name__}: {e}", "warning")
 
     # Brute-force fallback
     rows = conn.execute(

@@ -411,7 +411,8 @@ def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str]
             ORDER BY updated_at DESC
             LIMIT ?
         """, params).fetchall()
-    except Exception:
+    except Exception as e:
+        log(f"Keyword match search error: {type(e).__name__}: {e}")
         return []
 
     # Score by keyword overlap count
@@ -543,7 +544,8 @@ def is_context_cached(context_need: str, served_needs: list[dict[str, Any]], emb
             sim = emb.cosine_similarity(query_vec, cached_vec)
             if sim >= CONTEXT_CACHE_SIM_THRESHOLD:
                 return True
-    except Exception:
+    except Exception as e:
+        log(f"Context cache semantic check failed, falling back to exact match: {type(e).__name__}: {e}")
         return any(s.get("text") == context_need for s in served_needs)
     return False
 
@@ -555,7 +557,7 @@ def add_to_context_cache(context_need: str, served_needs: list[dict[str, Any]], 
         try:
             vec = emb.embed(context_need)
             entry["embedding_hex"] = emb.to_blob(vec).hex()
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"Context cache embedding failed: {type(e).__name__}: {e}")
     served_needs.append(entry)
     return served_needs
