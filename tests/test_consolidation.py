@@ -31,7 +31,14 @@ def fresh_db():
         project TEXT, confidence REAL DEFAULT 0.7, source_start INTEGER,
         source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT,
         keywords TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        origin_id TEXT,
+        user_id TEXT,
+        updated_by TEXT,
+        team_id TEXT,
+        source_ref TEXT,
+        deleted_at TIMESTAMP,
+        synced_at TIMESTAMP)""")
     conn.execute("""CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id INTEGER, content TEXT, session_id TEXT,
         changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")

@@ -6,6 +6,7 @@ try:
 except ImportError:
     import sqlite3
 import os
+import uuid
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 
@@ -26,7 +27,7 @@ def init():
         )
     """)
     # Migration: add columns to existing DB
-    for col, coltype in [("embedding", "BLOB"), ("session_id", "TEXT"), ("project", "TEXT"), ("confidence", "REAL DEFAULT 0.7"), ("source_start", "INTEGER"), ("source_end", "INTEGER"), ("archived_reason", "TEXT"), ("anchor_line", "INTEGER"), ("depth", "INTEGER"), ("associated_files", "TEXT"), ("keywords", "TEXT")]:
+    for col, coltype in [("embedding", "BLOB"), ("session_id", "TEXT"), ("project", "TEXT"), ("confidence", "REAL DEFAULT 0.7"), ("source_start", "INTEGER"), ("source_end", "INTEGER"), ("archived_reason", "TEXT"), ("anchor_line", "INTEGER"), ("depth", "INTEGER"), ("associated_files", "TEXT"), ("keywords", "TEXT"), ("origin_id", "TEXT"), ("user_id", "TEXT"), ("updated_by", "TEXT"), ("team_id", "TEXT"), ("source_ref", "TEXT"), ("deleted_at", "TIMESTAMP"), ("synced_at", "TIMESTAMP")]:
         try:
             conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {coltype}")
         except sqlite3.OperationalError:
@@ -186,6 +187,35 @@ def init():
     if _fts_needs_rebuild:
         conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
         print("FTS index rebuilt with keywords column")
+    # Schema version metadata — DB-level compatibility tracking for sync
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            description TEXT
+        )
+    """)
+    # Record current schema version if not already present
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 2").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (2, 'multi-user and sync columns: origin_id, user_id, updated_by, team_id, source_ref, deleted_at, synced_at')"
+        )
+    # Indexes for new columns
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_origin_id ON memories(origin_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_deleted_at ON memories(deleted_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_synced_at ON memories(synced_at)")
+    # Backfill origin_id for existing rows that don't have one
+    rows_without_origin = conn.execute(
+        "SELECT id FROM memories WHERE origin_id IS NULL"
+    ).fetchall()
+    if rows_without_origin:
+        for (mem_id,) in rows_without_origin:
+            conn.execute(
+                "UPDATE memories SET origin_id = ? WHERE id = ?",
+                (str(uuid.uuid4()), mem_id)
+            )
+        print(f"Backfilled origin_id for {len(rows_without_origin)} existing memories")
     conn.commit()
     conn.close()
     print(f"Database initialized at {DB_PATH}")

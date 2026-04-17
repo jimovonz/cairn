@@ -37,7 +37,14 @@ def _init_db(path):
             associated_files TEXT,
             keywords TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            origin_id TEXT,
+            user_id TEXT,
+            updated_by TEXT,
+            team_id TEXT,
+            source_ref TEXT,
+            deleted_at TIMESTAMP,
+            synced_at TIMESTAMP
         )
     """)
     conn.execute("""

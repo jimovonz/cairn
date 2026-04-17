@@ -116,7 +116,7 @@ def type_prefix_fanout(
     rows = conn.execute(
         "SELECT id, type, topic, content, embedding, updated_at, project, "
         "confidence, session_id, depth, archived_reason, keywords "
-        "FROM memories WHERE embedding IS NOT NULL"
+        "FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
     ).fetchall()
 
     if not rows:
@@ -194,7 +194,7 @@ def corpus_prf(
         fts_rows = conn.execute("""
             SELECT m.topic, m.content
             FROM memories_fts f JOIN memories m ON f.rowid = m.id
-            WHERE memories_fts MATCH ? ORDER BY rank LIMIT ?
+            WHERE memories_fts MATCH ? AND m.deleted_at IS NULL ORDER BY rank LIMIT ?
         """, (fts_query, prf_top_k)).fetchall()
     except Exception:
         fts_rows = []
@@ -249,7 +249,7 @@ def neighbor_blend(
     rows = conn.execute(
         "SELECT id, type, topic, content, embedding, updated_at, project, "
         "confidence, session_id, depth, archived_reason, keywords "
-        "FROM memories WHERE embedding IS NOT NULL"
+        "FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
     ).fetchall()
 
     if not rows:

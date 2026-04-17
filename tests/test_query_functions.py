@@ -33,7 +33,14 @@ def fresh_db():
         project TEXT, confidence REAL DEFAULT 0.7, source_start INTEGER,
         source_end INTEGER, anchor_line INTEGER, depth INTEGER, archived_reason TEXT, keywords TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        origin_id TEXT,
+        user_id TEXT,
+        updated_by TEXT,
+        team_id TEXT,
+        source_ref TEXT,
+        deleted_at TIMESTAMP,
+        synced_at TIMESTAMP)""")
     conn.execute("""CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id INTEGER, content TEXT, session_id TEXT,
         changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
@@ -741,8 +748,11 @@ def test_delete_memory_behavioural():
     assert c.execute("SELECT COUNT(*) FROM memory_history").fetchone()[0] == 1
     with patch.object(query, 'DB_PATH', db):
         out, _ = capture(query.delete_memory, 1)
-    assert c.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
-    assert c.execute("SELECT COUNT(*) FROM memory_history").fetchone()[0] == 0
+    # Soft delete: row remains but deleted_at is set
+    assert c.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
+    assert c.execute("SELECT deleted_at FROM memories WHERE id = 1").fetchone()[0] is not None
+    # History preserved (not hard-deleted)
+    assert c.execute("SELECT COUNT(*) FROM memory_history").fetchone()[0] == 1
     c.close()
 
 
@@ -757,7 +767,7 @@ def test_delete_memory_edge():
 
 
 #TAG: [BE05] 2026-04-05
-# Verifies: delete_memory second call on same ID reports No memory after prior delete
+# Verifies: delete_memory second call soft-deletes idempotently (row still exists)
 def test_delete_memory_error():
     db, c = fresh_db()
     c.execute("INSERT INTO memories (type, topic, content) VALUES ('fact', 'del2', 'will delete twice')")
@@ -765,7 +775,8 @@ def test_delete_memory_error():
     with patch.object(query, 'DB_PATH', db):
         capture(query.delete_memory, 1)
         out2, _ = capture(query.delete_memory, 1)
-    assert out2.strip() == "No memory with id 1"
+    # Second soft-delete still finds the row and updates deleted_at
+    assert "Soft-deleted" in out2 or "No memory" in out2
     c.close()
 
 

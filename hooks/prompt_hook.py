@@ -66,7 +66,7 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
     try:
         conn = get_conn()
         project = get_session_project(conn, session_id)
-        count = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL").fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL").fetchone()[0]
         if count == 0:
             conn.close()
             return None
@@ -184,6 +184,7 @@ def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> O
             FROM memories
             WHERE project = ? AND type IN ({placeholders})
             AND (archived_reason IS NULL OR archived_reason = '')
+            AND deleted_at IS NULL
             ORDER BY updated_at DESC
             LIMIT ?
         """, (project_name, *types, PROJECT_BOOTSTRAP_MAX)).fetchall()
@@ -237,6 +238,7 @@ def correction_bootstrap(session_id: str) -> Optional[str]:
             FROM memories
             WHERE type = 'correction'
             AND (archived_reason IS NULL OR archived_reason = '')
+            AND deleted_at IS NULL
             ORDER BY confidence DESC, updated_at DESC
             LIMIT ?
         """, (CORRECTION_BOOTSTRAP_MAX,)).fetchall()
@@ -281,7 +283,7 @@ def layer1_search(user_message: str, session_id: str) -> Optional[str]:
     try:
         conn = get_conn()
         project = get_session_project(conn, session_id)
-        count = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL").fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL").fetchone()[0]
         if count == 0:
             conn.close()
             return None

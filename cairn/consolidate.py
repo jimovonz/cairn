@@ -21,6 +21,7 @@ import select
 import subprocess
 import sys
 import time
+import uuid
 from typing import Optional
 
 try:
@@ -225,10 +226,11 @@ def execute_consolidation(
     embedding_blob = emb.to_blob(vec) if vec is not None else None
 
     # Insert the consolidated memory
+    session_id = newest.get("session_id")
     conn.execute(
-        "INSERT INTO memories (type, topic, content, embedding, project, confidence) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (mem_type, topic, consolidated_content, embedding_blob, project, newest["confidence"])
+        "INSERT INTO memories (type, topic, content, embedding, project, confidence, origin_id, session_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (mem_type, topic, consolidated_content, embedding_blob, project, newest["confidence"], str(uuid.uuid4()), session_id)
     )
     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -412,7 +414,7 @@ def find_contradiction_pairs(conn: sqlite3.Connection) -> list[dict]:
 
     rows = conn.execute(
         "SELECT id, type, topic, content, embedding, created_at, project, confidence "
-        "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '')"
+        "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '') AND deleted_at IS NULL"
     ).fetchall()
 
     entries = []

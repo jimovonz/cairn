@@ -171,7 +171,7 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
                    m.session_id, m.confidence, m.depth, m.archived_reason, rank, m.keywords
             FROM memories_fts f
             JOIN memories m ON f.rowid = m.id
-            WHERE memories_fts MATCH ?
+            WHERE memories_fts MATCH ? AND m.deleted_at IS NULL
             ORDER BY rank LIMIT 20
         """, (fts_query,)).fetchall()
         rank = 0
@@ -407,6 +407,7 @@ def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str]
             WHERE keywords IS NOT NULL
             AND ({where_kw})
             AND (archived_reason IS NULL OR archived_reason = '')
+            AND deleted_at IS NULL
             {project_filter}
             ORDER BY updated_at DESC
             LIMIT ?

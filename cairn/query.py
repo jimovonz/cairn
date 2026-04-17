@@ -7,6 +7,7 @@ except ImportError:
     import sqlite3
 import sys
 import os
+import uuid
 
 # Re-exec under venv python if not already in the venv
 if __name__ == "__main__":
@@ -24,7 +25,7 @@ def search(query, limit=10):
         SELECT m.id, m.type, m.topic, m.content, m.updated_at, m.keywords
         FROM memories_fts f
         JOIN memories m ON f.rowid = m.id
-        WHERE memories_fts MATCH ?
+        WHERE memories_fts MATCH ? AND m.deleted_at IS NULL
         ORDER BY rank
         LIMIT ?
     """, (query, limit)).fetchall()
@@ -37,7 +38,7 @@ def list_by_type(memory_type, limit=20):
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
         SELECT id, type, topic, content, updated_at, keywords
-        FROM memories WHERE type = ?
+        FROM memories WHERE type = ? AND deleted_at IS NULL
         ORDER BY updated_at DESC LIMIT ?
     """, (memory_type, limit)).fetchall()
     conn.close()
@@ -49,7 +50,7 @@ def list_recent(limit=20):
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
         SELECT id, type, topic, content, updated_at, keywords
-        FROM memories ORDER BY updated_at DESC LIMIT ?
+        FROM memories WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?
     """, (limit,)).fetchall()
     conn.close()
     return rows
@@ -100,7 +101,7 @@ def list_by_date(since=None, until=None, limit=50):
     """List memories filtered by date range."""
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
-    conditions = []
+    conditions = ["deleted_at IS NULL"]
     params = []
     if since:
         conditions.append("updated_at >= ?")
@@ -128,7 +129,7 @@ def list_by_session(session_id, limit=50):
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
         SELECT id, type, topic, content, updated_at, keywords
-        FROM memories WHERE session_id LIKE ?
+        FROM memories WHERE session_id LIKE ? AND deleted_at IS NULL
         ORDER BY updated_at DESC LIMIT ?
     """, (f"{session_id}%", limit)).fetchall()
     conn.close()
@@ -431,11 +432,13 @@ def delete_memory(memory_id):
     if not existing:
         print(f"No memory with id {memory_id}")
         return
-    conn.execute("DELETE FROM memory_history WHERE memory_id = ?", (memory_id,))
-    conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+    conn.execute(
+        "UPDATE memories SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (memory_id,)
+    )
     conn.commit()
     conn.close()
-    print(f"Deleted memory {memory_id}: {existing[1]}/{existing[2]}")
+    print(f"Soft-deleted memory {memory_id}: {existing[1]}/{existing[2]}")
 
 
 def add_memory(mem_type, topic, content, project=None, session_id=None):
@@ -455,8 +458,8 @@ def add_memory(mem_type, topic, content, project=None, session_id=None):
         pass
 
     conn.execute(
-        "INSERT INTO memories (type, topic, content, embedding, session_id, project) VALUES (?, ?, ?, ?, ?, ?)",
-        (mem_type, topic, content, embedding_blob, session_id, project)
+        "INSERT INTO memories (type, topic, content, embedding, session_id, project, origin_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (mem_type, topic, content, embedding_blob, session_id, project, str(uuid.uuid4()))
     )
     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -697,13 +700,13 @@ def review(threshold_low=0.3, threshold_high=0.6):
     # Below retrieval threshold — effectively suppressed
     suppressed = conn.execute("""
         SELECT id, type, topic, content, confidence, updated_at, project
-        FROM memories WHERE confidence < ? ORDER BY confidence ASC
+        FROM memories WHERE confidence < ? AND deleted_at IS NULL ORDER BY confidence ASC
     """, (threshold_low,)).fetchall()
 
     # Uncertain range — retrieved but not strongly trusted
     uncertain = conn.execute("""
         SELECT id, type, topic, content, confidence, updated_at, project
-        FROM memories WHERE confidence >= ? AND confidence < ? ORDER BY confidence ASC
+        FROM memories WHERE confidence >= ? AND confidence < ? AND deleted_at IS NULL ORDER BY confidence ASC
     """, (threshold_low, threshold_high)).fetchall()
 
     if suppressed:
@@ -734,13 +737,13 @@ def compact(project_name=None, limit=100):
     if project_name:
         rows = conn.execute("""
             SELECT type, topic, content, updated_at FROM memories
-            WHERE project = ? ORDER BY type, updated_at DESC LIMIT ?
+            WHERE project = ? AND deleted_at IS NULL ORDER BY type, updated_at DESC LIMIT ?
         """, (project_name, limit)).fetchall()
         print(f"# Cairn dump: {project_name}")
     else:
         rows = conn.execute("""
             SELECT type, topic, content, updated_at FROM memories
-            ORDER BY type, updated_at DESC LIMIT ?
+            WHERE deleted_at IS NULL ORDER BY type, updated_at DESC LIMIT ?
         """, (limit,)).fetchall()
         print("# Cairn dump: all memories")
 
@@ -770,7 +773,7 @@ def backfill_embeddings():
 
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     rows = conn.execute(
-        "SELECT id, type, topic, content, project FROM memories WHERE embedding IS NULL"
+        "SELECT id, type, topic, content, project FROM memories WHERE embedding IS NULL AND deleted_at IS NULL"
     ).fetchall()
 
     if not rows:
@@ -1203,7 +1206,7 @@ def list_projects():
                MIN(created_at) as first_seen,
                MAX(updated_at) as last_updated
         FROM memories
-        WHERE project IS NOT NULL
+        WHERE project IS NOT NULL AND deleted_at IS NULL
         GROUP BY project
         ORDER BY last_updated DESC
     """).fetchall()
@@ -1225,7 +1228,7 @@ def memories_for_project(project_name, limit=50):
     rows = conn.execute("""
         SELECT id, type, topic, content, updated_at, keywords
         FROM memories
-        WHERE project = ?
+        WHERE project = ? AND deleted_at IS NULL
         ORDER BY updated_at DESC
         LIMIT ?
     """, (project_name, limit)).fetchall()
@@ -1252,7 +1255,7 @@ def project_bootstrap_query(project_name=None, limit=5):
         SELECT id, type, topic, content, updated_at, keywords
         FROM memories
         WHERE project = ? AND type IN ({placeholders})
-        AND (archived_reason IS NULL OR archived_reason = '')
+        AND (archived_reason IS NULL OR archived_reason = '') AND deleted_at IS NULL
         ORDER BY updated_at DESC
         LIMIT ?
     """, (project_name, *types, limit)).fetchall()
