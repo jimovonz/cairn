@@ -4,7 +4,7 @@
 import sys
 import os
 
-from cairn.embeddings import composite_score, _recency_decay
+from cairn.embeddings import composite_score, _recency_decay, extract_query_terms, keyword_overlap
 
 
 # Verifies: higher similarity produces higher composite score
@@ -61,6 +61,62 @@ def test_composite_score_person_cross_project_matches_local():
     s_person_global = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="other", current_project="myproject", mem_type="person")
     s_local_decision = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="myproject", current_project="myproject", mem_type="decision")
     assert abs(s_person_global - s_local_decision) < 0.001, "person cross-project should match local-project full weight"
+
+
+# === Keyword overlap tests ===
+
+
+# Verifies: keyword overlap boosts composite score
+def test_composite_score_keyword_overlap_boost():
+    """Memories with keyword overlap should score higher than those without."""
+    s_with_kw = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="myproject", current_project="myproject", kw_overlap=1.0)
+    s_without_kw = composite_score(0.5, 0.7, "2026-03-20 12:00:00", project="myproject", current_project="myproject", kw_overlap=0.0)
+    assert s_with_kw > s_without_kw, f"Keyword overlap should boost score: {s_with_kw} vs {s_without_kw}"
+
+
+# Verifies: partial keyword overlap gives partial boost
+def test_composite_score_partial_keyword_overlap():
+    """Partial keyword overlap should give intermediate score."""
+    s_full = composite_score(0.5, 0.7, "2026-03-20 12:00:00", kw_overlap=1.0)
+    s_half = composite_score(0.5, 0.7, "2026-03-20 12:00:00", kw_overlap=0.5)
+    s_none = composite_score(0.5, 0.7, "2026-03-20 12:00:00", kw_overlap=0.0)
+    assert s_full > s_half > s_none
+
+
+# Verifies: extract_query_terms filters stopwords
+def test_extract_query_terms_filters_stopwords():
+    """Stopwords and short words should be filtered."""
+    terms = extract_query_terms("what is the best approach for debugging")
+    assert "what" not in terms
+    assert "the" not in terms
+    assert "debugging" in terms
+    assert "approach" in terms
+    assert "best" in terms
+
+
+# Verifies: keyword_overlap computes correct ratio
+def test_keyword_overlap_exact_match():
+    """Exact keyword matches should produce correct ratio."""
+    qt = {"debugging", "python", "error"}
+    assert keyword_overlap(qt, "debugging,python,error") == 1.0
+    assert keyword_overlap(qt, "debugging,python,unrelated") > 0.6
+    assert keyword_overlap(qt, "unrelated,other,stuff") == 0.0
+
+
+# Verifies: keyword_overlap handles substring matching
+def test_keyword_overlap_substring_match():
+    """Keywords should match via substring containment."""
+    qt = {"debug", "retrieval"}
+    ov = keyword_overlap(qt, "debugging,retrieval-system")
+    assert ov > 0.0, "Substring matching should find partial matches"
+
+
+# Verifies: keyword_overlap returns 0 for None/empty keywords
+def test_keyword_overlap_empty():
+    """Empty or None keywords should return 0."""
+    assert keyword_overlap({"test"}, None) == 0.0
+    assert keyword_overlap({"test"}, "") == 0.0
+    assert keyword_overlap(set(), "test,keywords") == 0.0
 
 
 # Verifies: find_similar with `|` separator decomposes into multiple subqueries

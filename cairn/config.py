@@ -36,12 +36,14 @@ L1_SIM_THRESHOLD = 0.30            # Same as L3 project threshold
 L1_MAX_RESULTS = 7
 
 # === Composite scoring ===
-# score = w_similarity * similarity + w_recency * recency_decay + w_scope * scope_weight
+# score = w_similarity * similarity + w_keywords * keyword_overlap + w_recency * recency_decay + w_scope * scope_weight
 # Confidence removed from scoring — it represents veracity (corroboration), not query relevance.
-# Similarity handles per-query relevance, recency proxies staleness, scope prioritises project-local.
+# Similarity handles per-query relevance, keywords reward explicit topic tagging,
+# recency is a tiebreaker only (staleness handled by archival/supersession), scope prioritises project-local.
 SCORE_W_SIMILARITY = 0.50
 SCORE_W_CONFIDENCE = 0.0        # Disabled — veracity is not a ranking signal
-SCORE_W_RECENCY = 0.15
+SCORE_W_KEYWORDS = 0.15         # Keyword overlap between query terms and memory keywords
+SCORE_W_RECENCY = 0.05          # Tiebreaker — staleness handled by archival system
 SCORE_W_SCOPE = 0.05
 RECENCY_HALF_LIFE_DAYS = 30        # Days after which recency weight halves
 

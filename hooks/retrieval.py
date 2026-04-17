@@ -142,6 +142,10 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
         except Exception as e:
             log(f"Context retrieval error ({type(e).__name__}): {e}")
 
+    # Extract query terms once for keyword overlap scoring
+    from cairn.embeddings import extract_query_terms, keyword_overlap as _kw_overlap
+    _query_terms = extract_query_terms(context_need)
+
     # FTS5 keyword search — runs alongside semantic for hybrid fusion
     _STOPWORDS = frozenset({
         "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
@@ -164,7 +168,7 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
         fts_query = " OR ".join(f'"{w}"' for w in meaningful) if meaningful else context_need
         rows = conn.execute("""
             SELECT m.id, m.type, m.topic, m.content, m.updated_at, m.project,
-                   m.session_id, m.confidence, m.depth, m.archived_reason, rank
+                   m.session_id, m.confidence, m.depth, m.archived_reason, rank, m.keywords
             FROM memories_fts f
             JOIN memories m ON f.rowid = m.id
             WHERE memories_fts MATCH ?
@@ -180,6 +184,7 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
                 "updated_at": r[4], "project": r[5], "session_id": r[6],
                 "confidence": confidence, "depth": r[8],
                 "archived_reason": r[9], "bm25_rank": -r[10],  # FTS5 rank is negative (lower = better)
+                "keywords": r[11],
             }
             fts_ranked[r[0]] = (rank, entry)
             rank += 1
@@ -210,9 +215,11 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
                 from cairn.embeddings import composite_score as _cscore
                 fts_sim = 0.35  # FTS doesn't produce a vector similarity; use baseline
                 fts_result["similarity"] = fts_sim
+                fts_kw_ov = _kw_overlap(_query_terms, fts_result.get("keywords"))
                 fts_result["score"] = _cscore(
                     fts_sim, fts_result["confidence"],
-                    fts_result.get("updated_at"), fts_result.get("project"), project
+                    fts_result.get("updated_at"), fts_result.get("project"), project,
+                    kw_overlap=fts_kw_ov
                 )
                 result_dict = fts_result
 
@@ -236,6 +243,12 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
 
     # Sort by fused score and split into project/global
     fused.sort(key=lambda x: x["score"], reverse=True)
+
+    # Pre-filter entries already served this session — ensures quota slots aren't wasted
+    from hooks.hook_helpers import load_injected_ids
+    already_served: set[int] = load_injected_ids(session_id) if session_id else set()
+    if already_served:
+        fused = [r for r in fused if r["id"] not in already_served]
 
     seen_ids: set[int] = set()
     project_threshold: float = L3_PROJECT_SIM_THRESHOLD + threshold_boost
