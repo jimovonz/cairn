@@ -57,7 +57,11 @@ You MUST store a memory when any of these happen — these are not optional:
   ```
   [cm]: # '{"ok":true,"ctx":"s","kw":["topic","of","conversation"]}'
   ```
-- Each entry is one line of content — no multi-line values, but make that line **information-dense**. Include the *what*, *why*, and *context* in the same line. Bad: `"Use SQLite"`. Good: `"Use SQLite for storage — chosen over PostgreSQL for zero-config local deployment, WAL mode handles concurrency, single-file portability"`. The content should be self-sufficient — a future session reading just this line should understand the full picture without needing the original conversation.
+- Each entry is one line of content — no multi-line values, but make that line **information-dense**. Include the *what*, *why*, and *context* in the same line. The content should be self-sufficient — a future session reading just this line should understand the full picture without needing the original conversation.
+  - Bad: `"Cairn is a clear net benefit over bog-standard Claude Code. Evidence over 6 days — 732 distilled memories (153 corrections, 201 decisions, 212 facts), 81% organic serve rate, 103 useful retrievals, 26 explicitly rated useful by LLM, zero harmful."`
+  - Good: `"Cairn net positive — cross-project surfacing works, 103 useful retrievals, zero harmful. Cost: ~45% token overhead, 900ms latency"`
+- **Every clause must earn its place** — if removing a clause wouldn't make the memory less findable or less useful to a future session, cut it.
+- **Drop noise tokens** — IDs, hashes, raw addresses, and specs already captured in sibling memories. These are never search terms and waste embedding dimensions.
 - **Never fabricate.** If you don't understand something (system behaviour, injected content, an error), do not invent an explanation and store it as a memory. A no-op block is always better than a false memory. If you're unsure whether something is true, don't store it as a fact.
 - **Never assert without verifying.** Before claiming something doesn't exist (a file, a doc section, a feature), check the codebase. Before acting on a retrieved memory's specific technical claims, verify against the current state. Memories are claims about the past, not guarantees about the present.
 - Never narrate a future action without executing it — if you say "let me do X", do X in the same response via a tool call
