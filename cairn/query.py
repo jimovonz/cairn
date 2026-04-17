@@ -206,33 +206,31 @@ def show_context(memory_id, margin=5):
     print(f"  Transcript: {transcript_path}")
 
     # Scan transcript — collect text-bearing messages with their timestamps and line numbers
+    from hooks.transcript_adapter import iter_normalized_entries
     messages = []
-    with open(transcript_path, encoding="utf-8") as f:
-        for line_num, line in enumerate(f):
-            try:
-                entry = _json.loads(line.strip())
-                ts_str = entry.get("timestamp", "")
-                msg = entry.get("message", entry)
-                role = msg.get("role", "")
-                if role not in ("user", "assistant"):
-                    continue
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    text_parts = [b.get("text", "") for b in content
-                                  if isinstance(b, dict) and b.get("type") == "text"]
-                    content = " ".join(text_parts)
-                elif not isinstance(content, str):
-                    continue
-                if not content or not content.strip():
-                    continue
-                # Parse JSONL timestamp (ISO 8601)
-                try:
-                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
-                except (ValueError, AttributeError):
-                    ts = None
-                messages.append({"line": line_num, "role": role, "text": content, "ts": ts})
-            except Exception:
+    for line_num, entry in enumerate(iter_normalized_entries(transcript_path)):
+        try:
+            ts_str = entry.get("timestamp", "")
+            msg = entry.get("message", entry)
+            role = msg.get("role", "")
+            if role not in ("user", "assistant"):
                 continue
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text_parts = [b.get("text", "") for b in content
+                              if isinstance(b, dict) and b.get("type") == "text"]
+                content = " ".join(text_parts)
+            elif not isinstance(content, str):
+                continue
+            if not content or not content.strip():
+                continue
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
+            except (ValueError, AttributeError):
+                ts = None
+            messages.append({"line": line_num, "role": role, "text": content, "ts": ts})
+        except Exception:
+            continue
 
     if not messages:
         print("  No text-bearing messages found in transcript.")
@@ -313,26 +311,24 @@ def verify_sources():
 
         # Load transcript messages if not cached
         if transcript_path not in transcripts:
+            from hooks.transcript_adapter import iter_normalized_entries
             messages = []
-            with open(transcript_path, encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        entry = _json.loads(line.strip())
-                        msg = entry.get("message", entry)
-                        role = msg.get("role", "")
-                        if role not in ("user", "assistant"):
-                            continue
-                        msg_content = msg.get("content", "")
-                        if isinstance(msg_content, list):
-                            text_parts = [b.get("text", "") for b in msg_content
-                                          if isinstance(b, dict) and b.get("type") == "text"]
-                            msg_content = " ".join(text_parts)
-                        # Only count text-bearing messages (align with LLM turn perception)
-                        if not msg_content or not msg_content.strip():
-                            continue
-                        messages.append({"num": len(messages) + 1, "role": role, "text": msg_content.lower()})
-                    except Exception:
+            for entry in iter_normalized_entries(transcript_path):
+                try:
+                    msg = entry.get("message", entry)
+                    role = msg.get("role", "")
+                    if role not in ("user", "assistant"):
                         continue
+                    msg_content = msg.get("content", "")
+                    if isinstance(msg_content, list):
+                        text_parts = [b.get("text", "") for b in msg_content
+                                      if isinstance(b, dict) and b.get("type") == "text"]
+                        msg_content = " ".join(text_parts)
+                    if not msg_content or not msg_content.strip():
+                        continue
+                    messages.append({"num": len(messages) + 1, "role": role, "text": msg_content.lower()})
+                except Exception:
+                    continue
             transcripts[transcript_path] = messages
 
         messages = transcripts[transcript_path]

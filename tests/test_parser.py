@@ -826,3 +826,278 @@ if __name__ == "__main__":
             failed += 1
             print(f"  ERROR: {test.__name__}: {e}")
     print(f"\n{passed}/{passed+failed} passed")
+
+
+# ─── Link-definition JSON format tests ─────────────────────────────────────
+
+
+def test_linkdef_single_entry():
+    """Link-definition format with one entry parses all fields."""
+    text = '''Some response text.
+
+[cairn-memory]: # '{"entries":[{"type":"fact","topic":"link def test","content":"this works with --semantic flags"}],"complete":true,"context":"sufficient","keywords":["cairn","copilot","linkdef"]}'
+'''
+    result = parse_memory_block(text)
+    assert result.entries is not None
+    assert len(result.entries) == 1
+    assert result.entries[0]["type"] == "fact"
+    assert result.entries[0]["topic"] == "link def test"
+    assert "--semantic" in result.entries[0]["content"]
+    assert result.complete is True
+    assert result.context == "sufficient"
+    assert "cairn" in result.keywords
+
+
+def test_linkdef_multiple_entries():
+    """Link-definition format with multiple entries."""
+    text = '''Response.
+
+[cairn-memory]: # '{"entries":[{"type":"fact","topic":"first","content":"entry one"},{"type":"decision","topic":"second","content":"entry two"}],"complete":true,"context":"sufficient","keywords":["test"]}'
+'''
+    result = parse_memory_block(text)
+    assert len(result.entries) == 2
+    assert result.entries[0]["topic"] == "first"
+    assert result.entries[1]["type"] == "decision"
+
+
+def test_linkdef_noop():
+    """Link-definition format with no entries (noop)."""
+    text = '''Response.
+
+[cairn-memory]: # '{"complete":true,"context":"sufficient","keywords":["greeting"]}'
+'''
+    result = parse_memory_block(text)
+    assert result.entries == []
+    assert result.complete is True
+    assert result.context == "sufficient"
+
+
+def test_linkdef_context_insufficient():
+    """Link-definition format with context: insufficient and context_need."""
+    text = '''Response.
+
+[cairn-memory]: # '{"complete":true,"context":"insufficient","context_need":"prior decisions on auth middleware","keywords":["auth"]}'
+'''
+    result = parse_memory_block(text)
+    assert result.context == "insufficient"
+    assert result.context_need == "prior decisions on auth middleware"
+
+
+def test_linkdef_incomplete():
+    """Link-definition format with complete: false and remaining."""
+    text = '''Response.
+
+[cairn-memory]: # '{"complete":false,"remaining":"still need to check the config file","context":"sufficient","keywords":["config"]}'
+'''
+    result = parse_memory_block(text)
+    assert result.complete is False
+    assert result.remaining == "still need to check the config file"
+
+
+def test_linkdef_confidence_updates():
+    """Link-definition format with confidence updates."""
+    text = '''Response.
+
+[cairn-memory]: # '{"complete":true,"context":"sufficient","keywords":["test"],"confidence_updates":["42:+","17:-! replaced by new approach"]}'
+'''
+    result = parse_memory_block(text)
+    assert len(result.confidence_updates) == 2
+    assert result.confidence_updates[0] == (42, "+", None)
+    assert result.confidence_updates[1] == (17, "-!", "replaced by new approach")
+
+
+def test_linkdef_with_single_quote_in_content():
+    """Link-definition JSON containing a single quote in content — greedy regex handles it."""
+    # Build the line with a literal ' inside the JSON content.
+    # The greedy regex matches from first ' to LAST ' on the line.
+    line = "[cairn-memory]: # " + "'" + '{"entries":[{"type":"fact","topic":"test","content":"it' + "'" + 's working fine"}],"complete":true,"context":"sufficient","keywords":["test"]}' + "'"
+    text = "Response.\n\n" + line
+    result = parse_memory_block(text)
+    assert result.entries is not None
+    assert len(result.entries) == 1
+    assert "it's working" in result.entries[0]["content"]
+
+
+def test_linkdef_cm_alias():
+    """Short [cm] alias works the same as [cairn-memory]."""
+    text = '''Response.
+
+[cm]: # '{"entries":[{"type":"fact","topic":"alias","content":"short form"}],"complete":true,"context":"sufficient","keywords":["test"]}'
+'''
+    result = parse_memory_block(text)
+    assert len(result.entries) == 1
+    assert result.entries[0]["topic"] == "alias"
+
+
+def test_linkdef_takes_priority_over_memory_tag():
+    """When both link-def and <memory> are present, link-def wins."""
+    text = '''Response.
+
+[cairn-memory]: # '{"entries":[{"type":"fact","topic":"linkdef","content":"from link def"}],"complete":true,"context":"sufficient","keywords":["test"]}'
+
+<memory>
+- type: decision
+- topic: old format
+- content: from memory tag
+- complete: true
+- context: sufficient
+- keywords: test
+</memory>'''
+    result = parse_memory_block(text)
+    assert len(result.entries) == 1
+    assert result.entries[0]["topic"] == "linkdef"
+
+
+def test_linkdef_malformed_json_falls_back_to_memory_tag():
+    """Bad JSON in link-def falls through to <memory> block."""
+    text = '''Response.
+
+[cairn-memory]: # '{bad json here}'
+
+<memory>
+- type: fact
+- topic: fallback
+- content: this should parse
+- complete: true
+- context: sufficient
+- keywords: test
+</memory>'''
+    result = parse_memory_block(text)
+    assert len(result.entries) == 1
+    assert result.entries[0]["topic"] == "fallback"
+
+
+def test_linkdef_note_format():
+    """[cairn-note] link definition parsed as memory note."""
+    from hooks.parser import parse_memory_notes
+    text = '''Some mid-response text.
+
+[cairn-note]: # '{"type":"fact","topic":"inline observation","content":"noticed this while reading"}'
+
+More response text.'''
+    notes = parse_memory_notes(text)
+    assert len(notes) == 1
+    assert notes[0]["type"] == "fact"
+    assert notes[0]["topic"] == "inline observation"
+
+
+def test_linkdef_note_cn_alias():
+    """Short [cn] alias works for notes too."""
+    from hooks.parser import parse_memory_notes
+    text = '''Text.
+
+[cn]: # '{"type":"skill","topic":"shorthand","content":"this uses the cn alias"}'
+'''
+    notes = parse_memory_notes(text)
+    assert len(notes) == 1
+    assert notes[0]["type"] == "skill"
+
+
+def test_linkdef_note_mixed_with_memory_note_tags():
+    """Both [cairn-note] and <memory_note> in same text are collected."""
+    from hooks.parser import parse_memory_notes
+    text = '''Text.
+
+<memory_note>fact/old format: this is the tag form</memory_note>
+
+[cairn-note]: # '{"type":"skill","topic":"new format","content":"this is the linkdef form"}'
+'''
+    notes = parse_memory_notes(text)
+    assert len(notes) == 2
+    assert notes[0]["topic"] == "old format"
+    assert notes[1]["topic"] == "new format"
+
+
+def test_linkdef_entry_keywords_per_entry():
+    """Per-entry keywords in link-def format."""
+    text = '''Response.
+
+[cairn-memory]: # '{"entries":[{"type":"fact","topic":"with kw","content":"has own keywords","keywords":["specific","local"]}],"complete":true,"context":"sufficient","keywords":["block","level"]}'
+'''
+    result = parse_memory_block(text)
+    assert result.entries[0]["keywords"] == ["specific", "local"]
+    assert result.keywords == ["block", "level"]
+
+
+def test_linkdef_retrieval_outcome_and_intent():
+    """retrieval_outcome and intent fields parse correctly."""
+    text = '''Response.
+
+[cairn-memory]: # '{"complete":true,"context":"sufficient","keywords":["test"],"retrieval_outcome":"useful","intent":"resolved"}'
+'''
+    result = parse_memory_block(text)
+    assert result.retrieval_outcome == "useful"
+    assert result.intent == "resolved"
+
+
+def test_linkdef_short_keys():
+    """Short JSON key aliases work: e, t, to, c, ok, ctx, kw."""
+    text = '''Response.
+
+[cm]: # '{"e":[{"t":"fact","to":"short keys","c":"token economy with --semantic"}],"ok":true,"ctx":"s","kw":["short","keys"]}'
+'''
+    result = parse_memory_block(text)
+    assert len(result.entries) == 1
+    assert result.entries[0]["type"] == "fact"
+    assert result.entries[0]["topic"] == "short keys"
+    assert "--semantic" in result.entries[0]["content"]
+    assert result.complete is True
+    assert result.context == "sufficient"
+    assert "short" in result.keywords
+
+
+def test_linkdef_short_ctx_insufficient():
+    """ctx: "i" expands to "insufficient"."""
+    text = '''Response.
+
+[cm]: # '{"ok":true,"ctx":"i","cn":"prior auth decisions","kw":["auth"]}'
+'''
+    result = parse_memory_block(text)
+    assert result.context == "insufficient"
+    assert result.context_need == "prior auth decisions"
+
+
+def test_linkdef_short_keys_incomplete():
+    """Short keys for incomplete: ok:false, rem."""
+    text = '''Response.
+
+[cm]: # '{"ok":false,"rem":"check config","ctx":"s","kw":["config"]}'
+'''
+    result = parse_memory_block(text)
+    assert result.complete is False
+    assert result.remaining == "check config"
+
+
+def test_linkdef_short_confidence_updates():
+    """Short cu key for confidence_updates."""
+    text = '''Response.
+
+[cm]: # '{"ok":true,"ctx":"s","kw":["test"],"cu":["42:+","17:-! wrong"]}'
+'''
+    result = parse_memory_block(text)
+    assert len(result.confidence_updates) == 2
+    assert result.confidence_updates[0] == (42, "+", None)
+    assert result.confidence_updates[1] == (17, "-!", "wrong")
+
+
+def test_linkdef_short_entry_with_trigger_and_depth():
+    """Short tr and d keys on entries."""
+    text = '''Response.
+
+[cm]: # '{"e":[{"t":"correction","to":"fix","c":"wrong approach","tr":"file_path:Edit","d":3}],"ok":true,"ctx":"s","kw":["fix"]}'
+'''
+    result = parse_memory_block(text)
+    assert result.entries[0]["trigger"] == "file_path:Edit"
+    assert result.entries[0]["depth"] == 3
+
+
+def test_linkdef_mixed_short_long_keys():
+    """Mix of short and long keys in same block — both accepted."""
+    text = '''Response.
+
+[cm]: # '{"entries":[{"t":"fact","topic":"mixed","c":"both styles"}],"ok":true,"context":"sufficient","kw":["mix"]}'
+'''
+    result = parse_memory_block(text)
+    assert result.entries[0]["type"] == "fact"
+    assert result.entries[0]["topic"] == "mixed"
+    assert result.context == "sufficient"
