@@ -3,7 +3,10 @@
 import json
 import os
 import re
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import sys
 import tempfile
 from unittest.mock import patch

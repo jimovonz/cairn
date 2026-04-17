@@ -10,7 +10,10 @@ Uses real FTS5 SQLite (file-based), mocked embedder only — per reviewer hint.
 import sys
 import os
 import re
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import tempfile
 import pytest
 from unittest.mock import patch, MagicMock

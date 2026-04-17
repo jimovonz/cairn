@@ -5,7 +5,10 @@ import sys
 import os
 import json
 import re
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import tempfile
 from unittest.mock import patch
 from io import StringIO

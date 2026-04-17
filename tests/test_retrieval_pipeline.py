@@ -8,7 +8,10 @@ and what gets injected. Uses in-memory DB with mock embeddings to exercise real 
 import sys
 import os
 import json
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import tempfile
 import shutil
 import numpy as np

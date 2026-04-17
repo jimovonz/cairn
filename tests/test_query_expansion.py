@@ -14,7 +14,10 @@ Assertions verify that expansion strategies don't regress below baseline.
 import sys
 import os
 import json
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import tempfile
 import shutil
 from typing import Any

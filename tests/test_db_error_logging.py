@@ -4,7 +4,10 @@ in record_metric/save_hook_state/delete_hook_state/load_hook_state with loud
 logging that surfaces corruption separately."""
 
 import os
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import tempfile
 from unittest.mock import patch
 
