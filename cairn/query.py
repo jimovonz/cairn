@@ -1363,6 +1363,10 @@ def main_entry():
         execute = "--execute" in sys.argv
         use_llm = "--no-llm" not in sys.argv
         run_consolidation(execute=execute, use_llm=use_llm)
+    elif cmd == "--contradictions":
+        from cairn.consolidate import run_contradiction_detection
+        execute = "--execute" in sys.argv
+        run_contradiction_detection(execute=execute)
     elif cmd == "--stats":
         stats()
     else:

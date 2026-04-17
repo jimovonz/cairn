@@ -166,11 +166,16 @@ CROSS_ENCODER_SCORE_FLOOR = 0.0    # Drop candidates scoring below this (raw CE 
 NLI_ENABLED = True
 NLI_MODEL = "cross-encoder/nli-MiniLM2-L6-H768"
 NLI_ENTAILMENT_THRESHOLD = 0.7     # Score above this = entailment (memories say the same thing)
+NLI_CONTRADICTION_THRESHOLD = 0.0  # Raw logit above this = possible contradiction (pre-filter for Haiku)
 
 # === Memory consolidation ===
 CONSOLIDATION_SIMILARITY_THRESHOLD = 0.85  # Bi-encoder cosine threshold for candidate clustering
 CONSOLIDATION_MIN_CLUSTER_SIZE = 2         # Minimum entries to form a consolidation cluster
 CONSOLIDATION_MAX_CLUSTER_SIZE = 10        # Cap cluster size for LLM summarisation prompt
+
+# === Contradiction detection ===
+CONTRADICTION_SIMILARITY_THRESHOLD = 0.55  # Lower than consolidation — contradictions may use different phrasing
+CONTRADICTION_MAX_PAIRS = 200              # Cap total pairs sent to NLI to bound compute
 
 # === Concurrency ===
 DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for lock release
