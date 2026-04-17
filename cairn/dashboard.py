@@ -236,20 +236,31 @@ def api_sessions(params):
         sort = "started_at"
     order_dir = "ASC" if order.lower() == "asc" else "DESC"
     conn = get_conn()
-    empty_where = "WHERE (SELECT COUNT(*) FROM memories m WHERE m.session_id = s.session_id) > 0" if hide_empty else ""
-    total = conn.execute(f"SELECT COUNT(*) FROM sessions s {empty_where}").fetchone()[0]
+    having_clause = "HAVING memory_count > 0" if hide_empty else ""
+    total_sql = f"""
+        SELECT COUNT(*) FROM (
+            SELECT s.session_id, COUNT(m.id) as memory_count
+            FROM sessions s LEFT JOIN memories m ON m.session_id = s.session_id
+            GROUP BY s.session_id {having_clause}
+        )
+    """
+    total = conn.execute(total_sql).fetchone()[0]
     sessions = conn.execute(f"""
         SELECT s.session_id, s.parent_session_id, s.project, s.started_at, s.transcript_path,
-               (SELECT COUNT(*) FROM memories m WHERE m.session_id = s.session_id) as memory_count,
+               COUNT(m.id) as memory_count,
                (SELECT COUNT(*) FROM sessions c WHERE c.parent_session_id = s.session_id) as child_count
-        FROM sessions s {empty_where} ORDER BY {sort} {order_dir} LIMIT ? OFFSET ?
+        FROM sessions s
+        LEFT JOIN memories m ON m.session_id = s.session_id
+        GROUP BY s.session_id
+        {having_clause}
+        ORDER BY {sort} {order_dir} LIMIT ? OFFSET ?
     """, (limit, offset)).fetchall()
     result = []
     for s in sessions:
         d = dict(s)
         d["cwd"] = _extract_cwd(s["transcript_path"])
         d["session_type"] = "agent" if s["parent_session_id"] else ("parent" if s["child_count"] > 0 else "session")
-        d["interaction_count"] = _count_interactions(s["transcript_path"])
+        d["interaction_count"] = 0
         result.append(d)
     conn.close()
     return {"sessions": result, "total": total}, 200
