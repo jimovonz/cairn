@@ -93,6 +93,70 @@ def _daemon_rerank(query: str, candidates: list[str]) -> Optional[list[float]]:
     return None
 
 
+def _daemon_nli(pairs: list[list[str]]) -> Optional[list[list[float]]]:
+    """Score (premise, hypothesis) pairs via the daemon's NLI model.
+
+    Returns a list of [contradiction, entailment, neutral] score triples, or None.
+    """
+    try:
+        from cairn.daemon import send_request
+        resp = send_request({"action": "nli", "pairs": pairs})
+        if resp and resp.get("scores") is not None:
+            return resp["scores"]
+    except Exception:
+        pass
+    return None
+
+
+def find_clusters(
+    conn: sqlite3.Connection,
+    similarity_threshold: float = 0.85,
+    min_cluster_size: int = 2,
+    max_cluster_size: int = 10,
+) -> list[list[dict]]:
+    """Find clusters of semantically similar active memories using bi-encoder embeddings.
+
+    Returns a list of clusters, each a list of memory dicts sorted by recency.
+    """
+    rows = conn.execute(
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence "
+        "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '')"
+    ).fetchall()
+
+    entries = []
+    for row in rows:
+        vec = from_blob(row[4])
+        entries.append({
+            "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
+            "vec": vec, "updated_at": row[5], "project": row[6], "confidence": row[7] or 0.7,
+        })
+
+    assigned: set[int] = set()
+    clusters: list[list[dict]] = []
+
+    for i, a in enumerate(entries):
+        if a["id"] in assigned:
+            continue
+        cluster = [a]
+        assigned.add(a["id"])
+        for j in range(i + 1, len(entries)):
+            b = entries[j]
+            if b["id"] in assigned:
+                continue
+            if len(cluster) >= max_cluster_size:
+                break
+            sim = cosine_similarity(a["vec"], b["vec"])
+            if sim >= similarity_threshold:
+                cluster.append(b)
+                assigned.add(b["id"])
+        if len(cluster) >= min_cluster_size:
+            cluster.sort(key=lambda x: x["updated_at"] or "", reverse=True)
+            clusters.append(cluster)
+
+    clusters.sort(key=len, reverse=True)
+    return clusters
+
+
 def get_model() -> Any:
     global _model
     if _model is None:

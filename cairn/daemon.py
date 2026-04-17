@@ -27,6 +27,23 @@ CAIRN_DIR = os.path.dirname(__file__)
 
 
 _cross_encoder: Any = None
+_nli_model: Any = None
+
+
+def _get_nli_model() -> Any:
+    """Lazily load the NLI cross-encoder model. Returns None if disabled or unavailable."""
+    global _nli_model
+    if _nli_model is not None:
+        return _nli_model
+    try:
+        from cairn.config import NLI_ENABLED, NLI_MODEL
+        if not NLI_ENABLED:
+            return None
+        from sentence_transformers import CrossEncoder
+        _nli_model = CrossEncoder(NLI_MODEL)
+        return _nli_model
+    except Exception:
+        return None
 
 
 def _get_cross_encoder() -> Any:
@@ -74,6 +91,15 @@ def handle_client(conn, emb):
             else:
                 pairs = [(query, c) for c in candidates]
                 scores = ce.predict(pairs).tolist()
+                response = {"scores": scores}
+
+        elif action == "nli":
+            pairs = request["pairs"]
+            nli = _get_nli_model()
+            if nli is None:
+                response = {"scores": None}
+            else:
+                scores = nli.predict(pairs).tolist()
                 response = {"scores": scores}
 
         elif action == "similarity":
