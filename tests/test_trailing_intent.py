@@ -5,7 +5,10 @@ unfulfilled action intent (e.g. 'let me test that') and allows FINISHED escape."
 import sys
 import os
 import json
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import tempfile
 import numpy as np
 from unittest.mock import patch, MagicMock

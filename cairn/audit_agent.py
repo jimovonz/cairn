@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import subprocess
 import sys
 from datetime import datetime

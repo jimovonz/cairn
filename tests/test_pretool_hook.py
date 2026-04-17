@@ -7,7 +7,10 @@ from the real system. Real query logic runs unmodified."""
 import sys
 import os
 import json
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import tempfile
 import io
 import pytest

@@ -8,7 +8,10 @@ Uses a temporary DB and patches all paths to isolate from the real system.
 import sys
 import os
 import json
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import tempfile
 import shutil
 from unittest.mock import patch, MagicMock

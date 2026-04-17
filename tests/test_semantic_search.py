@@ -3,7 +3,10 @@
 
 import sys
 import os
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import tempfile
 import numpy as np
 from unittest.mock import patch, MagicMock

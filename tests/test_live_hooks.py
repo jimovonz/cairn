@@ -17,7 +17,10 @@ import json
 import time
 import os
 import sys
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 
 import pytest
 
