@@ -247,6 +247,8 @@ def _vec_candidates(
     results: list[dict[str, Any]] = []
     qt = query_terms or set()
     for row in rows:
+        if row[9]:  # archived_reason — exclude from main search
+            continue
         confidence = row[7] if row[7] is not None else 0.7
         l2_dist = row[1]
         sim = 1.0 - (l2_dist * l2_dist / 2.0)
@@ -278,7 +280,8 @@ def _brute_force_candidates(
 ) -> list[dict[str, Any]]:
     """Get top-k candidates via brute-force scan."""
     rows = conn.execute(
-        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, depth, archived_reason, session_id, keywords FROM memories WHERE embedding IS NOT NULL"
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, depth, archived_reason, session_id, keywords "
+        "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '')"
     ).fetchall()
 
     results: list[dict[str, Any]] = []

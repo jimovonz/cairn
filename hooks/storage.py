@@ -26,7 +26,7 @@ def extract_associated_files(transcript_path: str, lookback: int = 30) -> list[s
     from hooks.transcript_adapter import iter_normalized_entries
     try:
         entries = list(iter_normalized_entries(transcript_path))
-        recent = entries[-lookback:] if len(entries) > lookback else entries
+        recent = entries if lookback == 0 else (entries[-lookback:] if len(entries) > lookback else entries)
 
         files: list[str] = []
         seen: set[str] = set()
