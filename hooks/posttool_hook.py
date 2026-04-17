@@ -108,7 +108,7 @@ def main() -> None:
     hook_input = json.loads(raw)
 
     tool_name: str = hook_input.get("tool_name", "")
-    session_id: str = hook_input.get("session_id", "")
+    session_id: str = hook_input.get("session_id", "") or hook_input.get("sessionId", "")
     is_subagent: bool = bool(hook_input.get("agent_id"))
 
     # Skip subagents — they have opportunistic memory only

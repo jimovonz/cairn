@@ -1,4 +1,5 @@
-"""Enforcement mechanisms — trailing intent, declined-without-trying, and continuation counting."""
+"""Enforcement mechanisms — trailing intent, deferral detection, declined-without-trying,
+correction triggers, and continuation counting."""
 
 from __future__ import annotations
 
@@ -12,6 +13,67 @@ from hooks.hook_helpers import log, get_conn
 from cairn.config import TRAILING_INTENT_SIM_THRESHOLD
 
 import numpy as np
+
+
+# --- Deferral detection ---
+# Catches the "I did part of it, the rest is for later" pattern where the LLM
+# fabricates session/scope boundaries to justify stopping. This is INDEPENDENT
+# of trailing-intent (which catches "let me do X" without doing it) — deferral
+# catches "I already did X, Y is multi-session scope" which can co-occur with
+# ok:true and tool calls.
+
+DEFERRAL_REFS: list[str] = [
+    # Session-boundary fabrication
+    "multi-session scope",
+    "for a future session",
+    "deferred to next session",
+    "next session will pick up",
+    "this is a multi-session effort",
+    "needs a dedicated session",
+    "scoped to this session",
+    "end of session checkpoint",
+    "pause here and continue later",
+    "beyond the scope of this session",
+    "that's another full chunk",
+    "remaining work is substantial enough to warrant",
+    "for the next session",
+    "in a follow-up session",
+    "separate session for that",
+    "pick this up in a new session",
+    "wrap up this session",
+    "good stopping point",
+    "natural break point to stop",
+    "continue in another session",
+    "this session has covered enough",
+    "defer the rest",
+    # "Still needs" / incomplete-but-marked-done pattern
+    "still needs to be done",
+    "remaining items that need attention",
+    "requires hardware not code",
+    "requires manual testing",
+    "TODO items remaining",
+    "left as an exercise",
+    "what still needs doing",
+    "outstanding items for later",
+    "not yet implemented but straightforward",
+    "the following still need to be addressed",
+]
+
+_deferral_embeddings: Optional[list[tuple[str, np.ndarray]]] = None
+
+
+def _get_deferral_embeddings() -> Optional[list[tuple[str, np.ndarray]]]:
+    """Lazy-load and cache deferral reference embeddings."""
+    global _deferral_embeddings
+    if _deferral_embeddings is not None:
+        return _deferral_embeddings
+    emb = hook_helpers.get_embedder()
+    if not emb:
+        return None
+    _deferral_embeddings = [(ref, emb.embed(ref)) for ref in DEFERRAL_REFS]
+    _deferral_embeddings = [(ref, vec) for ref, vec in _deferral_embeddings if vec is not None]
+    return _deferral_embeddings if _deferral_embeddings else None
+
 
 TRAILING_INTENT_REFS: list[str] = [
     "let me test that now",
@@ -64,11 +126,87 @@ def _get_intent_embeddings() -> Optional[list[tuple[str, np.ndarray]]]:
 
 def _extract_last_sentence(text: str) -> Optional[str]:
     """Extract the last non-empty, non-memory-block sentence from the response."""
-    cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
+    cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"^\[(?:cm|cairn-memory)\]:\s*#\s*'.*'$", "", cleaned, flags=re.MULTILINE).strip()
     cleaned = re.sub(r"\s*```\s*$", "", cleaned).strip()
     sentences = re.split(r"[.!?\n]", cleaned)
     sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
     return sentences[-1] if sentences else None
+
+
+def _strip_memory_and_code(text: str) -> str:
+    """Strip memory blocks and code blocks from response text for semantic analysis."""
+    cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"^\[(?:cm|cairn-memory)\]:\s*#\s*'.*'$", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"```.*?```", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"`[^`]+`", "", cleaned)
+    return cleaned.strip()
+
+
+def _has_deferral_language(text: str) -> bool:
+    """Quick regex pre-check for deferral-adjacent keywords before running embeddings."""
+    return bool(re.search(
+        r"session|multi.?session|defer|next time|follow.?up|wrap up|stopping point|"
+        r"beyond.{0,20}scope|another.{0,10}chunk|pause here|pick.{0,10}up.{0,10}later|"
+        r"still needs|remaining.{0,10}items|requires hardware|TODO.{0,10}remain|"
+        r"left as.{0,10}exercise|outstanding.{0,10}later|not yet implemented",
+        text, re.IGNORECASE
+    ))
+
+
+def check_deferral(text: str, complete: bool, session_id: str = "") -> Optional[str]:
+    """Detect scope-deferral language in the response.
+
+    Catches the pattern where the LLM fabricates session/scope boundaries to
+    justify stopping ("this is multi-session scope", "defer to next session").
+    Runs INDEPENDENTLY of ok:true — deferral in the body is suspicious even
+    when (especially when) the memory block claims complete.
+
+    Checks the last ~500 chars of cleaned response against DEFERRAL_REFS
+    embeddings. Returns the matched deferral text if detected, None otherwise.
+    """
+    from hooks.hook_helpers import record_metric
+    from cairn.config import TRAILING_INTENT_SIM_THRESHOLD
+
+    cleaned = _strip_memory_and_code(text)
+    if len(cleaned) < 30:
+        return None
+
+    # Quick keyword pre-check — skip embedding if no deferral-adjacent words
+    if not _has_deferral_language(cleaned):
+        return None
+
+    refs = _get_deferral_embeddings()
+    if not refs:
+        return None
+
+    emb = hook_helpers.get_embedder()
+    if not emb:
+        return None
+
+    # Check last ~500 chars — deferral language tends to be in summaries at the end
+    tail = cleaned[-500:]
+    tail_vec = emb.embed(tail)
+    if tail_vec is None:
+        return None
+
+    max_sim = 0.0
+    best_ref = ""
+    for ref_text, ref_vec in refs:
+        sim = emb.cosine_similarity(tail_vec, ref_vec)
+        if sim > max_sim:
+            max_sim = sim
+            best_ref = ref_text
+
+    # Use same threshold as trailing intent — deferral is equally actionable
+    if max_sim > TRAILING_INTENT_SIM_THRESHOLD:
+        extra = " (ok:true — body contradicts completeness flag)" if complete else ""
+        log(f"Deferral detected: sim={max_sim:.3f} ref='{best_ref}'{extra}")
+        record_metric(session_id, "deferral_detected", f"sim={max_sim:.3f} ref={best_ref[:40]}", max_sim)
+        return tail[:200]
+
+    record_metric(session_id, "deferral_clear", f"sim={max_sim:.3f}", max_sim)
+    return None
 
 
 def check_trailing_intent(text: str, session_id: str = "") -> Optional[str]:
@@ -79,9 +217,11 @@ def check_trailing_intent(text: str, session_id: str = "") -> Optional[str]:
     """
     from hooks.hook_helpers import record_metric
 
-    # Questions are not intent — check before extracting
-    cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL).strip()
-    if cleaned.rstrip().endswith("?"):
+    cleaned = _strip_memory_and_code(text)
+
+    # Questions bypass trailing-intent UNLESS deferral language is present.
+    # "Want me to continue?" is a covert exit ramp, not a genuine question.
+    if cleaned.rstrip().endswith("?") and not _has_deferral_language(cleaned):
         return None
 
     last = _extract_last_sentence(text)
@@ -181,33 +321,23 @@ def _response_has_tool_calls(transcript_path: str) -> bool:
     """Check if the current (last) assistant turn includes action tool calls."""
     if not transcript_path or not os.path.exists(transcript_path):
         return False
+    from hooks.transcript_adapter import iter_normalized_entries
     try:
-        with open(transcript_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+        entries = list(iter_normalized_entries(transcript_path))
         # Scan backwards from end — find tool calls after the last user message
-        found_assistant = False
-        for line in reversed(lines):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            # Stop at the last user message — everything after is current turn
+        for entry in reversed(entries):
             msg = entry.get("message", {})
             if isinstance(msg, dict) and msg.get("role") == "user":
                 break
             tool_name = entry.get("tool_name", "")
             if tool_name in _ACTION_TOOLS:
                 return True
-            # Also check for tool_use in assistant message content blocks
             if entry.get("type") == "assistant" and isinstance(msg, dict):
                 for block in msg.get("content", []):
                     if isinstance(block, dict) and block.get("type") == "tool_use":
                         if block.get("name", "") in _ACTION_TOOLS:
                             return True
-        return found_assistant  # False — no action tools found
+        return False  # no action tools found in current turn
     except (IOError, OSError):
         return False
 
@@ -227,6 +357,7 @@ def check_declined_without_trying(text: str, transcript_path: str,
 
     # Strip memory block and code blocks before checking
     cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"^\[(?:cm|cairn-memory)\]:\s*#\s*'.*'$", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"```.*?```", "", cleaned, flags=re.DOTALL)
     cleaned = re.sub(r"`[^`]+`", "", cleaned)
     cleaned = cleaned.strip()
@@ -278,6 +409,7 @@ def check_correction_triggers(text: str, session_id: str = "") -> Optional[tuple
 
     # Strip memory/code blocks — match against actual response content
     cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"^\[(?:cm|cairn-memory)\]:\s*#\s*'.*'$", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"```.*?```", "", cleaned, flags=re.DOTALL)
     cleaned = re.sub(r"`[^`]+`", "", cleaned)
     cleaned = cleaned.strip()

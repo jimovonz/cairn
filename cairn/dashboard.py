@@ -729,48 +729,61 @@ def api_config_update(body):
 def _count_interactions(transcript_path):
     if not transcript_path or not os.path.exists(transcript_path):
         return 0
+    from hooks.transcript_adapter import iter_normalized_entries
     count = 0
-    try:
-        with open(transcript_path, encoding="utf-8") as f:
-            for line in f:
-                if '"role":"user"' in line or '"role": "user"' in line:
-                    count += 1
-    except Exception:
-        pass
+    for entry in iter_normalized_entries(transcript_path):
+        msg = entry.get("message", {})
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            count += 1
     return count
 
 
 def _estimate_tokens(transcript_path):
     if not transcript_path or not os.path.exists(transcript_path):
         return {"user_tokens": 0, "assistant_tokens": 0}
+    from hooks.transcript_adapter import iter_normalized_entries
     user_chars, assistant_chars = 0, 0
-    try:
-        with open(transcript_path, encoding="utf-8") as f:
-            for line in f:
-                entry = json.loads(line)
-                msg = entry.get("message", {})
-                if not isinstance(msg, dict):
-                    continue
-                role = msg.get("role", "")
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    chars = sum(len(b.get("text", "")) for b in content if isinstance(b, dict))
-                elif isinstance(content, str):
-                    chars = len(content)
-                else:
-                    continue
-                if role == "user":
-                    user_chars += chars
-                elif role == "assistant":
-                    assistant_chars += chars
-    except Exception:
-        pass
+    for entry in iter_normalized_entries(transcript_path):
+        msg = entry.get("message", {})
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            chars = sum(len(b.get("text", "")) for b in content if isinstance(b, dict))
+        elif isinstance(content, str):
+            chars = len(content)
+        else:
+            continue
+        if role == "user":
+            user_chars += chars
+        elif role == "assistant":
+            assistant_chars += chars
     return {"user_tokens": user_chars // 4, "assistant_tokens": assistant_chars // 4}
 
 
 def _extract_cwd(transcript_path):
     if not transcript_path:
         return None
+    # Copilot transcripts live under workspaceStorage/<hash>/GitHub.copilot-chat/
+    # and don't encode cwd in the path. Try the session.start record's
+    # data.context.cwd field (populated when Copilot supplies workspace context).
+    if "GitHub.copilot-chat" in transcript_path or "/transcripts/" in transcript_path:
+        try:
+            with open(transcript_path, encoding="utf-8") as f:
+                first = f.readline().strip()
+            if first:
+                rec = json.loads(first)
+                if rec.get("type") == "session.start":
+                    ctx = (rec.get("data") or {}).get("context") or {}
+                    cwd = ctx.get("cwd") if isinstance(ctx, dict) else None
+                    if cwd:
+                        return cwd
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+        # Copilot transcript with no cwd context — nothing to derive
+        if "/.claude/projects/" not in transcript_path:
+            return None
     m = re.search(r'/\.claude/projects/([^/]+)/', transcript_path)
     if not m:
         return None
@@ -802,31 +815,30 @@ def _extract_cwd(transcript_path):
 
 
 def _parse_transcript(transcript_path):
+    from hooks.transcript_adapter import iter_normalized_entries
     messages = []
-    with open(transcript_path, encoding="utf-8") as f:
-        for line_num, line in enumerate(f):
-            try:
-                entry = json.loads(line.strip())
-                ts_str = entry.get("timestamp", "")
-                msg = entry.get("message", entry)
-                role = msg.get("role", "")
-                if role not in ("user", "assistant"):
-                    continue
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    content = "\n".join(b.get("text", "") for b in content
-                                        if isinstance(b, dict) and b.get("type") == "text")
-                elif not isinstance(content, str):
-                    continue
-                if not content or not content.strip():
-                    continue
-                try:
-                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
-                except (ValueError, AttributeError):
-                    ts = None
-                messages.append({"line": line_num, "role": role, "text": content, "ts": ts})
-            except Exception:
+    for line_num, entry in enumerate(iter_normalized_entries(transcript_path)):
+        try:
+            ts_str = entry.get("timestamp", "")
+            msg = entry.get("message", entry)
+            role = msg.get("role", "")
+            if role not in ("user", "assistant"):
                 continue
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = "\n".join(b.get("text", "") for b in content
+                                    if isinstance(b, dict) and b.get("type") == "text")
+            elif not isinstance(content, str):
+                continue
+            if not content or not content.strip():
+                continue
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
+            except (ValueError, AttributeError):
+                ts = None
+            messages.append({"line": line_num, "role": role, "text": content, "ts": ts})
+        except Exception:
+            continue
     return messages
 
 
