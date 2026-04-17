@@ -174,6 +174,36 @@ def _scope_weight(
     return 0.3
 
 
+def extract_query_terms(text: str) -> set[str]:
+    """Extract meaningful terms from query text for keyword matching."""
+    import re
+    _STOPWORDS = frozenset({
+        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "by", "from", "is", "it", "its", "was", "are", "be",
+        "has", "had", "have", "do", "did", "does", "will", "can", "could",
+        "would", "should", "may", "might", "not", "no", "what", "when",
+        "where", "who", "how", "why", "that", "this", "these", "those",
+        "my", "your", "his", "her", "our", "their", "me", "you", "him",
+        "them", "about", "into", "over", "after", "before", "between",
+        "other", "some", "any", "all", "just", "also", "than", "then",
+        "very", "too", "here", "there", "been", "being", "were",
+    })
+    words = re.findall(r'\w+', text.lower())
+    meaningful = {w for w in words if len(w) > 2 and w not in _STOPWORDS}
+    return meaningful if meaningful else {w for w in words if len(w) > 2}
+
+
+def keyword_overlap(query_terms: set[str], keywords_csv: Optional[str]) -> float:
+    """Compute overlap ratio between query terms and a memory's keywords (0.0-1.0)."""
+    if not query_terms or not keywords_csv:
+        return 0.0
+    mem_keywords = {k.strip().lower() for k in keywords_csv.split(",") if k.strip()}
+    if not mem_keywords:
+        return 0.0
+    matches = sum(1 for mk in mem_keywords if any(qt in mk or mk in qt for qt in query_terms))
+    return matches / len(mem_keywords)
+
+
 def composite_score(
     similarity: float,
     confidence: float,
@@ -181,15 +211,17 @@ def composite_score(
     project: Optional[str] = None,
     current_project: Optional[str] = None,
     mem_type: Optional[str] = None,
+    kw_overlap: float = 0.0,
 ) -> float:
     """Compute a single scalar retrieval score combining all signals.
     Reduces cognitive load on the LLM by pre-ranking results."""
-    from cairn.config import SCORE_W_SIMILARITY, SCORE_W_CONFIDENCE, SCORE_W_RECENCY, SCORE_W_SCOPE
+    from cairn.config import SCORE_W_SIMILARITY, SCORE_W_CONFIDENCE, SCORE_W_RECENCY, SCORE_W_SCOPE, SCORE_W_KEYWORDS
     recency = _recency_decay(updated_at_str) if updated_at_str else 0.5
     scope = _scope_weight(project, current_project, mem_type) if project is not None else 0.5
     return (
         SCORE_W_SIMILARITY * similarity +
-        SCORE_W_CONFIDENCE * (confidence ** 2) +  # Non-linear: high confidence gains meaningful advantage
+        SCORE_W_CONFIDENCE * (confidence ** 2) +
+        SCORE_W_KEYWORDS * kw_overlap +
         SCORE_W_RECENCY * recency +
         SCORE_W_SCOPE * scope
     )
@@ -200,6 +232,7 @@ def _vec_candidates(
     query_vec: np.ndarray,
     k: int,
     current_project: Optional[str] = None,
+    query_terms: Optional[set[str]] = None,
 ) -> list[dict[str, Any]]:
     """Get top-k candidates from sqlite-vec index."""
     query_blob = to_blob(query_vec)
@@ -212,10 +245,12 @@ def _vec_candidates(
     """, (query_blob, k)).fetchall()
 
     results: list[dict[str, Any]] = []
+    qt = query_terms or set()
     for row in rows:
         confidence = row[7] if row[7] is not None else 0.7
         l2_dist = row[1]
         sim = 1.0 - (l2_dist * l2_dist / 2.0)
+        kw_ov = keyword_overlap(qt, row[11])
         results.append({
             "id": row[0],
             "type": row[2],
@@ -229,7 +264,7 @@ def _vec_candidates(
             "depth": row[8],
             "archived_reason": row[9],
             "keywords": row[11],
-            "score": composite_score(sim, confidence, row[5], row[6], current_project, row[2])
+            "score": composite_score(sim, confidence, row[5], row[6], current_project, row[2], kw_ov)
         })
     return results
 
@@ -239,6 +274,7 @@ def _brute_force_candidates(
     query_vec: np.ndarray,
     k: int,
     current_project: Optional[str] = None,
+    query_terms: Optional[set[str]] = None,
 ) -> list[dict[str, Any]]:
     """Get top-k candidates via brute-force scan."""
     rows = conn.execute(
@@ -246,10 +282,12 @@ def _brute_force_candidates(
     ).fetchall()
 
     results: list[dict[str, Any]] = []
+    qt = query_terms or set()
     for row in rows:
         confidence = row[7] if row[7] is not None else 0.7
         row_vec = from_blob(row[4])
         sim = cosine_similarity(query_vec, row_vec)
+        kw_ov = keyword_overlap(qt, row[11])
         results.append({
             "id": row[0],
             "type": row[1],
@@ -263,7 +301,7 @@ def _brute_force_candidates(
             "depth": row[8],
             "archived_reason": row[9],
             "keywords": row[11],
-            "score": composite_score(sim, confidence, row[5], row[6], current_project, row[1])
+            "score": composite_score(sim, confidence, row[5], row[6], current_project, row[1], kw_ov)
         })
 
     results.sort(key=lambda x: x["score"], reverse=True)
@@ -331,6 +369,9 @@ def find_similar(
 
     from cairn.config import QUERY_EXPANSION_FANOUT
 
+    # Extract query terms once for keyword overlap scoring across all candidates
+    qt = extract_query_terms(text)
+
     # Prefix query with project to match how stored embeddings are augmented
     query_text = f"{current_project} {text}" if current_project else text
     query_vec = embed(query_text)
@@ -341,13 +382,13 @@ def find_similar(
     search_method = "brute"
     if _load_vec(conn):
         try:
-            candidates = _vec_candidates(conn, query_vec, k, current_project)
+            candidates = _vec_candidates(conn, query_vec, k, current_project, qt)
             search_method = "vec"
         except Exception:
             pass
 
     if not candidates:
-        candidates = _brute_force_candidates(conn, query_vec, k, current_project)
+        candidates = _brute_force_candidates(conn, query_vec, k, current_project, qt)
         search_method = "brute"
     _record_embed_metric(f"search_{search_method}_ms", (_time.perf_counter() - t_search) * 1000)
 
@@ -381,9 +422,10 @@ def find_similar(
             mid = c["id"]
             if mid in fanout_best and fanout_best[mid] > c["similarity"]:
                 c["similarity"] = fanout_best[mid]
+                kw_ov = keyword_overlap(qt, c.get("keywords"))
                 c["score"] = composite_score(
                     fanout_best[mid], c["confidence"],
-                    c.get("updated_at"), c.get("project"), current_project, c.get("type")
+                    c.get("updated_at"), c.get("project"), current_project, c.get("type"), kw_ov
                 )
         _record_embed_metric("fanout_ms", (_time.perf_counter() - t_fanout) * 1000)
 
@@ -441,6 +483,9 @@ def find_similar(
 
     # Archived memory enrichment: find related archived memories for learning trail
     if results:
+        active_ids = {r["id"] for r in results}
+        best_active_sim = results[0]["similarity"] if results else 0
+        archived_candidates: list[dict[str, Any]] = []
         try:
             archived = conn.execute(
                 "SELECT id, type, topic, content, embedding, updated_at, project, confidence, "
@@ -448,10 +493,12 @@ def find_similar(
                 "FROM memories WHERE archived_reason IS NOT NULL AND embedding IS NOT NULL"
             ).fetchall()
             for row in archived:
+                if row[0] in active_ids:
+                    continue
                 row_vec = from_blob(row[4])
                 sim = cosine_similarity(query_vec, row_vec)
-                if sim >= MIN_INJECTION_SIMILARITY:
-                    results.append({
+                if sim >= RELATIVE_FILTER_RATIO * best_active_sim and sim >= MIN_INJECTION_SIMILARITY:
+                    archived_candidates.append({
                         "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
                         "similarity": sim, "updated_at": row[5], "project": row[6],
                         "confidence": row[7], "depth": row[8],
@@ -460,6 +507,8 @@ def find_similar(
                     })
         except sqlite3.OperationalError:
             pass  # archived_reason column not yet added
+        archived_candidates.sort(key=lambda x: x["similarity"], reverse=True)
+        results.extend(archived_candidates[:limit])
 
     return results
 
