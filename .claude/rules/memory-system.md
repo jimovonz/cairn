@@ -9,7 +9,7 @@ CRITICAL: You have NO visibility into what other sessions have stored. On ANY ne
 ## How It Works
 
 A Stop hook runs after every response you generate. It:
-1. Parses the `<memory>` block from your response
+1. Parses the `[cm]: # '{...}'` link-definition block from your response
 2. Stores new memories in a SQLite database with semantic embeddings
 3. Deduplicates against existing memories using cosine similarity (threshold 0.85)
 4. Checks your `complete` and `context` flags to decide whether to let you stop or re-prompt you
@@ -18,23 +18,18 @@ You do not need to call any tools to persist memories. The hook handles it mecha
 
 ## Memory Block Format
 
-Every response MUST end with a `<memory>` block. No exceptions. This is enforced by the Stop hook.
+Every response MUST end with a `[cm]: # '{...}'` link-definition block. No exceptions. This is enforced by the Stop hook.
+
+This format is **invisible** in both VS Code Copilot Chat and Claude Code CLI — markdown link definitions produce no rendered output. The block is preserved verbatim in the JSONL transcript where the Stop hook reads it.
 
 ```
-<memory>
-- type: [decision|preference|fact|correction|person|project|skill|workflow]
-- topic: [short key]
-- content: [single line description]
-- complete: [true|false]
-- remaining: [what still needs doing, if complete is false]
-- context: [sufficient|insufficient]
-- context_need: [what context is missing, if insufficient]
-- confidence_update: [memory_id]:[+|-|-! reason]
-- intent: [resolved — only when re-prompted for trailing intent and you have nothing more to do]
-- keywords: [comma-separated topic keywords for cross-project discovery]
-- depth: [number of conversation turns back this knowledge was discussed, e.g. 5]
-</memory>
+[cm]: # '{"e":[{"t":"TYPE","to":"topic","c":"content — information-dense single line"}],"ok":true,"ctx":"s","kw":["keyword1","keyword2"]}'
 ```
+
+**Short key reference** (use short keys to save tokens):
+- Block-level: `ok`=complete (true/false), `ctx`=context (`s`=sufficient, `i`=insufficient), `cn`=context_need, `rem`=remaining, `cu`=confidence_updates (array of `"42:+"` / `"17:-! reason"` strings), `ro`=retrieval_outcome, `int`=intent, `kw`=keywords
+- Per-entry (`e` array): `t`=type, `to`=topic, `c`=content, `kw`=keywords (overrides block-level), `d`=depth
+- Entry `t` values: `decision`, `preference`, `fact`, `correction`, `person`, `project`, `skill`, `workflow`
 
 ### Types
 - **decision**: Architectural or design choices — include the choice, alternatives considered, and rationale
@@ -60,11 +55,7 @@ You MUST store a memory when any of these happen — these are not optional:
 - **All metadata fields are required** — `complete`, `context`, and `keywords` must be explicitly declared in every block. `remaining` is required when `complete: false`. `context_need` is required when `context: insufficient`. Each entry must have `type`, `topic`, and `content`.
 - Minimum valid block (when nothing was learned):
   ```
-  <memory>
-  - complete: true
-  - context: sufficient
-  - keywords: topic, of, conversation
-  </memory>
+  [cm]: # '{"ok":true,"ctx":"s","kw":["topic","of","conversation"]}'
   ```
 - Each entry is one line of content — no multi-line values, but make that line **information-dense**. Include the *what*, *why*, and *context* in the same line. Bad: `"Use SQLite"`. Good: `"Use SQLite for storage — chosen over PostgreSQL for zero-config local deployment, WAL mode handles concurrency, single-file portability"`. The content should be self-sufficient — a future session reading just this line should understand the full picture without needing the original conversation.
 - **Never fabricate.** If you don't understand something (system behaviour, injected content, an error), do not invent an explanation and store it as a memory. A no-op block is always better than a false memory. If you're unsure whether something is true, don't store it as a fact.

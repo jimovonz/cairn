@@ -157,7 +157,7 @@ def _check_db_integrity(session_id: str) -> Optional[str]:
         return None
 
 
-def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
+def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> Optional[str]:
     """Project bootstrap: inject standing-context memories for the CWD project.
 
     Queries directly by project name + type filter — no semantic search needed.
@@ -170,7 +170,7 @@ def project_bootstrap(session_id: str, cwd: str) -> Optional[str]:
         return None
 
     from hooks.hook_helpers import resolve_project
-    project_name = resolve_project(cwd)
+    project_name = resolve_project(cwd, transcript_path)
     if not project_name or project_name in (".", "/", "home", "tmp", "temp"):
         return None
 
@@ -305,8 +305,9 @@ def layer1_search(user_message: str, session_id: str) -> Optional[str]:
 def main() -> None:
     raw = sys.stdin.read()
     hook_input = json.loads(raw)
-    session_id = hook_input.get("session_id", "")
+    session_id = hook_input.get("session_id", "") or hook_input.get("sessionId", "")
     cwd = hook_input.get("cwd", "")
+    transcript_path = hook_input.get("transcript_path", "")
     user_message = hook_input.get("user_message") or hook_input.get("prompt", "")
 
     is_subagent = bool(hook_input.get("agent_id"))
@@ -328,7 +329,7 @@ def main() -> None:
             context_parts.append(corruption_warning)
 
         # Project bootstrap: inject standing context from CWD-matched project
-        pb_context = project_bootstrap(session_id, cwd)
+        pb_context = project_bootstrap(session_id, cwd, transcript_path)
         if pb_context:
             context_parts.append(pb_context)
 

@@ -23,8 +23,9 @@ def compute_response_hash(text: str) -> int:
     Returns:
         Integer hash value (sum of a=1..z=26 for first letter of each sentence).
     """
-    # Strip memory block
+    # Strip memory block (both <memory> tags and [cm] link-defs)
     stripped = re.sub(r'<memory>.*?</memory>', '', text, flags=re.DOTALL)
+    stripped = re.sub(r"^\[(?:cm|cairn-memory)\]:\s*#\s*'.*'$", "", stripped, flags=re.MULTILINE)
     # Strip fenced code blocks — replace with sentence boundary marker
     stripped = re.sub(r'```.*?```', '. ', stripped, flags=re.DOTALL)
     stripped = stripped.strip()
