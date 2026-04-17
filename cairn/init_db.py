@@ -168,6 +168,20 @@ def init():
             VALUES (new.id, new.topic, new.content, new.keywords);
         END
     """)
+    # Pair assessment cache — records which memory pairs have been assessed
+    # for consolidation/contradiction so incremental runs skip already-checked pairs
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pair_assessments (
+            memory_id_a INTEGER NOT NULL,
+            memory_id_b INTEGER NOT NULL,
+            mode TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            reason TEXT,
+            assessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (memory_id_a, memory_id_b, mode)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pair_mode ON pair_assessments(mode)")
     # Rebuild FTS index if we migrated
     if _fts_needs_rebuild:
         conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
