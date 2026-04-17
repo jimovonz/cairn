@@ -342,3 +342,153 @@ class TestNLIModelIntegration:
             ["The database was corrupted", "The user prefers dark mode"],
         ])
         assert scores[0][1] < scores[0][2]  # entailment < neutral
+
+    def test_contradiction_detected_for_negations(self):
+        """Real NLI model should detect contradiction between opposing statements."""
+        model = CrossEncoder("cross-encoder/nli-MiniLM2-L6-H768")
+        scores = model.predict([
+            ["The database is corrupted", "The database is not corrupted"],
+            ["Recency weighting is wrong for memory systems", "Recency weighting is correct for memory systems"],
+        ])
+        # Contradiction is index 0
+        assert scores[0][0] > scores[0][1]  # contradiction > entailment
+        assert scores[1][0] > scores[1][1]  # contradiction > entailment
+
+    def test_no_contradiction_for_compatible_statements(self):
+        """Real NLI model should not detect contradiction between compatible facts."""
+        model = CrossEncoder("cross-encoder/nli-MiniLM2-L6-H768")
+        scores = model.predict([
+            ["The database uses WAL mode", "WAL mode provides better concurrency"],
+        ])
+        assert scores[0][0] < scores[0][2]  # contradiction < neutral
+
+
+# === Contradiction detection unit tests ===
+
+class TestContradictionDetection:
+    def test_find_contradiction_pairs_returns_similar_pairs(self):
+        """Pairs above similarity threshold should be returned."""
+        db_path, conn = fresh_db()
+        emb1 = make_embedding(42)
+        emb2 = make_similar_embedding(42, noise=0.05)
+        conn.execute("INSERT INTO memories (type, topic, content, embedding, created_at) VALUES (?, ?, ?, ?, ?)",
+                      ("fact", "db", "DB is corrupted", emb1, "2026-04-01"))
+        conn.execute("INSERT INTO memories (type, topic, content, embedding, created_at) VALUES (?, ?, ?, ?, ?)",
+                      ("fact", "db", "DB is not corrupted", emb2, "2026-04-17"))
+        conn.commit()
+
+        from cairn.consolidate import find_contradiction_pairs
+        with patch("cairn.consolidate.DB_PATH", db_path):
+            pairs = find_contradiction_pairs(conn)
+        conn.close()
+        assert len(pairs) == 1
+        assert pairs[0]["older"]["id"] == 1
+        assert pairs[0]["newer"]["id"] == 2
+        assert pairs[0]["same_topic"] is True
+
+    def test_excludes_archived_from_contradiction_pairs(self):
+        """Archived memories should not appear in contradiction pairs."""
+        db_path, conn = fresh_db()
+        emb1 = make_embedding(42)
+        emb2 = make_similar_embedding(42, noise=0.02)
+        conn.execute("INSERT INTO memories (type, topic, content, embedding, archived_reason) VALUES (?, ?, ?, ?, ?)",
+                      ("fact", "db", "DB is broken", emb1, "already archived"))
+        conn.execute("INSERT INTO memories (type, topic, content, embedding) VALUES (?, ?, ?, ?)",
+                      ("fact", "db", "DB is fixed", emb2))
+        conn.commit()
+
+        from cairn.consolidate import find_contradiction_pairs
+        with patch("cairn.consolidate.DB_PATH", db_path):
+            pairs = find_contradiction_pairs(conn)
+        conn.close()
+        assert len(pairs) == 0
+
+    def test_nli_filters_non_contradictions(self):
+        """Pairs without NLI contradiction should be filtered."""
+        from cairn.consolidate import score_contradictions_nli
+
+        pairs = [{
+            "older": {"id": 1, "content": "WAL mode is enabled"},
+            "newer": {"id": 2, "content": "WAL provides concurrency"},
+            "similarity": 0.8,
+        }]
+
+        with patch("cairn.embeddings._daemon_nli") as mock_nli:
+            # Low contradiction, high neutral
+            mock_nli.return_value = [
+                [-3.0, -1.0, 4.0],  # fwd: neutral
+                [-3.0, -1.0, 4.0],  # rev: neutral
+            ]
+            with patch("cairn.config.NLI_ENABLED", True):
+                result = score_contradictions_nli(pairs)
+        assert len(result) == 0
+
+    def test_nli_keeps_genuine_contradictions(self):
+        """Pairs with high NLI contradiction score should be kept."""
+        from cairn.consolidate import score_contradictions_nli
+
+        pairs = [{
+            "older": {"id": 1, "content": "DB is corrupted"},
+            "newer": {"id": 2, "content": "DB is not corrupted"},
+            "similarity": 0.9,
+        }]
+
+        with patch("cairn.embeddings._daemon_nli") as mock_nli:
+            mock_nli.return_value = [
+                [4.0, -2.0, -1.0],  # fwd: strong contradiction
+                [3.5, -2.0, -1.0],  # rev: strong contradiction
+            ]
+            with patch("cairn.config.NLI_ENABLED", True):
+                result = score_contradictions_nli(pairs)
+        assert len(result) == 1
+        assert result[0]["nli_contradiction_score"] == 4.0
+
+    def test_execute_supersession_archives_older(self):
+        """execute_supersession should archive the older memory."""
+        db_path, conn = fresh_db()
+        conn.execute("INSERT INTO memories (type, topic, content, embedding) VALUES (?, ?, ?, ?)",
+                      ("fact", "db", "DB is broken", make_embedding(42)))
+        conn.execute("INSERT INTO memories (type, topic, content, embedding) VALUES (?, ?, ?, ?)",
+                      ("fact", "db", "DB is fixed", make_similar_embedding(42, noise=0.02)))
+        conn.commit()
+
+        superseded = [{
+            "older": {"id": 1, "content": "DB is broken"},
+            "newer": {"id": 2, "content": "DB is fixed"},
+            "reason": "DB was repaired",
+        }]
+
+        from cairn.consolidate import execute_supersession
+        count = execute_supersession(conn, superseded)
+        assert count == 1
+
+        row = conn.execute("SELECT archived_reason FROM memories WHERE id = 1").fetchone()
+        assert "superseded" in row[0]
+        assert "#2" in row[0]
+
+        # Newer should be untouched
+        row2 = conn.execute("SELECT archived_reason FROM memories WHERE id = 2").fetchone()
+        assert row2[0] is None
+        conn.close()
+
+    def test_contradiction_dry_run_makes_no_changes(self):
+        """Dry run should not modify the database."""
+        db_path, conn = fresh_db()
+        emb1 = make_embedding(42)
+        emb2 = make_similar_embedding(42, noise=0.02)
+        conn.execute("INSERT INTO memories (type, topic, content, embedding) VALUES (?, ?, ?, ?)",
+                      ("fact", "db", "DB is broken", emb1))
+        conn.execute("INSERT INTO memories (type, topic, content, embedding) VALUES (?, ?, ?, ?)",
+                      ("fact", "db", "DB is fixed", emb2))
+        conn.commit()
+
+        initial_count = conn.execute("SELECT count(*) FROM memories WHERE archived_reason IS NULL").fetchone()[0]
+
+        from cairn.consolidate import run_contradiction_detection
+        with patch("cairn.consolidate.DB_PATH", db_path):
+            with patch("cairn.consolidate.score_contradictions_nli", return_value=[]):
+                summary = run_contradiction_detection(execute=False)
+
+        final_count = conn.execute("SELECT count(*) FROM memories WHERE archived_reason IS NULL").fetchone()[0]
+        assert final_count == initial_count
+        conn.close()
