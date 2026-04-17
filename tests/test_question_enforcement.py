@@ -82,9 +82,21 @@ def run_hook(text: str, is_continuation: bool = False, session_id: str = SESSION
     return {"exit_code": result.returncode}
 
 
+_RESPONSE_COUNTER = 0
+
+
 def make_response(body: str, memory_fields: str = "") -> str:
-    default_memory = "- complete: true\n- context: sufficient\n- keywords: test"
+    global _RESPONSE_COUNTER
+    _RESPONSE_COUNTER += 1
+    default_memory = (
+        f"- type: fact\n- topic: test-placeholder-{_RESPONSE_COUNTER}\n"
+        f"- content: unique placeholder entry {_RESPONSE_COUNTER} for density gate\n"
+        "- complete: true\n- context: sufficient\n- keywords: test"
+    )
     memory = memory_fields if memory_fields else default_memory
+    if "- type:" not in memory:
+        memory = (f"- type: fact\n- topic: test-placeholder-{_RESPONSE_COUNTER}\n"
+                  f"- content: unique placeholder {_RESPONSE_COUNTER}\n" + memory)
     return f"{body}\n\n<memory>\n{memory}\n</memory>"
 
 
