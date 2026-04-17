@@ -140,20 +140,50 @@ sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" \
     "$CAIRN_HOME/templates/cairn-command.md" > "$CLAUDE_DIR/commands/cairn.md"
 echo "Installed /cairn slash command."
 
-# --- Pre-download model ---
+# --- Pre-download models ---
 echo ""
-echo "Pre-downloading embedding model (one-time)..."
+echo "Pre-downloading models (one-time)..."
 HF_HUB_DISABLE_PROGRESS_BARS=1 CUDA_VISIBLE_DEVICES="" "$VENV_PYTHON" -c "
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
+
+# Bi-encoder for embeddings
 m = SentenceTransformer('all-MiniLM-L6-v2')
 v = m.encode(['test'])
-print(f'Model ready ({v.shape[1]} dimensions).')
+print(f'Embedding model ready ({v.shape[1]} dimensions).')
+
+# Cross-encoder for retrieval re-ranking
+ce = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+ce.predict([['test', 'test']])
+print('Cross-encoder model ready.')
+
+# NLI model for consolidation/contradiction detection
+nli = CrossEncoder('cross-encoder/nli-MiniLM2-L6-H768')
+nli.predict([['test', 'test']])
+print('NLI model ready.')
 " 2>&1 | grep -v "^$\|Warning:\|Loading\|REPORT\|UNEXPECTED\|Notes:" \
     || { echo "ERROR: Model download/load failed."; exit 1; }
+
+# --- Logs directory ---
+mkdir -p "$CAIRN_HOME/logs"
 
 # --- Start daemon ---
 echo "Starting embedding daemon..."
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" start
+
+# --- Cron jobs (memory consolidation + contradiction detection) ---
+echo "Configuring cron jobs..."
+CRON_MARKER="# cairn-maintenance"
+CRON_CONSOLIDATION="0 3 * * * $VENV_PYTHON $CAIRN_HOME/cairn/daemon.py start >/dev/null 2>&1; $VENV_PYTHON $CAIRN_HOME/cairn/consolidate.py --execute >> $CAIRN_HOME/logs/consolidation.log 2>&1 $CRON_MARKER"
+CRON_CONTRADICTION="30 3 * * * $VENV_PYTHON $CAIRN_HOME/cairn/consolidate.py --contradictions --execute >> $CAIRN_HOME/logs/contradiction.log 2>&1 $CRON_MARKER"
+
+# Remove any existing cairn cron entries (including legacy contradiction_scan.py)
+EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan" || true)
+
+# Install fresh entries
+echo "$EXISTING_CRON
+$CRON_CONSOLIDATION
+$CRON_CONTRADICTION" | sed '/^$/d' | crontab -
+echo "Installed cron: consolidation (3:00 AM) + contradiction scan (3:30 AM) daily."
 
 # --- Health check ---
 echo ""
@@ -197,4 +227,9 @@ echo "  /cairn recent   — recent memories"
 echo "  /cairn search X — search memories"
 echo "  /cairn review   — low-confidence memories"
 echo "  /cairn projects — list projects"
+echo ""
+echo "Maintenance (cron, daily at 3:00 AM):"
+echo "  Consolidation — merge duplicate memories"
+echo "  Contradiction — detect and archive superseded memories"
+echo "  Logs: $CAIRN_HOME/logs/"
 echo ""
