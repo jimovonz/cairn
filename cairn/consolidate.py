@@ -40,12 +40,29 @@ def find_consolidation_candidates(conn: sqlite3.Connection) -> list[list[dict]]:
         CONSOLIDATION_MAX_CLUSTER_SIZE,
     )
 
+    assessed = _load_assessed_pairs(conn, "consolidation")
     clusters = find_clusters(
         conn,
         similarity_threshold=CONSOLIDATION_SIMILARITY_THRESHOLD,
         min_cluster_size=CONSOLIDATION_MIN_CLUSTER_SIZE,
         max_cluster_size=CONSOLIDATION_MAX_CLUSTER_SIZE,
     )
+
+    # Filter out clusters where all pairs have been assessed
+    if assessed:
+        filtered = []
+        for cluster in clusters:
+            ids = [e["id"] for e in cluster]
+            all_assessed = all(
+                (min(ids[i], ids[j]), max(ids[i], ids[j])) in assessed
+                for i in range(len(ids)) for j in range(i + 1, len(ids))
+            )
+            if not all_assessed:
+                filtered.append(cluster)
+        if len(clusters) != len(filtered):
+            print(f"  Skipping {len(clusters) - len(filtered)} fully-assessed clusters")
+        clusters = filtered
+
     return clusters
 
 
@@ -266,6 +283,14 @@ def run_consolidation(execute: bool = False, use_llm: bool = True) -> dict:
             print(f"  Cluster {i+1}: {len(cluster)} entries -> {len(confirmed)} confirmed entailment pairs")
         else:
             print(f"  Cluster {i+1}: {len(cluster)} entries -> no entailment (keeping separate)")
+            # Record non-entailment so we don't re-check these pairs
+            ids = [e["id"] for e in cluster]
+            for a in range(len(ids)):
+                for b in range(a + 1, len(ids)):
+                    pair = {"older": {"id": min(ids[a], ids[b])},
+                            "newer": {"id": max(ids[a], ids[b])},
+                            "verdict": "no_entailment", "reason": ""}
+                    _record_assessments(conn, [pair], "consolidation")
 
     print(f"  {len(confirmed_clusters)} clusters confirmed for consolidation")
 
@@ -305,6 +330,14 @@ def run_consolidation(execute: bool = False, use_llm: bool = True) -> dict:
             print(f"  Created memory #{new_id}, archived {source_ids}")
             total_consolidated += 1
             total_archived += len(cluster)
+            # Record as consolidated
+            ids = source_ids
+            for a in range(len(ids)):
+                for b in range(a + 1, len(ids)):
+                    pair = {"older": {"id": min(ids[a], ids[b])},
+                            "newer": {"id": max(ids[a], ids[b])},
+                            "verdict": "consolidated", "reason": f"into #{new_id}"}
+                    _record_assessments(conn, [pair], "consolidation")
 
     conn.close()
 
@@ -334,15 +367,48 @@ def run_consolidation(execute: bool = False, use_llm: bool = True) -> dict:
 # ============================================================
 
 
+def _load_assessed_pairs(conn: sqlite3.Connection, mode: str) -> set[tuple[int, int]]:
+    """Load previously assessed pair IDs from the cache."""
+    try:
+        rows = conn.execute(
+            "SELECT memory_id_a, memory_id_b FROM pair_assessments WHERE mode = ?", (mode,)
+        ).fetchall()
+        return {(r[0], r[1]) for r in rows}
+    except Exception:
+        return set()
+
+
+def _record_assessments(conn: sqlite3.Connection, pairs: list[dict], mode: str) -> None:
+    """Record assessment verdicts for all pairs (not just superseded)."""
+    for p in pairs:
+        a_id = min(p["older"]["id"], p["newer"]["id"])
+        b_id = max(p["older"]["id"], p["newer"]["id"])
+        verdict = p.get("verdict", "unknown")
+        reason = p.get("reason", "")
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO pair_assessments (memory_id_a, memory_id_b, mode, verdict, reason) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (a_id, b_id, mode, verdict, reason)
+            )
+        except Exception:
+            pass
+    conn.commit()
+
+
 def find_contradiction_pairs(conn: sqlite3.Connection) -> list[dict]:
     """Find candidate pairs of memories that may contradict each other.
 
     Uses bi-encoder similarity at a lower threshold than consolidation (0.55 vs 0.85)
     since contradicting memories may use different phrasing. Returns pairs sorted by
-    similarity descending.
+    similarity descending. Skips previously assessed pairs.
     """
     from cairn.embeddings import from_blob, cosine_similarity
     from cairn.config import CONTRADICTION_SIMILARITY_THRESHOLD, CONTRADICTION_MAX_PAIRS
+
+    assessed = _load_assessed_pairs(conn, "contradiction")
+    if assessed:
+        print(f"  Skipping {len(assessed)} previously assessed pairs")
 
     rows = conn.execute(
         "SELECT id, type, topic, content, embedding, created_at, project, confidence "
@@ -376,6 +442,9 @@ def find_contradiction_pairs(conn: sqlite3.Connection) -> list[dict]:
         for a_idx in range(len(indices)):
             for b_idx in range(a_idx + 1, len(indices)):
                 a, b = entries[indices[a_idx]], entries[indices[b_idx]]
+                pair_key = (min(a["id"], b["id"]), max(a["id"], b["id"]))
+                if pair_key in assessed:
+                    continue
                 sim = cosine_similarity(a["vec"], b["vec"])
                 if sim >= CONTRADICTION_SIMILARITY_THRESHOLD:
                     older, newer = (a, b) if a["id"] < b["id"] else (b, a)
@@ -396,7 +465,7 @@ def find_contradiction_pairs(conn: sqlite3.Connection) -> list[dict]:
                 if a["type"] == b["type"] and a["topic"] == b["topic"]:
                     continue
                 pair_key = (min(a["id"], b["id"]), max(a["id"], b["id"]))
-                if pair_key in seen_ids:
+                if pair_key in seen_ids or pair_key in assessed:
                     continue
                 sim = cosine_similarity(a["vec"], b["vec"])
                 if sim >= CONTRADICTION_SIMILARITY_THRESHOLD:
@@ -566,8 +635,9 @@ def assess_contradictions_haiku(contradictions: list[dict]) -> list[dict]:
         print(f"    -> {verdict}: {reason[:120]}")
         print()
 
+        c["verdict"] = verdict.lower()
+        c["reason"] = reason
         if verdict == "SUPERSEDED":
-            c["verdict"] = "superseded"
             c["reason"] = reason or f"superseded by #{n['id']}"
             superseded.append(c)
 
@@ -641,6 +711,8 @@ def run_contradiction_detection(execute: bool = False) -> dict:
         print(f"  Batch {batch_start // BATCH_SIZE + 1}: pairs {batch_start + 1}-{batch_start + len(batch)}")
         superseded = assess_contradictions_haiku(batch)
         all_superseded.extend(superseded)
+        # Record all verdicts from this batch (not just superseded)
+        _record_assessments(conn, batch, "contradiction")
 
     superseded = all_superseded
     print(f"  {len(superseded)} pairs classified as SUPERSEDED")

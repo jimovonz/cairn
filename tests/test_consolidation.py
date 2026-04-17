@@ -41,6 +41,11 @@ def fresh_db():
     conn.execute("""CREATE TABLE metrics (id INTEGER PRIMARY KEY AUTOINCREMENT,
         event TEXT, session_id TEXT, detail TEXT, value REAL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS pair_assessments (
+        memory_id_a INTEGER NOT NULL, memory_id_b INTEGER NOT NULL,
+        mode TEXT NOT NULL, verdict TEXT NOT NULL, reason TEXT,
+        assessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (memory_id_a, memory_id_b, mode))""")
     conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
         topic, content, keywords, content=memories, content_rowid=id)""")
     conn.execute("""CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
@@ -469,6 +474,31 @@ class TestContradictionDetection:
         # Newer should be untouched
         row2 = conn.execute("SELECT archived_reason FROM memories WHERE id = 2").fetchone()
         assert row2[0] is None
+        conn.close()
+
+    def test_assessed_pairs_skipped_on_rerun(self):
+        """Previously assessed pairs should not appear in candidates."""
+        db_path, conn = fresh_db()
+        emb1 = make_embedding(42)
+        emb2 = make_similar_embedding(42, noise=0.02)
+        conn.execute("INSERT INTO memories (type, topic, content, embedding, created_at) VALUES (?, ?, ?, ?, ?)",
+                      ("fact", "db", "DB is broken", emb1, "2026-04-01"))
+        conn.execute("INSERT INTO memories (type, topic, content, embedding, created_at) VALUES (?, ?, ?, ?, ?)",
+                      ("fact", "db", "DB is fixed", emb2, "2026-04-17"))
+        conn.commit()
+
+        from cairn.consolidate import find_contradiction_pairs
+        with patch("cairn.consolidate.DB_PATH", db_path):
+            pairs_first = find_contradiction_pairs(conn)
+        assert len(pairs_first) == 1
+
+        # Record assessment
+        conn.execute("INSERT INTO pair_assessments (memory_id_a, memory_id_b, mode, verdict) VALUES (1, 2, 'contradiction', 'complementary')")
+        conn.commit()
+
+        with patch("cairn.consolidate.DB_PATH", db_path):
+            pairs_second = find_contradiction_pairs(conn)
+        assert len(pairs_second) == 0
         conn.close()
 
     def test_contradiction_dry_run_makes_no_changes(self):

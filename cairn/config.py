@@ -174,8 +174,8 @@ CONSOLIDATION_MIN_CLUSTER_SIZE = 2         # Minimum entries to form a consolida
 CONSOLIDATION_MAX_CLUSTER_SIZE = 10        # Cap cluster size for LLM summarisation prompt
 
 # === Contradiction detection ===
-CONTRADICTION_SIMILARITY_THRESHOLD = 0.55  # Lower than consolidation — contradictions may use different phrasing
-CONTRADICTION_MAX_PAIRS = 500              # Cap total pairs sent to NLI to bound compute
+CONTRADICTION_SIMILARITY_THRESHOLD = 0.70  # Balance coverage vs pair count (1935 pairs at 0.70)
+CONTRADICTION_MAX_PAIRS = 2000             # High enough for full coverage at 0.70 threshold
 
 # === Concurrency ===
 DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for lock release
