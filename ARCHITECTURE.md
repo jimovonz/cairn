@@ -1221,3 +1221,196 @@ python3 cairn/consolidate.py --contradictions --execute    # execute contradicti
 - **Tag invisibility is behaviour-dependent** — relies on Claude Code stripping angle bracket tags in LLM responses only. Tags in Stop hook output are NOT stripped. If Anthropic changes LLM response rendering, memory blocks would become visible to users.
 - **Cross-type contradiction detection is batch-only** — write-time contradictions are only detected within the same type+topic. Cross-type contradictions (a `decision` contradicting a `fact` on a different topic) are caught by the daily NLI-based contradiction scan, not in real-time.
 - **No PostToolUse capture** — intermediate tool output between turns is not indexed. The LLM distils relevant observations in the final memory block, but raw tool results (file contents, command output) are not stored. This is a deliberate trade-off of completeness for signal quality.
+
+### Repo Ingestion (`cairn/ingest.py`)
+
+Mechanistic pre-loader that extracts meta-memories from a git repository, solving the cold-start problem for projects that haven't yet accumulated organic memories through normal Cairn-augmented work.
+
+#### CLI
+
+```bash
+python3 cairn/ingest.py /path/to/repo [--project name] [--dry-run] [--verbose]
+```
+
+#### Two-phase architecture
+
+**Phase 1: Mechanistic extraction (no LLM, deterministic)**
+
+Reads structured sources from the repo and produces a categorised JSON intermediate:
+
+| Source | What it yields |
+|--------|---------------|
+| README, CLAUDE.md, docs/ | Purpose, role in broader system |
+| package.json / pyproject.toml / Cargo.toml / go.mod | Stack, dependencies, versions, build/test/deploy scripts |
+| Directory tree (depth-limited) | Structure, naming conventions |
+| Config files (.env.example, tsconfig, docker-compose, CI) | Configuration, deploy targets |
+| Schema files (migrations, .prisma, .sql, models/) | Data models |
+| Import graph / cross-repo references | Inter-system connections |
+| HTTP route definitions, CLI parsers, exported functions | External interfaces (API surface, CLI args, public API) |
+| Code comments (filtered by signal words: because, since, NB, warning, depends, workaround) | Explanatory context, gotchas, cross-repo relationships in comments |
+| grep TODO/HACK/FIXME/WORKAROUND | Known issues, technical debt |
+| git log --oneline -50 | Recent activity, areas of churn |
+| Entrypoint files (main.*, index.*, app.*) | Entry points, wiring |
+
+**Phase 2: LLM distillation (single Haiku call)**
+
+The structured JSON is sent to Haiku with a prompt to distill into Cairn memory entries. Each entry must be a self-contained one-liner useful to a future session with zero context. The LLM handles deduplication, prioritisation, and compression — producing fact, workflow, and skill entries. Decision-type entries are not generated (decisions require human context about rejected alternatives and rationale; these accumulate organically during normal Cairn-augmented work).
+
+#### Memory types produced
+
+| Type | Examples |
+|------|---------|
+| **fact** | Tech stack, config locations, schemas, entry points, conventions, inter-system connections, gotchas |
+| **workflow** | Build commands, test commands, deploy process, CI setup |
+| **skill** | Useful CLI tools, scripts, common operations |
+
+#### External interface extraction
+
+External interfaces are the highest-value target — knowing repo B's API surface prevents re-discovery when working on repo A:
+
+- **HTTP endpoints** — route definitions, methods, path patterns
+- **CLI interfaces** — argument parsers, subcommands, flags
+- **Exported functions/classes** — public API surface (index.ts exports, `__init__.py` `__all__`, Go package exports)
+- **Event interfaces** — pub/sub topics, webhook payloads, message queue channels
+- **Database interfaces** — shared tables or databases accessed by multiple services
+- **Config/env contracts** — expected env vars, ports, external service URLs
+
+#### Inter-repo connections
+
+After extraction, the ingester cross-references imports and connections against existing Cairn projects (`query.py --projects`). If repo A imports from or calls repo B, relationship memories are generated and tagged to both projects or globally, with keywords including both project names for L2 cross-project retrieval.
+
+Cross-references are checked bidirectionally — "what existing memories reference this repo" as well as "what does this repo reference." Ordering of independent ingestions doesn't matter; the cross-reference pass runs against all existing project memories after each ingestion.
+
+#### Source references
+
+Each ingested memory includes a `source_ref` JSON column anchoring it to the exact source:
+
+```json
+{
+  "repo": "git@github.com:user/repo.git",
+  "commit": "a1b2c3d",
+  "files": ["src/routes/webhook.ts", "src/state.ts"],
+  "local": false
+}
+```
+
+- **Portable references** (repo-backed): remote URL + commit SHA + relative paths — resolvable by any user with repo access
+- **Local references** (no remote or no repo): flagged `"local": true` — useful to the creator, visible but not resolvable to other users in a multi-user setup
+
+The commit SHA enables:
+- `--context <id>` showing exact file versions via `git show <sha>:<file>`
+- Selective re-ingestion by diffing source files against the ingestion commit
+- Cheap identity check for dedup when multiple users ingest the same repo
+
+#### Lifecycle
+
+- No special confidence treatment — ingested memories are mechanistically verified from actual files, not LLM claims. They are just memories.
+- **Re-ingestion**: `git diff <old_sha>..HEAD -- <source_files>` detects which memories' source files changed. Changed files trigger re-extraction; unchanged files are skipped. Superseded memories are archived with reason "superseded by re-ingestion at commit X".
+- **Same-commit idempotency**: re-running against the same commit produces no changes.
+- Marked with `depth: bootstrap` to distinguish from organic memories.
+- Creates a synthetic session (`ingest-<project>-<timestamp>`) for grouping and traceability.
+
+#### What is NOT extracted
+
+- Per-function documentation (too granular, stales instantly)
+- Git blame / authorship
+- Test internals (test commands yes, test contents no)
+- Specific line numbers or exact counts (change frequently)
+- Decision-type memories (require human context about rejected alternatives)
+
+### Multi-User Architecture
+
+Cairn is designed for extension to multi-user teams with shared knowledge. The architecture uses a hybrid local/global model with bidirectional sync.
+
+#### Architecture overview
+
+```
+┌──────────────────────┐     ┌──────────────────────┐
+│   User A's Machine   │     │   User B's Machine   │
+│                      │     │                      │
+│  ┌────────────────┐  │     │  ┌────────────────┐  │
+│  │  Local SQLite  │  │     │  │  Local SQLite  │  │
+│  │  (write-first) │  │     │  │  (write-first) │  │
+│  └───────┬────────┘  │     │  └───────┬────────┘  │
+│          │ sync      │     │          │ sync      │
+└──────────┼───────────┘     └──────────┼───────────┘
+           │                            │
+           ▼                            ▼
+    ┌──────────────────────────────────────────┐
+    │          Global PostgreSQL + pgvector     │
+    │          (shared truth, team-wide)        │
+    └──────────────────────────────────────────┘
+```
+
+#### Design principles
+
+- **Write always to local SQLite first** — instant, offline-capable, zero latency. Never write directly to global.
+- **Read prefers Postgres when available** — pgvector for proper ANN vector search, complete dataset. Local supplements with unsynced memories.
+- **Graceful degradation** — when offline, local DB works standalone. Full keyword search via FTS5, brute-force vector search over local embeddings. Vector search defers to pgvector when connected.
+- **No private memories** — in a commercial team environment, all memories are shared. The value is cross-pollination. Local vs global is about availability and sync, not access control.
+- **Same schema everywhere** — local and global DBs use identical schemas. Sync is row-level replication, not transformation. Pulled memories carry their original author's `user_id`.
+
+#### Schema additions (local + global, unified)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `origin_id` | TEXT (UUID) | Globally unique identity, stable across sync. Required because `AUTOINCREMENT` IDs collide across databases. |
+| `user_id` | TEXT | Author attribution — who created this memory. Always the local user for local writes; original author for pulled memories. |
+| `updated_by` | TEXT | Who last modified (e.g., who applied a `-!` contradiction). Distinct from creator. |
+| `team_id` | TEXT | Partition key for multi-organisation deployments. |
+| `source_ref` | TEXT (JSON) | Repo ingestion source reference: `{"repo": "...", "commit": "...", "files": [...], "local": bool}` |
+| `deleted_at` | TIMESTAMP | Tombstone for delete replication — current hard-delete breaks sync because deletions can't propagate. |
+| `synced_at` | TIMESTAMP | Last sync timestamp for this row — tracks what's been pushed to global. |
+
+Database-level: `schema_version` in metadata table for sync compatibility checks.
+
+#### Sync mechanism
+
+**Push (local → global):**
+- New and modified local memories sync up periodically
+- `synced_at` tracks what's been pushed
+- Global DB deduplicates on `origin_id` (exact) then cosine similarity (semantic)
+
+**Pull (global → local):**
+- Memories from other users replicate down
+- Carry original `user_id` for attribution
+- Ingested memories from other users travel the same path — if the global DB already has an ingestion of repo X at commit Y, pull it locally instead of re-ingesting
+
+**Conflict resolution:**
+- Same `origin_id` = same memory, newer `updated_at` wins
+- Same repo + same commit SHA = identical ingestion, deduplicate
+- Semantic dedup (0.85 cosine) as last resort for near-duplicates from different users
+- NLI consolidation pipeline handles remaining overlaps in batch
+
+**Offline behaviour:**
+- Write locally as normal, full functionality via FTS5 + brute-force vectors
+- On reconnect, push unsynced memories, pull new global memories
+- No data loss — local DB is always the write-ahead log
+
+#### Vector search strategy
+
+| Location | Engine | When |
+|----------|--------|------|
+| Global (Postgres) | pgvector with HNSN/IVFFlat indexes | Connected — all semantic queries route here |
+| Local (SQLite) | FTS5 keyword search + brute-force vectors | Offline fallback |
+
+Pulled memories may not need embeddings stored locally — saves storage, defers vector search to the global DB. Local brute-force is acceptable at local-only scale.
+
+#### Federated query layer
+
+A unified `MemoryStore` interface abstracts the backend:
+
+```python
+results = cairn.search("webhook endpoint", mode="semantic")
+```
+
+Three implementations:
+- `SqliteStore` — local SQLite operations
+- `PostgresStore` — global Postgres/pgvector operations
+- `FederatedStore` — wraps both, handles merge/dedup by `origin_id`, detects connectivity, degrades gracefully
+
+All callers (hooks, ingester, `query.py` CLI) use the same interface. Physical differences (pgvector column vs blob, UUID handling) are hidden behind the abstraction.
+
+#### Local path resolution
+
+Git has no reverse lookup from remote URL to local path. A lightweight registry maps `remote_url → local_path`, populated during ingestion and updated opportunistically during normal sessions. Used at retrieval time when `--context <id>` needs to show source files from commit-anchored ingested memories. If the repo isn't locally available, the memory content stands on its own.

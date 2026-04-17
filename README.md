@@ -9,11 +9,11 @@
   <img src="docs/social-preview.png" alt="Cairn — invisible memory capture, storage, and cross-session retrieval" width="640">
 </p>
 
-**Every Claude Code response secretly writes structured metadata about itself. The user never sees it. A hook captures it. A database stores it. The next session remembers.**
+**Every Claude Code response distills what it learned into structured knowledge. The user never sees it. A hook captures it. A database stores it. The next session knows.**
 
-Cairn exploits the gap between raw LLM output and rendered display in **Claude Code** and **VS Code Copilot Chat**. Memory metadata is invisible to the user — angle bracket tags are stripped from the CLI, markdown link definitions don't render in Copilot's chat panel — but preserved in the hook system. This creates an invisible control plane where the LLM self-annotates every response with structured memory data, and the infrastructure enforces it mechanically.
+Cairn exploits the gap between raw LLM output and rendered display in **Claude Code** and **VS Code Copilot Chat**. Memory metadata is invisible to the user — angle bracket tags are stripped from the CLI, markdown link definitions don't render in Copilot's chat panel — but preserved in the hook system. This creates an invisible control plane where the LLM distills portable knowledge on every turn, and the infrastructure enforces it mechanically.
 
-No cloud. No API keys. No MCP. One SQLite file. Two hooks. **No additional LLM calls** — memory is written as part of the normal response, not via a separate extraction step.
+No cloud. No API keys. No MCP. One SQLite file. Two hooks. **No additional LLM calls** — knowledge is distilled as part of the normal response, not via a separate extraction step.
 
 ---
 
@@ -21,17 +21,17 @@ No cloud. No API keys. No MCP. One SQLite file. Two hooks. **No additional LLM c
 
 Most LLM memory systems treat memory as infrastructure *around* the LLM — capturing at session end, on compaction, via batch tools, or when the LLM calls an explicit tool. Retrieval fires at session start or when the user's prompt happens to match something stored.
 
-Cairn makes the LLM an **active participant in its own memory lifecycle on every single turn**:
+Cairn delivers **per-turn granular knowledge capture and retrieval**, making the LLM an active participant in its own memory lifecycle on every single turn:
 
-- **Every response** → the LLM authors structured memories and commits them to the cairn
+- **Every response** → the LLM distills what it learned into structured, portable knowledge
 - **Every response** → the LLM self-assesses whether it has sufficient context and requests retrieval if not
 - **Every response** → keywords are extracted and cross-project knowledge is staged for the next turn
 
 All three are enforced mechanically. The LLM cannot forget to participate. No other memory system operates this way.
 
-**The LLM is the memory author — at zero extra cost.** Memory is written as part of every response, not via a separate LLM call. Other systems run a second Claude invocation after the session to extract memories. Cairn's `<memory>` block is invisible tail content appended to the normal response — the same tokens that answer the user also capture the memory. No extra API calls, no added latency, no background processes for extraction.
+**The LLM is the knowledge author — at zero extra cost.** Knowledge is distilled as part of every response, not via a separate LLM call. Other systems run a second Claude invocation after the session to extract memories. Cairn's memory block is invisible tail content appended to the normal response — the same tokens that answer the user also distill the knowledge. No extra API calls, no added latency, no background processes for extraction.
 
-**The metadata is invisible.** The user sees a clean response. The hook infrastructure sees structured XML with type, topic, confidence signals, and retrieval requests. The LLM writes to a channel the user can't see.
+**The knowledge channel is invisible.** The user sees a clean response. The hook infrastructure sees structured entries with type, topic, confidence signals, and retrieval requests. The LLM writes to a channel the user can't see.
 
 **The LLM controls the retrieval loop.** It declares when it lacks context. A Stop hook searches the database, injects results, and re-prompts — all before the response reaches the user. The LLM also rates what it gets back, dynamically adjusting confidence scores that determine what surfaces in future sessions.
 
@@ -52,7 +52,7 @@ Cairn is the only system that makes the LLM an active participant on every turn 
 
 | Capability | Cairn | Claude-Mem | Mem0 | Others |
 |------------|-------|-----------|------|--------|
-| Memory captured within the normal response — **no extra LLM calls** | ✓ | ✗ (1 call/session) | ✗ (2+ calls/add) | ✗ |
+| Knowledge distilled within the normal response — **no extra LLM calls** | ✓ | ✗ (1 call/session) | ✗ (2+ calls/add) | ✗ |
 | LLM self-declares context gaps mid-conversation, system injects and re-prompts | ✓ | ✗ | ✗ | ✗ |
 | Automatic context injection — no explicit tool call required | ✓ | ✗ | ✗ | ✗ |
 | Bootstrap enforcement — forces context checks every N turns | ✓ | ✗ | ✗ | ✗ |
