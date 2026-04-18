@@ -949,17 +949,20 @@ Commit: {commit}
 Below are categorised extracts from the repository. Distill them into memory entries.
 
 Rules:
-- Each entry is ONE dense line — no line breaks within an entry
+- Each entry is a single content string — no line breaks within it, but be thorough and specific
+- Include concrete details: function names, file paths, config keys, exact commands, parameter names
+- A future AI session will use these entries to WORK ON this codebase — vague summaries are useless
 - Types allowed: fact, workflow, skill (NO decision type — decisions require human context)
 - Every entry must include enough context to be useful standalone (include the project name)
 - Prioritise: tech stack, build/test/deploy commands, entry points, external interfaces, cross-system connections, gotchas, conventions
-- Skip: trivial facts, things obvious from the project name, per-file details that stale quickly
-- Aim for 15-40 entries depending on repo complexity — quality over quantity
+- Skip: trivial facts, things obvious from the project name
+- Include source_files: list the relative file paths each entry was derived from
+- Aim for 20-50 entries depending on repo complexity — thoroughness over brevity
 - DO NOT fabricate — only distill what is present in the extracts
 
 Output format — one JSON array of objects:
 [
-  {{"type": "fact", "topic": "short-topic-slug", "content": "the one-liner", "keywords": ["kw1", "kw2"]}},
+  {{"type": "fact", "topic": "short-topic-slug", "content": "detailed actionable content", "keywords": ["kw1", "kw2"], "source_files": ["relative/path.py"]}},
   ...
 ]
 
@@ -1293,6 +1296,9 @@ def insert_memories(entries, project, source_ref, session_id=None, dry_run=False
         "repo": source_ref.get("remote") or source_ref.get("path"),
         "commit": source_ref.get("commit"),
         "local": source_ref.get("local_only", True),
+        "path": source_ref.get("path"),
+        "parent_project": source_ref.get("parent_project"),
+        "parent_path": source_ref.get("parent_path"),
     })
 
     if dry_run:
@@ -1313,6 +1319,14 @@ def insert_memories(entries, project, source_ref, session_id=None, dry_run=False
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA busy_timeout=5000")
     inserted_ids = []
+
+    # Register synthetic session so dashboard can find it
+    repo_path = source_ref.get("path", "")
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions (session_id, project, transcript_path, created_at) "
+        "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+        (session_id, project, repo_path),
+    )
 
     try:
         from cairn import embeddings as emb
@@ -1341,12 +1355,14 @@ def insert_memories(entries, project, source_ref, session_id=None, dry_run=False
 
         origin_id = str(uuid.uuid4())
         kw_str = ",".join(keywords) if keywords else None
+        source_files = entry.get("source_files", [])
+        assoc_files = json.dumps(source_files) if source_files else None
 
         conn.execute(
             "INSERT INTO memories (type, topic, content, embedding, session_id, project, "
-            "origin_id, source_ref, keywords, depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "origin_id, source_ref, keywords, depth, associated_files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (mem_type, topic, content, embedding_blob, session_id, project,
-             origin_id, src_ref_json, kw_str, 0),
+             origin_id, src_ref_json, kw_str, 0, assoc_files),
         )
         new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -1425,15 +1441,17 @@ def main():
 
     print(f"Haiku produced {len(entries)} memory entries", file=sys.stderr)
 
-    # Save entries if requested
-    if args.save_entries:
-        save_data = {
-            "project": result["project"],
-            "source_ref": result["repo"],
-            "entries": entries,
-        }
-        Path(args.save_entries).write_text(json.dumps(save_data, indent=2))
-        print(f"Entries saved to {args.save_entries}", file=sys.stderr)
+    # Always save distillation output — Haiku calls are expensive
+    save_data = {
+        "project": result["project"],
+        "source_ref": result["repo"],
+        "entries": entries,
+    }
+    save_path = args.save_entries or os.path.join(
+        "/tmp", f"cairn-ingest-{result['project']}-{int(time.time())}.json"
+    )
+    Path(save_path).write_text(json.dumps(save_data, indent=2))
+    print(f"Entries saved to {save_path}", file=sys.stderr)
 
     # Insert or dry-run
     inserted = insert_memories(
@@ -1465,6 +1483,16 @@ def main():
                 sub_entries = distill_with_haiku(sub_result, verbose=args.verbose)
                 if sub_entries:
                     print(f"Haiku produced {len(sub_entries)} entries for {sub_project}", file=sys.stderr)
+                    sub_save = {
+                        "project": sub_project,
+                        "source_ref": sub_result["repo"],
+                        "entries": sub_entries,
+                    }
+                    sub_save_path = os.path.join(
+                        "/tmp", f"cairn-ingest-{sub_project}-{int(time.time())}.json"
+                    )
+                    Path(sub_save_path).write_text(json.dumps(sub_save, indent=2))
+                    print(f"Entries saved to {sub_save_path}", file=sys.stderr)
                     sub_source_ref = dict(sub_result["repo"])
                     sub_source_ref["parent_project"] = result["project"]
                     sub_source_ref["parent_path"] = sub_path
