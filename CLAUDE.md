@@ -32,8 +32,8 @@ Query commands:
 
 Ingest a git repository into Cairn as portable knowledge entries:
 
-- `python3 ./cairn/ingest.py /path/to/repo` — dry-run (extract + distill, no DB write)
-- `python3 ./cairn/ingest.py /path/to/repo --distill` — extract, distill, and store
+- `python3 ./cairn/ingest.py /path/to/repo` — extract, distill, and store (default)
+- `python3 ./cairn/ingest.py /path/to/repo --dry-run` — preview without storing
 - `python3 ./cairn/ingest.py /path/to/repo --project name` — override project name
 - `python3 ./cairn/ingest.py /path/to/repo --verbose` — show extraction details
 
