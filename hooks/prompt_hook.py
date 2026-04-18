@@ -49,18 +49,15 @@ def load_staged_context(session_id: str) -> Optional[str]:
 
 
 def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
-    """Layer 1.5: Per-prompt semantic injection for subsequent prompts.
+    """Layer 1.5: Per-prompt hybrid injection for subsequent prompts.
 
     Fires on every message after the first. Higher threshold than Layer 1 (0.55 vs 0.30)
-    to avoid mid-session noise.
+    to avoid mid-session noise. Uses full hybrid search (semantic + FTS5 + RRF).
     """
-    from cairn.config import L1_5_ENABLED, L1_5_SIM_THRESHOLD, L1_5_MAX_RESULTS, MIN_INJECTION_SIMILARITY
+    from cairn.config import L1_5_ENABLED, L1_5_SIM_THRESHOLD, L1_5_MAX_RESULTS
+    from hooks.retrieval import hybrid_search
 
     if not L1_5_ENABLED:
-        return None
-
-    emb = get_embedder()
-    if not emb:
         return None
 
     try:
@@ -71,26 +68,21 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
             conn.close()
             return None
 
-        results = emb.find_similar(conn, user_message, threshold=L1_5_SIM_THRESHOLD,
-                                   limit=L1_5_MAX_RESULTS, current_project=project)
+        project_results, global_results, _ = hybrid_search(
+            user_message, conn, project=project, session_id=session_id,
+            threshold=L1_5_SIM_THRESHOLD, limit=L1_5_MAX_RESULTS,
+        )
         conn.close()
     except Exception as e:
         log(f"Layer 1.5 error: {e}")
         return None
 
-    if not results or results[0]["similarity"] < L1_5_SIM_THRESHOLD:
+    if not project_results and not global_results:
         record_metric(session_id, "layer1_5_no_match", user_message[:80])
         return None
 
-    # Skip memories produced in this session (central gate handles cross-layer dedup)
-    results = [r for r in results if r.get("session_id") != session_id]
-    if not results:
-        record_metric(session_id, "layer1_5_skipped_all_seen", user_message[:80], len(results))
-        return None
-
-    project_results, global_results = split_by_scope(results, project)
     result_ids = [r["id"] for r in project_results + global_results]
-    record_metric(session_id, "layer1_5_injected", user_message[:80], len(results))
+    record_metric(session_id, "layer1_5_injected", user_message[:80], len(result_ids))
     record_layer_delivery(session_id, "L1.5", result_ids)
     return build_context_xml(user_message, project, "per-prompt", project_results, global_results)
 
@@ -273,12 +265,9 @@ def correction_bootstrap(session_id: str) -> Optional[str]:
 
 
 def layer1_search(user_message: str, session_id: str) -> Optional[str]:
-    """Layer 1: Search cairn using user's first message."""
-    from cairn.config import L1_SIM_THRESHOLD, L1_MAX_RESULTS, MIN_INJECTION_SIMILARITY
-
-    emb = get_embedder()
-    if not emb:
-        return None
+    """Layer 1: Hybrid search using user's first message (semantic + FTS5 + RRF)."""
+    from cairn.config import L1_SIM_THRESHOLD, L1_MAX_RESULTS
+    from hooks.retrieval import hybrid_search
 
     try:
         conn = get_conn()
@@ -288,17 +277,18 @@ def layer1_search(user_message: str, session_id: str) -> Optional[str]:
             conn.close()
             return None
 
-        results = emb.find_similar(conn, user_message, threshold=L1_SIM_THRESHOLD,
-                                   limit=L1_MAX_RESULTS, current_project=project)
+        project_results, global_results, _ = hybrid_search(
+            user_message, conn, project=project, session_id=session_id,
+            threshold=L1_SIM_THRESHOLD, limit=L1_MAX_RESULTS,
+        )
         conn.close()
     except Exception as e:
         log(f"Layer 1 error: {e}")
         return None
 
-    if not results or results[0]["similarity"] < MIN_INJECTION_SIMILARITY:
+    if not project_results and not global_results:
         return None
 
-    project_results, global_results = split_by_scope(results, project)
     result_ids = [r["id"] for r in project_results + global_results]
     record_layer_delivery(session_id, "L1", result_ids)
     return build_context_xml(user_message, project, "first-prompt", project_results, global_results)

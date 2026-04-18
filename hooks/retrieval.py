@@ -26,6 +26,189 @@ from cairn.config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
 CONTEXT_CACHE_SIM_THRESHOLD: float = 0.9
 
 
+def hybrid_search(
+    query: str,
+    conn,
+    project: Optional[str] = None,
+    session_id: Optional[str] = None,
+    threshold: float = 0.30,
+    limit: int = 10,
+    use_adaptive: bool = True,
+    exclude_project: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float]:
+    """Hybrid semantic + FTS5 search with RRF fusion.
+
+    Returns (project_results, global_results, threshold_boost).
+    Used by all retrieval layers for consistent search quality.
+    """
+    from cairn.config import (
+        MIN_INJECTION_SIMILARITY, L3_PROJECT_QUALITY_FLOOR,
+        SCOPE_BIAS_EXEMPT_TYPES, WEAK_ENTRY_SCORE_FLOOR,
+    )
+    from cairn.embeddings import extract_query_terms, keyword_overlap as _kw_overlap
+
+    emb = hook_helpers.get_embedder()
+    semantic_ranked: dict[int, tuple[int, dict[str, Any]]] = {}
+    fts_ranked: dict[int, tuple[int, dict[str, Any]]] = {}
+
+    threshold_boost = get_adaptive_threshold_boost() if use_adaptive else 0.0
+    effective_threshold = threshold + threshold_boost
+
+    # --- Semantic search ---
+    if emb:
+        try:
+            all_results = emb.find_similar(conn, query, threshold=threshold,
+                                           limit=limit * 2, current_project=project)
+            if project and not exclude_project:
+                unprefixed = emb.find_similar(conn, query, threshold=threshold,
+                                              limit=limit * 2, current_project=None)
+                by_id = {r["id"]: r for r in all_results}
+                for r in unprefixed:
+                    if r["id"] not in by_id or r["score"] > by_id[r["id"]]["score"]:
+                        by_id[r["id"]] = r
+                all_results = sorted(by_id.values(), key=lambda x: x["score"], reverse=True)
+
+            rank = 0
+            for r in all_results:
+                if session_id and r.get("session_id") == session_id:
+                    continue
+                if exclude_project and project and r.get("project") == project:
+                    continue
+                semantic_ranked[r["id"]] = (rank, r)
+                rank += 1
+        except Exception as e:
+            log(f"Hybrid search semantic error: {e}")
+
+    # --- FTS5 keyword search ---
+    _STOPWORDS = frozenset({
+        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "by", "from", "is", "it", "its", "was", "are", "be",
+        "has", "had", "have", "do", "did", "does", "will", "can", "could",
+        "would", "should", "may", "might", "not", "no", "what", "when",
+        "where", "who", "how", "why", "that", "this", "these", "those",
+        "my", "your", "his", "her", "our", "their", "me", "you", "him",
+        "them", "about", "into", "over", "after", "before", "between",
+        "other", "some", "any", "all", "just", "also", "than", "then",
+        "very", "too", "here", "there", "been", "being", "were",
+    })
+    _query_terms = extract_query_terms(query)
+
+    try:
+        words = re.findall(r'\w+', query.lower())
+        meaningful = [w for w in words if len(w) > 2 and w not in _STOPWORDS]
+        if not meaningful:
+            meaningful = [w for w in words if len(w) > 2]
+        if not meaningful:
+            meaningful = words
+        fts_query = " OR ".join(f'"{w}"' for w in meaningful) if meaningful else query
+        rows = conn.execute("""
+            SELECT m.id, m.type, m.topic, m.content, m.updated_at, m.project,
+                   m.session_id, m.confidence, m.depth, m.archived_reason, rank, m.keywords
+            FROM memories_fts f
+            JOIN memories m ON f.rowid = m.id
+            WHERE memories_fts MATCH ? AND m.deleted_at IS NULL
+            ORDER BY rank LIMIT ?
+        """, (fts_query, limit * 3)).fetchall()
+        rank = 0
+        for r in rows:
+            if session_id and r[6] == session_id:
+                continue
+            if exclude_project and project and r[5] == project:
+                continue
+            confidence = r[7] if r[7] is not None else 0.7
+            entry: dict[str, Any] = {
+                "id": r[0], "type": r[1], "topic": r[2], "content": r[3],
+                "updated_at": r[4], "project": r[5], "session_id": r[6],
+                "confidence": confidence, "depth": r[8],
+                "archived_reason": r[9], "bm25_rank": -r[10],
+                "keywords": r[11],
+            }
+            fts_ranked[r[0]] = (rank, entry)
+            rank += 1
+    except Exception as e:
+        log(f"Hybrid search FTS error: {e}")
+
+    # --- RRF Fusion ---
+    all_ids = set(semantic_ranked.keys()) | set(fts_ranked.keys())
+    fused: list[dict[str, Any]] = []
+
+    for mid in all_ids:
+        rrf_score = 0.0
+        result_dict: Optional[dict[str, Any]] = None
+
+        if mid in semantic_ranked:
+            sem_rank, sem_result = semantic_ranked[mid]
+            rrf_score += 1.0 / (RRF_K + sem_rank)
+            result_dict = sem_result
+
+        if mid in fts_ranked:
+            fts_rank_pos, fts_result = fts_ranked[mid]
+            rrf_score += 1.0 / (RRF_K + fts_rank_pos)
+            if result_dict is None:
+                from cairn.embeddings import composite_score as _cscore
+                fts_sim = 0.35
+                fts_result["similarity"] = fts_sim
+                fts_kw_ov = _kw_overlap(_query_terms, fts_result.get("keywords"))
+                fts_result["score"] = _cscore(
+                    fts_sim, fts_result["confidence"],
+                    fts_result.get("updated_at"), fts_result.get("project"), project,
+                    kw_overlap=fts_kw_ov
+                )
+                result_dict = fts_result
+
+        if result_dict is None:
+            continue
+
+        rrf_boost = rrf_score * (0.20 / (2.0 / (RRF_K + 1)))
+        result_dict["rrf_score"] = rrf_score
+        result_dict["score"] = result_dict.get("score", 0.30) + rrf_boost
+
+        in_sem = mid in semantic_ranked
+        in_fts = mid in fts_ranked
+        result_dict["_source"] = "both" if (in_sem and in_fts) else ("semantic" if in_sem else "fts")
+
+        fused.append(result_dict)
+
+    fused.sort(key=lambda x: x["score"], reverse=True)
+
+    # --- Split by scope ---
+    project_results: list[dict[str, Any]] = []
+    global_results: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+
+    for r in fused:
+        mid = r["id"]
+        if mid in seen_ids:
+            continue
+        sim = r.get("similarity", 0)
+        if project and r.get("project") == project and sim >= effective_threshold:
+            project_results.append(r)
+            seen_ids.add(mid)
+
+    global_threshold = effective_threshold
+    for r in fused:
+        mid = r["id"]
+        if mid in seen_ids:
+            continue
+        sim = r.get("similarity", 0)
+        is_exempt = r.get("type") in SCOPE_BIAS_EXEMPT_TYPES
+        eff_t = effective_threshold if is_exempt else global_threshold
+        if sim >= eff_t or (r.get("_source") == "fts" and r["score"] >= WEAK_ENTRY_SCORE_FLOOR):
+            global_results.append(r)
+            seen_ids.add(mid)
+
+    project_results = project_results[:limit]
+    global_results = global_results[:limit]
+
+    both_count = sum(1 for r in fused if r.get("_source") == "both")
+    sem_only = sum(1 for r in fused if r.get("_source") == "semantic")
+    fts_only = sum(1 for r in fused if r.get("_source") == "fts")
+    log(f"Hybrid search: {len(fused)} candidates ({both_count} both, {sem_only} sem, {fts_only} fts) "
+        f"→ {len(project_results)} project + {len(global_results)} global")
+
+    return project_results, global_results, threshold_boost
+
+
 def _is_thin_retrieval(entries: list[dict[str, Any]]) -> tuple[bool, dict[str, Any]]:
     """Detect whether retrieved entries are too thin to be a useful answer.
 
@@ -100,198 +283,23 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
     conn = get_conn()
     project = get_session_project(conn, session_id)
 
-    emb = hook_helpers.get_embedder()
-    project_results: list[dict[str, Any]] = []
-    global_results: list[dict[str, Any]] = []
+    max_project = max_per_scope or L3_MAX_PROJECT_RESULTS
+    max_global = max_per_scope or L3_MAX_GLOBAL_RESULTS
 
-    threshold_boost = get_adaptive_threshold_boost()
-    if threshold_boost > 0:
-        log(f"Adaptive threshold boost: +{threshold_boost:.2f}")
+    project_results, global_results, threshold_boost = hybrid_search(
+        context_need, conn, project=project, session_id=session_id,
+        threshold=L3_PROJECT_SIM_THRESHOLD, limit=max(max_project, max_global),
+    )
 
-    # --- Collect candidates from both search methods ---
-    # semantic_ranked: {memory_id: (rank_position, result_dict)}
-    # fts_ranked:      {memory_id: (rank_position, result_dict)}
-    semantic_ranked: dict[int, tuple[int, dict[str, Any]]] = {}
-    fts_ranked: dict[int, tuple[int, dict[str, Any]]] = {}
-
-    if emb:
-        try:
-            # Primary search: project-prefixed query (biased toward project-local matches)
-            all_results = emb.find_similar(conn, context_need, current_project=project)
-
-            # Mitigation 3: Unprefixed search for cross-project matches
-            if project:
-                unprefixed_results = emb.find_similar(conn, context_need, current_project=None)
-                # Merge unprefixed results (keep best score per id)
-                by_id = {r["id"]: r for r in all_results}
-                for r in unprefixed_results:
-                    if r["id"] not in by_id or r["score"] > by_id[r["id"]]["score"]:
-                        by_id[r["id"]] = r
-                all_results = sorted(by_id.values(), key=lambda x: x["score"], reverse=True)
-
-            # Build ranked list (excluding same-session)
-            rank = 0
-            for r in all_results:
-                if session_id and r.get("session_id") == session_id:
-                    continue
-                semantic_ranked[r["id"]] = (rank, r)
-                rank += 1
-
-        except (ConnectionError, TimeoutError, OSError) as e:
-            log(f"Context retrieval embedding unavailable: {e}")
-        except Exception as e:
-            log(f"Context retrieval error ({type(e).__name__}): {e}")
-
-    # Extract query terms once for keyword overlap scoring
-    from cairn.embeddings import extract_query_terms, keyword_overlap as _kw_overlap
-    _query_terms = extract_query_terms(context_need)
-
-    # FTS5 keyword search — runs alongside semantic for hybrid fusion
-    _STOPWORDS = frozenset({
-        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-        "of", "with", "by", "from", "is", "it", "its", "was", "are", "be",
-        "has", "had", "have", "do", "did", "does", "will", "can", "could",
-        "would", "should", "may", "might", "not", "no", "what", "when",
-        "where", "who", "how", "why", "that", "this", "these", "those",
-        "my", "your", "his", "her", "our", "their", "me", "you", "him",
-        "them", "about", "into", "over", "after", "before", "between",
-        "other", "some", "any", "all", "just", "also", "than", "then",
-        "very", "too", "here", "there", "been", "being", "were",
-    })
-    try:
-        words = re.findall(r'\w+', context_need.lower())
-        meaningful = [w for w in words if len(w) > 2 and w not in _STOPWORDS]
-        if not meaningful:
-            meaningful = [w for w in words if len(w) > 2]
-        if not meaningful:
-            meaningful = words
-        fts_query = " OR ".join(f'"{w}"' for w in meaningful) if meaningful else context_need
-        rows = conn.execute("""
-            SELECT m.id, m.type, m.topic, m.content, m.updated_at, m.project,
-                   m.session_id, m.confidence, m.depth, m.archived_reason, rank, m.keywords
-            FROM memories_fts f
-            JOIN memories m ON f.rowid = m.id
-            WHERE memories_fts MATCH ? AND m.deleted_at IS NULL
-            ORDER BY rank LIMIT 20
-        """, (fts_query,)).fetchall()
-        rank = 0
-        for r in rows:
-            if session_id and r[6] == session_id:
-                continue
-            confidence = r[7] if r[7] is not None else 0.7
-            entry: dict[str, Any] = {
-                "id": r[0], "type": r[1], "topic": r[2], "content": r[3],
-                "updated_at": r[4], "project": r[5], "session_id": r[6],
-                "confidence": confidence, "depth": r[8],
-                "archived_reason": r[9], "bm25_rank": -r[10],  # FTS5 rank is negative (lower = better)
-                "keywords": r[11],
-            }
-            fts_ranked[r[0]] = (rank, entry)
-            rank += 1
-    except Exception as e:
-        log(f"FTS search error: {e}")
-
-    # --- RRF Fusion ---
-    # Merge both result sets. Memories found by both methods get boosted.
-    all_ids = set(semantic_ranked.keys()) | set(fts_ranked.keys())
-    fused: list[dict[str, Any]] = []
-
-    for mid in all_ids:
-        # RRF score: sum of 1/(k + rank) across each method that found this memory
-        rrf_score = 0.0
-        result_dict: Optional[dict[str, Any]] = None
-
-        if mid in semantic_ranked:
-            sem_rank, sem_result = semantic_ranked[mid]
-            rrf_score += 1.0 / (RRF_K + sem_rank)
-            result_dict = sem_result
-
-        if mid in fts_ranked:
-            fts_rank_pos, fts_result = fts_ranked[mid]
-            rrf_score += 1.0 / (RRF_K + fts_rank_pos)
-            # If we didn't get this from semantic, use the FTS result
-            if result_dict is None:
-                # FTS-only result needs a composite score computed from its metadata
-                from cairn.embeddings import composite_score as _cscore
-                fts_sim = 0.35  # FTS doesn't produce a vector similarity; use baseline
-                fts_result["similarity"] = fts_sim
-                fts_kw_ov = _kw_overlap(_query_terms, fts_result.get("keywords"))
-                fts_result["score"] = _cscore(
-                    fts_sim, fts_result["confidence"],
-                    fts_result.get("updated_at"), fts_result.get("project"), project,
-                    kw_overlap=fts_kw_ov
-                )
-                result_dict = fts_result
-
-        if result_dict is None:
-            continue
-
-        # Blend: use the original composite score but boost by RRF contribution
-        # RRF score range for k=60: single-method top rank = 1/61 ≈ 0.016,
-        # dual-method top rank = 2/61 ≈ 0.033. Normalise to a meaningful boost.
-        # Max possible RRF = 2/61 ≈ 0.033. Scale so dual-top gives ~0.20 boost.
-        rrf_boost = rrf_score * (0.20 / (2.0 / (RRF_K + 1)))
-        result_dict["rrf_score"] = rrf_score
-        result_dict["score"] = result_dict.get("score", 0.30) + rrf_boost
-
-        # Tag source method for logging
-        in_sem = mid in semantic_ranked
-        in_fts = mid in fts_ranked
-        result_dict["_source"] = "both" if (in_sem and in_fts) else ("semantic" if in_sem else "fts")
-
-        fused.append(result_dict)
-
-    # Sort by fused score and split into project/global
-    fused.sort(key=lambda x: x["score"], reverse=True)
-
-    # Pre-filter entries already served this session — ensures quota slots aren't wasted
+    # L3-specific: filter already-served entries
     from hooks.hook_helpers import load_injected_ids
     already_served: set[int] = load_injected_ids(session_id) if session_id else set()
     if already_served:
-        fused = [r for r in fused if r["id"] not in already_served]
+        project_results = [r for r in project_results if r["id"] not in already_served]
+        global_results = [r for r in global_results if r["id"] not in already_served]
 
-    seen_ids: set[int] = set()
-    project_threshold: float = L3_PROJECT_SIM_THRESHOLD + threshold_boost
-    quality_project_count = 0
-
-    for r in fused:
-        mid = r["id"]
-        if mid in seen_ids:
-            continue
-        sim = r.get("similarity", 0)
-
-        if project and r.get("project") == project and sim >= project_threshold:
-            project_results.append(r)
-            seen_ids.add(mid)
-            if sim >= L3_PROJECT_QUALITY_FLOOR:
-                quality_project_count += 1
-        # Defer global results until we know the threshold
-
-    global_threshold: float = (L3_GLOBAL_SIM_WITH_PROJECT if quality_project_count > 0
-                               else L3_GLOBAL_SIM_WITHOUT_PROJECT) + threshold_boost
-
-    from cairn.config import SCOPE_BIAS_EXEMPT_TYPES
-    for r in fused:
-        mid = r["id"]
-        if mid in seen_ids:
-            continue
-        sim = r.get("similarity", 0)
-        # Type-exempt entries (person, preference) use the project threshold even cross-project
-        # because biographical/cross-cutting facts apply universally regardless of which project
-        # they were captured in.
-        is_exempt = r.get("type") in SCOPE_BIAS_EXEMPT_TYPES
-        effective_threshold = project_threshold if is_exempt else global_threshold
-        # FTS-only results (sim=0.35) pass through if their fused score is strong enough
-        # Use a relaxed threshold for FTS-only: if RRF boosted score >= global threshold, allow
-        if sim >= effective_threshold or (r.get("_source") == "fts" and r["score"] >= WEAK_ENTRY_SCORE_FLOOR):
-            global_results.append(r)
-            seen_ids.add(mid)
-
-    # Log RRF fusion stats
-    both_count = sum(1 for r in fused if r.get("_source") == "both")
-    sem_only = sum(1 for r in fused if r.get("_source") == "semantic")
-    fts_only = sum(1 for r in fused if r.get("_source") == "fts")
-    log(f"RRF fusion: {len(fused)} candidates ({both_count} both, {sem_only} sem-only, {fts_only} fts-only)")
+    project_results = project_results[:max_project]
+    global_results = global_results[:max_global]
 
     conn.close()
 
@@ -440,14 +448,11 @@ def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str]
 
 
 def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[str] = None) -> None:
-    """Layer 2: Search global memories for cross-project relevance using keywords.
+    """Layer 2: Cross-project search using hybrid search (semantic + FTS5 + RRF).
 
-    Uses two complementary methods:
-    1. Exact keyword matching on persisted keywords column — catches cross-project
-       connections that embeddings miss (same concept, different domain language)
-    2. Semantic search on keyword text — catches conceptually related memories
-
-    Merges and deduplicates results, stages for next UserPromptSubmit injection.
+    Also includes exact keyword matching on the persisted keywords column for
+    connections that embeddings miss (same concept, different domain language).
+    Stages results for next UserPromptSubmit injection.
     """
     from cairn.config import L2_SIM_THRESHOLD, L2_MAX_RESULTS
 
@@ -457,31 +462,27 @@ def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[s
     conn = get_conn()
     project = get_session_project(conn, session_id)
 
-    # Method 1: Exact keyword matching (no embedder needed)
+    # Exact keyword matching (no embedder needed) — catches cross-project by shared keywords
     keyword_results = _keyword_match_search(conn, keywords_list, project, L2_MAX_RESULTS)
-    seen_ids = {r["id"] for r in keyword_results}
+    keyword_ids = {r["id"] for r in keyword_results}
 
     if keyword_results:
         log(f"Layer 2 keyword match: {len(keyword_results)} cross-project hits")
         record_metric(session_id, "layer2_keyword_matches", None, len(keyword_results))
 
-    # Method 2: Semantic search (existing path)
-    semantic_results = []
-    emb = hook_helpers.get_embedder()
-    if emb:
-        query = " ".join(keywords_list)
-        try:
-            results = emb.find_similar(conn, query, threshold=L2_SIM_THRESHOLD,
-                                       limit=L2_MAX_RESULTS * 2, current_project=project)
-            semantic_results = [r for r in results
-                                if r.get("project") != project
-                                and r["similarity"] >= L2_SIM_THRESHOLD
-                                and r["id"] not in seen_ids][:L2_MAX_RESULTS]
-        except Exception as e:
-            log(f"Layer 2 semantic search error: {e}")
+    # Hybrid search (semantic + FTS5 + RRF) — cross-project only
+    query = " ".join(keywords_list)
+    _, hybrid_results, _ = hybrid_search(
+        query, conn, project=project, session_id=session_id,
+        threshold=L2_SIM_THRESHOLD, limit=L2_MAX_RESULTS,
+        exclude_project=True,
+    )
 
-    # Merge: keyword matches first (exact relevance), then semantic
-    cross_project = keyword_results + semantic_results
+    # Merge: keyword matches + hybrid results, deduplicated
+    cross_project = list(keyword_results)
+    for r in hybrid_results:
+        if r["id"] not in keyword_ids:
+            cross_project.append(r)
     cross_project = cross_project[:L2_MAX_RESULTS]
 
     if not cross_project:
@@ -498,7 +499,7 @@ def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[s
     conn.close()
 
     log(f"Layer 2: staged {len(cross_project)} cross-project entries "
-        f"({len(keyword_results)} keyword, {len(semantic_results)} semantic)")
+        f"({len(keyword_results)} keyword, {len(hybrid_results)} hybrid)")
     record_metric(session_id, "layer2_staged", " ".join(keywords_list)[:100], len(cross_project))
     result_ids = [r["id"] for r in cross_project if "id" in r]
     if result_ids:
