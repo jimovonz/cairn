@@ -317,10 +317,26 @@ def api_session_detail(params, session_id):
         except Exception:
             pass
     conn.close()
-    tokens = _estimate_tokens(session["transcript_path"])
+    is_ingestion = full_id.startswith("ingest-")
+    tokens = _estimate_tokens(session["transcript_path"]) if not is_ingestion else {}
+    source_info = None
+    if is_ingestion and memories:
+        try:
+            first_src = memories[0].get("source_ref") if isinstance(memories[0], dict) else None
+            if not first_src:
+                mc = get_conn()
+                sr_row = mc.execute("SELECT source_ref FROM memories WHERE session_id = ? AND source_ref IS NOT NULL LIMIT 1", (full_id,)).fetchone()
+                mc.close()
+                if sr_row:
+                    first_src = sr_row["source_ref"]
+            if first_src:
+                source_info = json.loads(first_src) if isinstance(first_src, str) else first_src
+        except Exception:
+            pass
     return {
         "session": row_to_dict(session), "memories": memories, "consumed": consumed,
         "layer_detail": layer_detail, "chain": chain, "tokens": tokens,
+        "is_ingestion": is_ingestion, "source_info": source_info,
     }, 200
 
 
@@ -332,6 +348,37 @@ def api_session_transcript(params, session_id):
     conn.close()
     if not session or not session["transcript_path"]:
         return {"messages": [], "note": "No transcript"}, 200
+
+    full_id = conn.execute(
+        "SELECT session_id FROM sessions WHERE session_id LIKE ?", (f"{session_id}%",)
+    ).fetchone()
+    if full_id and full_id["session_id"].startswith("ingest-"):
+        sr_row = conn.execute(
+            "SELECT source_ref, associated_files FROM memories WHERE session_id = ? AND source_ref IS NOT NULL LIMIT 1",
+            (full_id["session_id"],)
+        ).fetchone()
+        conn.close()
+        if sr_row:
+            try:
+                src_ref = json.loads(sr_row["source_ref"]) if sr_row["source_ref"] else {}
+                assoc = json.loads(sr_row["associated_files"]) if sr_row["associated_files"] else []
+            except Exception:
+                src_ref, assoc = {}, []
+            repo_path = src_ref.get("path", "")
+            source_files = []
+            for rel_path in assoc[:20]:
+                full_path = os.path.join(repo_path, rel_path) if repo_path else rel_path
+                content = ""
+                if os.path.exists(full_path):
+                    try:
+                        with open(full_path, errors="replace") as f:
+                            content = f.read(10000)
+                    except Exception:
+                        content = "(error reading file)"
+                source_files.append({"path": rel_path, "content": content})
+            return {"messages": [], "source_files": source_files, "source_ref": src_ref, "note": "Ingested from repository"}, 200
+        return {"messages": [], "note": "Ingestion session — no source files linked"}, 200
+
     transcript_path = session["transcript_path"]
     if not os.path.exists(transcript_path):
         return {"messages": [], "note": "Transcript file not found"}, 200

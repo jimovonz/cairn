@@ -177,6 +177,55 @@ def show_context(memory_id, margin=5):
         conn.close()
         return
 
+    # Ingested memories: show source files instead of transcript
+    if session_id.startswith("ingest-"):
+        source_ref_raw = conn.execute(
+            "SELECT source_ref, associated_files FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        conn.close()
+        src_ref = {}
+        assoc_files = []
+        if source_ref_raw:
+            import json as _json
+            try:
+                src_ref = _json.loads(source_ref_raw[0]) if source_ref_raw[0] else {}
+            except Exception:
+                pass
+            try:
+                assoc_files = _json.loads(source_ref_raw[1]) if source_ref_raw[1] else []
+            except Exception:
+                pass
+
+        repo_path = src_ref.get("path", "")
+        commit = src_ref.get("commit", "unknown")
+        repo_url = src_ref.get("repo", "")
+        print(f"  Created: {created_at}, depth: {depth or 'unset'} turns")
+        print(f"  Source: {repo_url or repo_path} @ {commit[:12] if commit else '?'}")
+        if src_ref.get("parent_project"):
+            print(f"  Parent: {src_ref['parent_project']} ({src_ref.get('parent_path', '')})")
+
+        if not assoc_files:
+            print("  No source files linked to this memory.")
+            return
+
+        print(f"\n  --- Source files ({len(assoc_files)}) ---")
+        for rel_path in assoc_files:
+            full_path = os.path.join(repo_path, rel_path) if repo_path else rel_path
+            print(f"\n  [{rel_path}]")
+            if os.path.exists(full_path):
+                try:
+                    with open(full_path, errors="replace") as f:
+                        lines = f.readlines()[:100]
+                    for i, line in enumerate(lines, 1):
+                        print(f"  {i:4d} | {line.rstrip()}")
+                    if len(lines) == 100:
+                        print(f"  ... (truncated)")
+                except Exception as e:
+                    print(f"  Error reading: {e}")
+            else:
+                print(f"  File not found at {full_path}")
+        return
+
     session = conn.execute(
         "SELECT transcript_path FROM sessions WHERE session_id = ?", (session_id,)
     ).fetchone()
