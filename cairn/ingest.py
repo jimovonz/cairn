@@ -1328,6 +1328,22 @@ def insert_memories(entries, project, source_ref, session_id=None, dry_run=False
         (session_id, project, repo_path),
     )
 
+    # Archive previous ingestion for this project (safe re-ingestion)
+    prev_ingested = conn.execute(
+        "SELECT id FROM memories WHERE project = ? AND session_id LIKE 'ingest-%' "
+        "AND session_id != ? AND (archived_reason IS NULL OR archived_reason = '')",
+        (project, session_id),
+    ).fetchall()
+    if prev_ingested:
+        archived_reason = f"re-ingested:{session_id}"
+        conn.execute(
+            "UPDATE memories SET archived_reason = ?, confidence = 0, updated_at = CURRENT_TIMESTAMP "
+            "WHERE project = ? AND session_id LIKE 'ingest-%' AND session_id != ? "
+            "AND (archived_reason IS NULL OR archived_reason = '')",
+            (archived_reason, project, session_id),
+        )
+        print(f"Archived {len(prev_ingested)} previous ingestion memories for {project}", file=sys.stderr)
+
     try:
         from cairn import embeddings as emb
         emb._load_vec(conn)
