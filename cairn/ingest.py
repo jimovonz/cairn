@@ -73,15 +73,34 @@ def _is_skippable(path):
     return path.suffix.lower() in SKIP_EXTENSIONS
 
 
-def _walk_files(repo_path, max_depth=6):
+def _get_submodule_paths(repo_path):
+    """Return set of relative paths that are git submodules."""
     root = Path(repo_path).resolve()
+    gitmodules = root / ".gitmodules"
+    if not gitmodules.is_file():
+        return set()
+    paths = set()
+    content = gitmodules.read_text(errors="replace")
+    for m in re.finditer(r'path\s*=\s*(.+)', content):
+        paths.add(m.group(1).strip())
+    return paths
+
+
+def _walk_files(repo_path, max_depth=6, submodule_paths=None):
+    root = Path(repo_path).resolve()
+    if submodule_paths is None:
+        submodule_paths = _get_submodule_paths(root)
+    skip_abs = {str(root / p) for p in submodule_paths}
     for dirpath, dirnames, filenames in os.walk(root):
         rel = Path(dirpath).relative_to(root)
         depth = len(rel.parts) if str(rel) != "." else 0
         if depth >= max_depth:
             dirnames.clear()
             continue
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in SKIP_DIRS and str(Path(dirpath) / d) not in skip_abs
+        )
         for f in sorted(filenames):
             fp = Path(dirpath) / f
             if not _is_skippable(fp):
@@ -101,6 +120,9 @@ def extract_git_info(repo_path):
     remote = _run_git(repo_path, "remote", "get-url", "origin")
     info["remote"] = remote
     info["local_only"] = remote is None
+    submodules = _get_submodule_paths(repo_path)
+    if submodules:
+        info["submodules"] = sorted(submodules)
     return info
 
 
@@ -907,6 +929,10 @@ def print_summary(result):
 
     for label, count in rows:
         print(f"  {label:<30} {count}", file=sys.stderr)
+
+    submodules = result.get("git", {}).get("submodules", [])
+    if submodules:
+        print(f"  {'Submodules':<30} {len(submodules)} ({', '.join(submodules)})", file=sys.stderr)
     print(file=sys.stderr)
 
 
@@ -1345,6 +1371,7 @@ def main():
     parser.add_argument("--distill", action="store_true", help="Run Phase 2 distillation after extraction")
     parser.add_argument("--save-entries", help="Save distilled entries to JSON file (reusable with --load-entries)")
     parser.add_argument("--load-entries", help="Insert entries from a previously saved JSON file (skips Phase 2)")
+    parser.add_argument("--recurse-submodules", action="store_true", help="Also ingest each submodule as its own project")
     args = parser.parse_args()
 
     # Load-entries shortcut: skip Phase 1 + 2, just insert from file
@@ -1414,6 +1441,32 @@ def main():
 
     if not args.dry_run:
         print(f"\nInserted {len(inserted)} memories (IDs: {inserted[0]}–{inserted[-1]})", file=sys.stderr)
+
+    # Recurse into submodules if requested
+    if args.recurse_submodules:
+        submodules = result.get("git", {}).get("submodules", [])
+        root = Path(args.repo_path).resolve()
+        for sub_path in submodules:
+            sub_full = root / sub_path
+            if not sub_full.is_dir() or not (sub_full / ".git").exists():
+                print(f"\nSkipping submodule {sub_path} (not initialized)", file=sys.stderr)
+                continue
+            sub_project = sub_full.name
+            print(f"\n{'='*60}", file=sys.stderr)
+            print(f"Ingesting submodule: {sub_path} (project: {sub_project})", file=sys.stderr)
+            print(f"{'='*60}", file=sys.stderr)
+            sub_result = run_extraction(str(sub_full), project=sub_project, verbose=args.verbose)
+            print_summary(sub_result)
+            if args.distill or not args.dry_run:
+                sub_entries = distill_with_haiku(sub_result, verbose=args.verbose)
+                if sub_entries:
+                    print(f"Haiku produced {len(sub_entries)} entries for {sub_project}", file=sys.stderr)
+                    sub_inserted = insert_memories(
+                        sub_entries, project=sub_project,
+                        source_ref=sub_result["repo"], dry_run=args.dry_run,
+                    )
+                    if not args.dry_run and sub_inserted:
+                        print(f"Inserted {len(sub_inserted)} memories for {sub_project}", file=sys.stderr)
 
 
 if __name__ == "__main__":
