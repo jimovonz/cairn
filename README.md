@@ -120,6 +120,7 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Web dashboard** — browser-based UI at `localhost:8420` for monitoring and management; overview stats, memory browser with search, session explorer with transcript viewer, retrieval metrics, embedding performance, token usage estimates, per-session generated-vs-consumed memory flow, config editor
 - **Subagent mode** — automatic detection via `agent_id` in hook input; keeps bootstrap + L1 context injection, skips enforcement/L1.5/L2; stop hook opportunistically stores volunteered memories without blocking
 - **Embedding instrumentation** — per-call timing for daemon, local model, vector search, brute-force search, and fan-out expansion; surfaced in dashboard metrics panel
+- **Repo ingestion** — mechanistic extraction + Haiku distillation turns any git repo into portable knowledge entries; 17 extractors cover docs, deps, configs, schemas, HTTP routes, CLI args, exports, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, and Docker/CI
 - **Env var overrides** — any config value tunable via `CAIRN_<NAME>=value` without editing source
 
 ## Quick start
@@ -169,6 +170,30 @@ Every Claude Code response produces invisible metadata that gets captured and st
 | `/cairn delete <id>` | Delete a memory |
 | `/cairn daemon start\|stop\|status` | Manage the embedding daemon |
 | `/cairn dashboard` | Launch web dashboard in browser |
+
+### Repo ingestion
+
+Ingest any git repository into Cairn as portable knowledge entries. Two-phase pipeline: mechanistic extraction (no LLM) followed by Haiku distillation into one-liner memories.
+
+```bash
+python3 cairn/ingest.py /path/to/repo                    # dry-run (default)
+python3 cairn/ingest.py /path/to/repo --execute           # extract + distill + store
+python3 cairn/ingest.py /path/to/repo --project myproj    # override project name
+python3 cairn/ingest.py /path/to/repo --verbose            # show extraction details
+```
+
+**17 extractors** cover a broad range of project types:
+
+| Category | Extractors |
+|----------|------------|
+| General | docs, dependencies, tree, config, schemas, entrypoints, git log |
+| Code | signal comments, TODOs, env vars, exports |
+| Web/API | HTTP routes, CLI args, event interfaces (pub/sub, webhooks) |
+| Systems | protobuf/gRPC, CMake flags, C/C++ public headers, DB tables |
+| Embedded | ROS2 (.msg/.srv/.action, launch, package.xml), CAN DBC, device tree |
+| Build/Deploy | Yocto/BitBake (recipes, layers, machines), Docker, CI pipelines |
+
+Memories are tagged with the project name and git commit SHA for provenance. Re-running ingestion diffs against existing entries and archives superseded ones.
 
 ## How it works
 

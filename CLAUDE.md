@@ -28,6 +28,17 @@ Query commands:
 - `python3 ./cairn/query.py --backfill` — generate missing embeddings
 - `python3 ./cairn/query.py --stats` — database statistics
 
+## Repo Ingestion
+
+Ingest a git repository into Cairn as portable knowledge entries:
+
+- `python3 ./cairn/ingest.py /path/to/repo` — dry-run (extract + distill, no DB write)
+- `python3 ./cairn/ingest.py /path/to/repo --execute` — extract, distill, and store
+- `python3 ./cairn/ingest.py /path/to/repo --project name` — override project name
+- `python3 ./cairn/ingest.py /path/to/repo --verbose` — show extraction details
+
+17 extractors: docs, deps, tree, config, schemas, entrypoints, HTTP routes, CLI args, exports, comments, TODOs, env vars, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI.
+
 ## Git workflow
 
 All changes MUST be made on feature branches, not main. Branch naming: `feature/<short-description>` or `fix/<short-description>`. Merge to main only after testing.
