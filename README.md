@@ -176,10 +176,11 @@ Every Claude Code response produces invisible metadata that gets captured and st
 Ingest any git repository into Cairn as portable knowledge entries. Two-phase pipeline: mechanistic extraction (no LLM) followed by Haiku distillation into one-liner memories.
 
 ```bash
-python3 cairn/ingest.py /path/to/repo                    # dry-run (default)
-python3 cairn/ingest.py /path/to/repo --distill            # extract + distill + store
-python3 cairn/ingest.py /path/to/repo --project myproj    # override project name
-python3 cairn/ingest.py /path/to/repo --verbose            # show extraction details
+python3 cairn/ingest.py /path/to/repo                     # extract + distill + store
+python3 cairn/ingest.py /path/to/repo --dry-run            # preview without storing
+python3 cairn/ingest.py /path/to/repo --phase1-only        # extraction only, no Haiku
+python3 cairn/ingest.py /path/to/repo --project myproj     # override project name
+python3 cairn/ingest.py /path/to/repo --recurse-submodules # include git submodules
 ```
 
 **17 extractors** cover a broad range of project types:

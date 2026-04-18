@@ -1403,8 +1403,7 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="Show progress on stderr")
     parser.add_argument("--output", "-o", help="Write Phase 1 JSON to file")
     parser.add_argument("--section", help="Extract only this section (e.g. docs, routes, comments)")
-    parser.add_argument("--phase1-only", action="store_true", help="Run Phase 1 only, output JSON")
-    parser.add_argument("--distill", action="store_true", help="Run Phase 2 distillation after extraction")
+    parser.add_argument("--phase1-only", action="store_true", help="Run Phase 1 only, output JSON (skip distillation)")
     parser.add_argument("--save-entries", help="Save distilled entries to JSON file (reusable with --load-entries)")
     parser.add_argument("--load-entries", help="Insert entries from a previously saved JSON file (skips Phase 2)")
     parser.add_argument("--recurse-submodules", action="store_true", help="Also ingest each submodule as its own project")
@@ -1443,7 +1442,7 @@ def main():
         Path(args.output).write_text(json_str)
         print(f"Phase 1 written to {args.output}", file=sys.stderr)
 
-    if args.phase1_only or (not args.distill and not args.dry_run):
+    if args.phase1_only:
         if not args.output:
             print(json.dumps(result, indent=2, default=str))
         return
@@ -1495,7 +1494,7 @@ def main():
             print(f"{'='*60}", file=sys.stderr)
             sub_result = run_extraction(str(sub_full), project=sub_project, verbose=args.verbose)
             print_summary(sub_result)
-            if args.distill or not args.dry_run:
+            if not args.dry_run:
                 sub_entries = distill_with_haiku(sub_result, verbose=args.verbose)
                 if sub_entries:
                     print(f"Haiku produced {len(sub_entries)} entries for {sub_project}", file=sys.stderr)

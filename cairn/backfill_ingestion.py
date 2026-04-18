@@ -137,11 +137,11 @@ def backfill(db_path=DB_PATH, execute=False, project=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Backfill ingested memory provenance")
-    parser.add_argument("--execute", action="store_true", help="Apply changes (default: dry-run)")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would change without applying")
     parser.add_argument("--project", help="Only backfill specific project")
     parser.add_argument("--db", default=DB_PATH, help="Database path")
     args = parser.parse_args()
-    backfill(db_path=args.db, execute=args.execute, project=args.project)
+    backfill(db_path=args.db, execute=not args.dry_run, project=args.project)
 
 
 if __name__ == "__main__":

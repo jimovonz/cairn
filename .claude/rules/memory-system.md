@@ -111,15 +111,17 @@ If the retrieved context does not answer your need, set `context: sufficient` an
 
 ### Recovering full conversation context
 
-Memories are distilled one-liners. When you need the full detail behind a memory (exact wording of a decision, complete error output, nuanced discussion):
+Memories are distilled one-liners. `--context` recovers the full detail — use it freely, not as a last resort.
 
 1. Run `python3 $CAIRN_HOME/cairn/query.py --context <memory_id>` (the installer sets CAIRN_HOME)
-2. This shows the conversation excerpt from the session where the memory was recorded, with the source range highlighted
-3. Use this when:
+2. For conversation-generated memories: shows the verbatim transcript excerpt from the session
+3. For repo-ingested memories: shows the source files the entry was derived from
+4. Use this when:
    - A memory's one-liner is ambiguous and you need the original discussion
-   - The user asks "what exactly did we decide about X?" and the memory is too terse
+   - The user asks "what exactly did we decide about X?"
    - You need to verify whether a memory accurately reflects what was discussed
-4. Do NOT use this routinely — only when the distilled memory is genuinely insufficient for the current task
+   - You're about to act on a retrieved memory and want the full reasoning behind it
+   - A repo-ingested memory references code you need to see
 
 ## Before recommending from memory
 
