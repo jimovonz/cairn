@@ -177,7 +177,7 @@ Ingest any git repository into Cairn as portable knowledge entries. Two-phase pi
 
 ```bash
 python3 cairn/ingest.py /path/to/repo                    # dry-run (default)
-python3 cairn/ingest.py /path/to/repo --execute           # extract + distill + store
+python3 cairn/ingest.py /path/to/repo --distill            # extract + distill + store
 python3 cairn/ingest.py /path/to/repo --project myproj    # override project name
 python3 cairn/ingest.py /path/to/repo --verbose            # show extraction details
 ```
