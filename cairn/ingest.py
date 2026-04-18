@@ -1184,6 +1184,10 @@ def _prepare_extracts_text(result):
                 content = content[:2000] + "\n... (truncated)"
             sections.append(f"### Docker/CI: {dc['file']}\n{content}")
 
+    submodules = result.get("git", {}).get("submodules", [])
+    if submodules:
+        sections.append(f"### Git submodules\n" + "\n".join(f"  {s}" for s in submodules))
+
     if ex.get("git_log"):
         log = ex["git_log"][:30]
         sections.append(f"### Recent git log ({len(ex['git_log'])} commits)\n" + "\n".join(log))
@@ -1461,9 +1465,12 @@ def main():
                 sub_entries = distill_with_haiku(sub_result, verbose=args.verbose)
                 if sub_entries:
                     print(f"Haiku produced {len(sub_entries)} entries for {sub_project}", file=sys.stderr)
+                    sub_source_ref = dict(sub_result["repo"])
+                    sub_source_ref["parent_project"] = result["project"]
+                    sub_source_ref["parent_path"] = sub_path
                     sub_inserted = insert_memories(
                         sub_entries, project=sub_project,
-                        source_ref=sub_result["repo"], dry_run=args.dry_run,
+                        source_ref=sub_source_ref, dry_run=args.dry_run,
                     )
                     if not args.dry_run and sub_inserted:
                         print(f"Inserted {len(sub_inserted)} memories for {sub_project}", file=sys.stderr)
