@@ -1323,7 +1323,7 @@ def insert_memories(entries, project, source_ref, session_id=None, dry_run=False
     # Register synthetic session so dashboard can find it
     repo_path = source_ref.get("path", "")
     conn.execute(
-        "INSERT OR IGNORE INTO sessions (session_id, project, transcript_path, created_at) "
+        "INSERT OR IGNORE INTO sessions (session_id, project, transcript_path, started_at) "
         "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
         (session_id, project, repo_path),
     )
