@@ -321,7 +321,7 @@ def test_layer1_5_injects_on_subsequent_prompt():
         }]
 
         with patch.object(hook_helpers, 'DB_PATH', db_path), \
-             patch('hooks.prompt_hook.get_embedder', return_value=mock_emb):
+             patch('hooks.hook_helpers.get_embedder', return_value=mock_emb):
             result = prompt_hook.layer1_5_search("auth approach JWT", "s1")
 
         assert result is not None
@@ -366,7 +366,7 @@ def test_layer1_5_skips_already_injected():
         }]
 
         with patch.object(hook_helpers, 'DB_PATH', db_path), \
-             patch('hooks.prompt_hook.get_embedder', return_value=mock_emb):
+             patch('hooks.hook_helpers.get_embedder', return_value=mock_emb):
             # L1.5 returns XML (dedup moved to central gate)
             result = prompt_hook.layer1_5_search("some query", "s1")
             assert result is not None  # L1.5 builds XML without filtering

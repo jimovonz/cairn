@@ -512,15 +512,31 @@ def find_similar(
         all_rows = conn.execute(
             "SELECT id, embedding, confidence, updated_at, project FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
         ).fetchall()
-        fanout_best: dict[int, float] = {}
+        # Compute per-prefix similarity distributions for z-score normalization.
+        # Without this, prefixes that produce higher raw cosine scores dominate.
+        import numpy as _np
+        n_prefixes = len(fanout_vecs) + 1  # +1 for base query vec
+        all_vecs = [query_vec] + fanout_vecs
+        prefix_sims: list[list[float]] = [[] for _ in range(n_prefixes)]
+        mem_raw_sims: dict[int, list[float]] = {}
+
         for row in all_rows:
             mem_vec = from_blob(row[1])
-            max_sim = float(cosine_similarity(query_vec, mem_vec))
-            for fvec in fanout_vecs:
-                sim = float(cosine_similarity(fvec, mem_vec))
-                if sim > max_sim:
-                    max_sim = sim
-            fanout_best[row[0]] = max_sim
+            sims = [float(cosine_similarity(v, mem_vec)) for v in all_vecs]
+            for i, s in enumerate(sims):
+                prefix_sims[i].append(s)
+            mem_raw_sims[row[0]] = sims
+
+        # Z-score normalize within each prefix, then take max across prefixes
+        prefix_means = [_np.mean(ps) if ps else 0.0 for ps in prefix_sims]
+        prefix_stds = [_np.std(ps) if ps else 1.0 for ps in prefix_sims]
+        prefix_stds = [max(s, 1e-6) for s in prefix_stds]
+
+        fanout_best: dict[int, float] = {}
+        for mid, raw_sims in mem_raw_sims.items():
+            z_scores = [(raw_sims[i] - prefix_means[i]) / prefix_stds[i] for i in range(n_prefixes)]
+            best_idx = int(_np.argmax(z_scores))
+            fanout_best[mid] = raw_sims[best_idx]
 
         # Update candidates with fan-out similarities where they improved
         for c in candidates:
