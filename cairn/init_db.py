@@ -313,3 +313,4 @@ def init_ephemeral(path=None):
 
 if __name__ == "__main__":
     init()
+    init_ephemeral()
