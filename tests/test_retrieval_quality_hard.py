@@ -395,16 +395,6 @@ def run_fanout(db_path: str, query: str, limit: int = 10) -> list[int]:
     return [r["id"] for r in results]
 
 
-def run_combined(db_path: str, query: str, limit: int = 10) -> list[int]:
-    import cairn.embeddings as embeddings
-    from hooks.query_expansion import combined_expansion
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA busy_timeout=5000")
-    results = combined_expansion(conn, query, embeddings.embed,
-                                  current_project="webapp", limit=limit)
-    conn.close()
-    return [r["id"] for r in results]
-
 
 # --- Evaluation ---
 
@@ -538,16 +528,6 @@ class TestExpansionOnHardBenchmark:
         assert fanout["hard"]["avg_mrr"] >= baseline["hard"]["avg_mrr"] * 0.85, \
             f"Fan-out hard MRR {fanout['hard']['avg_mrr']:.3f} regressed vs baseline {baseline['hard']['avg_mrr']:.3f}"
 
-    @pytest.mark.behavioural
-    def test_combined_does_not_regress_overall(self, hard_db):
-        """Combined strategy should not regress overall MRR."""
-        db_path, memory_ids = hard_db
-        baseline = evaluate_by_difficulty(run_semantic, db_path, memory_ids)
-        combined = evaluate_by_difficulty(run_combined, db_path, memory_ids)
-
-        assert combined["overall"]["avg_mrr"] >= baseline["overall"]["avg_mrr"] * 0.85, \
-            f"Combined overall MRR {combined['overall']['avg_mrr']:.3f} regressed vs baseline {baseline['overall']['avg_mrr']:.3f}"
-
 
 class TestDistractorDiscrimination:
     """Tests that strategies don't get fooled by vocabulary-sharing distractors."""
@@ -628,7 +608,6 @@ class TestHardBenchmarkSummary:
             "FTS5": run_fts,
             "Hybrid RRF": run_rrf,
             "Fan-out": run_fanout,
-            "Combined": run_combined,
         }
 
         print("\n\n=== Hard Benchmark — Strategy Comparison by Difficulty ===\n")
@@ -649,8 +628,8 @@ class TestHardBenchmarkSummary:
             print(f"{name:<15} {easy:>9.3f} {med:>9.3f} {hard_mrr:>10.3f} {overall:>9.3f} {fp:>9.2f}")
 
         # Per-query detail
-        print(f"\n{'Query':<55} {'Diff':<6} {'Sem':>5} {'FTS':>5} {'RRF':>5} {'Fan':>5} {'Comb':>5}")
-        print("-" * 90)
+        print(f"\n{'Query':<55} {'Diff':<6} {'Sem':>5} {'FTS':>5} {'RRF':>5} {'Fan':>5}")
+        print("-" * 85)
 
         for i, (query_text, relevant_indices, difficulty, notes) in enumerate(QUERIES):
             q_short = query_text[:53]
@@ -659,7 +638,6 @@ class TestHardBenchmarkSummary:
                 result = all_results[name]
                 tier = result.get(difficulty, {})
                 pq = tier.get("per_query", [])
-                # Find this query in the per_query list
                 score = 0.0
                 for entry in pq:
                     if entry["query"] == query_text:
@@ -668,7 +646,7 @@ class TestHardBenchmarkSummary:
                 scores.append(score)
 
             diff_short = difficulty[:4]
-            print(f"{q_short:<55} {diff_short:<6} {scores[0]:>5.2f} {scores[1]:>5.2f} {scores[2]:>5.2f} {scores[3]:>5.2f} {scores[4]:>5.2f}")
+            print(f"{q_short:<55} {diff_short:<6} {scores[0]:>5.2f} {scores[1]:>5.2f} {scores[2]:>5.2f} {scores[3]:>5.2f}")
 
         print()
         assert True

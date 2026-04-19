@@ -43,7 +43,7 @@ L1_MAX_RESULTS = 7
 SCORE_W_SIMILARITY = 0.50
 SCORE_W_CONFIDENCE = 0.0        # Disabled — veracity is not a ranking signal
 SCORE_W_KEYWORDS = 0.15         # Keyword overlap between query terms and memory keywords
-SCORE_W_RECENCY = 0.05          # Tiebreaker — staleness handled by archival system
+SCORE_W_RECENCY = 0.0           # Disabled — age is not a usefulness signal; obsolescence handled by supersession
 SCORE_W_SCOPE = 0.05
 RECENCY_HALF_LIFE_DAYS = 30        # Days after which recency weight halves
 
