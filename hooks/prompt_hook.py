@@ -320,6 +320,15 @@ def main() -> None:
         if corruption_warning:
             context_parts.append(corruption_warning)
 
+        # Health sentinel — warn if systemic failure detected
+        from hooks.health import sentinel_info
+        _health = sentinel_info()
+        if _health:
+            context_parts.append(
+                f"WARNING — Cairn IMPAIRED: {_health.get('reason', 'unknown')} "
+                f"since {_health.get('since', '?')} — memory capture/retrieval may be degraded."
+            )
+
         # Project bootstrap: inject standing context from CWD-matched project
         pb_context = project_bootstrap(session_id, cwd, transcript_path)
         if pb_context:

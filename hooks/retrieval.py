@@ -20,7 +20,7 @@ import re
 from cairn.config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
                      L3_GLOBAL_SIM_WITHOUT_PROJECT, L3_PROJECT_QUALITY_FLOOR,
                      L3_MAX_PROJECT_RESULTS, L3_MAX_GLOBAL_RESULTS,
-                     WEAK_ENTRY_SCORE_FLOOR, RRF_K)
+                     WEAK_ENTRY_SCORE_FLOOR, RRF_K, GLOBAL_HARD_FLOOR)
 
 
 CONTEXT_CACHE_SIM_THRESHOLD: float = 0.9
@@ -193,7 +193,8 @@ def hybrid_search(
         sim = r.get("similarity", 0)
         is_exempt = r.get("type") in SCOPE_BIAS_EXEMPT_TYPES
         eff_t = effective_threshold if is_exempt else global_threshold
-        if sim >= eff_t or (r.get("_source") == "fts" and r["score"] >= WEAK_ENTRY_SCORE_FLOOR):
+        above_hard_floor = sim >= GLOBAL_HARD_FLOOR
+        if above_hard_floor or sim >= eff_t or (r.get("_source") == "fts" and r["score"] >= WEAK_ENTRY_SCORE_FLOOR):
             global_results.append(r)
             seen_ids.add(mid)
 
@@ -337,8 +338,7 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
         score = r.get("score", r.get("confidence", 0.7))
         rel_label = reliability_label(score)
         days = _recency_days(r.get("updated_at", ""))
-        has_source = r.get("depth") is not None
-        source_attr = ' ctx="y"' if has_source else ""
+        sim = r.get("similarity", 0)
         reason = r.get("archived_reason")
         if r.get("archived") or reason:
             return (
@@ -346,15 +346,14 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
                 f'{r["content"]}</entry>'
             )
         return (
-            f'  <entry id="{r["id"]}" reliability="{rel_label}" days="{days}"{source_attr}>'
+            f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}">'
             f'{r["content"]}</entry>'
         )
 
-    lines: list[str] = ['<cairn_context query="{}" current_project="{}">'.format(
+    lines: list[str] = ['<cairn_context query="{}" current_project="{}" layer="L3">'.format(
         context_need.replace('"', '&quot;'),
         project or "none"
     )]
-    lines.append('  <instruction>Before acting on any entry below, run: python3 /home/james/Projects/cairn/cairn/query.py --context &lt;id&gt; to recover the full conversation behind it.</instruction>')
 
     project_cap = max_per_scope if max_per_scope is not None else L3_MAX_PROJECT_RESULTS
     global_cap = max_per_scope if max_per_scope is not None else L3_MAX_GLOBAL_RESULTS

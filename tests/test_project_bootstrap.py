@@ -123,18 +123,10 @@ def test_project_bootstrap_behavioural():
     assert entries[1]["content"] == "Python 3.11 required"
     assert entries[2]["content"] == "Prefers short functions"
 
-    # Verify entry attributes match inserted data
-    assert entries[0]["type"] == "project"
-    assert entries[0]["topic"] == "arch"
-    assert entries[0]["confidence"] == "0.80"
-    assert entries[1]["type"] == "fact"
-    assert entries[1]["confidence"] == "0.60"
-    assert entries[2]["type"] == "preference"
-    assert entries[2]["confidence"] == "0.90"
-
-    # Verify reliability mapping: 0.8 >= 0.6 → strong, 0.6 >= 0.6 → strong, 0.9 → strong
-    assert entries[0]["reliability"] == "strong"
-    assert entries[1]["reliability"] == "strong"
+    # Verify compact entry attributes (id, days, sim)
+    assert "id" in entries[0]
+    assert "days" in entries[0]
+    assert "sim" in entries[0]
 
     # Verify excluded types are not present
     contents = [e["content"] for e in entries]
@@ -265,19 +257,15 @@ def test_project_bootstrap_adversarial():
     # Find entries by content
     by_content = {e["content"]: e for e in entries}
 
-    # NULL confidence → defaults to 0.7 in code
+    # Compact format: entries have id, days, sim
     null_conf_entry = by_content["no confidence set"]
-    assert null_conf_entry["confidence"] == "0.70"
+    assert "id" in null_conf_entry
 
-    # Malformed date → recency_days should be 0 (fallback), confidence correct
     bad_date_entry = by_content["bad timestamp value"]
-    assert bad_date_entry["recency_days"] == "0"
-    assert bad_date_entry["confidence"] == "0.50"
+    assert bad_date_entry["days"] == "0"
 
-    # Low confidence (0.3) → reliability "weak" (score < 0.4)
     empty_arch_entry = by_content["empty archived reason"]
-    assert empty_arch_entry["reliability"] == "weak"
-    assert empty_arch_entry["confidence"] == "0.30"
+    assert "sim" in empty_arch_entry
 
     # Verify overall XML structure is well-formed despite bad data
     assert result.startswith('<cairn_context')
