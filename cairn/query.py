@@ -172,6 +172,21 @@ def show_context(memory_id, margin=5):
     created_at = row[5]
     depth = row[6]
 
+    # Try snapshot excerpt first (survives JSONL purge)
+    try:
+        excerpt_row = conn.execute(
+            "SELECT excerpt, captured_at FROM memory_source_excerpt WHERE memory_id = ?",
+            (memory_id,)
+        ).fetchone()
+        if excerpt_row:
+            print(f"  [from snapshot — captured {excerpt_row[1]}]")
+            print()
+            print(excerpt_row[0])
+            conn.close()
+            return
+    except Exception:
+        pass
+
     if not session_id:
         print("  No session ID — cannot locate transcript.")
         conn.close()
