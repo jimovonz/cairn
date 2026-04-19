@@ -36,11 +36,15 @@ def _record_embed_metric(event: str, value: float) -> None:
     global _metrics_conn
     try:
         if _metrics_conn is None:
-            db_path = os.path.join(os.path.dirname(__file__), "cairn.db")
-            if not os.path.exists(db_path):
-                return
-            _metrics_conn = sqlite3.connect(db_path)
+            from cairn.config import EPHEMERAL_DB_PATH
+            _metrics_conn = sqlite3.connect(EPHEMERAL_DB_PATH)
             _metrics_conn.execute("PRAGMA busy_timeout=2000")
+            _metrics_conn.execute("PRAGMA journal_mode=WAL")
+            try:
+                _metrics_conn.execute("SELECT 1 FROM metrics LIMIT 0")
+            except sqlite3.OperationalError:
+                from cairn.init_db import init_ephemeral
+                init_ephemeral(EPHEMERAL_DB_PATH)
         _metrics_conn.execute(
             "INSERT INTO metrics (event, value) VALUES (?, ?)",
             (event, value)
@@ -86,9 +90,19 @@ def _daemon_embed(text: str) -> Optional[np.ndarray]:
 
         resp = send_request({"action": "embed", "text": text})
         if resp and "vector" in resp:
+            try:
+                from hooks.health import record_success
+                record_success("daemon")
+            except Exception:
+                pass
             return np.frombuffer(bytes.fromhex(resp["vector"]), dtype=np.float32)
     except (ConnectionError, TimeoutError, OSError, ValueError) as e:
         _log_embed(f"daemon embed unavailable: {type(e).__name__}: {e}", "warning")
+        try:
+            from hooks.health import record_failure
+            record_failure("daemon", str(e))
+        except Exception:
+            pass
     except Exception as e:
         _log_embed(f"daemon embed unexpected error: {type(e).__name__}: {e}", "error")
     return None

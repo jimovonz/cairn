@@ -326,8 +326,7 @@ def test_layer2_cross_project_search_stages_results():
     entry_match = re.search(r'<entry ([^>]*)>([^<]+)</entry>', xml)
     entry_attrs = entry_match.group(1)
     assert parse_xml_attr(entry_attrs, 'id') == '10'
-    assert parse_xml_attr(entry_attrs, 'confidence') == '0.80'
-    assert parse_xml_attr(entry_attrs, 'project') == 'ProjB'
+    assert parse_xml_attr(entry_attrs, 'sim') is not None
     assert entry_match.group(2) == "Cross-project useful info"
     conn.close()
 

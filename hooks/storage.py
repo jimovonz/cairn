@@ -153,7 +153,6 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
             continue
 
         if direction == "-!":
-            # Contradiction annotation — mark memory as superseded with reason
             annotation = reason or "contradicted by later session"
             conn.execute(
                 "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -162,20 +161,24 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
             log(f"Contradicted: memory {memory_id} — {annotation}")
             record_metric(session_id, "contradiction_annotated", f"{memory_id}: {annotation[:80]}")
             applied += 1
-            continue
-
-        if direction == "+":
-            # Corroboration — boost veracity
+        elif direction == "+":
             current = row[0] if row[0] is not None else CONFIDENCE_DEFAULT
             new = min(current + CONFIDENCE_BOOST * (1 - current), CONFIDENCE_MAX)
             conn.execute("UPDATE memories SET confidence = ? WHERE id = ?", (new, memory_id))
             log(f"Corroborated: memory {memory_id} {current:.2f} → {new:.2f}")
             applied += 1
         else:
-            # Irrelevant (-) — log but don't adjust confidence
             log(f"Irrelevant: memory {memory_id} — no confidence change")
             record_metric(session_id, "confidence_irrelevant", f"{memory_id}")
             applied += 1
+
+        try:
+            conn.execute(
+                "INSERT INTO memory_annotation_log (memory_id, direction, reason, session_id) VALUES (?, ?, ?, ?)",
+                (memory_id, direction, reason, session_id)
+            )
+        except Exception:
+            pass
     conn.commit()
     conn.close()
     return applied
@@ -377,13 +380,13 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     # current transaction boundary; remaining missing embeddings get picked up on
     # subsequent responses. Brute-force fallback handles retrieval for memories
     # still missing embeddings.
-    _inline_backfill(conn)
+    inline_backfill(conn)
     conn.close()
 
     return inserted
 
 
-def _inline_backfill(conn) -> None:
+def inline_backfill(conn) -> None:
     """Fill a bounded number of missing embeddings inline via the daemon socket.
     Bounded so a single response can't turn into a long-running transaction."""
     BACKFILL_INLINE_MAX = 5

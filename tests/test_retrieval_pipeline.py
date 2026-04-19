@@ -309,7 +309,7 @@ def test_retrieve_returns_structured_xml():
     assert isinstance(result, str) and len(result) > 0
     assert result.count("<cairn_context") == 1
     assert result.count("JWT") >= 1
-    assert result.count('reliability=') >= 1
+    assert result.count('sim=') >= 1
     assert result.count('id="1"') >= 1
     conn.close()
 
@@ -734,7 +734,7 @@ def test_auto_backfill_triggered_when_embeddings_missing():
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'log'), \
-         patch.object(storage, '_inline_backfill') as mock_backfill:
+         patch.object(storage, 'inline_backfill') as mock_backfill:
         storage.insert_memories([{
             "type": "fact", "topic": "test", "content": "stored without embedding"
         }], session_id="s1")
@@ -760,19 +760,19 @@ def test_no_backfill_when_all_have_embeddings():
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
-         patch.object(storage, '_inline_backfill') as mock_backfill:
+         patch.object(storage, 'inline_backfill') as mock_backfill:
         storage.insert_memories([{
             "type": "fact", "topic": "test", "content": "stored with embedding"
         }], session_id="s1")
 
-    # _inline_backfill is called unconditionally but exits early if no missing embeddings.
+    # inline_backfill is called unconditionally but exits early if no missing embeddings.
     # Verify the insert succeeded (the memory was stored with its embedding from mock_emb).
     conn.close()
 
 
 # Verifies: inline backfill fills missing embeddings via the daemon socket
-def test_inline_backfill_fills_missing():
-    """_inline_backfill should fill missing embeddings up to BACKFILL_INLINE_MAX."""
+def testinline_backfill_fills_missing():
+    """inline_backfill should fill missing embeddings up to BACKFILL_INLINE_MAX."""
     db_path, conn = fresh_db()
 
     # Insert several memories without embeddings
@@ -790,7 +790,7 @@ def test_inline_backfill_fills_missing():
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
-        storage._inline_backfill(conn)
+        storage.inline_backfill(conn)
 
     # All three should now have embeddings
     remaining = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NULL").fetchone()[0]
@@ -801,8 +801,8 @@ def test_inline_backfill_fills_missing():
 
 
 # Verifies: inline backfill is bounded to BACKFILL_INLINE_MAX per call
-def test_inline_backfill_bounded():
-    """_inline_backfill should not process more than BACKFILL_INLINE_MAX memories per call."""
+def testinline_backfill_bounded():
+    """inline_backfill should not process more than BACKFILL_INLINE_MAX memories per call."""
     db_path, conn = fresh_db()
 
     # Insert many memories without embeddings (more than the cap)
@@ -820,7 +820,7 @@ def test_inline_backfill_bounded():
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
-        storage._inline_backfill(conn)
+        storage.inline_backfill(conn)
 
     # Exactly 5 should have been filled (the cap)
     remaining = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NULL").fetchone()[0]
@@ -830,7 +830,7 @@ def test_inline_backfill_bounded():
 
 
 # Verifies: inline backfill gracefully handles daemon unavailable
-def test_inline_backfill_daemon_unavailable():
+def testinline_backfill_daemon_unavailable():
     """When embed() returns None (daemon unavailable), skip and leave memories unfilled."""
     db_path, conn = fresh_db()
     conn.execute(
@@ -844,7 +844,7 @@ def test_inline_backfill_daemon_unavailable():
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
-        storage._inline_backfill(conn)
+        storage.inline_backfill(conn)
 
     # Memory still has no embedding — but the function did not crash
     remaining = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NULL").fetchone()[0]

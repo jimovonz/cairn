@@ -22,10 +22,37 @@ import sys
 import os
 from typing import Optional
 
-from hooks.hook_helpers import log, get_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery
+from hooks.hook_helpers import log, get_conn, get_ephemeral_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery
 from hooks.parser import parse_memory_block, parse_memory_notes
 from hooks.hash_verify import compute_response_hash
-from hooks.storage import apply_confidence_updates, insert_memories
+from hooks.storage import apply_confidence_updates, inline_backfill, insert_memories
+
+SOURCE_EXCERPT_LINES = 15
+
+
+def _snapshot_excerpts(session_id: str, transcript_path: str, assistant_message: str) -> None:
+    """Snapshot the assistant message as source excerpt for recently stored memories."""
+    if not session_id or not assistant_message:
+        return
+    conn = hook_helpers.get_conn()
+    rows = conn.execute(
+        "SELECT id FROM memories WHERE session_id = ? AND id NOT IN "
+        "(SELECT memory_id FROM memory_source_excerpt) ORDER BY id DESC LIMIT 10",
+        (session_id,)
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return
+    lines = assistant_message.split("\n")
+    excerpt = "\n".join(lines[:SOURCE_EXCERPT_LINES * 2])
+    for (mem_id,) in rows:
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_source_excerpt (memory_id, session_id, transcript_path, excerpt) "
+            "VALUES (?, ?, ?, ?)",
+            (mem_id, session_id, transcript_path or "", excerpt)
+        )
+    conn.commit()
+    conn.close()
 from hooks.enforcement import check_trailing_intent, check_deferral, check_declined_without_trying, check_correction_triggers, get_continuation_count, increment_continuation, reset_continuation
 
 # Appended to block reasons that are purely about memory format — the user already saw the
@@ -327,11 +354,13 @@ def main() -> None:
         session_has_memories = conn.execute(
             "SELECT COUNT(*) FROM memories WHERE session_id = ?", (session_id,)
         ).fetchone()[0] > 0
+        conn.close()
         # Also check if we've seen any hook_fired metric for this session
-        session_hook_count = conn.execute(
+        eph_conn = get_ephemeral_conn()
+        session_hook_count = eph_conn.execute(
             "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'hook_fired'", (session_id,)
         ).fetchone()[0]
-        conn.close()
+        eph_conn.close()
 
         if not session_has_memories and session_hook_count <= 1:
             log(f"No prior memories for session {session_id[:8]}... — LLM may lack rules, allowing stop")
@@ -466,6 +495,21 @@ def main() -> None:
         record_metric(session_id, "memories_stored", None, count)
         log(f"Stored {count} memories (session: {session_id[:8]}...)" if session_id else f"Stored {count} memories")
 
+        # Snapshot source excerpts for --context recovery after JSONL purge
+        try:
+            _snapshot_excerpts(session_id, transcript_path, assistant_message)
+        except Exception as exc:
+            log(f"Excerpt capture failed (non-fatal): {exc}")
+
+    # Backfill any NULL embeddings (from content edits or trigger-nulled rows)
+    if not entries and confidence_updates:
+        try:
+            conn = hook_helpers.get_conn()
+            inline_backfill(conn)
+            conn.close()
+        except Exception:
+            pass
+
     # Record dedup stats
     record_metric(session_id, "hook_fired", f"entries={len(entries) if entries else 0}")
 
@@ -513,7 +557,7 @@ def main() -> None:
                 # Check if this retrieval was triggered by bootstrap — apply tighter cap
                 _is_bootstrap = False
                 try:
-                    _bc = get_conn()
+                    _bc = get_ephemeral_conn()
                     _brow = _bc.execute(
                         "SELECT value FROM metrics WHERE session_id = ? AND event = 'context_bootstrap_triggered' "
                         "ORDER BY created_at DESC LIMIT 1", (session_id,)
@@ -567,32 +611,32 @@ def main() -> None:
     # hasn't used layer 3 in CONTEXT_BOOTSTRAP_INTERVAL turns. Builds the habit
     # through demonstrated value rather than rules alone.
     if not is_continuation and context != "insufficient" and CONTEXT_BOOTSTRAP_INTERVAL > 0:
-        conn = get_conn()
+        eph = get_ephemeral_conn()
         # Count hook firings since last context_requested
-        last_request = conn.execute(
+        last_request = eph.execute(
             "SELECT MAX(created_at) FROM metrics WHERE session_id = ? AND event = 'context_requested'",
             (session_id,)
         ).fetchone()[0]
         if last_request:
-            turns_since = conn.execute(
+            turns_since = eph.execute(
                 "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'hook_fired' AND created_at > ?",
                 (session_id, last_request)
             ).fetchone()[0]
         else:
-            turns_since = conn.execute(
+            turns_since = eph.execute(
                 "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'hook_fired'",
                 (session_id,)
             ).fetchone()[0]
-        conn.close()
+        eph.close()
 
         # Use shorter interval for first bootstrap in session, then standard interval
         from cairn.config import CONTEXT_BOOTSTRAP_FIRST_INTERVAL
-        conn_check = get_conn()
-        _prior_bootstrap = conn_check.execute(
+        eph_check = get_ephemeral_conn()
+        _prior_bootstrap = eph_check.execute(
             "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'context_bootstrap_triggered'",
             (session_id,)
         ).fetchone()[0]
-        conn_check.close()
+        eph_check.close()
         effective_interval = CONTEXT_BOOTSTRAP_FIRST_INTERVAL if _prior_bootstrap == 0 else CONTEXT_BOOTSTRAP_INTERVAL
 
         if turns_since >= effective_interval:

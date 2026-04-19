@@ -9,7 +9,7 @@ import re
 from typing import Optional
 
 import hooks.hook_helpers as hook_helpers
-from hooks.hook_helpers import log, get_conn
+from hooks.hook_helpers import log, get_conn, get_ephemeral_conn
 from cairn.config import TRAILING_INTENT_SIM_THRESHOLD
 
 import numpy as np
@@ -143,6 +143,17 @@ def _strip_memory_and_code(text: str) -> str:
     return cleaned.strip()
 
 
+def _is_permission_seeking(text: str) -> bool:
+    """Detect questions that ask the user for permission to proceed — covert exit ramps."""
+    return bool(re.search(
+        r"want me to|shall I|should I|would you like me to|ready to proceed|"
+        r"would you like to|do you want me|if you.{0,10}like.{0,10}I can|"
+        r"want me to pick|want me to start|want me to continue|"
+        r"I can .{0,30}\?$",
+        text, re.IGNORECASE | re.MULTILINE
+    ))
+
+
 def _has_deferral_language(text: str) -> bool:
     """Quick regex pre-check for deferral-adjacent keywords before running embeddings."""
     return bool(re.search(
@@ -219,10 +230,11 @@ def check_trailing_intent(text: str, session_id: str = "") -> Optional[str]:
 
     cleaned = _strip_memory_and_code(text)
 
-    # Questions bypass trailing-intent UNLESS deferral language is present.
-    # "Want me to continue?" is a covert exit ramp, not a genuine question.
-    if cleaned.rstrip().endswith("?") and not _has_deferral_language(cleaned):
-        return None
+    # Questions bypass trailing-intent UNLESS deferral or permission-seeking language present.
+    # "Want me to continue?" / "Shall I proceed?" are covert exit ramps, not genuine questions.
+    if cleaned.rstrip().endswith("?"):
+        if not _has_deferral_language(cleaned) and not _is_permission_seeking(cleaned):
+            return None
 
     tail = _extract_tail_sentences(text, n=3)
     if not tail:
@@ -277,7 +289,7 @@ def check_trailing_intent(text: str, session_id: str = "") -> Optional[str]:
 
 def get_continuation_count(session_id: str) -> int:
     """Get how many times we've re-prompted this session."""
-    conn = get_conn()
+    conn = get_ephemeral_conn()
     row = conn.execute(
         "SELECT value FROM hook_state WHERE session_id = ? AND key = 'continuation_count'",
         (session_id,)
@@ -288,7 +300,7 @@ def get_continuation_count(session_id: str) -> int:
 
 def increment_continuation(session_id: str) -> int:
     """Increment and return the continuation count."""
-    conn = get_conn()
+    conn = get_ephemeral_conn()
     current = get_continuation_count(session_id)
     new_count = current + 1
     conn.execute(
@@ -302,7 +314,7 @@ def increment_continuation(session_id: str) -> int:
 
 def reset_continuation(session_id: str) -> None:
     """Reset continuation count (called when a response completes normally)."""
-    conn = get_conn()
+    conn = get_ephemeral_conn()
     conn.execute(
         "DELETE FROM hook_state WHERE session_id = ? AND key = 'continuation_count'",
         (session_id,)
