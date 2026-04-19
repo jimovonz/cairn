@@ -377,13 +377,13 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     # current transaction boundary; remaining missing embeddings get picked up on
     # subsequent responses. Brute-force fallback handles retrieval for memories
     # still missing embeddings.
-    _inline_backfill(conn)
+    inline_backfill(conn)
     conn.close()
 
     return inserted
 
 
-def _inline_backfill(conn) -> None:
+def inline_backfill(conn) -> None:
     """Fill a bounded number of missing embeddings inline via the daemon socket.
     Bounded so a single response can't turn into a long-running transaction."""
     BACKFILL_INLINE_MAX = 5
