@@ -9,7 +9,7 @@ The key innovation is that every LLM response contains invisible structured meta
 1. **Memory persistence** — distilled facts, decisions, and preferences are extracted and stored
 2. **Loop continuation control** — the LLM declares whether its response is complete
 3. **Context retrieval** — the LLM declares whether it needs information from past sessions
-4. **Confidence feedback** — the LLM rates the usefulness of retrieved memories, dynamically adjusting their future retrieval priority
+4. **Confidence feedback** — the LLM rates the veracity of retrieved memories, building a corroboration signal across sessions
 
 ## The Invisible Metadata Mechanism
 
@@ -1031,7 +1031,7 @@ Intermediate tool output (file reads, command results) is factual data that coul
 The LLM weighting rules already instruct it to prefer recent entries over old ones. The confidence system handles "bad" memories via explicit feedback. Time decay would primarily benefit memories that are *both* old *and* never retrieved — a narrow gap that doesn't justify the operational overhead of a background cron job at current scale.
 
 ### Why hook-side composite scoring instead of LLM ranking?
-LLMs are inconsistent at multi-factor ranking under token pressure. Passing similarity, confidence, recency, and scope as separate attributes and expecting the LLM to combine them leads to anchoring on whichever signal appears first or is most salient. A pre-computed composite score eliminates this: results arrive sorted, with a single scalar the LLM can trust. The weights (`0.50 similarity + 0.30 confidence + 0.15 recency + 0.05 scope`) can be tuned in `config.py` without changing any instructions.
+LLMs are inconsistent at multi-factor ranking under token pressure. Passing similarity, confidence, recency, and scope as separate attributes and expecting the LLM to combine them leads to anchoring on whichever signal appears first or is most salient. A pre-computed composite score eliminates this: results arrive sorted, with a single scalar the LLM can trust. The weights (see `config.py SCORE_W_*` — currently `0.50 similarity + 0.15 keywords + 0.05 scope`, with confidence and recency at 0) can be tuned without changing any instructions.
 
 ### Why embedding augmentation with project name?
 Prepending the project name to the embedding text (e.g. `"webshop decision use-postgres ..."`) pushes memories from unrelated domains apart in vector space. This reduces cross-project bleed naturally — without changing the schema, queries, or adding filtering logic. It's a zero-cost signal that improves retrieval precision as the database grows across multiple projects.

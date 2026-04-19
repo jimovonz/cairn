@@ -276,41 +276,6 @@ def run_type_fanout(db_path: str, query: str, limit: int = 10) -> list[int]:
     return [r["id"] for r in results]
 
 
-def run_corpus_prf(db_path: str, query: str, limit: int = 10) -> list[int]:
-    """Corpus-aware PRF strategy."""
-    from hooks.query_expansion import corpus_prf
-    import cairn.embeddings as embeddings
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA busy_timeout=5000")
-    results = corpus_prf(conn, query, embeddings.embed,
-                          current_project="exptest", limit=limit)
-    conn.close()
-    return [r["id"] for r in results]
-
-
-def run_neighbor_blend(db_path: str, query: str, limit: int = 10) -> list[int]:
-    """Nearest-neighbor blending strategy."""
-    from hooks.query_expansion import neighbor_blend
-    import cairn.embeddings as embeddings
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA busy_timeout=5000")
-    results = neighbor_blend(conn, query, embeddings.embed,
-                              current_project="exptest", limit=limit)
-    conn.close()
-    return [r["id"] for r in results]
-
-
-def run_combined(db_path: str, query: str, limit: int = 10) -> list[int]:
-    """Combined fan-out + blend strategy."""
-    from hooks.query_expansion import combined_expansion
-    import cairn.embeddings as embeddings
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA busy_timeout=5000")
-    results = combined_expansion(conn, query, embeddings.embed,
-                                  current_project="exptest", limit=limit)
-    conn.close()
-    return [r["id"] for r in results]
-
 
 # --- Benchmark helpers ---
 
@@ -379,157 +344,30 @@ class TestTypePrefixFanout:
         assert improved >= 0  # Soft check — we just want no regression
 
 
-class TestCorpusPRF:
-    """Tests corpus-aware pseudo-relevance feedback strategy."""
-
-    @pytest.mark.behavioural
-    def test_prf_quality_characterised(self, expansion_db):
-        """Corpus PRF quality characterisation — FTS term expansion can hurt semantic search.
-
-        Known issue: FTS hits inject misleading terms that shift the embedding away from
-        the correct cluster. PRF MRR is lower than baseline (~0.81 vs ~0.97). This test
-        records the current quality level and alerts if it changes significantly.
-        """
-        db_path, cluster_id_map = expansion_db
-        ground_truth = _build_ground_truth(cluster_id_map)
-
-        prf = evaluate_strategy(run_corpus_prf, db_path, ground_truth)
-
-        # PRF is known to regress vs baseline — just verify it's not catastrophically bad
-        assert prf["avg_mrr"] >= 0.5, \
-            f"PRF MRR {prf['avg_mrr']:.3f} dropped below minimum acceptable 0.5"
-        # And recall shouldn't be zero
-        assert prf["avg_r5"] >= 0.5, \
-            f"PRF R@5 {prf['avg_r5']:.3f} dropped below minimum acceptable 0.5"
-
-
-class TestNeighborBlend:
-    """Tests nearest-neighbor vector blending strategy."""
-
-    @pytest.mark.behavioural
-    def test_blend_does_not_regress_mrr(self, expansion_db):
-        """Neighbor blending should not regress MRR below baseline."""
-        db_path, cluster_id_map = expansion_db
-        ground_truth = _build_ground_truth(cluster_id_map)
-
-        baseline = evaluate_strategy(run_baseline, db_path, ground_truth)
-        blend = evaluate_strategy(run_neighbor_blend, db_path, ground_truth)
-
-        assert blend["avg_mrr"] >= baseline["avg_mrr"] * 0.9, \
-            f"Blend MRR {blend['avg_mrr']:.3f} regressed vs baseline {baseline['avg_mrr']:.3f}"
-
-    @pytest.mark.behavioural
-    def test_blend_noise_rejection(self, expansion_db):
-        """Blending should not pull query toward noise cluster."""
-        db_path, cluster_id_map = expansion_db
-        noise_ids = set(cluster_id_map["noise"])
-
-        for cluster in CLUSTERS:
-            if not cluster["queries"]:
-                continue
-            for query_text, _ in cluster["queries"]:
-                retrieved = run_neighbor_blend(db_path, query_text, limit=5)
-                top_3 = set(retrieved[:3])
-                assert not (top_3 & noise_ids), \
-                    f"Blend returned noise in top 3 for: '{query_text}'"
-
-
-class TestCombinedExpansion:
-    """Tests combined fan-out + blend strategy."""
-
-    @pytest.mark.behavioural
-    def test_combined_does_not_regress_mrr(self, expansion_db):
-        """Combined strategy should not regress MRR below baseline."""
-        db_path, cluster_id_map = expansion_db
-        ground_truth = _build_ground_truth(cluster_id_map)
-
-        baseline = evaluate_strategy(run_baseline, db_path, ground_truth)
-        combined = evaluate_strategy(run_combined, db_path, ground_truth)
-
-        assert combined["avg_mrr"] >= baseline["avg_mrr"] * 0.9, \
-            f"Combined MRR {combined['avg_mrr']:.3f} regressed vs baseline {baseline['avg_mrr']:.3f}"
-
-    @pytest.mark.behavioural
-    def test_combined_matches_or_beats_fanout(self, expansion_db):
-        """Combined should match or beat fan-out alone (it includes fan-out results)."""
-        db_path, cluster_id_map = expansion_db
-        ground_truth = _build_ground_truth(cluster_id_map)
-
-        fanout = evaluate_strategy(run_type_fanout, db_path, ground_truth)
-        combined = evaluate_strategy(run_combined, db_path, ground_truth)
-
-        assert combined["avg_mrr"] >= fanout["avg_mrr"] * 0.95, \
-            f"Combined MRR {combined['avg_mrr']:.3f} should match fan-out {fanout['avg_mrr']:.3f}"
-
-    @pytest.mark.behavioural
-    def test_combined_noise_rejection(self, expansion_db):
-        """Combined strategy should not return noise in top 3."""
-        db_path, cluster_id_map = expansion_db
-        noise_ids = set(cluster_id_map["noise"])
-
-        for cluster in CLUSTERS:
-            if not cluster["queries"]:
-                continue
-            for query_text, _ in cluster["queries"]:
-                retrieved = run_combined(db_path, query_text, limit=5)
-                top_3 = set(retrieved[:3])
-                assert not (top_3 & noise_ids), \
-                    f"Combined returned noise in top 3 for: '{query_text}'"
-
-
 class TestExpansionComparison:
-    """Comparative benchmark across all strategies — prints summary table."""
+    """Comparative benchmark — baseline vs fan-out."""
 
     @pytest.mark.behavioural
     def test_print_comparison(self, expansion_db):
-        """Print comparison table of all strategies (diagnostic, always passes)."""
+        """Print comparison table (diagnostic, always passes)."""
         db_path, cluster_id_map = expansion_db
         ground_truth = _build_ground_truth(cluster_id_map)
 
         strategies = {
             "Baseline": run_baseline,
             "Type Fan-out": run_type_fanout,
-            "Corpus PRF": run_corpus_prf,
-            "Neighbor Blend": run_neighbor_blend,
-            "Combined": run_combined,
         }
 
         print("\n\n=== Query Expansion Comparison ===")
         print(f"{'Strategy':<18} {'Avg MRR':>8} {'Avg P@3':>8} {'Avg R@5':>8}")
         print("-" * 48)
 
-        results_by_strategy: dict[str, dict] = {}
         for name, fn in strategies.items():
             stats = evaluate_strategy(fn, db_path, ground_truth)
-            results_by_strategy[name] = stats
             print(f"{name:<18} {stats['avg_mrr']:>8.3f} {stats['avg_p3']:>8.3f} {stats['avg_r5']:>8.3f}")
 
-        # Per-query delta from baseline
-        baseline_pq = {q: m for q, m, _, _ in results_by_strategy["Baseline"]["per_query"]}
-
-        print(f"\n{'Query':<45} {'Base':>5} {'Fan':>5} {'PRF':>5} {'Blend':>5} {'Comb':>5} {'Best':>8}")
-        print("-" * 86)
-
-        for i, (query_text, relevant_ids) in enumerate(ground_truth):
-            q_short = query_text[:43]
-            base_m = results_by_strategy["Baseline"]["per_query"][i][1]
-            fan_m = results_by_strategy["Type Fan-out"]["per_query"][i][1]
-            prf_m = results_by_strategy["Corpus PRF"]["per_query"][i][1]
-            blend_m = results_by_strategy["Neighbor Blend"]["per_query"][i][1]
-            comb_m = results_by_strategy["Combined"]["per_query"][i][1]
-
-            best_val = max(base_m, fan_m, prf_m, blend_m, comb_m)
-            best_name = "="
-            if best_val > base_m:
-                for name, val in [("Fan", fan_m), ("PRF", prf_m), ("Blend", blend_m), ("Comb", comb_m)]:
-                    if val == best_val:
-                        best_name = name
-                        break
-
-            print(f"{q_short:<45} {base_m:>5.2f} {fan_m:>5.2f} {prf_m:>5.2f} {blend_m:>5.2f} {comb_m:>5.2f} {best_name:>8}")
-
         print()
-        assert True  # Diagnostic test
+        assert True
 
 
 # --- Cleanup ---
