@@ -9,6 +9,7 @@ self-contained one-liner Cairn memory entries (fact/workflow/skill types).
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -38,6 +39,78 @@ SKIP_EXTENSIONS = {
 
 MAX_FILE_SIZE = 100_000  # 100KB per file
 MAX_FILE_LINES = 500     # for content extraction
+
+EXTRACTOR_VERSIONS = {
+    "docs": 1, "dependencies": 1, "tree": 1, "config": 1,
+    "schemas": 1, "entrypoints": 1, "interfaces": 1, "exports": 1,
+    "comments": 1, "todos": 1, "env_vars": 1, "protobuf": 1,
+    "cmake_flags": 1, "event_interfaces": 1, "db_interfaces": 1,
+    "cpp_headers": 1, "ros2": 1, "dbc": 1, "yocto": 1,
+    "device_tree": 1, "docker_ci": 1, "git_log": 1,
+}
+
+
+def _fingerprint_section(name, data):
+    """SHA256 of section name + extractor version + serialized data."""
+    version = EXTRACTOR_VERSIONS.get(name, 0)
+    payload = json.dumps({"v": version, "n": name, "d": data}, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def compute_fingerprints(extractions):
+    """Compute fingerprints for all extraction sections."""
+    return {name: _fingerprint_section(name, data) for name, data in extractions.items()}
+
+
+def _init_ingestion_cache(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ingestion_cache (
+            project TEXT NOT NULL,
+            section TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            session_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (project, section)
+        )
+    """)
+
+
+def get_cached_fingerprints(project):
+    """Load previous fingerprints for a project."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout=5000")
+    _init_ingestion_cache(conn)
+    rows = conn.execute(
+        "SELECT section, fingerprint FROM ingestion_cache WHERE project = ?",
+        (project,),
+    ).fetchall()
+    conn.close()
+    return dict(rows)
+
+
+def store_fingerprints(project, fingerprints, session_id):
+    """Store current fingerprints, replacing previous ones."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout=5000")
+    _init_ingestion_cache(conn)
+    conn.execute("DELETE FROM ingestion_cache WHERE project = ?", (project,))
+    for section, fp in fingerprints.items():
+        conn.execute(
+            "INSERT INTO ingestion_cache (project, section, fingerprint, session_id) "
+            "VALUES (?, ?, ?, ?)",
+            (project, section, fp, session_id),
+        )
+    conn.commit()
+    conn.close()
+
+
+def diff_sections(current, cached):
+    """Return set of section names that changed or are new."""
+    changed = set()
+    for name, fp in current.items():
+        if cached.get(name) != fp:
+            changed.add(name)
+    return changed
 
 
 def _run_git(repo_path, *args):
@@ -962,9 +1035,11 @@ Rules:
 
 Output format — one JSON array of objects:
 [
-  {{"type": "fact", "topic": "short-topic-slug", "content": "detailed actionable content", "keywords": ["kw1", "kw2"], "source_files": ["relative/path.py"]}},
+  {{"type": "fact", "topic": "short-topic-slug", "content": "detailed actionable content", "keywords": ["kw1", "kw2"], "source_files": ["relative/path.py"], "source_sections": ["docs", "config"]}},
   ...
 ]
+
+source_sections: list which extract sections (docs, dependencies, tree, config, schemas, entrypoints, interfaces, exports, comments, todos, env_vars, protobuf, cmake_flags, event_interfaces, db_interfaces, cpp_headers, ros2, dbc, yocto, device_tree, docker_ci, git_log) each entry draws from. Usually one section, sometimes two if combining information.
 
 Reply with ONLY the JSON array. No commentary, no markdown fences, no explanation.
 
@@ -973,9 +1048,14 @@ Reply with ONLY the JSON array. No commentary, no markdown fences, no explanatio
 """
 
 
-def _prepare_extracts_text(result):
-    """Prepare a condensed text representation of extractions for the LLM prompt."""
+def _prepare_extracts_text(result, sections_filter=None):
+    """Prepare a condensed text representation of extractions for the LLM prompt.
+
+    If sections_filter is set, only include those sections.
+    """
     ex = result["extractions"]
+    if sections_filter is not None:
+        ex = {k: v for k, v in ex.items() if k in sections_filter}
     sections = []
 
     if ex.get("docs"):
@@ -1198,9 +1278,9 @@ def _prepare_extracts_text(result):
     return "\n\n".join(sections)
 
 
-def distill_with_haiku(result, verbose=False):
+def distill_with_haiku(result, verbose=False, sections_filter=None):
     """Phase 2: Send structured extracts to Haiku for distillation into memory entries."""
-    extracts_text = _prepare_extracts_text(result)
+    extracts_text = _prepare_extracts_text(result, sections_filter=sections_filter)
     repo = result["repo"]
 
     prompt = DISTILL_PROMPT.format(
@@ -1287,29 +1367,38 @@ def distill_with_haiku(result, verbose=False):
         return None
 
 
-def insert_memories(entries, project, source_ref, session_id=None, dry_run=False):
-    """Insert distilled memory entries into the Cairn database."""
+def insert_memories(entries, project, source_ref, session_id=None, dry_run=False,
+                    changed_sections=None):
+    """Insert distilled memory entries into the Cairn database.
+
+    If changed_sections is set, only archive previous memories whose source_ref
+    contains overlapping sections (incremental mode). Otherwise archive all
+    previous ingestion memories (full mode).
+    """
     if session_id is None:
         session_id = f"ingest-{project}-{time.strftime('%Y%m%d-%H%M%S')}"
 
-    src_ref_json = json.dumps({
+    src_ref_base = {
         "repo": source_ref.get("remote") or source_ref.get("path"),
         "commit": source_ref.get("commit"),
         "local": source_ref.get("local_only", True),
         "path": source_ref.get("path"),
         "parent_project": source_ref.get("parent_project"),
         "parent_path": source_ref.get("parent_path"),
-    })
+    }
 
     if dry_run:
         print(f"\n{'='*60}")
         print(f"DRY RUN — {len(entries)} memories would be inserted")
         print(f"Project: {project}")
         print(f"Session: {session_id}")
-        print(f"Source ref: {src_ref_json}")
+        if changed_sections:
+            print(f"Changed sections: {', '.join(sorted(changed_sections))}")
         print(f"{'='*60}")
         for i, entry in enumerate(entries, 1):
-            print(f"  [{i}] {entry.get('type', '?')}/{entry.get('topic', '?')}")
+            sections = entry.get("source_sections", [])
+            sec_str = f" [{', '.join(sections)}]" if sections else ""
+            print(f"  [{i}] {entry.get('type', '?')}/{entry.get('topic', '?')}{sec_str}")
             print(f"      {entry.get('content', '?')}")
             kw = entry.get("keywords", [])
             if kw:
@@ -1328,21 +1417,50 @@ def insert_memories(entries, project, source_ref, session_id=None, dry_run=False
         (session_id, project, repo_path),
     )
 
-    # Archive previous ingestion for this project (safe re-ingestion)
-    prev_ingested = conn.execute(
-        "SELECT id FROM memories WHERE project = ? AND session_id LIKE 'ingest-%' "
-        "AND session_id != ? AND (archived_reason IS NULL OR archived_reason = '')",
-        (project, session_id),
-    ).fetchall()
-    if prev_ingested:
-        archived_reason = f"re-ingested:{session_id}"
-        conn.execute(
-            "UPDATE memories SET archived_reason = ?, confidence = 0, updated_at = CURRENT_TIMESTAMP "
-            "WHERE project = ? AND session_id LIKE 'ingest-%' AND session_id != ? "
-            "AND (archived_reason IS NULL OR archived_reason = '')",
-            (archived_reason, project, session_id),
-        )
-        print(f"Archived {len(prev_ingested)} previous ingestion memories for {project}", file=sys.stderr)
+    # Archive previous ingestion memories
+    archived_reason = f"re-ingested:{session_id}"
+    if changed_sections is not None:
+        # Incremental: only archive memories whose source_ref sections overlap
+        prev_rows = conn.execute(
+            "SELECT id, source_ref FROM memories WHERE project = ? AND session_id LIKE 'ingest-%' "
+            "AND session_id != ? AND (archived_reason IS NULL OR archived_reason = '')",
+            (project, session_id),
+        ).fetchall()
+        archive_ids = []
+        for mid, sref in prev_rows:
+            try:
+                prev_sections = set(json.loads(sref).get("sections", []))
+            except (json.JSONDecodeError, TypeError):
+                prev_sections = set()
+            if not prev_sections or prev_sections & changed_sections:
+                archive_ids.append(mid)
+        if archive_ids:
+            placeholders = ",".join("?" * len(archive_ids))
+            conn.execute(
+                f"UPDATE memories SET archived_reason = ?, confidence = 0, "
+                f"updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+                [archived_reason] + archive_ids,
+            )
+            print(f"Archived {len(archive_ids)} of {len(prev_rows)} previous memories "
+                  f"(sections: {', '.join(sorted(changed_sections))})", file=sys.stderr)
+        kept = len(prev_rows) - len(archive_ids)
+        if kept:
+            print(f"Kept {kept} memories from unchanged sections", file=sys.stderr)
+    else:
+        # Full mode: archive everything
+        prev_ingested = conn.execute(
+            "SELECT id FROM memories WHERE project = ? AND session_id LIKE 'ingest-%' "
+            "AND session_id != ? AND (archived_reason IS NULL OR archived_reason = '')",
+            (project, session_id),
+        ).fetchall()
+        if prev_ingested:
+            conn.execute(
+                "UPDATE memories SET archived_reason = ?, confidence = 0, updated_at = CURRENT_TIMESTAMP "
+                "WHERE project = ? AND session_id LIKE 'ingest-%' AND session_id != ? "
+                "AND (archived_reason IS NULL OR archived_reason = '')",
+                (archived_reason, project, session_id),
+            )
+            print(f"Archived {len(prev_ingested)} previous ingestion memories for {project}", file=sys.stderr)
 
     try:
         from cairn import embeddings as emb
@@ -1374,11 +1492,17 @@ def insert_memories(entries, project, source_ref, session_id=None, dry_run=False
         source_files = entry.get("source_files", [])
         assoc_files = json.dumps(source_files) if source_files else None
 
+        entry_ref = dict(src_ref_base)
+        source_sections = entry.get("source_sections", [])
+        if source_sections:
+            entry_ref["sections"] = source_sections
+        entry_ref_json = json.dumps(entry_ref)
+
         conn.execute(
             "INSERT INTO memories (type, topic, content, embedding, session_id, project, "
             "origin_id, source_ref, keywords, depth, associated_files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (mem_type, topic, content, embedding_blob, session_id, project,
-             origin_id, src_ref_json, kw_str, 0, assoc_files),
+             origin_id, entry_ref_json, kw_str, 0, assoc_files),
         )
         new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -1407,6 +1531,7 @@ def main():
     parser.add_argument("--save-entries", help="Save distilled entries to JSON file (reusable with --load-entries)")
     parser.add_argument("--load-entries", help="Insert entries from a previously saved JSON file (skips Phase 2)")
     parser.add_argument("--recurse-submodules", action="store_true", help="Also ingest each submodule as its own project")
+    parser.add_argument("--full", action="store_true", help="Force full re-ingestion (skip incremental diff)")
     args = parser.parse_args()
 
     # Load-entries shortcut: skip Phase 1 + 2, just insert from file
@@ -1447,9 +1572,29 @@ def main():
             print(json.dumps(result, indent=2, default=str))
         return
 
-    # Phase 2: Distill
+    # Incremental diff
+    project = result["project"]
+    current_fps = compute_fingerprints(result["extractions"])
+    cached_fps = get_cached_fingerprints(project) if not args.full else {}
+    changed = diff_sections(current_fps, cached_fps)
+    sections_filter = None
+    incremental = bool(cached_fps) and not args.full
+
+    if incremental:
+        if not changed:
+            print("\nNo sections changed since last ingestion — nothing to do.", file=sys.stderr)
+            return
+        sections_filter = changed
+        total = len(current_fps)
+        print(f"\nIncremental: {len(changed)}/{total} sections changed: "
+              f"{', '.join(sorted(changed))}", file=sys.stderr)
+        unchanged = total - len(changed)
+        if unchanged:
+            print(f"Skipping {unchanged} unchanged sections", file=sys.stderr)
+
+    # Phase 2: Distill (only changed sections in incremental mode)
     print("\nPhase 2: Distilling with Haiku...", file=sys.stderr)
-    entries = distill_with_haiku(result, verbose=args.verbose)
+    entries = distill_with_haiku(result, verbose=args.verbose, sections_filter=sections_filter)
     if entries is None:
         print("Distillation failed.", file=sys.stderr)
         sys.exit(1)
@@ -1458,26 +1603,31 @@ def main():
 
     # Always save distillation output — Haiku calls are expensive
     save_data = {
-        "project": result["project"],
+        "project": project,
         "source_ref": result["repo"],
         "entries": entries,
+        "changed_sections": sorted(changed) if changed else None,
     }
     save_path = args.save_entries or os.path.join(
-        "/tmp", f"cairn-ingest-{result['project']}-{int(time.time())}.json"
+        "/tmp", f"cairn-ingest-{project}-{int(time.time())}.json"
     )
     Path(save_path).write_text(json.dumps(save_data, indent=2))
     print(f"Entries saved to {save_path}", file=sys.stderr)
 
     # Insert or dry-run
+    session_id = f"ingest-{project}-{time.strftime('%Y%m%d-%H%M%S')}"
     inserted = insert_memories(
         entries,
-        project=result["project"],
+        project=project,
         source_ref=result["repo"],
+        session_id=session_id,
         dry_run=args.dry_run,
+        changed_sections=changed if incremental else None,
     )
 
     if not args.dry_run:
         print(f"\nInserted {len(inserted)} memories (IDs: {inserted[0]}–{inserted[-1]})", file=sys.stderr)
+        store_fingerprints(project, current_fps, session_id)
 
     # Recurse into submodules if requested
     if args.recurse_submodules:
