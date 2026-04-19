@@ -47,6 +47,7 @@ EXTRACTOR_VERSIONS = {
     "cmake_flags": 1, "event_interfaces": 1, "db_interfaces": 1,
     "cpp_headers": 1, "ros2": 1, "dbc": 1, "yocto": 1,
     "device_tree": 1, "docker_ci": 1, "git_log": 1,
+    "ast": 1, "dep_graph": 1,
 }
 
 
@@ -887,6 +888,67 @@ def extract_docker_ci(repo_path):
     return results
 
 
+def extract_ast_section(repo_path):
+    """Extract AST-based code structure using tree-sitter."""
+    try:
+        from cairn.ast_parser import extract_repo_ast
+    except ImportError:
+        return {"error": "tree-sitter not available"}
+    submodule_paths = _get_submodule_paths(repo_path)
+    ast_results = extract_repo_ast(
+        repo_path,
+        walk_fn=lambda rp: _walk_files(rp, submodule_paths=submodule_paths),
+    )
+    summary = {}
+    for rel, data in ast_results.items():
+        lang = data.get("language", "unknown")
+        fns = data.get("functions", [])
+        classes = data.get("classes", [])
+        types = data.get("types", [])
+        structs = data.get("structs", [])
+        impls = data.get("impls", [])
+        imports = data.get("imports", [])
+        summary[rel] = {
+            "language": lang,
+            "functions": [{"name": f["name"], "params": f.get("params", "()"),
+                          "line": f.get("line", 0), "kind": f.get("kind", "function")}
+                         for f in fns],
+            "classes": [{"name": c["name"], "methods": len(c.get("methods", [])),
+                        "line": c.get("line", 0)}
+                       for c in classes],
+        }
+        if types:
+            summary[rel]["types"] = [{"name": t["name"], "kind": t.get("kind", "type"),
+                                     "line": t.get("line", 0)} for t in types]
+        if structs:
+            summary[rel]["structs"] = [{"name": s["name"], "line": s.get("line", 0)}
+                                      for s in structs]
+        if impls:
+            summary[rel]["impls"] = [{"name": i["name"], "trait": i.get("trait"),
+                                     "methods": len(i.get("methods", [])),
+                                     "line": i.get("line", 0)} for i in impls]
+        if imports:
+            summary[rel]["import_count"] = len(imports)
+    return {"files": summary, "_raw": ast_results}
+
+
+def extract_dep_graph_section(repo_path, ast_results=None):
+    """Extract dependency graph from AST data."""
+    try:
+        from cairn.ast_parser import extract_repo_ast
+        from cairn.dep_graph import build_full_graph, graph_to_extraction_format
+    except ImportError:
+        return {"error": "tree-sitter or dep_graph not available"}
+    if ast_results is None:
+        submodule_paths = _get_submodule_paths(repo_path)
+        ast_results = extract_repo_ast(
+            repo_path,
+            walk_fn=lambda rp: _walk_files(rp, submodule_paths=submodule_paths),
+        )
+    graph = build_full_graph(ast_results)
+    return graph_to_extraction_format(graph)
+
+
 def run_extraction(repo_path, project=None, verbose=False):
     root = Path(repo_path).resolve()
     if not root.is_dir():
@@ -907,6 +969,19 @@ def run_extraction(repo_path, project=None, verbose=False):
 
     if project is None:
         project = root.name
+
+    # AST results are shared between ast and dep_graph extractors
+    _ast_cache = {}
+
+    def _extract_ast():
+        result = extract_ast_section(root)
+        _ast_cache["raw"] = result.get("_raw", {})
+        clean = dict(result)
+        clean.pop("_raw", None)
+        return clean
+
+    def _extract_dep_graph():
+        return extract_dep_graph_section(root, ast_results=_ast_cache.get("raw"))
 
     extractors = [
         ("docs", lambda: extract_docs(root)),
@@ -931,6 +1006,8 @@ def run_extraction(repo_path, project=None, verbose=False):
         ("device_tree", lambda: extract_device_tree(root)),
         ("docker_ci", lambda: extract_docker_ci(root)),
         ("git_log", lambda: extract_git_log(root)),
+        ("ast", _extract_ast),
+        ("dep_graph", _extract_dep_graph),
     ]
 
     extractions = {}
@@ -998,6 +1075,9 @@ def print_summary(result):
         ("Device tree files", _count(ex.get("device_tree"))),
         ("Docker/CI configs", _count(ex.get("docker_ci"))),
         ("Git log entries", _count(ex.get("git_log"))),
+        ("AST-parsed files", len(ex.get("ast", {}).get("files", {}))),
+        ("Dep graph edges", (ex.get("dep_graph", {}).get("stats", {}).get("import_edges", 0)
+                            + ex.get("dep_graph", {}).get("stats", {}).get("inheritance_edges", 0))),
     ]
 
     for label, count in rows:
@@ -1039,7 +1119,7 @@ Output format — one JSON array of objects:
   ...
 ]
 
-source_sections: list which extract sections (docs, dependencies, tree, config, schemas, entrypoints, interfaces, exports, comments, todos, env_vars, protobuf, cmake_flags, event_interfaces, db_interfaces, cpp_headers, ros2, dbc, yocto, device_tree, docker_ci, git_log) each entry draws from. Usually one section, sometimes two if combining information.
+source_sections: list which extract sections (docs, dependencies, tree, config, schemas, entrypoints, interfaces, exports, comments, todos, env_vars, protobuf, cmake_flags, event_interfaces, db_interfaces, cpp_headers, ros2, dbc, yocto, device_tree, docker_ci, git_log, ast, dep_graph) each entry draws from. Usually one section, sometimes two if combining information.
 
 Reply with ONLY the JSON array. No commentary, no markdown fences, no explanation.
 
@@ -1274,6 +1354,72 @@ def _prepare_extracts_text(result, sections_filter=None):
     if ex.get("git_log"):
         log = ex["git_log"][:30]
         sections.append(f"### Recent git log ({len(ex['git_log'])} commits)\n" + "\n".join(log))
+
+    ast_data = ex.get("ast", {})
+    ast_files = ast_data.get("files", {})
+    if ast_files:
+        lines = []
+        for rel, info in sorted(ast_files.items()):
+            parts = []
+            fns = info.get("functions", [])
+            if fns:
+                fn_names = [f["name"] for f in fns[:8]]
+                if len(fns) > 8:
+                    fn_names.append(f"... +{len(fns) - 8}")
+                parts.append(f"fns: {', '.join(fn_names)}")
+            cls = info.get("classes", [])
+            if cls:
+                cls_strs = [f"{c['name']}({c['methods']} methods)" for c in cls[:5]]
+                parts.append(f"classes: {', '.join(cls_strs)}")
+            types = info.get("types", [])
+            if types:
+                type_strs = [f"{t['name']}({t['kind']})" for t in types[:5]]
+                parts.append(f"types: {', '.join(type_strs)}")
+            structs = info.get("structs", [])
+            if structs:
+                struct_names = [s["name"] for s in structs[:5]]
+                parts.append(f"structs: {', '.join(struct_names)}")
+            impls = info.get("impls", [])
+            if impls:
+                impl_strs = []
+                for i in impls[:5]:
+                    trait = f" impl {i['trait']}" if i.get("trait") else ""
+                    impl_strs.append(f"{i['name']}{trait}({i['methods']} methods)")
+                parts.append(f"impls: {', '.join(impl_strs)}")
+            if parts:
+                lines.append(f"  {rel} [{info.get('language', '?')}]: {'; '.join(parts)}")
+        if len(lines) > 100:
+            lines = lines[:100] + [f"... ({len(lines) - 100} more files)"]
+        sections.append(f"### AST code structure ({len(ast_files)} files)\n" + "\n".join(lines))
+
+    dep = ex.get("dep_graph", {})
+    if dep and not dep.get("error"):
+        dep_lines = []
+        import_map = dep.get("import_map", {})
+        if import_map:
+            for source, targets in sorted(import_map.items())[:60]:
+                dep_lines.append(f"  {source} -> {', '.join(targets[:5])}")
+            if len(import_map) > 60:
+                dep_lines.append(f"  ... ({len(import_map) - 60} more files)")
+        inheritance = dep.get("inheritance", [])
+        if inheritance:
+            dep_lines.append("  --- inheritance ---")
+            for edge in inheritance[:30]:
+                dep_lines.append(f"  {edge['child']} {edge['kind']} {edge['parent']}")
+        hotspots = dep.get("hotspots", [])
+        if hotspots:
+            dep_lines.append("  --- hotspot symbols (multiple definitions) ---")
+            for h in hotspots[:15]:
+                dep_lines.append(f"  {h['symbol']}: {h['definitions']} defs in {', '.join(h['files'][:3])}")
+        stats = dep.get("stats", {})
+        if stats:
+            dep_lines.insert(0, f"  stats: {stats.get('files_parsed', 0)} files, "
+                             f"{stats.get('import_edges', 0)} imports, "
+                             f"{stats.get('inheritance_edges', 0)} inheritance, "
+                             f"{stats.get('symbols_indexed', 0)} symbols, "
+                             f"langs: {', '.join(stats.get('languages', []))}")
+        if dep_lines:
+            sections.append(f"### Dependency graph\n" + "\n".join(dep_lines))
 
     return "\n\n".join(sections)
 
@@ -1519,6 +1665,65 @@ def insert_memories(entries, project, source_ref, session_id=None, dry_run=False
     return inserted_ids
 
 
+def store_graph_edges(dep_graph_data, project, session_id):
+    """Persist dependency graph edges to memory_relations table.
+
+    Replaces previous edges for the project, then inserts current edges.
+    """
+    if not dep_graph_data or dep_graph_data.get("error"):
+        return 0
+
+    try:
+        from cairn.dep_graph import build_import_graph, build_inheritance_graph
+    except ImportError:
+        return 0
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout=5000")
+
+    # Ensure table exists
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            target TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            names TEXT,
+            line INTEGER,
+            project TEXT,
+            session_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Clear previous edges for this project
+    conn.execute("DELETE FROM memory_relations WHERE project = ?", (project,))
+
+    # Import and inheritance edges come from the extraction format
+    import_map = dep_graph_data.get("import_map", {})
+    count = 0
+    for source, targets in import_map.items():
+        for target in targets:
+            conn.execute(
+                "INSERT INTO memory_relations (source_file, target, kind, project, session_id) "
+                "VALUES (?, ?, 'imports', ?, ?)",
+                (source, target, project, session_id),
+            )
+            count += 1
+
+    for edge in dep_graph_data.get("inheritance", []):
+        conn.execute(
+            "INSERT INTO memory_relations (source_file, target, kind, project, session_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (edge["child"], edge["parent"], edge["kind"], project, session_id),
+        )
+        count += 1
+
+    conn.commit()
+    conn.close()
+    return count
+
+
 def main():
     parser = argparse.ArgumentParser(description="Cairn repo ingestion — mechanistic extraction + LLM distillation")
     parser.add_argument("repo_path", help="Path to the git repository")
@@ -1628,6 +1833,11 @@ def main():
     if not args.dry_run:
         print(f"\nInserted {len(inserted)} memories (IDs: {inserted[0]}–{inserted[-1]})", file=sys.stderr)
         store_fingerprints(project, current_fps, session_id)
+        dep_graph_data = result["extractions"].get("dep_graph", {})
+        if dep_graph_data and not dep_graph_data.get("error"):
+            edge_count = store_graph_edges(dep_graph_data, project, session_id)
+            if edge_count:
+                print(f"Stored {edge_count} dependency graph edges", file=sys.stderr)
 
     # Recurse into submodules if requested
     if args.recurse_submodules:

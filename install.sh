@@ -59,10 +59,10 @@ if ! "$VENV_PYTHON" -c "import torch" 2>/dev/null; then
     fi
 fi
 
-"$VENV_PATH/bin/pip" install --progress-bar on -e "$CAIRN_HOME[test]" 2>&1 \
+"$VENV_PATH/bin/pip" install --progress-bar on -e "$CAIRN_HOME[test,ast]" 2>&1 \
     | grep -E "^(Collecting|Downloading|Installing|Successfully)" \
     || { echo "ERROR: Dependency install failed. Run manually:"; \
-         echo "  $VENV_PATH/bin/pip install -e \"$CAIRN_HOME[test]\""; exit 1; }
+         echo "  $VENV_PATH/bin/pip install -e \"$CAIRN_HOME[test,ast]\""; exit 1; }
 
 # Verify critical imports before proceeding
 "$VENV_PYTHON" -c "from cairn import embeddings; from hooks.hook_helpers import log" 2>/dev/null \
