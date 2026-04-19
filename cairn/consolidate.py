@@ -704,8 +704,8 @@ def run_contradiction_detection(execute: bool = False) -> dict:
         conn.close()
         return {"pairs_found": len(pairs), "nli_confirmed": 0, "superseded": 0}
 
-    # Batch Haiku assessment — 50 pairs per batch to stay within prompt limits
-    BATCH_SIZE = 50
+    # Batch Haiku assessment — 10 pairs per batch (50 overwhelmed Haiku output budget)
+    BATCH_SIZE = 10
     print(f"\nPhase 3: Haiku assessment ({len(contradictions)} pairs in {(len(contradictions) + BATCH_SIZE - 1) // BATCH_SIZE} batches)...")
     all_superseded = []
     for batch_start in range(0, len(contradictions), BATCH_SIZE):
