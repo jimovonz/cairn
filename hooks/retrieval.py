@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import hooks.hook_helpers as hook_helpers
 from hooks.hook_helpers import (
-    log, get_conn, get_session_project, record_metric,
+    log, get_conn, get_ephemeral_conn, get_session_project, record_metric,
     recency_days as _recency_days, reliability_label, record_layer_delivery,
     format_entry as _shared_format_entry, build_context_xml, save_hook_state,
 )
@@ -246,7 +246,7 @@ def _is_thin_retrieval(entries: list[dict[str, Any]]) -> tuple[bool, dict[str, A
 def get_adaptive_threshold_boost() -> float:
     """Check recent retrieval outcomes. If harmful/neutral rate is high, boost the similarity floor."""
     try:
-        conn = get_conn()
+        conn = get_ephemeral_conn()
         recent = conn.execute("""
             SELECT event, COUNT(*) FROM metrics
             WHERE event IN ('retrieval_useful', 'retrieval_neutral', 'retrieval_harmful')
@@ -510,7 +510,7 @@ def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[s
 # --- Context cache ---
 
 def load_context_cache(session_id: str) -> list[dict[str, Any]]:
-    conn = get_conn()
+    conn = get_ephemeral_conn()
     row = conn.execute(
         "SELECT value FROM hook_state WHERE session_id = ? AND key = 'context_cache'",
         (session_id,)
@@ -525,7 +525,7 @@ def load_context_cache(session_id: str) -> list[dict[str, Any]]:
 
 
 def save_context_cache(session_id: str, served_needs: list[dict[str, Any]]) -> None:
-    conn = get_conn()
+    conn = get_ephemeral_conn()
     conn.execute(
         "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'context_cache', ?)",
         (session_id, json.dumps(served_needs))

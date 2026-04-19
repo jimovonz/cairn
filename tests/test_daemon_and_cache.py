@@ -146,6 +146,10 @@ def _make_state_db():
         session_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (session_id, key))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL,
+        session_id TEXT, detail TEXT, value REAL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.commit()
     return db_path, conn
 
@@ -155,7 +159,7 @@ def test_continuation_counter_increments():
     from hooks.enforcement import get_continuation_count, increment_continuation
     db_path, conn = _make_state_db()
 
-    with patch('hooks.hook_helpers.DB_PATH', db_path):
+    with patch('cairn.config.EPHEMERAL_DB_PATH', db_path), patch('hooks.hook_helpers.DB_PATH', db_path):
         assert get_continuation_count("sess-1") == 0
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 1
@@ -169,7 +173,7 @@ def test_continuation_counter_resets():
     from hooks.enforcement import get_continuation_count, increment_continuation, reset_continuation
     db_path, conn = _make_state_db()
 
-    with patch('hooks.hook_helpers.DB_PATH', db_path):
+    with patch('cairn.config.EPHEMERAL_DB_PATH', db_path), patch('hooks.hook_helpers.DB_PATH', db_path):
         increment_continuation("sess-1")
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 2
@@ -184,7 +188,7 @@ def test_continuation_cap_at_three():
     from cairn.config import MAX_CONTINUATIONS
     db_path, conn = _make_state_db()
 
-    with patch('hooks.hook_helpers.DB_PATH', db_path):
+    with patch('cairn.config.EPHEMERAL_DB_PATH', db_path), patch('hooks.hook_helpers.DB_PATH', db_path):
         for _ in range(MAX_CONTINUATIONS):
             increment_continuation("sess-1")
         assert get_continuation_count("sess-1") >= MAX_CONTINUATIONS
@@ -196,7 +200,7 @@ def test_continuation_isolated_per_session():
     from hooks.enforcement import get_continuation_count, increment_continuation
     db_path, conn = _make_state_db()
 
-    with patch('hooks.hook_helpers.DB_PATH', db_path):
+    with patch('cairn.config.EPHEMERAL_DB_PATH', db_path), patch('hooks.hook_helpers.DB_PATH', db_path):
         increment_continuation("sess-1")
         increment_continuation("sess-1")
         assert get_continuation_count("sess-1") == 2
@@ -254,7 +258,7 @@ def test_record_metric_stores_event():
     from hooks.hook_helpers import record_metric, flush_metrics
     db_path, conn = fresh_db()
 
-    with patch('hooks.hook_helpers.DB_PATH', db_path):
+    with patch('cairn.config.EPHEMERAL_DB_PATH', db_path), patch('hooks.hook_helpers.DB_PATH', db_path):
         record_metric("sess-1", "test_event", "detail", 42.0)
         flush_metrics()
 
@@ -321,6 +325,7 @@ def test_low_info_context_need_filtered_through_main():
         raise SystemExit(code)
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'LOG_PATH', os.path.join(TEST_DIR, 'prefilter.log')), \
          patch.object(hook_helpers, 'get_embedder', return_value=None), \
          patch('sys.stdin', StringIO(payload)), \
@@ -380,6 +385,7 @@ def test_substantive_context_need_not_filtered():
         raise SystemExit(code)
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), \
+         patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'LOG_PATH', os.path.join(TEST_DIR, 'subst.log')), \
          patch.object(hook_helpers, 'get_embedder', return_value=None), \
          patch('sys.stdin', StringIO(payload)), \

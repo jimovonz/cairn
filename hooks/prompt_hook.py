@@ -361,7 +361,8 @@ def main() -> None:
     if not is_subagent:
         # Clean up stale staged context (older than 7 days — sessions unlikely to resume)
         try:
-            cleanup_conn = get_conn()
+            from hooks.hook_helpers import get_ephemeral_conn
+            cleanup_conn = get_ephemeral_conn()
             from cairn.config import STAGED_CONTEXT_RETENTION_DAYS
             cleanup_conn.execute(
                 "DELETE FROM hook_state WHERE key = 'staged_context' AND updated_at < datetime('now', ?)",

@@ -9,7 +9,7 @@ import re
 from typing import Optional
 
 import hooks.hook_helpers as hook_helpers
-from hooks.hook_helpers import log, get_conn
+from hooks.hook_helpers import log, get_conn, get_ephemeral_conn
 from cairn.config import TRAILING_INTENT_SIM_THRESHOLD
 
 import numpy as np
@@ -277,7 +277,7 @@ def check_trailing_intent(text: str, session_id: str = "") -> Optional[str]:
 
 def get_continuation_count(session_id: str) -> int:
     """Get how many times we've re-prompted this session."""
-    conn = get_conn()
+    conn = get_ephemeral_conn()
     row = conn.execute(
         "SELECT value FROM hook_state WHERE session_id = ? AND key = 'continuation_count'",
         (session_id,)
@@ -288,7 +288,7 @@ def get_continuation_count(session_id: str) -> int:
 
 def increment_continuation(session_id: str) -> int:
     """Increment and return the continuation count."""
-    conn = get_conn()
+    conn = get_ephemeral_conn()
     current = get_continuation_count(session_id)
     new_count = current + 1
     conn.execute(
@@ -302,7 +302,7 @@ def increment_continuation(session_id: str) -> int:
 
 def reset_continuation(session_id: str) -> None:
     """Reset continuation count (called when a response completes normally)."""
-    conn = get_conn()
+    conn = get_ephemeral_conn()
     conn.execute(
         "DELETE FROM hook_state WHERE session_id = ? AND key = 'continuation_count'",
         (session_id,)

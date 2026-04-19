@@ -238,5 +238,50 @@ def init():
     conn.close()
     print(f"Database initialized at {DB_PATH}")
 
+def init_ephemeral(path=None):
+    """Initialize the ephemeral DB (metrics, hook_state, pair_assessments)."""
+    if path is None:
+        from cairn.config import EPHEMERAL_DB_PATH
+        path = EPHEMERAL_DB_PATH
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event TEXT NOT NULL,
+            session_id TEXT,
+            detail TEXT,
+            value REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_event ON metrics(event)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_session ON metrics(session_id)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hook_state (
+            session_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (session_id, key)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pair_assessments (
+            memory_id_a INTEGER NOT NULL,
+            memory_id_b INTEGER NOT NULL,
+            mode TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            reason TEXT,
+            assessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (memory_id_a, memory_id_b, mode)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pair_mode ON pair_assessments(mode)")
+    conn.commit()
+    conn.close()
+
+
 if __name__ == "__main__":
     init()

@@ -254,6 +254,7 @@ def run_prompt_hook(db_path, session_id, user_message, cwd="/home/test/testproje
         with patch("sys.stdin", StringIO(json.dumps(payload))), \
              patch("sys.stdout", captured), \
              patch("sys.exit", mock_exit), \
+             patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
              patch.object(hook_helpers, "get_embedder", return_value=mock_emb), \
              patch("hooks.prompt_hook.get_embedder", return_value=mock_emb):
             try:
@@ -308,6 +309,7 @@ def run_stop_hook(db_path, session_id, assistant_message, cwd="/home/test/testpr
         with patch("sys.stdin", StringIO(json.dumps(payload))), \
              patch("sys.stdout", captured), \
              patch("sys.exit", mock_exit), \
+             patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
              patch.object(hook_helpers, "get_embedder", return_value=mock_emb), \
              patch("hooks.stop_hook.get_embedder", return_value=mock_emb):
             try:
