@@ -160,7 +160,7 @@ print('Cross-encoder model ready.')
 nli = CrossEncoder('cross-encoder/nli-MiniLM2-L6-H768')
 nli.predict([['test', 'test']])
 print('NLI model ready.')
-" 2>&1 | grep -v "^$\|Warning:\|Loading\|REPORT\|UNEXPECTED\|Notes:" \
+" 2>&1 | grep -v "^$\|Warning:\|Loading\|REPORT\|UNEXPECTED\|Notes:\|Key.*|.*Status\|---" \
     || { echo "ERROR: Model download/load failed."; exit 1; }
 
 # --- Logs directory ---
