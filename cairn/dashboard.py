@@ -900,6 +900,150 @@ def _parse_transcript(transcript_path):
     return messages
 
 
+# ─── Retention & Health APIs ──────────────────────────────────────────────
+
+
+def api_retention(params):
+    conn = get_conn()
+    total_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    sessions_with_path = conn.execute(
+        "SELECT COUNT(*) FROM sessions WHERE transcript_path IS NOT NULL AND transcript_path != ''"
+    ).fetchone()[0]
+    transcripts_on_disk = 0
+    total_bytes = 0
+    rows = conn.execute("SELECT transcript_path FROM sessions WHERE transcript_path IS NOT NULL").fetchall()
+    for r in rows:
+        p = r[0]
+        if p and os.path.exists(p):
+            transcripts_on_disk += 1
+            total_bytes += os.path.getsize(p)
+
+    total_memories = conn.execute("SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL").fetchone()[0]
+    try:
+        with_excerpt = conn.execute("SELECT COUNT(*) FROM memory_source_excerpt").fetchone()[0]
+    except Exception:
+        with_excerpt = 0
+    excerpt_pct = round(with_excerpt / max(total_memories, 1) * 100, 1)
+
+    age_buckets = {"0-7d": 0, "7-30d": 0, "30-90d": 0, "90d+": 0}
+    age_rows = conn.execute(
+        "SELECT julianday('now') - julianday(started_at) AS age FROM sessions"
+    ).fetchall()
+    for r in age_rows:
+        age = r[0] or 0
+        if age <= 7:
+            age_buckets["0-7d"] += 1
+        elif age <= 30:
+            age_buckets["7-30d"] += 1
+        elif age <= 90:
+            age_buckets["30-90d"] += 1
+        else:
+            age_buckets["90d+"] += 1
+    conn.close()
+
+    return {
+        "total_sessions": total_sessions,
+        "sessions_with_transcript": transcripts_on_disk,
+        "sessions_transcript_purged": sessions_with_path - transcripts_on_disk,
+        "total_transcript_bytes": total_bytes,
+        "age_histogram": [{"bucket": k, "count": v} for k, v in age_buckets.items()],
+        "excerpt_coverage_pct": excerpt_pct,
+        "memories_with_excerpt": with_excerpt,
+        "total_memories": total_memories,
+    }, 200
+
+
+def api_session_triage(params):
+    conn = get_conn()
+    limit = int(params.get("limit", "50"))
+    offset = int(params.get("offset", "0"))
+    sort = params.get("sort", "value_score")
+    order = params.get("order", "asc")
+
+    rows = conn.execute("""
+        SELECT s.session_id, s.project, s.started_at, s.transcript_path,
+               COUNT(m.id) AS memory_count
+        FROM sessions s
+        LEFT JOIN memories m ON m.session_id = s.session_id AND m.deleted_at IS NULL
+        GROUP BY s.session_id
+    """).fetchall()
+
+    results = []
+    for r in rows:
+        sid = r[0]
+        path = r[3]
+        exists = bool(path and os.path.exists(path))
+        size = os.path.getsize(path) if exists else 0
+        try:
+            excerpt_count = conn.execute(
+                "SELECT COUNT(*) FROM memory_source_excerpt WHERE session_id = ?", (sid,)
+            ).fetchone()[0]
+        except Exception:
+            excerpt_count = 0
+        mem_count = r[4]
+        results.append({
+            "session_id": sid,
+            "project": r[1],
+            "created_at": r[2],
+            "memory_count": mem_count,
+            "value_score": 0,
+            "transcript_exists": exists,
+            "transcript_bytes": size,
+            "excerpt_coverage": round(excerpt_count / max(mem_count, 1) * 100, 1),
+        })
+
+    rev = order == "desc"
+    results.sort(key=lambda x: x.get(sort, 0) or 0, reverse=rev)
+    conn.close()
+    return {"sessions": results[offset:offset + limit], "total": len(results)}, 200
+
+
+def api_health(params):
+    from hooks.health import sentinel_info
+    info = sentinel_info()
+    return {"impaired": info is not None, "info": info}, 200
+
+
+def api_snapshot_session(params, session_id):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT m.id, m.session_id, s.transcript_path FROM memories m "
+        "JOIN sessions s ON s.session_id = m.session_id "
+        "WHERE m.session_id = ? AND m.deleted_at IS NULL "
+        "AND m.id NOT IN (SELECT memory_id FROM memory_source_excerpt)",
+        (session_id,)
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return {"snapshotted": 0, "skipped": 0, "reason": "no memories without excerpts"}, 200
+
+    transcript_path = rows[0][2] if rows else None
+    excerpt = ""
+    if transcript_path and os.path.exists(transcript_path):
+        try:
+            with open(transcript_path, "r") as f:
+                lines = f.readlines()
+            excerpt = "".join(lines[-60:]) if len(lines) > 60 else "".join(lines)
+        except Exception:
+            pass
+
+    if not excerpt:
+        conn.close()
+        return {"snapshotted": 0, "skipped": len(rows), "reason": "transcript not available"}, 200
+
+    count = 0
+    for r in rows:
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_source_excerpt (memory_id, session_id, transcript_path, excerpt) "
+            "VALUES (?, ?, ?, ?)",
+            (r[0], session_id, transcript_path or "", excerpt[:10000])
+        )
+        count += 1
+    conn.commit()
+    conn.close()
+    return {"snapshotted": count, "skipped": 0}, 200
+
+
 # ─── HTTP Server ────────────────────────────────────────────────────────────
 
 # Route table: (method, pattern) -> handler
@@ -918,6 +1062,9 @@ _ROUTES: list[tuple[str, str, callable]] = [
     ("GET", "/api/memory-usage", lambda p, **kw: api_memory_usage(p)),
     ("GET", "/api/projects", lambda p, **kw: api_projects(p)),
     ("GET", "/api/config", lambda p, **kw: api_config_get(p)),
+    ("GET", "/api/retention", lambda p, **kw: api_retention(p)),
+    ("GET", "/api/session-triage", lambda p, **kw: api_session_triage(p)),
+    ("GET", "/api/health", lambda p, **kw: api_health(p)),
 ]
 
 # Compile route patterns to regex
@@ -984,12 +1131,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path.rstrip("/")
+        params = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
 
         if path == "/api/config":
             content_length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(content_length)) if content_length else {}
             try:
                 data, status = api_config_update(body)
+                self._send_json(data, status)
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+            return
+
+        m = re.match(r"/api/snapshot-session/([^/]+)$", path)
+        if m:
+            try:
+                data, status = api_snapshot_session(params, m.group(1))
                 self._send_json(data, status)
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)

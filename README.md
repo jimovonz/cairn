@@ -33,7 +33,7 @@ All three are enforced mechanically. The LLM cannot forget to participate. No ot
 
 **The knowledge channel is invisible.** The user sees a clean response. The hook infrastructure sees structured entries with type, topic, confidence signals, and retrieval requests. The LLM writes to a channel the user can't see.
 
-**The LLM controls the retrieval loop.** It declares when it lacks context. A Stop hook searches the database, injects results, and re-prompts — all before the response reaches the user. The LLM also rates what it gets back, dynamically adjusting confidence scores that determine what surfaces in future sessions.
+**The LLM controls the retrieval loop.** It declares when it lacks context. A Stop hook searches the database, injects results, and re-prompts — all before the response reaches the user. The LLM also rates what it gets back — corroborating, flagging irrelevance, or annotating contradictions — building a veracity signal across sessions.
 
 **Enforcement is mechanical, not advisory.** A Stop hook fires after every response. No memory block? Blocked and re-prompted. Says it's incomplete? Blocked and continued. Needs context? Blocked, searched, injected, continued. The LLM can't forget to participate.
 
@@ -117,7 +117,11 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Content enforcement** — strict metadata validation, content density checks, anti-fabrication rules
 - **Health check** — `--check` validates the full chain (DB, hooks, daemon, embeddings, rules) post-install
 - **Self-healing embeddings** — auto-starts daemon and backfills when memories are stored without embeddings
-- **Web dashboard** — browser-based UI at `localhost:8420` for monitoring and management; overview stats, memory browser with search, session explorer with transcript viewer, retrieval metrics, embedding performance, token usage estimates, per-session generated-vs-consumed memory flow, config editor
+- **Web dashboard** — browser-based UI at `localhost:8420` for monitoring and management; overview stats, memory browser with search, session explorer with transcript viewer, retrieval metrics, embedding performance, token usage estimates, per-session generated-vs-consumed memory flow, retention dashboard with excerpt snapshots, session triage, config editor
+- **Systemic health monitoring** — tracks persistent failures across daemon, embedding, and hook subsystems; writes `.impaired` sentinel file on degradation triggering a visible warning in the LLM's prompt; desktop notifications via `notify-send`; health pill in dashboard
+- **Ephemeral DB split** — transient operational data (metrics, hook state, pair assessments) isolated in a separate `cairn-ephemeral.db` to contain corruption blast radius away from durable memories
+- **Annotation audit trail** — every confidence feedback event (`+`, `-`, `-!`) logged to `memory_annotation_log` with reason and session, enabling post-hoc review of how memory confidence evolved
+- **Excerpt snapshots** — stop hook auto-captures the assistant message as source context; `--context <id>` reads the excerpt first for instant recovery without transcript search
 - **Subagent mode** — automatic detection via `agent_id` in hook input; keeps bootstrap + L1 context injection, skips enforcement/L1.5/L2; stop hook opportunistically stores volunteered memories without blocking
 - **Embedding instrumentation** — per-call timing for daemon, local model, vector search, brute-force search, and fan-out expansion; surfaced in dashboard metrics panel
 - **Repo ingestion** — mechanistic extraction + Haiku distillation turns any git repo into portable knowledge entries; 17 extractors cover docs, deps, configs, schemas, HTTP routes, CLI args, exports, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, and Docker/CI

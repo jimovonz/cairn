@@ -238,7 +238,7 @@ def test_insert_memories_behavioural(db_path, tmp_path):
     transcript.write_text("\n".join(lines))
 
     entries = [{"type": "correction", "topic": "boundary", "content": "Fixed off-by-one in loop boundary — exclusive vs inclusive upper bound"}]
-    with patch.object(storage, "_inline_backfill"):
+    with patch.object(storage, "inline_backfill"):
         count = storage.insert_memories(entries, session_id="s1", transcript_path=str(transcript))
 
     assert count == 1
@@ -253,11 +253,11 @@ def test_insert_memories_behavioural(db_path, tmp_path):
 def test_insert_memories_edge(db_path):
     assert storage.insert_memories([]) == 0
 
-    with patch.object(storage, "_inline_backfill"):
+    with patch.object(storage, "inline_backfill"):
         count_short = storage.insert_memories([{"type": "fact", "topic": "t", "content": "short"}])
     assert count_short == 0
 
-    with patch.object(storage, "_inline_backfill"):
+    with patch.object(storage, "inline_backfill"):
         storage.insert_memories([{"type": "fact", "topic": "no-files", "content": "Memory without any transcript file association context provided"}])
     rows = _query(db_path, "SELECT associated_files FROM memories WHERE topic = 'no-files'")
     assert rows[0][0] is None
@@ -271,7 +271,7 @@ def test_insert_memories_error(db_path):
     mock_emb.embed.side_effect = ConnectionError("daemon down")
 
     with patch.object(storage.hook_helpers, "get_embedder", return_value=mock_emb), \
-         patch.object(storage, "_inline_backfill"):
+         patch.object(storage, "inline_backfill"):
         count = storage.insert_memories(
             [{"type": "fact", "topic": "resilient", "content": "Memory stored despite ConnectionError from embedding daemon"}],
             session_id="s1"
@@ -288,7 +288,7 @@ def test_insert_memories_error(db_path):
 def test_insert_memories_adversarial(db_path):
     _execute(db_path, "INSERT INTO memories (id, type, topic, content) VALUES (1, 'decision', 'feat', 'Enable feature X for all users')")
 
-    with patch.object(storage, "_inline_backfill"):
+    with patch.object(storage, "inline_backfill"):
         count = storage.insert_memories(
             [{"type": "decision", "topic": "feat", "content": "Disable feature X due to performance regression"}],
             session_id="s1"
@@ -297,3 +297,68 @@ def test_insert_memories_adversarial(db_path):
     assert count == 1
     rows = _query(db_path, "SELECT archived_reason FROM memories WHERE id = 1")
     assert isinstance(rows[0][0], str) and rows[0][0].startswith("superseded")
+
+
+def test_null_embedding_trigger_on_content_edit(tmp_path):
+    """Trigger nulls embedding when content changes without setting a new embedding."""
+    import cairn.init_db as init_db
+    db_path = str(tmp_path / "trigger_test.db")
+    old_db_path = init_db.DB_PATH
+    init_db.DB_PATH = db_path
+    try:
+        init_db.init()
+    finally:
+        init_db.DB_PATH = old_db_path
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA busy_timeout=5000")
+    fake_embedding = b'\x00' * 16
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, embedding) VALUES (?, ?, ?, ?)",
+        ("fact", "test-topic", "original content", fake_embedding)
+    )
+    conn.commit()
+
+    row = conn.execute("SELECT embedding FROM memories WHERE id = 1").fetchone()
+    assert row[0] == fake_embedding
+
+    conn.execute("UPDATE memories SET content = 'updated content' WHERE id = 1")
+    conn.commit()
+
+    row = conn.execute("SELECT embedding FROM memories WHERE id = 1").fetchone()
+    assert row[0] is None
+
+    conn.close()
+
+
+def test_null_embedding_trigger_skips_when_embedding_also_set(tmp_path):
+    """Trigger does NOT null embedding when content and embedding change together."""
+    import cairn.init_db as init_db
+    db_path = str(tmp_path / "trigger_test2.db")
+    old_db_path = init_db.DB_PATH
+    init_db.DB_PATH = db_path
+    try:
+        init_db.init()
+    finally:
+        init_db.DB_PATH = old_db_path
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA busy_timeout=5000")
+    fake_embedding = b'\x00' * 16
+    new_embedding = b'\x01' * 16
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, embedding) VALUES (?, ?, ?, ?)",
+        ("fact", "test-topic", "original content", fake_embedding)
+    )
+    conn.commit()
+
+    conn.execute(
+        "UPDATE memories SET content = 'updated content', embedding = ? WHERE id = 1",
+        (new_embedding,)
+    )
+    conn.commit()
+
+    row = conn.execute("SELECT embedding FROM memories WHERE id = 1").fetchone()
+    assert row[0] == new_embedding
+
+    conn.close()

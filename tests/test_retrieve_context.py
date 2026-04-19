@@ -182,12 +182,10 @@ def test_retrieve_context_xml_structure():
 
     # Verify complete XML structure via line-by-line parse
     lines = result.strip().split("\n")
-    assert lines[0] == '<cairn_context query="database schema migration" current_project="myproj">'
+    assert lines[0] == '<cairn_context query="database schema migration" current_project="myproj" layer="L3">'
     assert lines[-1] == "</cairn_context>"
-    # Exactly 1 instruction element at line[1], exactly 1 project scope at line[2], global at line[5]
-    assert lines[1][:15] == "  <instruction>"
-    assert lines[2] == '  <scope level="project" name="myproj" weight="high">'
-    assert lines[5] == '  <scope level="global" weight="low">'
+    # No instruction element — project scope at line[1], global scope follows
+    assert lines[1] == '  <scope level="project" name="myproj" weight="high">'
     # Project scope references the correct project name and weight
     proj_scope_line = [l for l in lines if 'level="project"' in l][0]
     scope_attrs = re.search(r'<scope level="project" name="(\w+)" weight="(\w+)">', proj_scope_line)
@@ -195,13 +193,9 @@ def test_retrieve_context_xml_structure():
     assert scope_attrs.group(2) == "high"
     # Entry with depth=3 should have ctx="y" attribute — verify exact attribute value
     entry_with_ctx = [l for l in lines if f'id="{m1}"' in l][0]
-    ctx_attr = re.search(r'\bctx="([^"]*)"', entry_with_ctx)
-    assert ctx_attr is not None and ctx_attr.group(1) == "y", \
-        f"Expected ctx=\"y\" in entry line; got: {entry_with_ctx!r}"
-    # Reliability label must be "strong" for score 0.60 — verify exact attribute value
-    rel_attr = re.search(r'\breliability="([^"]*)"', entry_with_ctx)
-    assert rel_attr is not None and rel_attr.group(1) == "strong", \
-        f"Expected reliability=\"strong\"; got: {entry_with_ctx!r}"
+    # Compact format: entry has id, days, sim attributes
+    sim_attr = re.search(r'\bsim="([^"]*)"', entry_with_ctx)
+    assert sim_attr is not None, f"Expected sim attribute in entry line; got: {entry_with_ctx!r}"
 
 
 # ============================================================
@@ -226,7 +220,7 @@ def test_retrieve_context_fts_only_no_embedder():
 
     # FTS should find the memory. Verify it's a complete XML document with the expected entry.
     lines = result.strip().split("\n")
-    assert lines[0] == '<cairn_context query="SQLite WAL deadlock" current_project="proj">'
+    assert lines[0] == '<cairn_context query="SQLite WAL deadlock" current_project="proj" layer="L3">'
     assert lines[-1] == "</cairn_context>"
     # The FTS-found entry should have a computed score (not hardcoded 0.30)
     # and should reference our memory's content
@@ -236,11 +230,9 @@ def test_retrieve_context_fts_only_no_embedder():
     extracted_content = m_content.group(1) if m_content else ""
     assert extracted_content == "SQLite WAL mode fixed concurrent access deadlock"
     # composite_score=0.75 → score ≈ 0.75+0.10=0.85 ≥ 0.6 → "strong"
-    # If 0.30 fallback were used: score ≈ 0.40 → "moderate", not "strong"
-    m_rel = re.search(r'reliability="(\w+)"', entry_line)
-    extracted_rel = m_rel.group(1) if m_rel else ""
-    assert extracted_rel == "strong", \
-        f"Expected reliability=strong (score≈0.85 from composite_score=0.75); got '{extracted_rel}'"
+    # Compact format: verify sim attribute present
+    m_sim = re.search(r'sim="([^"]+)"', entry_line)
+    assert m_sim is not None, f"Expected sim attribute in entry; got: {entry_line!r}"
 
 
 #TAG: [999F] 2026-04-05

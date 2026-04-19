@@ -320,6 +320,15 @@ def main() -> None:
         if corruption_warning:
             context_parts.append(corruption_warning)
 
+        # Health sentinel — warn if systemic failure detected
+        from hooks.health import sentinel_info
+        _health = sentinel_info()
+        if _health:
+            context_parts.append(
+                f"WARNING — Cairn IMPAIRED: {_health.get('reason', 'unknown')} "
+                f"since {_health.get('since', '?')} — memory capture/retrieval may be degraded."
+            )
+
         # Project bootstrap: inject standing context from CWD-matched project
         pb_context = project_bootstrap(session_id, cwd, transcript_path)
         if pb_context:
@@ -361,7 +370,8 @@ def main() -> None:
     if not is_subagent:
         # Clean up stale staged context (older than 7 days — sessions unlikely to resume)
         try:
-            cleanup_conn = get_conn()
+            from hooks.hook_helpers import get_ephemeral_conn
+            cleanup_conn = get_ephemeral_conn()
             from cairn.config import STAGED_CONTEXT_RETENTION_DAYS
             cleanup_conn.execute(
                 "DELETE FROM hook_state WHERE key = 'staged_context' AND updated_at < datetime('now', ?)",

@@ -24,6 +24,7 @@ L3_PROJECT_SIM_THRESHOLD = 0.25     # Minimum similarity for project-scoped resu
 L3_GLOBAL_SIM_WITH_PROJECT = 0.50   # Global threshold when project results exist
 L3_GLOBAL_SIM_WITHOUT_PROJECT = 0.25  # Global threshold when no project results
 L3_PROJECT_QUALITY_FLOOR = 0.45       # Project results below this don't raise the global threshold
+GLOBAL_HARD_FLOOR = 0.50              # Global results above this always surface, even when project has results
 L3_MAX_PROJECT_RESULTS = 7
 L3_MAX_GLOBAL_RESULTS = 7
 
@@ -43,7 +44,7 @@ L1_MAX_RESULTS = 7
 SCORE_W_SIMILARITY = 0.50
 SCORE_W_CONFIDENCE = 0.0        # Disabled — veracity is not a ranking signal
 SCORE_W_KEYWORDS = 0.15         # Keyword overlap between query terms and memory keywords
-SCORE_W_RECENCY = 0.05          # Tiebreaker — staleness handled by archival system
+SCORE_W_RECENCY = 0.0           # Disabled — age is not a usefulness signal; obsolescence handled by supersession
 SCORE_W_SCOPE = 0.05
 RECENCY_HALF_LIFE_DAYS = 30        # Days after which recency weight halves
 
@@ -180,6 +181,21 @@ CONTRADICTION_MAX_PAIRS = 2000             # High enough for full coverage at 0.
 # === Concurrency ===
 DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for lock release
 
+# === Ephemeral DB ===
+# Hot-path ephemeral tables (metrics, hook_state, pair_assessments) are isolated
+# from the durable memory DB to contain corruption blast radius.
+import os as _os_path
+CAIRN_DIR = _os_path.path.dirname(_os_path.path.abspath(__file__))
+EPHEMERAL_DB_PATH = _os_path.path.join(CAIRN_DIR, "cairn-ephemeral.db")
+SENTINEL_PATH = _os_path.path.join(CAIRN_DIR, ".impaired")
+del _os_path
+
+# === Health monitoring ===
+DAEMON_FAIL_THRESHOLD = 5
+EMBEDDING_FAIL_WINDOW = 50
+EMBEDDING_FAIL_RATE_THRESHOLD = 0.5
+HOOK_CRASH_WINDOW_MINUTES = 10
+HOOK_CRASH_THRESHOLD = 3
 
 # === Environment variable overrides ===
 # Any config value above can be overridden by setting CAIRN_<NAME>=value.

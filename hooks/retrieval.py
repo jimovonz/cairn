@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import hooks.hook_helpers as hook_helpers
 from hooks.hook_helpers import (
-    log, get_conn, get_session_project, record_metric,
+    log, get_conn, get_ephemeral_conn, get_session_project, record_metric,
     recency_days as _recency_days, reliability_label, record_layer_delivery,
     format_entry as _shared_format_entry, build_context_xml, save_hook_state,
 )
@@ -20,7 +20,7 @@ import re
 from cairn.config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
                      L3_GLOBAL_SIM_WITHOUT_PROJECT, L3_PROJECT_QUALITY_FLOOR,
                      L3_MAX_PROJECT_RESULTS, L3_MAX_GLOBAL_RESULTS,
-                     WEAK_ENTRY_SCORE_FLOOR, RRF_K)
+                     WEAK_ENTRY_SCORE_FLOOR, RRF_K, GLOBAL_HARD_FLOOR)
 
 
 CONTEXT_CACHE_SIM_THRESHOLD: float = 0.9
@@ -193,7 +193,8 @@ def hybrid_search(
         sim = r.get("similarity", 0)
         is_exempt = r.get("type") in SCOPE_BIAS_EXEMPT_TYPES
         eff_t = effective_threshold if is_exempt else global_threshold
-        if sim >= eff_t or (r.get("_source") == "fts" and r["score"] >= WEAK_ENTRY_SCORE_FLOOR):
+        above_hard_floor = sim >= GLOBAL_HARD_FLOOR
+        if above_hard_floor or sim >= eff_t or (r.get("_source") == "fts" and r["score"] >= WEAK_ENTRY_SCORE_FLOOR):
             global_results.append(r)
             seen_ids.add(mid)
 
@@ -246,7 +247,7 @@ def _is_thin_retrieval(entries: list[dict[str, Any]]) -> tuple[bool, dict[str, A
 def get_adaptive_threshold_boost() -> float:
     """Check recent retrieval outcomes. If harmful/neutral rate is high, boost the similarity floor."""
     try:
-        conn = get_conn()
+        conn = get_ephemeral_conn()
         recent = conn.execute("""
             SELECT event, COUNT(*) FROM metrics
             WHERE event IN ('retrieval_useful', 'retrieval_neutral', 'retrieval_harmful')
@@ -337,8 +338,7 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
         score = r.get("score", r.get("confidence", 0.7))
         rel_label = reliability_label(score)
         days = _recency_days(r.get("updated_at", ""))
-        has_source = r.get("depth") is not None
-        source_attr = ' ctx="y"' if has_source else ""
+        sim = r.get("similarity", 0)
         reason = r.get("archived_reason")
         if r.get("archived") or reason:
             return (
@@ -346,15 +346,14 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
                 f'{r["content"]}</entry>'
             )
         return (
-            f'  <entry id="{r["id"]}" reliability="{rel_label}" days="{days}"{source_attr}>'
+            f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}">'
             f'{r["content"]}</entry>'
         )
 
-    lines: list[str] = ['<cairn_context query="{}" current_project="{}">'.format(
+    lines: list[str] = ['<cairn_context query="{}" current_project="{}" layer="L3">'.format(
         context_need.replace('"', '&quot;'),
         project or "none"
     )]
-    lines.append('  <instruction>Before acting on any entry below, run: python3 /home/james/Projects/cairn/cairn/query.py --context &lt;id&gt; to recover the full conversation behind it.</instruction>')
 
     project_cap = max_per_scope if max_per_scope is not None else L3_MAX_PROJECT_RESULTS
     global_cap = max_per_scope if max_per_scope is not None else L3_MAX_GLOBAL_RESULTS
@@ -510,7 +509,7 @@ def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[s
 # --- Context cache ---
 
 def load_context_cache(session_id: str) -> list[dict[str, Any]]:
-    conn = get_conn()
+    conn = get_ephemeral_conn()
     row = conn.execute(
         "SELECT value FROM hook_state WHERE session_id = ? AND key = 'context_cache'",
         (session_id,)
@@ -525,7 +524,7 @@ def load_context_cache(session_id: str) -> list[dict[str, Any]]:
 
 
 def save_context_cache(session_id: str, served_needs: list[dict[str, Any]]) -> None:
-    conn = get_conn()
+    conn = get_ephemeral_conn()
     conn.execute(
         "INSERT OR REPLACE INTO hook_state (session_id, key, value) VALUES (?, 'context_cache', ?)",
         (session_id, json.dumps(served_needs))

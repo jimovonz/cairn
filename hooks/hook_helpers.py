@@ -57,9 +57,47 @@ def log_error(msg: str) -> None:
 
 
 def get_conn() -> sqlite3.Connection:
-    """Create a SQLite connection with WAL mode and busy timeout."""
+    """Create a SQLite connection to the main (durable) DB."""
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def get_ephemeral_conn() -> sqlite3.Connection:
+    """Create a SQLite connection to the ephemeral DB (metrics, hook_state, pair_assessments).
+    Falls back to main DB if ephemeral tables exist there (backward compat + tests).
+    Order: main DB first (respects test DB_PATH patches), then dedicated ephemeral file."""
+    # Try main DB first — works for tests and pre-migration installs
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("PRAGMA busy_timeout=5000")
+        # Check for any ephemeral table (tests may have hook_state but not metrics)
+        has_ephemeral = False
+        for tbl in ("metrics", "hook_state", "pair_assessments"):
+            try:
+                conn.execute(f"SELECT 1 FROM {tbl} LIMIT 0")
+                has_ephemeral = True
+                break
+            except sqlite3.OperationalError:
+                continue
+        if has_ephemeral:
+            return conn
+        conn.close()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        try:
+            conn.close()
+        except Exception:
+            pass
+    # Main DB doesn't have metrics — use dedicated ephemeral DB
+    from cairn.config import EPHEMERAL_DB_PATH
+    conn = sqlite3.connect(EPHEMERAL_DB_PATH)
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        conn.execute("SELECT 1 FROM metrics LIMIT 0")
+    except sqlite3.OperationalError:
+        from cairn.init_db import init_ephemeral
+        init_ephemeral(EPHEMERAL_DB_PATH)
     return conn
 
 
@@ -235,7 +273,7 @@ def flush_metrics() -> None:
     batch = _metric_buffer[:]
     _metric_buffer = []
     try:
-        conn = get_conn()
+        conn = get_ephemeral_conn()
         conn.executemany(
             "INSERT INTO metrics (event, session_id, detail, value) VALUES (?, ?, ?, ?)",
             batch
@@ -273,9 +311,9 @@ def get_session_project(conn: sqlite3.Connection, session_id: str) -> Optional[s
 # --- Generic hook state helpers ---
 
 def load_hook_state(session_id: str, key: str) -> Optional[str]:
-    """Load a raw string value from hook_state."""
+    """Load a raw string value from hook_state (ephemeral DB)."""
     try:
-        conn = get_conn()
+        conn = get_ephemeral_conn()
         row = conn.execute(
             "SELECT value FROM hook_state WHERE session_id = ? AND key = ?",
             (session_id, key)
@@ -288,9 +326,9 @@ def load_hook_state(session_id: str, key: str) -> Optional[str]:
 
 
 def save_hook_state(session_id: str, key: str, value: str) -> None:
-    """Save a raw string value to hook_state (upsert)."""
+    """Save a raw string value to hook_state (ephemeral DB, upsert)."""
     try:
-        conn = get_conn()
+        conn = get_ephemeral_conn()
         conn.execute(
             "INSERT INTO hook_state (session_id, key, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
             "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
@@ -303,9 +341,9 @@ def save_hook_state(session_id: str, key: str, value: str) -> None:
 
 
 def delete_hook_state(session_id: str, key: str) -> None:
-    """Delete a hook_state entry."""
+    """Delete a hook_state entry (ephemeral DB)."""
     try:
-        conn = get_conn()
+        conn = get_ephemeral_conn()
         conn.execute(
             "DELETE FROM hook_state WHERE session_id = ? AND key = ?",
             (session_id, key)
@@ -368,25 +406,18 @@ def strip_memory_block(text: str) -> str:
 
 
 def format_entry(r: dict[str, Any]) -> str:
-    """Format a memory entry as XML for context injection."""
+    """Format a memory entry as compact XML for context injection."""
     sim = r.get("similarity", 0)
-    conf = r.get("confidence", 0.7)
-    score = r.get("score", conf)
-    proj = r.get("project") or "global"
-    rel = reliability_label(score)
     days = recency_days(r.get("updated_at", ""))
     reason = r.get("archived_reason")
     if r.get("archived") or reason:
         reason = reason or "unknown"
         return (
-            f'  <entry id="{r["id"]}" type="{r["type"]}" topic="{r["topic"]}" '
-            f'project="{proj}" superseded="true" reason="{reason}" days="{days}">'
+            f'  <entry id="{r["id"]}" superseded="true" reason="{reason}" days="{days}">'
             f'{r["content"]}</entry>'
         )
     return (
-        f'  <entry id="{r["id"]}" type="{r["type"]}" topic="{r["topic"]}" '
-        f'project="{proj}" date="{r["updated_at"]}" confidence="{conf:.2f}" '
-        f'score="{score:.2f}" recency_days="{days}" reliability="{rel}" similarity="{sim:.2f}">'
+        f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}">'
         f'{r["content"]}</entry>'
     )
 
@@ -405,11 +436,8 @@ def build_context_xml(query: str, project: Optional[str], layer: str,
     """Build a complete <cairn_context> XML block."""
     safe_query = query[:80].replace('"', '&quot;')
     lines = [f'<cairn_context query="{safe_query}" current_project="{project or "none"}" layer="{layer}">']
-    if instruction is None:
-        instruction = ('Before acting on any entry below, run: python3 '
-                       '/home/james/Projects/cairn/cairn/query.py --context &lt;id&gt; '
-                       'to recover the full conversation behind it.')
-    lines.append(f'  <instruction>{instruction}</instruction>')
+    if instruction:
+        lines.append(f'  <instruction>{instruction}</instruction>')
 
     if project_results:
         lines.append(f'  <scope level="project" name="{project}" weight="high">')

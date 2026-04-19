@@ -9,7 +9,7 @@ The key innovation is that every LLM response contains invisible structured meta
 1. **Memory persistence** — distilled facts, decisions, and preferences are extracted and stored
 2. **Loop continuation control** — the LLM declares whether its response is complete
 3. **Context retrieval** — the LLM declares whether it needs information from past sessions
-4. **Confidence feedback** — the LLM rates the usefulness of retrieved memories, dynamically adjusting their future retrieval priority
+4. **Confidence feedback** — the LLM rates the veracity of retrieved memories, building a corroboration signal across sessions
 
 ## The Invisible Metadata Mechanism
 
@@ -317,6 +317,7 @@ cairn/
 │   ├── storage.py                     # Insert, dedup, confidence, quality gates, file association
 │   ├── enforcement.py                 # Trailing intent detection, continuation counting
 │   ├── retrieval.py                   # Context retrieval with RRF fusion, Layer 2, context cache
+│   ├── health.py                      # Systemic failure detection — sentinel file, desktop notifications
 │   └── hash_verify.py                 # Response hash verification (log-only, non-blocking)
 └── .venv/                             # Python venv with sentence-transformers
 ```
@@ -367,6 +368,33 @@ A `BEFORE UPDATE OF content` trigger on `memories` automatically snapshots the o
 
 Sessions chain via `parent_session_id`. When Claude Code compacts context and creates a new session, the hook detects the parent by comparing the first transcript entry's `sessionId` against the current `session_id`.
 
+**memory_annotation_log** — confidence feedback audit trail
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INTEGER | Primary key |
+| memory_id | INTEGER | FK to memories.id |
+| action | TEXT | `+` (corroborate), `-` (irrelevant), or `-!` (contradict) |
+| reason | TEXT | Explanation for `-!` annotations |
+| session_id | TEXT | Session that produced this feedback |
+| created_at | TIMESTAMP | When recorded |
+
+Every `confidence_update` from the LLM is logged here, creating an audit trail of how confidence evolved over time.
+
+**memory_source_excerpt** — conversation context snapshots
+
+| Column | Type | Description |
+|--------|------|-------------|
+| memory_id | INTEGER | FK to memories.id (unique) |
+| excerpt | TEXT | Verbatim assistant message that produced this memory |
+| created_at | TIMESTAMP | When captured |
+
+Auto-captured by the stop hook. `query.py --context <id>` reads the excerpt first, falling back to transcript search if unavailable.
+
+### Ephemeral database (`cairn-ephemeral.db`)
+
+Transient operational data is isolated in a separate SQLite database to contain corruption blast radius — a corrupt ephemeral DB doesn't affect durable memories.
+
 **metrics** — performance monitoring
 
 | Column | Type | Description |
@@ -379,6 +407,17 @@ Sessions chain via `parent_session_id`. When Claude Code compacts context and cr
 | created_at | TIMESTAMP | When recorded |
 
 Tracked events: `hook_fired`, `memories_stored`, `missing_memory_block`, `malformed_memory_block`, `context_requested`, `context_served`, `context_empty`, `context_cache_hit`, `context_retrieval`, `retrieval_latency_ms`, `confidence_updates`, `continuation_cap_hit`, `completeness_cap_hit`, `hook_crash`.
+
+**hook_state** — per-session transient state
+
+| Column | Type | Description |
+|--------|------|-------------|
+| session_id | TEXT | Session UUID |
+| key | TEXT | State key |
+| value | TEXT | State value |
+| updated_at | TIMESTAMP | Last modified |
+
+Primary key: `(session_id, key)`. Tracks per-session flags like continuation counts and context-served markers.
 
 **pair_assessments** — consolidation/contradiction cache
 
@@ -1031,7 +1070,7 @@ Intermediate tool output (file reads, command results) is factual data that coul
 The LLM weighting rules already instruct it to prefer recent entries over old ones. The confidence system handles "bad" memories via explicit feedback. Time decay would primarily benefit memories that are *both* old *and* never retrieved — a narrow gap that doesn't justify the operational overhead of a background cron job at current scale.
 
 ### Why hook-side composite scoring instead of LLM ranking?
-LLMs are inconsistent at multi-factor ranking under token pressure. Passing similarity, confidence, recency, and scope as separate attributes and expecting the LLM to combine them leads to anchoring on whichever signal appears first or is most salient. A pre-computed composite score eliminates this: results arrive sorted, with a single scalar the LLM can trust. The weights (`0.50 similarity + 0.30 confidence + 0.15 recency + 0.05 scope`) can be tuned in `config.py` without changing any instructions.
+LLMs are inconsistent at multi-factor ranking under token pressure. Passing similarity, confidence, recency, and scope as separate attributes and expecting the LLM to combine them leads to anchoring on whichever signal appears first or is most salient. A pre-computed composite score eliminates this: results arrive sorted, with a single scalar the LLM can trust. The weights (see `config.py SCORE_W_*` — currently `0.50 similarity + 0.15 keywords + 0.05 scope`, with confidence and recency at 0) can be tuned without changing any instructions.
 
 ### Why embedding augmentation with project name?
 Prepending the project name to the embedding text (e.g. `"webshop decision use-postgres ..."`) pushes memories from unrelated domains apart in vector space. This reduces cross-project bleed naturally — without changing the schema, queries, or adding filtering logic. It's a zero-cost signal that improves retrieval precision as the database grows across multiple projects.
@@ -1045,8 +1084,8 @@ Per-memory `confidence_update` signals tell the system which individual memories
 ### Why five retrieval layers instead of one?
 Each layer covers a different blind spot: project bootstrap gives CWD-based project awareness independent of prompt content. Layer 1 (first-prompt push) eliminates the cold-start "I don't know" problem. Layer 1.5 (per-prompt push) catches mid-conversation context the LLM didn't know to request. Layer 2 (keyword cross-project) surfaces knowledge from other projects the LLM doesn't know to ask for. Layer 3 (pull-based) handles explicit gaps mid-conversation. No single approach covers all five cases. The layers don't overlap — bootstrap is type-filtered and prompt-independent, Layer 1 fires once, Layer 1.5 skips already-injected IDs, Layer 2 only injects cross-project data, Layer 3 only fires when the LLM explicitly declares a gap.
 
-### Why non-linear confidence in composite scoring?
-Linear confidence weighting (e.g. `0.30 × confidence`) gives similar advantage to memories at 0.4 vs 0.8 confidence. Using `confidence²` amplifies the gap: 0.4² = 0.16 vs 0.8² = 0.64. This means high-confidence memories (decisions, corrections) dominate over low-confidence entries at equivalent similarity, which matches the intended behaviour — trusted knowledge should outweigh uncertain signals.
+### Why is confidence weight zero?
+Confidence represents veracity (how well-corroborated a memory is), not retrieval relevance. A low-confidence memory may be exactly what the LLM needs. Mixing veracity into the retrieval score caused high-confidence but tangentially-related memories to outrank precise but uncorroborated ones. Setting `SCORE_W_CONFIDENCE = 0.0` keeps confidence as a display-only signal — visible in the dashboard and available for `-!` annotation — without distorting retrieval ranking.
 
 ### Why overwrite guard (similarity < 0.8)?
 Same type+topic doesn't always mean same fact. "Use RTK for accuracy" and "Use GNSS fallback under canopy" could both be `decision/positioning` — they're valid under different conditions. The 0.8 similarity guard ensures only genuinely updated statements overwrite, while distinct variants coexist as separate memories.
@@ -1060,8 +1099,10 @@ All tunable parameters are centralised in `cairn/config.py`:
 | `DEDUP_THRESHOLD` | 0.95 | Cosine similarity for near-identical dedup |
 | `CONFIDENCE_DEFAULT` | 0.7 | Starting confidence for new memories |
 | `CONFIDENCE_BOOST` / `PENALTY` | 0.1 / 0.2 | Base rates for saturating adjustments (actual: `base × (1-conf)` / `base × (1+conf)`) |
-| `SCORE_W_*` | 0.50/0.00/0.15/0.05/0.05 | Composite scoring weights (similarity/confidence/keywords/recency/scope) |
-| `RECENCY_HALF_LIFE_DAYS` | 30 | Recency decay rate |
+| `SCORE_W_*` | 0.50/0.00/0.15/0.00/0.05 | Composite scoring weights (similarity/confidence/keywords/recency/scope) |
+| `RECENCY_HALF_LIFE_DAYS` | 30 | Recency decay rate (weight is 0 — decay computed but unused) |
+| `GLOBAL_HARD_FLOOR` | 0.50 | Cross-project memories above this similarity always surface regardless of project penalty |
+| `EPHEMERAL_DB_PATH` | `cairn-ephemeral.db` | Path to ephemeral database (metrics, hook_state, pair_assessments) |
 | `MIN_INJECTION_SIMILARITY` | 0.35 | Garbage gate — reject all if best < this |
 | `BORDERLINE_SIM_CEILING` | 0.45 | Borderline gate similarity ceiling |
 | `BORDERLINE_SCORE_FLOOR` | 0.50 | Borderline gate minimum composite score |
