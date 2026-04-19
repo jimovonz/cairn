@@ -38,7 +38,7 @@ Ingest a git repository into Cairn as portable knowledge entries:
 - `python3 ./cairn/ingest.py /path/to/repo --full` — force full re-ingestion (skip incremental diff)
 - `python3 ./cairn/ingest.py /path/to/repo --verbose` — show extraction details
 
-17 extractors: docs, deps, tree, config, schemas, entrypoints, HTTP routes, CLI args, exports, comments, TODOs, env vars, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI.
+24 extractors: docs, deps, tree, config, schemas, entrypoints, HTTP routes, CLI args, exports, comments, TODOs, env vars, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI, tree-sitter AST (Python, JS, TS, TSX, Go, Rust, C, C++), dependency graph. Graph edges queryable via `python3 ./cairn/query.py --deps <project>`.
 
 ## Git workflow
 

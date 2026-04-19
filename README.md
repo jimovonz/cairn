@@ -124,7 +124,7 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Excerpt snapshots** — stop hook auto-captures the assistant message as source context; `--context <id>` reads the excerpt first for instant recovery without transcript search
 - **Subagent mode** — automatic detection via `agent_id` in hook input; keeps bootstrap + L1 context injection, skips enforcement/L1.5/L2; stop hook opportunistically stores volunteered memories without blocking
 - **Embedding instrumentation** — per-call timing for daemon, local model, vector search, brute-force search, and fan-out expansion; surfaced in dashboard metrics panel
-- **Repo ingestion** — mechanistic extraction + Haiku distillation turns any git repo into portable knowledge entries; 17 extractors cover docs, deps, configs, schemas, HTTP routes, CLI args, exports, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, and Docker/CI
+- **Repo ingestion** — mechanistic extraction + Haiku distillation turns any git repo into portable knowledge entries; 19 extractors cover docs, deps, configs, schemas, HTTP routes, CLI args, exports, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI, plus tree-sitter AST parsing (8 languages) and dependency graph analysis
 - **Incremental re-ingestion** — section-level fingerprinting detects what changed since last ingestion; only changed sections are sent to Haiku, unchanged memories preserved; `--full` forces complete re-ingestion; extractor version tracking triggers re-processing when extractor logic changes
 - **Env var overrides** — any config value tunable via `CAIRN_<NAME>=value` without editing source
 
@@ -188,18 +188,20 @@ python3 cairn/ingest.py /path/to/repo --project myproj     # override project na
 python3 cairn/ingest.py /path/to/repo --recurse-submodules # include git submodules
 ```
 
-**17 extractors** cover a broad range of project types:
+**24 extractors** cover a broad range of project types:
 
 | Category | Extractors |
 |----------|------------|
 | General | docs, dependencies, tree, config, schemas, entrypoints, git log |
 | Code | signal comments, TODOs, env vars, exports |
+| AST | tree-sitter structural parsing (Python, JS, TS, TSX, Go, Rust, C, C++) — function signatures, class hierarchies, imports |
+| Dependency graph | import/inheritance edges, symbol index, architectural hotspots |
 | Web/API | HTTP routes, CLI args, event interfaces (pub/sub, webhooks) |
 | Systems | protobuf/gRPC, CMake flags, C/C++ public headers, DB tables |
 | Embedded | ROS2 (.msg/.srv/.action, launch, package.xml), CAN DBC, device tree |
 | Build/Deploy | Yocto/BitBake (recipes, layers, machines), Docker, CI pipelines |
 
-Memories are tagged with the project name and git commit SHA for provenance. Re-running ingestion diffs against existing entries and archives superseded ones.
+Memories are tagged with the project name and git commit SHA for provenance. Re-running ingestion diffs against existing entries and archives superseded ones. Dependency graph edges are persisted to `memory_relations` and queryable via `query.py --deps <project>`.
 
 ## How it works
 
