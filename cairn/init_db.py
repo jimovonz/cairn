@@ -214,6 +214,20 @@ def init():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (2, 'multi-user and sync columns: origin_id, user_id, updated_by, team_id, source_ref, deleted_at, synced_at')"
         )
+    # Source excerpt snapshots — preserves transcript context for --context recovery after JSONL purge
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_source_excerpt (
+            memory_id INTEGER PRIMARY KEY,
+            session_id TEXT,
+            transcript_path TEXT,
+            excerpt TEXT NOT NULL,
+            context_before TEXT,
+            context_after TEXT,
+            captured_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_source_excerpt_session ON memory_source_excerpt(session_id)")
     # Annotation audit trail — records every confidence update event
     conn.execute("""
         CREATE TABLE IF NOT EXISTS memory_annotation_log (

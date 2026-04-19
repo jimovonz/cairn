@@ -26,6 +26,33 @@ from hooks.hook_helpers import log, get_conn, get_ephemeral_conn, record_metric,
 from hooks.parser import parse_memory_block, parse_memory_notes
 from hooks.hash_verify import compute_response_hash
 from hooks.storage import apply_confidence_updates, inline_backfill, insert_memories
+
+SOURCE_EXCERPT_LINES = 15
+
+
+def _snapshot_excerpts(session_id: str, transcript_path: str, assistant_message: str) -> None:
+    """Snapshot the assistant message as source excerpt for recently stored memories."""
+    if not session_id or not assistant_message:
+        return
+    conn = hook_helpers.get_conn()
+    rows = conn.execute(
+        "SELECT id FROM memories WHERE session_id = ? AND id NOT IN "
+        "(SELECT memory_id FROM memory_source_excerpt) ORDER BY id DESC LIMIT 10",
+        (session_id,)
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return
+    lines = assistant_message.split("\n")
+    excerpt = "\n".join(lines[:SOURCE_EXCERPT_LINES * 2])
+    for (mem_id,) in rows:
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_source_excerpt (memory_id, session_id, transcript_path, excerpt) "
+            "VALUES (?, ?, ?, ?)",
+            (mem_id, session_id, transcript_path or "", excerpt)
+        )
+    conn.commit()
+    conn.close()
 from hooks.enforcement import check_trailing_intent, check_deferral, check_declined_without_trying, check_correction_triggers, get_continuation_count, increment_continuation, reset_continuation
 
 # Appended to block reasons that are purely about memory format — the user already saw the
@@ -467,6 +494,12 @@ def main() -> None:
         count = insert_memories(entries, session_id=session_id, transcript_path=transcript_path)
         record_metric(session_id, "memories_stored", None, count)
         log(f"Stored {count} memories (session: {session_id[:8]}...)" if session_id else f"Stored {count} memories")
+
+        # Snapshot source excerpts for --context recovery after JSONL purge
+        try:
+            _snapshot_excerpts(session_id, transcript_path, assistant_message)
+        except Exception as exc:
+            log(f"Excerpt capture failed (non-fatal): {exc}")
 
     # Backfill any NULL embeddings (from content edits or trigger-nulled rows)
     if not entries and confidence_updates:
