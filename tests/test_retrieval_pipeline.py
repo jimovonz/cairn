@@ -309,7 +309,7 @@ def test_retrieve_returns_structured_xml():
     assert isinstance(result, str) and len(result) > 0
     assert result.count("<cairn_context") == 1
     assert result.count("JWT") >= 1
-    assert result.count('reliability=') >= 1
+    assert result.count('sim=') >= 1
     assert result.count('id="1"') >= 1
     conn.close()
 

@@ -214,6 +214,20 @@ def init():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (2, 'multi-user and sync columns: origin_id, user_id, updated_by, team_id, source_ref, deleted_at, synced_at')"
         )
+    # Annotation audit trail — records every confidence update event
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_annotation_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL,
+            direction TEXT NOT NULL,
+            reason TEXT,
+            session_id TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ann_memory ON memory_annotation_log(memory_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ann_session ON memory_annotation_log(session_id)")
     if not conn.execute("SELECT 1 FROM schema_version WHERE version = 3").fetchone():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (3, 'null_embedding_on_content_edit trigger — invalidates stale embeddings when content changes without re-embedding')"

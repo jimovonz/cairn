@@ -406,25 +406,18 @@ def strip_memory_block(text: str) -> str:
 
 
 def format_entry(r: dict[str, Any]) -> str:
-    """Format a memory entry as XML for context injection."""
+    """Format a memory entry as compact XML for context injection."""
     sim = r.get("similarity", 0)
-    conf = r.get("confidence", 0.7)
-    score = r.get("score", conf)
-    proj = r.get("project") or "global"
-    rel = reliability_label(score)
     days = recency_days(r.get("updated_at", ""))
     reason = r.get("archived_reason")
     if r.get("archived") or reason:
         reason = reason or "unknown"
         return (
-            f'  <entry id="{r["id"]}" type="{r["type"]}" topic="{r["topic"]}" '
-            f'project="{proj}" superseded="true" reason="{reason}" days="{days}">'
+            f'  <entry id="{r["id"]}" superseded="true" reason="{reason}" days="{days}">'
             f'{r["content"]}</entry>'
         )
     return (
-        f'  <entry id="{r["id"]}" type="{r["type"]}" topic="{r["topic"]}" '
-        f'project="{proj}" date="{r["updated_at"]}" confidence="{conf:.2f}" '
-        f'score="{score:.2f}" recency_days="{days}" reliability="{rel}" similarity="{sim:.2f}">'
+        f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}">'
         f'{r["content"]}</entry>'
     )
 
@@ -443,11 +436,8 @@ def build_context_xml(query: str, project: Optional[str], layer: str,
     """Build a complete <cairn_context> XML block."""
     safe_query = query[:80].replace('"', '&quot;')
     lines = [f'<cairn_context query="{safe_query}" current_project="{project or "none"}" layer="{layer}">']
-    if instruction is None:
-        instruction = ('Before acting on any entry below, run: python3 '
-                       '/home/james/Projects/cairn/cairn/query.py --context &lt;id&gt; '
-                       'to recover the full conversation behind it.')
-    lines.append(f'  <instruction>{instruction}</instruction>')
+    if instruction:
+        lines.append(f'  <instruction>{instruction}</instruction>')
 
     if project_results:
         lines.append(f'  <scope level="project" name="{project}" weight="high">')

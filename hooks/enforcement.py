@@ -143,6 +143,17 @@ def _strip_memory_and_code(text: str) -> str:
     return cleaned.strip()
 
 
+def _is_permission_seeking(text: str) -> bool:
+    """Detect questions that ask the user for permission to proceed — covert exit ramps."""
+    return bool(re.search(
+        r"want me to|shall I|should I|would you like me to|ready to proceed|"
+        r"would you like to|do you want me|if you.{0,10}like.{0,10}I can|"
+        r"want me to pick|want me to start|want me to continue|"
+        r"I can .{0,30}\?$",
+        text, re.IGNORECASE | re.MULTILINE
+    ))
+
+
 def _has_deferral_language(text: str) -> bool:
     """Quick regex pre-check for deferral-adjacent keywords before running embeddings."""
     return bool(re.search(
@@ -219,10 +230,11 @@ def check_trailing_intent(text: str, session_id: str = "") -> Optional[str]:
 
     cleaned = _strip_memory_and_code(text)
 
-    # Questions bypass trailing-intent UNLESS deferral language is present.
-    # "Want me to continue?" is a covert exit ramp, not a genuine question.
-    if cleaned.rstrip().endswith("?") and not _has_deferral_language(cleaned):
-        return None
+    # Questions bypass trailing-intent UNLESS deferral or permission-seeking language present.
+    # "Want me to continue?" / "Shall I proceed?" are covert exit ramps, not genuine questions.
+    if cleaned.rstrip().endswith("?"):
+        if not _has_deferral_language(cleaned) and not _is_permission_seeking(cleaned):
+            return None
 
     tail = _extract_tail_sentences(text, n=3)
     if not tail:
