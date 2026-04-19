@@ -635,6 +635,53 @@ def show_session_chain(session_id):
     conn.close()
 
 
+def query_deps(project, file_filter=None):
+    """Query dependency graph edges for a project."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout=5000")
+    try:
+        conn.execute("SELECT 1 FROM memory_relations LIMIT 0")
+    except sqlite3.OperationalError:
+        print("No dependency graph data. Run ingest.py first.")
+        conn.close()
+        return
+
+    if file_filter:
+        rows = conn.execute(
+            "SELECT source_file, target, kind FROM memory_relations "
+            "WHERE project = ? AND (source_file LIKE ? OR target LIKE ?) ORDER BY source_file",
+            (project, f"%{file_filter}%", f"%{file_filter}%"),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT source_file, target, kind FROM memory_relations "
+            "WHERE project = ? ORDER BY kind, source_file",
+            (project,),
+        ).fetchall()
+
+    if not rows:
+        print(f"No dependency edges for project '{project}'.")
+        conn.close()
+        return
+
+    kinds = {}
+    for source, target, kind in rows:
+        kinds.setdefault(kind, []).append((source, target))
+
+    for kind, edges in sorted(kinds.items()):
+        print(f"\n  {kind} ({len(edges)} edges)")
+        for source, target in edges[:50]:
+            print(f"    {source} -> {target}")
+        if len(edges) > 50:
+            print(f"    ... ({len(edges) - 50} more)")
+
+    total = conn.execute(
+        "SELECT COUNT(*) FROM memory_relations WHERE project = ?", (project,)
+    ).fetchone()[0]
+    print(f"\n  Total: {total} edges for {project}")
+    conn.close()
+
+
 def stats():
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
@@ -907,6 +954,7 @@ Commands:
   --check                Validate system health (DB, hooks, daemon, embeddings)
   --bootstrap [project]  Show standing-context memories for a project (from CWD if omitted)
   --audit <session_id>   Dump unaudited memories from session for review
+  --deps <project> [file] Query dependency graph (imports/inheritance for a project, optionally filtered to a file)
   --stats                Show database statistics
   --dashboard [--port N]  Launch web dashboard (default port 8420)"""
 
@@ -1434,6 +1482,8 @@ def main_entry():
         from cairn.consolidate import run_contradiction_detection
         execute = "--execute" in sys.argv
         run_contradiction_detection(execute=execute)
+    elif cmd == "--deps" and len(sys.argv) > 2:
+        query_deps(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
     elif cmd == "--stats":
         stats()
     else:

@@ -242,9 +242,31 @@ def init():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ann_memory ON memory_annotation_log(memory_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ann_session ON memory_annotation_log(session_id)")
+    # Dependency graph — stores import/inheritance/include edges from repo ingestion
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            target TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            names TEXT,
+            line INTEGER,
+            project TEXT,
+            session_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_source ON memory_relations(source_file)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_target ON memory_relations(target)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_project ON memory_relations(project)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_kind ON memory_relations(kind)")
     if not conn.execute("SELECT 1 FROM schema_version WHERE version = 3").fetchone():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (3, 'null_embedding_on_content_edit trigger — invalidates stale embeddings when content changes without re-embedding')"
+        )
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 4").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (4, 'memory_relations table — dependency graph edges from tree-sitter AST parsing')"
         )
     # Indexes for new columns
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_origin_id ON memories(origin_id)")
