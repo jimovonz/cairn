@@ -117,6 +117,20 @@ def init():
             VALUES (old.id, old.content, old.session_id, old.updated_at);
         END
     """)
+    # Trigger: null embedding when content changes without a new embedding being set.
+    # insert_memories always sets a fresh embedding blob alongside content, so
+    # NEW.embedding != OLD.embedding and this trigger skips. Other update paths
+    # (query.py, consolidate.py) don't touch embedding, so it fires.
+    conn.execute("DROP TRIGGER IF EXISTS null_embedding_on_content_edit")
+    conn.execute("""
+        CREATE TRIGGER null_embedding_on_content_edit
+        AFTER UPDATE OF content ON memories
+        FOR EACH ROW
+        WHEN NEW.content != OLD.content AND NEW.embedding IS OLD.embedding
+        BEGIN
+            UPDATE memories SET embedding = NULL WHERE id = NEW.id;
+        END
+    """)
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type)
     """)
@@ -199,6 +213,10 @@ def init():
     if not conn.execute("SELECT 1 FROM schema_version WHERE version = 2").fetchone():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (2, 'multi-user and sync columns: origin_id, user_id, updated_by, team_id, source_ref, deleted_at, synced_at')"
+        )
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 3").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (3, 'null_embedding_on_content_edit trigger — invalidates stale embeddings when content changes without re-embedding')"
         )
     # Indexes for new columns
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_origin_id ON memories(origin_id)")

@@ -25,7 +25,7 @@ from typing import Optional
 from hooks.hook_helpers import log, get_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery
 from hooks.parser import parse_memory_block, parse_memory_notes
 from hooks.hash_verify import compute_response_hash
-from hooks.storage import apply_confidence_updates, insert_memories
+from hooks.storage import apply_confidence_updates, inline_backfill, insert_memories
 from hooks.enforcement import check_trailing_intent, check_deferral, check_declined_without_trying, check_correction_triggers, get_continuation_count, increment_continuation, reset_continuation
 
 # Appended to block reasons that are purely about memory format — the user already saw the
@@ -465,6 +465,15 @@ def main() -> None:
         count = insert_memories(entries, session_id=session_id, transcript_path=transcript_path)
         record_metric(session_id, "memories_stored", None, count)
         log(f"Stored {count} memories (session: {session_id[:8]}...)" if session_id else f"Stored {count} memories")
+
+    # Backfill any NULL embeddings (from content edits or trigger-nulled rows)
+    if not entries and confidence_updates:
+        try:
+            conn = hook_helpers.get_conn()
+            inline_backfill(conn)
+            conn.close()
+        except Exception:
+            pass
 
     # Record dedup stats
     record_metric(session_id, "hook_fired", f"entries={len(entries) if entries else 0}")
