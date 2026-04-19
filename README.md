@@ -125,6 +125,7 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Subagent mode** — automatic detection via `agent_id` in hook input; keeps bootstrap + L1 context injection, skips enforcement/L1.5/L2; stop hook opportunistically stores volunteered memories without blocking
 - **Embedding instrumentation** — per-call timing for daemon, local model, vector search, brute-force search, and fan-out expansion; surfaced in dashboard metrics panel
 - **Repo ingestion** — mechanistic extraction + Haiku distillation turns any git repo into portable knowledge entries; 17 extractors cover docs, deps, configs, schemas, HTTP routes, CLI args, exports, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, and Docker/CI
+- **Incremental re-ingestion** — section-level fingerprinting detects what changed since last ingestion; only changed sections are sent to Haiku, unchanged memories preserved; `--full` forces complete re-ingestion; extractor version tracking triggers re-processing when extractor logic changes
 - **Env var overrides** — any config value tunable via `CAIRN_<NAME>=value` without editing source
 
 ## Quick start
