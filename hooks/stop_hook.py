@@ -22,7 +22,7 @@ import sys
 import os
 from typing import Optional
 
-from hooks.hook_helpers import log, get_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery
+from hooks.hook_helpers import log, get_conn, get_ephemeral_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery
 from hooks.parser import parse_memory_block, parse_memory_notes
 from hooks.hash_verify import compute_response_hash
 from hooks.storage import apply_confidence_updates, inline_backfill, insert_memories
@@ -327,11 +327,13 @@ def main() -> None:
         session_has_memories = conn.execute(
             "SELECT COUNT(*) FROM memories WHERE session_id = ?", (session_id,)
         ).fetchone()[0] > 0
+        conn.close()
         # Also check if we've seen any hook_fired metric for this session
-        session_hook_count = conn.execute(
+        eph_conn = get_ephemeral_conn()
+        session_hook_count = eph_conn.execute(
             "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'hook_fired'", (session_id,)
         ).fetchone()[0]
-        conn.close()
+        eph_conn.close()
 
         if not session_has_memories and session_hook_count <= 1:
             log(f"No prior memories for session {session_id[:8]}... — LLM may lack rules, allowing stop")
@@ -522,7 +524,7 @@ def main() -> None:
                 # Check if this retrieval was triggered by bootstrap — apply tighter cap
                 _is_bootstrap = False
                 try:
-                    _bc = get_conn()
+                    _bc = get_ephemeral_conn()
                     _brow = _bc.execute(
                         "SELECT value FROM metrics WHERE session_id = ? AND event = 'context_bootstrap_triggered' "
                         "ORDER BY created_at DESC LIMIT 1", (session_id,)
@@ -576,32 +578,32 @@ def main() -> None:
     # hasn't used layer 3 in CONTEXT_BOOTSTRAP_INTERVAL turns. Builds the habit
     # through demonstrated value rather than rules alone.
     if not is_continuation and context != "insufficient" and CONTEXT_BOOTSTRAP_INTERVAL > 0:
-        conn = get_conn()
+        eph = get_ephemeral_conn()
         # Count hook firings since last context_requested
-        last_request = conn.execute(
+        last_request = eph.execute(
             "SELECT MAX(created_at) FROM metrics WHERE session_id = ? AND event = 'context_requested'",
             (session_id,)
         ).fetchone()[0]
         if last_request:
-            turns_since = conn.execute(
+            turns_since = eph.execute(
                 "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'hook_fired' AND created_at > ?",
                 (session_id, last_request)
             ).fetchone()[0]
         else:
-            turns_since = conn.execute(
+            turns_since = eph.execute(
                 "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'hook_fired'",
                 (session_id,)
             ).fetchone()[0]
-        conn.close()
+        eph.close()
 
         # Use shorter interval for first bootstrap in session, then standard interval
         from cairn.config import CONTEXT_BOOTSTRAP_FIRST_INTERVAL
-        conn_check = get_conn()
-        _prior_bootstrap = conn_check.execute(
+        eph_check = get_ephemeral_conn()
+        _prior_bootstrap = eph_check.execute(
             "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'context_bootstrap_triggered'",
             (session_id,)
         ).fetchone()[0]
-        conn_check.close()
+        eph_check.close()
         effective_interval = CONTEXT_BOOTSTRAP_FIRST_INTERVAL if _prior_bootstrap == 0 else CONTEXT_BOOTSTRAP_INTERVAL
 
         if turns_since >= effective_interval:

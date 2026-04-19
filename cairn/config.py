@@ -180,6 +180,13 @@ CONTRADICTION_MAX_PAIRS = 2000             # High enough for full coverage at 0.
 # === Concurrency ===
 DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for lock release
 
+# === Ephemeral DB ===
+# Hot-path ephemeral tables (metrics, hook_state, pair_assessments) are isolated
+# from the durable memory DB to contain corruption blast radius.
+import os as _os_path
+CAIRN_DIR = _os_path.path.dirname(_os_path.path.abspath(__file__))
+EPHEMERAL_DB_PATH = _os_path.path.join(CAIRN_DIR, "cairn-ephemeral.db")
+del _os_path
 
 # === Environment variable overrides ===
 # Any config value above can be overridden by setting CAIRN_<NAME>=value.

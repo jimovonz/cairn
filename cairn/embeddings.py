@@ -36,11 +36,15 @@ def _record_embed_metric(event: str, value: float) -> None:
     global _metrics_conn
     try:
         if _metrics_conn is None:
-            db_path = os.path.join(os.path.dirname(__file__), "cairn.db")
-            if not os.path.exists(db_path):
-                return
-            _metrics_conn = sqlite3.connect(db_path)
+            from cairn.config import EPHEMERAL_DB_PATH
+            _metrics_conn = sqlite3.connect(EPHEMERAL_DB_PATH)
             _metrics_conn.execute("PRAGMA busy_timeout=2000")
+            _metrics_conn.execute("PRAGMA journal_mode=WAL")
+            try:
+                _metrics_conn.execute("SELECT 1 FROM metrics LIMIT 0")
+            except sqlite3.OperationalError:
+                from cairn.init_db import init_ephemeral
+                init_ephemeral(EPHEMERAL_DB_PATH)
         _metrics_conn.execute(
             "INSERT INTO metrics (event, value) VALUES (?, ?)",
             (event, value)
