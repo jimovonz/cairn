@@ -424,14 +424,15 @@ def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str]
         return []
 
     # Score by keyword overlap count
+    from cairn.config import L2_KEYWORD_MIN_OVERLAP
     kw_set = {k.strip().lower() for k in keywords_list if k.strip()}
     results = []
     for r in rows:
         mem_id, mem_type, topic, content, updated_at, mem_project, confidence, mem_keywords = r
         mem_kw_set = {k.strip().lower() for k in (mem_keywords or "").split(",") if k.strip()}
         overlap = len(kw_set & mem_kw_set)
-        if overlap < 2:
-            continue  # Require ≥2 keyword overlap to reduce cross-project noise
+        if overlap < L2_KEYWORD_MIN_OVERLAP:
+            continue  # Filter single-keyword cross-project collisions (incidental shared terms like "install", "config")
         results.append({
             "id": mem_id, "type": mem_type, "topic": topic, "content": content,
             "updated_at": updated_at, "project": mem_project,

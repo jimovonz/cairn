@@ -51,7 +51,7 @@ def load_staged_context(session_id: str) -> Optional[str]:
 _ACTION_PROMPT_RE = re.compile(
     r"^(?:y(?:es|ep|eah)?|ok(?:ay)?|sure|do it|go(?: ahead)?|proceed|continue|"
     r"lgtm|ship it|sounds good|perfect|correct|right|exactly|please|thanks|"
-    r"👍|✅|done|next|yup|ack|k)\s*[.!]?\s*$",
+    r"👍|✅|done|next|yup|ack|k)[.!?]*$",
     re.IGNORECASE,
 )
 
