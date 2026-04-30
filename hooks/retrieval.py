@@ -430,8 +430,8 @@ def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str]
         mem_id, mem_type, topic, content, updated_at, mem_project, confidence, mem_keywords = r
         mem_kw_set = {k.strip().lower() for k in (mem_keywords or "").split(",") if k.strip()}
         overlap = len(kw_set & mem_kw_set)
-        if overlap == 0:
-            continue  # LIKE matched substring but not a real keyword overlap
+        if overlap < 2:
+            continue  # Require ≥2 keyword overlap to reduce cross-project noise
         results.append({
             "id": mem_id, "type": mem_type, "topic": topic, "content": content,
             "updated_at": updated_at, "project": mem_project,

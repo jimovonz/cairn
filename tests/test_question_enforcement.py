@@ -63,6 +63,7 @@ def run_hook(text: str, is_continuation: bool = False, session_id: str = SESSION
     env = os.environ.copy()
     env["CAIRN_DB_PATH"] = TEST_DB
     env["CAIRN_SKIP_EMBEDDER"] = "1"
+    env["PYTHONPATH"] = os.path.join(os.path.dirname(__file__), "..")
 
     result = subprocess.run(
         [sys.executable, HOOK_SCRIPT],

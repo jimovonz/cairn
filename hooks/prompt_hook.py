@@ -48,6 +48,22 @@ def load_staged_context(session_id: str) -> Optional[str]:
     return raw
 
 
+_ACTION_PROMPT_RE = re.compile(
+    r"^(?:y(?:es|ep|eah)?|ok(?:ay)?|sure|do it|go(?: ahead)?|proceed|continue|"
+    r"lgtm|ship it|sounds good|perfect|correct|right|exactly|please|thanks|"
+    r"👍|✅|done|next|yup|ack|k)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_action_prompt(user_message: str) -> bool:
+    """Detect short confirmation/action prompts that don't need retrieval."""
+    stripped = user_message.strip()
+    if len(stripped) > 80:
+        return False
+    return bool(_ACTION_PROMPT_RE.match(stripped))
+
+
 def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
     """Layer 1.5: Per-prompt hybrid injection for subsequent prompts.
 
@@ -58,6 +74,11 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
     from hooks.retrieval import hybrid_search
 
     if not L1_5_ENABLED:
+        return None
+
+    if _is_action_prompt(user_message):
+        log(f"Layer 1.5: skipped action prompt: {user_message[:40]}")
+        record_metric(session_id, "layer1_5_action_skip", user_message[:80])
         return None
 
     try:
