@@ -63,7 +63,9 @@ def run_hook(text: str, is_continuation: bool = False, session_id: str = SESSION
     env = os.environ.copy()
     env["CAIRN_DB_PATH"] = TEST_DB
     env["CAIRN_SKIP_EMBEDDER"] = "1"
-    env["PYTHONPATH"] = os.path.join(os.path.dirname(__file__), "..")
+    repo_root = os.path.join(os.path.dirname(__file__), "..")
+    existing_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = repo_root + (os.pathsep + existing_pp if existing_pp else "")
 
     result = subprocess.run(
         [sys.executable, HOOK_SCRIPT],
