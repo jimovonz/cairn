@@ -398,6 +398,58 @@ def test_l1_5_enabled_env_override():
         importlib.reload(config)
 
 
+def test_is_action_prompt_true_cases():
+    """Short confirmation/action prompts must be detected so L1.5 retrieval is skipped."""
+    from hooks.prompt_hook import _is_action_prompt
+    positives = [
+        "yes", "Yes", "YES", "yep", "yeah",
+        "ok", "OK", "okay", "Okay",
+        "sure", "do it", "Do it",
+        "go", "go ahead", "Go ahead",
+        "proceed", "continue",
+        "lgtm", "LGTM", "ship it",
+        "sounds good", "perfect", "correct", "right", "exactly",
+        "please", "thanks",
+        "done", "next", "yup", "ack", "k",
+        # Trailing punctuation variants — must all be skipped
+        "yes.", "yes!", "ok!!", "ok!!!", "do it!!", "yes?", "ok!?",
+        # Whitespace tolerance
+        "  yes  ", "\nok\n",
+        # Emoji confirmations
+        "👍", "✅",
+    ]
+    for msg in positives:
+        assert _is_action_prompt(msg), f"expected action prompt: {msg!r}"
+
+
+def test_is_action_prompt_false_cases():
+    """Substantive prompts must NOT match — false positives silently disable retrieval."""
+    from hooks.prompt_hook import _is_action_prompt
+    negatives = [
+        # Action stems with real content following
+        "yes do that and also refactor the parser",
+        "ok but first explain why",
+        "continue with the refactor",
+        "do it but only for the new files",
+        "go ahead and update the docs too",
+        "sure, what about edge cases?",
+        # Substantive questions
+        "what does the action prompt regex match?",
+        "tell me about the keyword overlap change",
+        # Long messages — over 80 char cap
+        "ok " + ("x" * 100),
+        # Empty / whitespace
+        "",
+        "   ",
+        # Action-adjacent but not a confirmation
+        "yesterday I changed the threshold",
+        "okra is a vegetable",
+        "rightly or wrongly",
+    ]
+    for msg in negatives:
+        assert not _is_action_prompt(msg), f"expected non-action: {msg!r}"
+
+
 def cleanup():
     shutil.rmtree(TEST_DIR, ignore_errors=True)
 
