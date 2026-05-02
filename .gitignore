@@ -22,3 +22,4 @@ cairn/cairn.db.recover-*
 cairn/cairn.db.test-*
 cairn/corruption.log
 cairn_memory.egg-info/
+.code-review-graph/

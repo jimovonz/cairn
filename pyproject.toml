@@ -53,6 +53,7 @@ Issues = "https://github.com/jimovonz/cairn/issues"
 [project.scripts]
 cairn-query = "cairn.query:main_entry"
 cairn-dashboard = "cairn.dashboard:main"
+cairn-graph = "cairn.graph:main"
 
 [tool.setuptools.packages.find]
 include = ["cairn*", "hooks*"]
