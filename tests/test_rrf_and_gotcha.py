@@ -105,7 +105,7 @@ def test_retrieve_context_rrf_fts_only_scores():
     mock_emb = MagicMock()
     mock_emb.find_similar.return_value = []
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         result = retrieval.retrieve_context("SQLite WAL mode", session_id="s1")
 
@@ -144,7 +144,7 @@ def test_retrieve_context_rrf_dual_match_boosted():
         "archived_reason": None, "similarity": 0.75, "score": 0.55,
     }]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         result = retrieval.retrieve_context("JWT authentication tokens", session_id="s1")
 
@@ -170,7 +170,7 @@ def test_retrieve_context_rrf_fts_exact_match():
     mock_emb = MagicMock()
     mock_emb.find_similar.return_value = []  # Semantic finds nothing
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         result = retrieval.retrieve_context("SQLITE_BUSY", session_id="s1")
 
@@ -202,7 +202,7 @@ def test_retrieve_context_rrf_same_session_excluded():
         "archived_reason": None, "similarity": 0.95, "score": 0.70,
     }]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         result = retrieval.retrieve_context("test memory specific", session_id="s1")
 
@@ -287,7 +287,7 @@ def test_insert_memories_correction_gets_files():
     mock_emb.find_nearest.return_value = []
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         storage.insert_memories(
             [{"type": "correction", "topic": "fts-scoring", "content": "FTS results had hardcoded 0.30 score — need proper RRF fusion"}],
@@ -322,7 +322,7 @@ def test_insert_memories_non_correction_skips():
     mock_emb.find_nearest.return_value = []
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         storage.insert_memories(
             [{"type": "fact", "topic": "test-fact", "content": "This is a fact not a correction"}],
@@ -355,7 +355,7 @@ def test_insert_memories_no_transcript_null_files():
     mock_emb.find_nearest.return_value = []
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         storage.insert_memories(
             [{"type": "fact", "topic": "no-transcript", "content": "A fact with no transcript"}],
@@ -383,7 +383,7 @@ def test_insert_memories_nonexistent_transcript():
     mock_emb.find_nearest.return_value = []
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         storage.insert_memories(
             [{"type": "correction", "topic": "bad-path", "content": "Correction with missing transcript"}],
@@ -423,7 +423,7 @@ def test_insert_memories_non_file_tool_not_associated():
     mock_emb.find_nearest.return_value = []
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         storage.insert_memories(
             [{"type": "correction", "topic": "tool-filter", "content": "Only file tools should be associated"}],
@@ -458,7 +458,7 @@ def test_find_memories_for_file_exact_path():
     )
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         matches = pretool_hook.find_memories_for_file("/project/hooks/retrieval.py", corrections_only=True)
 
     assert len(matches) == 1
@@ -480,7 +480,7 @@ def test_find_memories_for_file_by_basename():
     )
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         matches = pretool_hook.find_memories_for_file("/new/path/config.py", corrections_only=True)
 
     assert len(matches) == 1
@@ -502,7 +502,7 @@ def test_find_memories_for_file_skips_archived():
     )
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         matches = pretool_hook.find_memories_for_file("/project/foo.py", corrections_only=True)
 
     assert len(matches) == 0
@@ -523,7 +523,7 @@ def test_find_memories_for_file_no_match():
     )
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         matches = pretool_hook.find_memories_for_file("/project/unrelated.py", corrections_only=True)
 
     assert len(matches) == 0
@@ -545,7 +545,7 @@ def test_find_memories_for_file_max_injections():
         )
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         matches = pretool_hook.find_memories_for_file("/project/buggy.py", corrections_only=True)
 
     # find_memories_for_file returns ALL matches; the cap is applied in main() via [:MAX_GOTCHA_INJECTIONS]
@@ -580,7 +580,7 @@ def test_main_gotcha_outputs_additional_context():
     from io import StringIO
     captured = StringIO()
 
-    with _patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with _patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          _patch('sys.stdin', StringIO(hook_input)), \
          _patch('sys.stdout', captured), \
          _patch('sys.exit') as mock_exit:
@@ -617,7 +617,7 @@ def test_main_non_file_tool_exits_without_output():
     conn.commit()
 
     captured = SIO()
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch('sys.stdin', SIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls -la"}, "session_id": "s1"}))), \
          patch('sys.stdout', captured):
         with pytest.raises(SystemExit) as exc_info:
@@ -639,7 +639,7 @@ def test_main_empty_file_path_produces_no_output():
     conn.commit()
 
     captured = SIO()
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch('sys.stdin', SIO(json.dumps({"tool_name": "Read", "tool_input": {"file_path": ""}, "session_id": "s1"}))), \
          patch('sys.stdout', captured):
         with pytest.raises(SystemExit) as exc_info:
@@ -737,7 +737,7 @@ def test_find_memories_for_file_empty_path():
     )
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         matches = pretool_hook.find_memories_for_file("", corrections_only=True)
 
     assert len(matches) == 0, f"Empty file_path must return 0 matches, got {len(matches)}"
@@ -763,7 +763,7 @@ def test_find_memories_for_file_null_files():
     )
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         matches = pretool_hook.find_memories_for_file("/project/target.py", corrections_only=True)
 
     assert len(matches) == 1, f"Must return 1 valid match despite NULL associated_files row, got {len(matches)}"

@@ -68,7 +68,7 @@ def run_prompt_hook(db_path, payload):
 
         with patch('sys.stdin', StringIO(payload_json)), \
              patch('sys.stdout', captured), \
-             patch('sys.exit', mock_exit):
+             patch("sys.exit", mock_exit), patch("cairn.config.EPHEMERAL_DB_PATH", db_path):
             try:
                 prompt_hook.main()
             except SystemExit:
@@ -92,7 +92,7 @@ def test_first_prompt_detected():
     import hooks.prompt_hook as prompt_hook
     db_path, conn = fresh_env()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         assert prompt_hook.is_first_prompt("new-session") is True
     conn.close()
 
@@ -103,7 +103,7 @@ def test_second_prompt_not_first():
     import hooks.prompt_hook as prompt_hook
     db_path, conn = fresh_env()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         prompt_hook.mark_first_prompt_done("sess-1")
         assert prompt_hook.is_first_prompt("sess-1") is False
     conn.close()
@@ -115,7 +115,7 @@ def test_different_session_still_first():
     import hooks.prompt_hook as prompt_hook
     db_path, conn = fresh_env()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         prompt_hook.mark_first_prompt_done("sess-1")
         assert prompt_hook.is_first_prompt("sess-2") is True
     conn.close()
@@ -138,7 +138,7 @@ def test_staged_context_loaded():
     )
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         data = prompt_hook.load_staged_context("sess-1")
     assert data == "<cairn_context>test data</cairn_context>"
     conn.close()
@@ -160,7 +160,7 @@ def test_staged_context_consumed():
     )
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         prompt_hook.load_staged_context("sess-1")
 
     # sess-1 should be consumed, sess-2 should remain
@@ -181,7 +181,7 @@ def test_no_staged_context():
     import hooks.prompt_hook as prompt_hook
     db_path, conn = fresh_env()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         data = prompt_hook.load_staged_context("sess-nonexistent")
     assert data is None
     conn.close()
@@ -250,7 +250,7 @@ def test_injected_ids_stored_in_hook_state():
     )
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         result = run_prompt_hook(db_path, {
             "session_id": "sess-ids",
             "user_message": "tell me about the auth decisions"
@@ -285,7 +285,7 @@ def test_layer1_5_disabled_by_default():
         db_path, conn = fresh_env()
         conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s1', 'proj')")
         conn.commit()
-        with patch.object(hook_helpers, 'DB_PATH', db_path):
+        with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
             result = prompt_hook.layer1_5_search("what is the auth approach", "s1")
         assert result is None
         conn.close()
@@ -320,7 +320,7 @@ def test_layer1_5_injects_on_subsequent_prompt():
             "archived_reason": None, "similarity": 0.75, "score": 0.55,
         }]
 
-        with patch.object(hook_helpers, 'DB_PATH', db_path), \
+        with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
              patch('hooks.hook_helpers.get_embedder', return_value=mock_emb):
             result = prompt_hook.layer1_5_search("auth approach JWT", "s1")
 
@@ -365,7 +365,7 @@ def test_layer1_5_skips_already_injected():
             "archived_reason": None, "similarity": 0.80, "score": 0.60,
         }]
 
-        with patch.object(hook_helpers, 'DB_PATH', db_path), \
+        with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
              patch('hooks.hook_helpers.get_embedder', return_value=mock_emb):
             # L1.5 returns XML (dedup moved to central gate)
             result = prompt_hook.layer1_5_search("some query", "s1")

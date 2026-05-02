@@ -301,7 +301,7 @@ def test_boost_at_high_confidence_is_tiny():
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.9)")
     conn.commit()
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         apply_confidence_updates([(1, "+", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
     assert new_conf > 0.9, "Should increase"
@@ -318,7 +318,7 @@ def test_boost_at_low_confidence_is_meaningful():
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.3)")
     conn.commit()
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         apply_confidence_updates([(1, "+", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
     boost = new_conf - 0.3
@@ -335,7 +335,7 @@ def test_irrelevant_does_not_change_confidence():
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.9)")
     conn.commit()
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         apply_confidence_updates([(1, "-", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
     assert new_conf == 0.9, f"- should not change confidence, got {new_conf}"
@@ -351,7 +351,7 @@ def test_irrelevant_at_low_confidence_unchanged():
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.3)")
     conn.commit()
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         apply_confidence_updates([(1, "-", None)], session_id="s1")
     new_conf = conn.execute("SELECT confidence FROM memories WHERE id = 1").fetchone()[0]
     assert new_conf == 0.3, f"- should not change confidence, got {new_conf}"
@@ -422,7 +422,7 @@ def test_contradiction_annotation_writes_archived_reason():
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('decision', 'db-choice', 'Use PostgreSQL', 0.8)")
     conn.commit()
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         applied = apply_confidence_updates([(1, "-!", "replaced by SQLite for zero-config deployment")], session_id="s1")
     assert applied == 1
     row = conn.execute("SELECT confidence, archived_reason FROM memories WHERE id = 1").fetchone()
@@ -440,7 +440,7 @@ def test_contradiction_annotation_default_reason():
     db_path, conn = _confidence_db()
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 't', 'c', 0.7)")
     conn.commit()
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         apply_confidence_updates([(1, "-!", None)], session_id="s1")
     row = conn.execute("SELECT archived_reason FROM memories WHERE id = 1").fetchone()
     assert row[0] == "contradicted by later session", f"Expected exact default annotation, got: {row[0]}"
@@ -458,7 +458,7 @@ def test_mixed_feedback_types():
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('fact', 'b', 'mem b', 0.7)")
     conn.execute("INSERT INTO memories (type, topic, content, confidence) VALUES ('decision', 'c', 'mem c', 0.7)")
     conn.commit()
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         applied = apply_confidence_updates([
             (1, "+", None),
             (2, "-", None),

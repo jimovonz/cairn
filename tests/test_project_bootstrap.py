@@ -106,7 +106,7 @@ def test_project_bootstrap_behavioural():
                   content="skill mem")
     conn.close()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         result = project_bootstrap("sess-beh", "/home/user/Projects/myproject")
         hook_helpers.flush_metrics()
 
@@ -164,7 +164,7 @@ def test_project_bootstrap_edge():
                       updated_at=f"2026-04-01 {10+i:02d}:00:00")
     conn.close()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         # Empty / invalid CWD returns None
         assert project_bootstrap("s1", "") is None
         assert project_bootstrap("s1", "/") is None
@@ -177,12 +177,12 @@ def test_project_bootstrap_edge():
         assert project_bootstrap("s1", "/home/user/nomatch") is None
 
     # Disabled via config returns None
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(config, 'PROJECT_BOOTSTRAP_ENABLED', False):
         assert project_bootstrap("s1", "/home/user/captest") is None
 
     # Max cap: 10 inserted but only PROJECT_BOOTSTRAP_MAX (5) returned
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         result = project_bootstrap("s-cap", "/home/user/captest")
 
     entries = parse_entries(result)
@@ -209,7 +209,7 @@ def test_project_bootstrap_error():
     broken_conn.commit()
     broken_conn.close()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         result = project_bootstrap("sess-err", "/home/user/someproject")
 
     # Must return None, not raise
@@ -248,7 +248,7 @@ def test_project_bootstrap_adversarial():
     conn.commit()
     conn.close()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         result = project_bootstrap("sess-adv", "/home/user/weirdproject")
 
     entries = parse_entries(result)

@@ -129,7 +129,7 @@ def test_retrieve_context_rrf_dual_match_outranks_single_method():
          "depth": None, "archived_reason": None},
     ]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'), \
@@ -180,7 +180,7 @@ def test_retrieve_context_same_session_excluded_from_both_paths():
          "session_id": "other-session", "depth": None, "archived_reason": None},
     ]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'), \
@@ -209,7 +209,7 @@ def test_retrieve_context_fts_only_uses_composite_score_with_correct_sim():
     mock_emb = MagicMock()
     mock_emb.find_similar.side_effect = ConnectionError("embedding unavailable")
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'), \
@@ -249,7 +249,7 @@ def test_retrieve_context_max_per_scope_caps_fts_output_exactly():
     mock_emb = MagicMock()
     mock_emb.find_similar.side_effect = ConnectionError("no semantic")
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'), \

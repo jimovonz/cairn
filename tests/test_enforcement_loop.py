@@ -103,7 +103,7 @@ def run_hook(db_path, payload):
         with patch('sys.stdin', StringIO(json.dumps(payload))), \
              patch('sys.stdout', captured), \
              patch('sys.exit', mock_exit), \
-             patch.object(hook_helpers, 'get_embedder', return_value=None):
+             patch.object(hook_helpers, 'get_embedder', return_value=None), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
             try:
                 stop_hook.main()
             except SystemExit:

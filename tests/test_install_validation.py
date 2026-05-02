@@ -81,7 +81,8 @@ init_db.init()
         ).fetchall()}
         conn.close()
 
-        required = {"memories", "memory_history", "sessions", "metrics", "hook_state"}
+        # metrics, hook_state, pair_assessments now live in cairn-ephemeral.db (init_ephemeral)
+        required = {"memories", "memory_history", "sessions"}
         assert required.issubset(tables), \
             f"Missing tables: {required - tables}. Found: {tables}"
 
@@ -108,7 +109,7 @@ init_db.init()
         conn.close()
 
         required = {"idx_memories_type", "idx_memories_topic", "idx_memories_project",
-                     "idx_metrics_event", "idx_history_memory_id"}
+                     "idx_history_memory_id"}
         assert required.issubset(indexes), \
             f"Missing indexes: {required - indexes}. Found: {indexes}"
 

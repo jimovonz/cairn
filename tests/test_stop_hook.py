@@ -101,6 +101,7 @@ def run_hook(db_path, payload, env_override=None):
             patch("sys.stdout", captured_output),
             patch("sys.exit", mock_exit),
             patch.object(hook_helpers, "get_embedder", return_value=mock_embedder),
+            patch("cairn.config.EPHEMERAL_DB_PATH", db_path),
         ]
         if env_override:
             ctx_managers.append(patch.dict(os.environ, env_override))
@@ -431,7 +432,7 @@ def test_main_context_insufficient_triggers_retrieval():
         with patch("sys.stdin", StringIO(json.dumps(payload))), \
              patch("sys.stdout", captured_output), \
              patch("sys.exit", mock_exit), \
-             patch.object(hh, "get_embedder", return_value=mock_emb), \
+             patch.object(hh, "get_embedder", return_value=mock_emb), patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
              patch.object(stop_hook, "retrieve_context",
                           return_value='<entry id="99" score="0.8">test context</entry>'), \
              patch.object(stop_hook, "load_context_cache", return_value=[]), \
@@ -883,7 +884,7 @@ def test_main_trailing_intent_blocks():
         with patch("sys.stdin", StringIO(json.dumps(payload))), \
              patch("sys.stdout", captured_output), \
              patch("sys.exit", mock_exit), \
-             patch.object(hh, "get_embedder", return_value=mock_emb):
+             patch.object(hh, "get_embedder", return_value=mock_emb), patch("cairn.config.EPHEMERAL_DB_PATH", db_path):
             try:
                 stop_hook.main()
             except SystemExit:

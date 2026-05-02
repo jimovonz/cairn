@@ -40,9 +40,9 @@ TABLES_TO_RECOVER = (
     "memories",
     "memory_history",
     "sessions",
-    "metrics",
-    "hook_state",
 )
+# metrics, hook_state, pair_assessments live in cairn-ephemeral.db
+# (see init_ephemeral) and are recovered separately via recover_ephemeral().
 
 
 def _can_read_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -206,14 +206,14 @@ def recover(db_path: str) -> bool:
     for table in TABLES_TO_RECOVER:
         _copy_table(old, new, table)
 
-    # 4. Gather session IDs from memories and metrics for reconstruction
-    for source_table in ("memories", "metrics"):
-        try:
-            for (sid,) in old.execute(f"SELECT DISTINCT session_id FROM {source_table} WHERE session_id IS NOT NULL"):
-                if sid:
-                    known_session_ids.add(sid)
-        except sqlite3.DatabaseError:
-            pass
+    # 4. Gather session IDs from memories for reconstruction
+    # (metrics moved to ephemeral DB; sessions can also be reconstructed from there if needed)
+    try:
+        for (sid,) in old.execute("SELECT DISTINCT session_id FROM memories WHERE session_id IS NOT NULL"):
+            if sid:
+                known_session_ids.add(sid)
+    except sqlite3.DatabaseError:
+        pass
 
     # 5. Reconstruct sessions from transcripts for any missing IDs
     existing_sids = {r[0] for r in new.execute("SELECT session_id FROM sessions").fetchall()}

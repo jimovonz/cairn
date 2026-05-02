@@ -136,7 +136,7 @@ def test_retrieve_context_rrf_dual_match_ranks_higher():
                              project="proj", confidence=0.8, similarity=0.65, score=0.55),
     ]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         result = retrieval.retrieve_context("JWT authentication tokens", session_id="s1")
 
@@ -176,7 +176,7 @@ def test_retrieve_context_xml_structure():
                              project="otherproj", confidence=0.6, similarity=0.55, score=0.45),
     ]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         result = retrieval.retrieve_context("database schema migration", session_id="s1")
 
@@ -213,7 +213,7 @@ def test_retrieve_context_fts_only_no_embedder():
                        content="SQLite WAL mode fixed concurrent access deadlock",
                        project="proj", confidence=0.8, session_id="other")
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=None), \
          patch.object(embeddings_mod, 'composite_score', return_value=0.75):
         result = retrieval.retrieve_context("SQLite WAL deadlock", session_id="s1")
@@ -269,7 +269,7 @@ def test_retrieve_context_max_per_scope_caps():
             score=0.45 - i * 0.05))
     mock_emb.find_similar.return_value = sem_results
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         result = retrieval.retrieve_context("caching strategy", session_id="s1",
                                             max_per_scope=1)
@@ -306,7 +306,7 @@ def test_retrieve_context_embedder_connection_error():
     mock_emb = MagicMock()
     mock_emb.find_similar.side_effect = ConnectionError("Embedding service unreachable")
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         result = retrieval.retrieve_context("Redis caching latency", session_id="s1")
 
@@ -338,7 +338,7 @@ def test_retrieve_context_null_confidence():
     mock_emb = MagicMock()
     mock_emb.find_similar.return_value = []  # No semantic results
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         result = retrieval.retrieve_context("deployment pipeline confidence", session_id="s1")
 
@@ -374,7 +374,7 @@ def test_retrieve_context_same_session_excluded():
                              similarity=0.95, score=0.80),
     ]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         result = retrieval.retrieve_context("recursive self reference", session_id="s1")
 
@@ -398,7 +398,7 @@ def test_retrieve_context_sql_injection_in_query():
 
     malicious_query = '''Robert"); DROP TABLE memories; --'''
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         # Should not raise — parameterised queries prevent injection
         result = retrieval.retrieve_context(malicious_query, session_id="s1")

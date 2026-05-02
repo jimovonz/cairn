@@ -62,29 +62,10 @@ def init():
         conn.execute("ALTER TABLE sessions ADD COLUMN project TEXT")
     except sqlite3.OperationalError:
         pass
-    # Performance metrics
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS metrics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event TEXT NOT NULL,
-            session_id TEXT,
-            detail TEXT,
-            value REAL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_event ON metrics(event)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_session ON metrics(session_id)")
-    # Hook state — replaces file-based state for atomicity under concurrent access
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS hook_state (
-            session_id TEXT NOT NULL,
-            key TEXT NOT NULL,
-            value TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (session_id, key)
-        )
-    """)
+    # metrics, hook_state, pair_assessments live in cairn-ephemeral.db (see
+    # init_ephemeral). Keeping high-frequency writers off the durable file
+    # contains corruption blast radius — they corrupt first under concurrent
+    # WAL writers and would cascade to memories if hosted here.
     # Correction triggers — behavioural pattern detection
     conn.execute("""
         CREATE TABLE IF NOT EXISTS correction_triggers (
@@ -183,20 +164,7 @@ def init():
             VALUES (new.id, new.topic, new.content, new.keywords);
         END
     """)
-    # Pair assessment cache — records which memory pairs have been assessed
-    # for consolidation/contradiction so incremental runs skip already-checked pairs
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS pair_assessments (
-            memory_id_a INTEGER NOT NULL,
-            memory_id_b INTEGER NOT NULL,
-            mode TEXT NOT NULL,
-            verdict TEXT NOT NULL,
-            reason TEXT,
-            assessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (memory_id_a, memory_id_b, mode)
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_pair_mode ON pair_assessments(mode)")
+    # pair_assessments lives in cairn-ephemeral.db (see init_ephemeral)
     # Rebuild FTS index if we migrated
     if _fts_needs_rebuild:
         conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")

@@ -93,7 +93,8 @@ def run_hook(db_path, payload):
 
         with patch('sys.stdin', StringIO(json.dumps(payload))), \
              patch('sys.stdout', captured), \
-             patch('sys.exit', mock_exit):
+             patch('sys.exit', mock_exit), \
+             patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
             try:
                 stop_hook.main()
             except SystemExit:
@@ -361,9 +362,9 @@ class TestContentQualityGate:
         conn.commit()
 
         import hooks.stop_hook as stop_hook
-        with patch.object(hook_helpers, 'DB_PATH', db_path), \
+        with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
              patch.object(hook_helpers, 'LOG_PATH', os.path.join(TEST_DIR, 'quality.log')), \
-             patch.object(hook_helpers, 'get_embedder', return_value=None):
+             patch.object(hook_helpers, 'get_embedder', return_value=None), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
             count = storage.insert_memories([
                 {"type": "fact", "topic": "good", "content": "User prefers dark mode in all editors"},
                 {"type": "fact", "topic": "bad", "content": "no context available for this question"},
