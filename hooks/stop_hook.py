@@ -57,7 +57,7 @@ def _enqueue_or_insert(entries, session_id, transcript_path) -> int:
     if not entries:
         return 0
     if _async_writes_enabled():
-        from hooks.queue import enqueue_memories, spawn_drain
+        from hooks.write_queue import enqueue_memories, spawn_drain
         enqueue_memories(entries, session_id=session_id, transcript_path=transcript_path)
         spawn_drain()
         return len(entries)
@@ -68,7 +68,7 @@ def _enqueue_or_apply_confidence(updates, session_id) -> int:
     if not updates:
         return 0
     if _async_writes_enabled():
-        from hooks.queue import enqueue_confidence_updates, spawn_drain
+        from hooks.write_queue import enqueue_confidence_updates, spawn_drain
         enqueue_confidence_updates(updates, session_id=session_id)
         spawn_drain()
         return len(updates)
