@@ -308,10 +308,18 @@ def init_ephemeral(path=None):
             payload TEXT NOT NULL,
             session_id TEXT,
             transcript_path TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_writes_seq ON pending_writes(seq)")
+    # Migrate existing DBs that pre-date attempts/last_error columns
+    for col, coltype in [("attempts", "INTEGER NOT NULL DEFAULT 0"), ("last_error", "TEXT")]:
+        try:
+            conn.execute(f"ALTER TABLE pending_writes ADD COLUMN {col} {coltype}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 

@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import time
+from typing import Optional
 
 # Ensure repo importable when invoked as a detached subprocess
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -97,30 +98,40 @@ def _drain_loop(fd: int) -> None:
             continue
 
         seq = row[0]
+        _last_error: Optional[str] = None
         try:
             ok = _process_one(row, None)
         except Exception as e:
-            log_error(f"drain: seq={seq} failed: {type(e).__name__}: {e}")
+            _last_error = f"{type(e).__name__}: {e}"
+            log_error(f"drain: seq={seq} failed: {_last_error}")
             ok = False
 
         del_conn = get_ephemeral_conn()
         try:
             if ok:
                 del_conn.execute("DELETE FROM pending_writes WHERE seq = ?", (seq,))
+                del_conn.commit()
             else:
-                # Best-effort retry counter via session_id field abuse would be
-                # hacky; simpler: drop after a brief sleep so transient errors
-                # have a chance to clear, then delete on next failure.
-                del_conn.execute(
-                    "UPDATE pending_writes SET created_at = CURRENT_TIMESTAMP WHERE seq = ?",
-                    (seq,),
-                )
-                # Count failures by counting how many times we've touched this row.
-                # If older than MAX_RETRIES poll cycles, give up.
-                # Simple approach: just drop after one retry to avoid blocking.
-                del_conn.execute("DELETE FROM pending_writes WHERE seq = ?", (seq,))
-                log_error(f"drain: dropping seq={seq} after failure")
-            del_conn.commit()
+                # Increment attempts; only drop after MAX_RETRIES so transient
+                # errors (DB locked, corruption mid-recovery) do not lose entries.
+                attempts_row = del_conn.execute(
+                    "SELECT attempts FROM pending_writes WHERE seq = ?", (seq,)
+                ).fetchone()
+                attempts = (attempts_row[0] if attempts_row else 0) + 1
+                if attempts >= MAX_RETRIES:
+                    del_conn.execute("DELETE FROM pending_writes WHERE seq = ?", (seq,))
+                    log_error(f"drain: seq={seq} dropped after {attempts} attempts (poison row)")
+                    del_conn.commit()
+                else:
+                    del_conn.execute(
+                        "UPDATE pending_writes SET attempts = ?, last_error = ? WHERE seq = ?",
+                        (attempts, str(_last_error)[:500] if _last_error else None, seq),
+                    )
+                    log(f"drain: seq={seq} attempt {attempts}/{MAX_RETRIES} failed, leaving in queue")
+                    del_conn.commit()
+                    # Stop on first failure — do not hammer a broken DB. Next drain
+                    # spawn (after next user turn) retries.
+                    return
         finally:
             del_conn.close()
 
