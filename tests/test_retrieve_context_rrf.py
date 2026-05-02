@@ -120,7 +120,7 @@ def test_rrf_dual_match_scores_higher_than_single():
          "updated_at": "2026-04-01 12:00:00", "project": None, "session_id": "other"},
     ]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'), \
@@ -170,7 +170,7 @@ def test_same_session_excluded_from_both_ranking_methods():
          "session_id": "other-session"},
     ]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'), \
@@ -197,7 +197,7 @@ def test_fts_only_calls_composite_score_not_hardcoded_baseline():
     mock_emb = MagicMock()
     mock_emb.find_similar.side_effect = ConnectionError("embedding service down")
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'), \
@@ -237,7 +237,7 @@ def test_max_per_scope_caps_output_entries():
     mock_emb = MagicMock()
     mock_emb.find_similar.side_effect = ConnectionError("no embedder")
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'), \

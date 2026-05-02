@@ -324,7 +324,7 @@ def test_low_info_context_need_filtered_through_main():
     def mock_exit(code=0):
         raise SystemExit(code)
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'LOG_PATH', os.path.join(TEST_DIR, 'prefilter.log')), \
          patch.object(hook_helpers, 'get_embedder', return_value=None), \
@@ -384,7 +384,7 @@ def test_substantive_context_need_not_filtered():
     def mock_exit(code=0):
         raise SystemExit(code)
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'LOG_PATH', os.path.join(TEST_DIR, 'subst.log')), \
          patch.object(hook_helpers, 'get_embedder', return_value=None), \

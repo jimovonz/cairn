@@ -69,7 +69,7 @@ def run_main(hook_input_dict, db_path):
 
     exit_code = None
     with patch("sys.stdin", io.StringIO(stdin_data)), \
-         patch.object(hook_helpers, "DB_PATH", db_path), \
+         patch.object(hook_helpers, "DB_PATH", db_path), patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
          patch("hooks.pretool_hook.record_metric"), \
          patch("hooks.pretool_hook.log"), \
          patch("builtins.print", side_effect=fake_print):
@@ -104,7 +104,7 @@ def test_find_memories_for_file_behavioural():
     conn.commit()
     conn.close()
 
-    with patch.object(hook_helpers, "DB_PATH", db_path), \
+    with patch.object(hook_helpers, "DB_PATH", db_path), patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
          patch("hooks.pretool_hook.log"):
         results = find_memories_for_file("/src/auth.py", corrections_only=True)
 
@@ -135,7 +135,7 @@ def test_find_memories_for_file_edge():
     conn.commit()
     conn.close()
 
-    with patch.object(hook_helpers, "DB_PATH", db_path), \
+    with patch.object(hook_helpers, "DB_PATH", db_path), patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
          patch("hooks.pretool_hook.log"):
         results = find_memories_for_file("/new/project/storage.py", corrections_only=False)
 
@@ -155,7 +155,7 @@ def test_find_memories_for_file_error():
     conn.commit()
     conn.close()  # memories table deliberately not created
 
-    with patch.object(hook_helpers, "DB_PATH", db_path), \
+    with patch.object(hook_helpers, "DB_PATH", db_path), patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
          patch("hooks.pretool_hook.log") as mock_log:
         results = find_memories_for_file("/any/file.py", corrections_only=False)
 
@@ -184,7 +184,7 @@ def test_find_memories_for_file_adversarial():
     conn.commit()
     conn.close()
 
-    with patch.object(hook_helpers, "DB_PATH", db_path), \
+    with patch.object(hook_helpers, "DB_PATH", db_path), patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
          patch("hooks.pretool_hook.log"):
         results = find_memories_for_file("/target/file.py", corrections_only=False)
 

@@ -84,33 +84,13 @@ def get_conn() -> sqlite3.Connection:
 
 
 def get_ephemeral_conn() -> sqlite3.Connection:
-    """Create a SQLite connection to the ephemeral DB (metrics, hook_state, pair_assessments).
-    Falls back to main DB if ephemeral tables exist there (backward compat + tests).
-    Order: main DB first (respects test DB_PATH patches), then dedicated ephemeral file."""
-    # Try main DB first — works for tests and pre-migration installs
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("PRAGMA busy_timeout=5000")
-        # Main DB hosts memories_vec; load extension so any vec0 ops in this connection succeed.
-        _load_sqlite_vec(conn)
-        # Check for any ephemeral table (tests may have hook_state but not metrics)
-        has_ephemeral = False
-        for tbl in ("metrics", "hook_state", "pair_assessments"):
-            try:
-                conn.execute(f"SELECT 1 FROM {tbl} LIMIT 0")
-                has_ephemeral = True
-                break
-            except sqlite3.OperationalError:
-                continue
-        if has_ephemeral:
-            return conn
-        conn.close()
-    except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        try:
-            conn.close()
-        except Exception:
-            pass
-    # Main DB doesn't have metrics — use dedicated ephemeral DB
+    """Create a SQLite connection to the ephemeral DB (metrics, hook_state,
+    pair_assessments). Always uses the dedicated ephemeral file — no fallback
+    to main DB. Containing high-frequency writers off the durable file is the
+    whole point of the split; falling back defeats it.
+
+    Tests share path by patching cairn.config.EPHEMERAL_DB_PATH to the test
+    DB_PATH; auto-init via init_ephemeral handles missing tables on first use."""
     from cairn.config import EPHEMERAL_DB_PATH
     conn = sqlite3.connect(EPHEMERAL_DB_PATH)
     conn.execute("PRAGMA busy_timeout=5000")

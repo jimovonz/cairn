@@ -186,9 +186,15 @@ DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for l
 # from the durable memory DB to contain corruption blast radius.
 import os as _os_path
 CAIRN_DIR = _os_path.path.dirname(_os_path.path.abspath(__file__))
-EPHEMERAL_DB_PATH = _os_path.path.join(CAIRN_DIR, "cairn-ephemeral.db")
+# Test convenience: when CAIRN_DB_PATH is set without a separate
+# CAIRN_EPHEMERAL_DB_PATH override, default ephemeral to the same path so
+# subprocess-based tests share one DB file. The env-override loop below still
+# upgrades EPHEMERAL_DB_PATH if CAIRN_EPHEMERAL_DB_PATH is explicitly set.
+_test_shared = (_os_path.environ.get("CAIRN_DB_PATH")
+                if not _os_path.environ.get("CAIRN_EPHEMERAL_DB_PATH") else None)
+EPHEMERAL_DB_PATH = _test_shared or _os_path.path.join(CAIRN_DIR, "cairn-ephemeral.db")
 SENTINEL_PATH = _os_path.path.join(CAIRN_DIR, ".impaired")
-del _os_path
+del _os_path, _test_shared
 
 # === Health monitoring ===
 DAEMON_FAIL_THRESHOLD = 5

@@ -55,7 +55,7 @@ def run_hook(db_path, payload):
         with patch("sys.stdin", StringIO(payload_json)), \
              patch("sys.stdout", captured_output), \
              patch("sys.exit", mock_exit), \
-             patch.object(hook_helpers, "log", lambda msg: None):
+             patch.object(hook_helpers, "log", lambda msg: None), patch("cairn.config.EPHEMERAL_DB_PATH", db_path):
             try:
                 posttool_hook.main()
             except SystemExit:
@@ -342,7 +342,7 @@ class TestMemoryNoteCollection:
         try:
             hook_helpers.DB_PATH = db_path
             with patch.object(hook_helpers, "log", lambda msg: None), \
-                 patch("hooks.hook_helpers.get_embedder", return_value=None):
+                 patch("hooks.hook_helpers.get_embedder", return_value=None), patch("cairn.config.EPHEMERAL_DB_PATH", db_path):
                 count = collect_memory_notes(transcript, "sess-collect-1", [])
         finally:
             hook_helpers.DB_PATH = original_db
@@ -369,7 +369,7 @@ class TestMemoryNoteCollection:
         try:
             hook_helpers.DB_PATH = db_path
             with patch.object(hook_helpers, "log", lambda msg: None), \
-                 patch("hooks.hook_helpers.get_embedder", return_value=None):
+                 patch("hooks.hook_helpers.get_embedder", return_value=None), patch("cairn.config.EPHEMERAL_DB_PATH", db_path):
                 count = collect_memory_notes(transcript, "sess-collect-2", final_entries)
         finally:
             hook_helpers.DB_PATH = original_db
@@ -395,7 +395,7 @@ class TestMemoryNoteCollection:
         try:
             hook_helpers.DB_PATH = db_path
             with patch.object(hook_helpers, "log", lambda msg: None), \
-                 patch("hooks.hook_helpers.get_embedder", return_value=None):
+                 patch("hooks.hook_helpers.get_embedder", return_value=None), patch("cairn.config.EPHEMERAL_DB_PATH", db_path):
                 count = collect_memory_notes(transcript, "sess-collect-3", [])
         finally:
             hook_helpers.DB_PATH = original_db

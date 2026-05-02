@@ -96,7 +96,7 @@ def test_get_adaptive_threshold_boost_high_harmful_rate():
         conn.execute("INSERT INTO metrics (event, session_id) VALUES ('retrieval_useful', 's1')")
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         boost = retrieval.get_adaptive_threshold_boost()
 
     assert boost == 0.10, f"Expected 0.10 for 60% harmful rate, got {boost}"
@@ -112,7 +112,7 @@ def test_get_adaptive_threshold_boost_insufficient_data():
         conn.execute("INSERT INTO metrics (event, session_id) VALUES ('retrieval_harmful', 's1')")
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         boost = retrieval.get_adaptive_threshold_boost()
 
     assert boost == 0.0, f"Expected 0.0 for < 5 total metrics, got {boost}"
@@ -143,7 +143,7 @@ def test_get_adaptive_threshold_boost_boundary_fifty_percent():
         conn.execute("INSERT INTO metrics (event, session_id) VALUES ('retrieval_useful', 's1')")
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         boost = retrieval.get_adaptive_threshold_boost()
 
     # 50% is NOT > 0.5, so falls to the > 0.3 branch => 0.05
@@ -179,7 +179,7 @@ def test_retrieve_context_project_and_global():
          "updated_at": "2026-03-20 12:00:00", "project": "ProjB", "session_id": "other-session"},
     ]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'), \
@@ -212,7 +212,7 @@ def test_retrieve_context_no_results_returns_none():
     mock_emb = MagicMock()
     mock_emb.find_similar.return_value = []
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch('hooks.retrieval.record_metric') as mock_metric, \
          patch('hooks.retrieval.log'), \
@@ -241,7 +241,7 @@ def test_retrieve_context_embedding_error_fts_fallback():
     mock_emb = MagicMock()
     mock_emb.find_similar.side_effect = ConnectionError("daemon down")
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'), \
@@ -271,7 +271,7 @@ def test_retrieve_context_only_stopwords():
     mock_emb = MagicMock()
     mock_emb.find_similar.return_value = []
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch('hooks.retrieval.record_metric') as mock_metric, \
          patch.object(hook_helpers, 'log'), \
@@ -309,7 +309,7 @@ def test_layer2_cross_project_search_stages_results():
         "updated_at": "2026-03-20 12:00:00", "project": "ProjB",
     }]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'):
@@ -352,7 +352,7 @@ def test_layer2_cross_project_search_search_error():
     mock_emb = MagicMock()
     mock_emb.find_similar.side_effect = RuntimeError("embedding service down")
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'log'):
         retrieval.layer2_cross_project_search(["test", "keywords"], session_id="s1")
@@ -380,7 +380,7 @@ def test_layer2_cross_project_search_all_same_project():
          "updated_at": "2026-03-20 12:00:00", "project": "ProjA"},
     ]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'):
@@ -466,7 +466,7 @@ def test_load_context_cache_returns_parsed():
         ("s1", json.dumps(data)))
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         result = retrieval.load_context_cache("s1")
 
     assert len(result) == 1
@@ -486,7 +486,7 @@ def test_save_context_cache_persists():
     db_path, conn = fresh_db()
 
     data = [{"text": "saved query"}]
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         retrieval.save_context_cache("s1", data)
 
     row = conn.execute(
@@ -578,7 +578,7 @@ def test_load_context_cache_missing_session():
     db_path, conn = fresh_db()
     # No hook_state rows inserted
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         result = retrieval.load_context_cache("nonexistent-session")
 
     assert result == []
@@ -595,7 +595,7 @@ def test_load_context_cache_corrupt_json():
         ("s1", "THIS IS NOT JSON {{{"))
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         result = retrieval.load_context_cache("s1")
 
     assert result == []
@@ -612,7 +612,7 @@ def test_load_context_cache_null_value():
         ("s1",))
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         result = retrieval.load_context_cache("s1")
 
     assert result == []
@@ -629,7 +629,7 @@ def test_load_context_cache_null_value():
 def test_save_context_cache_empty_list():
     db_path, conn = fresh_db()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         retrieval.save_context_cache("s1", [])
 
     row = conn.execute(
@@ -649,7 +649,7 @@ def test_save_context_cache_overwrites_existing():
     conn.commit()
 
     new_data = [{"text": "new-entry"}]
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         retrieval.save_context_cache("s1", new_data)
 
     row = conn.execute(
@@ -669,10 +669,10 @@ def test_save_context_cache_special_chars_roundtrip():
     db_path, conn = fresh_db()
     data = [{"text": 'query with "quotes" and \u00e9 unicode'}]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         retrieval.save_context_cache("s1", data)
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         result = retrieval.load_context_cache("s1")
 
     assert len(result) == 1

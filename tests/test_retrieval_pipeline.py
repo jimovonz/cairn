@@ -158,7 +158,7 @@ def test_insert_dedup_near_identical():
     mock_emb.upsert_vec_index = MagicMock()
     mock_emb.cosine_similarity = lambda a, b: float(np.dot(a, b))
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         storage.insert_memories([{"type": "fact", "topic": "test", "content": "first version"}], session_id="s1")
 
@@ -171,7 +171,7 @@ def test_insert_dedup_near_identical():
         "content": existing[3], "similarity": 0.98, "confidence": existing[4]
     }]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         storage.insert_memories([{"type": "fact", "topic": "test", "content": "first version slightly rephrased"}], session_id="s1")
 
@@ -201,7 +201,7 @@ def test_insert_distinct_variant_preserved():
     mock_emb.cosine_similarity.return_value = 0.3  # Low similarity — distinct variant
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         storage.insert_memories([{
             "type": "decision", "topic": "positioning",
@@ -231,7 +231,7 @@ def test_insert_contradiction_overwrites_with_confidence_drop():
     mock_emb.cosine_similarity.return_value = 0.95  # High similarity — true update, not variant
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'):
         storage.insert_memories([{
@@ -266,7 +266,7 @@ def test_insert_without_embedding():
     mock_emb = MagicMock()
     mock_emb.embed.return_value = None  # Daemon not available
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'log'):
         storage.insert_memories([{
@@ -300,7 +300,7 @@ def test_retrieve_returns_structured_xml():
         "depth": 3
     }]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'):
@@ -324,7 +324,7 @@ def test_retrieve_returns_none_when_no_match():
     mock_emb = MagicMock()
     mock_emb.find_similar.return_value = []
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'):
@@ -357,7 +357,7 @@ def test_retrieve_separates_project_and_global():
          "depth": None},
     ]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'):
@@ -379,7 +379,7 @@ def test_adaptive_threshold_no_data():
     import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         boost = retrieval.get_adaptive_threshold_boost()
 
     assert boost == 0.0
@@ -399,7 +399,7 @@ def test_adaptive_threshold_with_harmful_outcomes():
         conn.execute("INSERT INTO metrics (event, session_id) VALUES ('retrieval_useful', 's1')")
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         boost = retrieval.get_adaptive_threshold_boost()
 
     assert boost > 0, f"Expected positive boost for high harmful rate, got {boost}"
@@ -418,7 +418,7 @@ def test_adaptive_threshold_with_good_outcomes():
         conn.execute("INSERT INTO metrics (event, session_id) VALUES ('retrieval_neutral', 's1')")
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path):
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
         boost = retrieval.get_adaptive_threshold_boost()
 
     assert boost == 0.0
@@ -448,7 +448,7 @@ def test_layer2_stages_cross_project_results():
         "depth": None
     }]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'):
@@ -483,7 +483,7 @@ def test_layer2_excludes_current_project():
         "depth": None
     }]
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'):
@@ -507,7 +507,7 @@ def test_register_session_new():
     import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'log'):
         stop_hook.register_session("sess-new", "")
 
@@ -522,7 +522,7 @@ def test_register_session_idempotent():
     import hooks.stop_hook as stop_hook
     db_path, conn = fresh_db()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'log'):
         stop_hook.register_session("sess-idem", "")
         stop_hook.register_session("sess-idem", "")
@@ -544,7 +544,7 @@ def test_auto_label_from_deep_path():
     conn.execute("INSERT INTO sessions (session_id) VALUES ('s-deep')")
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'log'):
         stop_hook.auto_label_project("s-deep", "/home/user/Projects/robotics/nav-system")
 
@@ -561,7 +561,7 @@ def test_auto_label_skips_root():
     conn.execute("INSERT INTO sessions (session_id) VALUES ('s-root')")
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'log'):
         stop_hook.auto_label_project("s-root", "/")
 
@@ -578,7 +578,7 @@ def test_auto_label_skips_home():
     conn.execute("INSERT INTO sessions (session_id) VALUES ('s-home')")
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'log'):
         stop_hook.auto_label_project("s-home", "/home")
 
@@ -595,7 +595,7 @@ def test_auto_label_does_not_overwrite():
     conn.execute("INSERT INTO sessions (session_id, project) VALUES ('s-existing', 'AlreadyLabelled')")
     conn.commit()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'log'):
         stop_hook.auto_label_project("s-existing", "/home/user/different-project")
 
@@ -644,7 +644,7 @@ def test_negation_dampening_in_insert():
     mock_emb.cosine_similarity = lambda a, b: 0.75
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'record_metric'), \
          patch.object(hook_helpers, 'log'):
@@ -689,7 +689,7 @@ def test_type_topic_contradiction_annotates():
     mock_emb.cosine_similarity = lambda a, b: 0.85  # Above DISTINCT_VARIANT_SIM_THRESHOLD (0.8)
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(storage, 'record_metric') as mock_metric, \
          patch.object(hook_helpers, 'log'), \
@@ -731,7 +731,7 @@ def test_auto_backfill_triggered_when_embeddings_missing():
     mock_emb = MagicMock()
     mock_emb.embed.return_value = None  # Daemon unavailable — no embedding
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(hook_helpers, 'log'), \
          patch.object(storage, 'inline_backfill') as mock_backfill:
@@ -758,7 +758,7 @@ def test_no_backfill_when_all_have_embeddings():
     mock_emb.find_nearest.return_value = []
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
          patch.object(storage, 'inline_backfill') as mock_backfill:
         storage.insert_memories([{
@@ -788,7 +788,7 @@ def testinline_backfill_fills_missing():
     mock_emb.to_blob.return_value = make_blob(100)
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         storage.inline_backfill(conn)
 
@@ -818,7 +818,7 @@ def testinline_backfill_bounded():
     mock_emb.to_blob.return_value = make_blob(100)
     mock_emb.upsert_vec_index = MagicMock()
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         storage.inline_backfill(conn)
 
@@ -842,7 +842,7 @@ def testinline_backfill_daemon_unavailable():
     mock_emb = MagicMock()
     mock_emb.embed.return_value = None  # daemon unavailable
 
-    with patch.object(hook_helpers, 'DB_PATH', db_path), \
+    with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
          patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
         storage.inline_backfill(conn)
 

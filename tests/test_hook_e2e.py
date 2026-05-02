@@ -81,7 +81,7 @@ def run_hook(db_path, payload):
         with patch('sys.stdin', StringIO(payload_json)), \
              patch('sys.stdout', captured_output), \
              patch('sys.exit', mock_exit), \
-             patch.object(hook_helpers, 'get_embedder', return_value=None):
+             patch.object(hook_helpers, 'get_embedder', return_value=None), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
             try:
                 stop_hook.main()
             except SystemExit:
@@ -475,7 +475,7 @@ def test_contradiction_enforcement_blocks():
         with patch('sys.stdin', StringIO(payload_json)), \
              patch('sys.stdout', captured_output), \
              patch('sys.exit', mock_exit), \
-             patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+             patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
              patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
             try:
                 stop_hook.main()
@@ -559,7 +559,7 @@ def test_contradiction_enforcement_skips_when_annotated():
         with patch('sys.stdin', StringIO(payload_json)), \
              patch('sys.stdout', captured_output), \
              patch('sys.exit', mock_exit), \
-             patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+             patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
              patch.object(stop_hook, 'get_embedder', return_value=mock_emb):
             try:
                 stop_hook.main()
