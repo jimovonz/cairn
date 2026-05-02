@@ -1,0 +1,2 @@
+#!/bin/bash
+exec "$(dirname "$(realpath "$0")")/.venv/bin/python3" "$(dirname "$(realpath "$0")")/cairn/graph.py" "$@"

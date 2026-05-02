@@ -1486,6 +1486,11 @@ def main_entry():
         query_deps(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
     elif cmd == "--stats":
         stats()
+    elif cmd in ("--location", "--callers", "--callees", "--tests", "--summary",
+                 "--knowledge", "--context-pack", "--impact"):
+        from cairn.graph import main as graph_main
+        sys.argv = [sys.argv[0]] + sys.argv[1:]
+        graph_main()
     else:
         format_rows(search(" ".join(sys.argv[1:])))
 
