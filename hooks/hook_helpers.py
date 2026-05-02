@@ -56,10 +56,30 @@ def log_error(msg: str) -> None:
     _logger.error(msg)
 
 
+_VEC_LOAD_WARNED = False
+
+
+def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
+    """Load sqlite-vec extension. Without it, writes to memories_vec fail with
+    'no such module: vec0', leaving the ANN index empty so find_nearest falls
+    back to a Python-side cosine scan over every row — orders of magnitude slower."""
+    global _VEC_LOAD_WARNED
+    try:
+        import sqlite_vec  # type: ignore[import-untyped]
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+    except (ImportError, OSError, AttributeError) as e:
+        if not _VEC_LOAD_WARNED:
+            log_warning(f"sqlite_vec not loaded ({type(e).__name__}: {e}); memories_vec writes will fail and search falls back to brute force")
+            _VEC_LOAD_WARNED = True
+
+
 def get_conn() -> sqlite3.Connection:
     """Create a SQLite connection to the main (durable) DB."""
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA busy_timeout=5000")
+    _load_sqlite_vec(conn)
     return conn
 
 
@@ -71,6 +91,8 @@ def get_ephemeral_conn() -> sqlite3.Connection:
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.execute("PRAGMA busy_timeout=5000")
+        # Main DB hosts memories_vec; load extension so any vec0 ops in this connection succeed.
+        _load_sqlite_vec(conn)
         # Check for any ephemeral table (tests may have hook_state but not metrics)
         has_ephemeral = False
         for tbl in ("metrics", "hook_state", "pair_assessments"):
