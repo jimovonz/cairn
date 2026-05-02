@@ -30,6 +30,38 @@ from hooks.storage import apply_confidence_updates, inline_backfill, insert_memo
 SOURCE_EXCERPT_LINES = 15
 
 
+def _async_writes_enabled() -> bool:
+    """Set CAIRN_HOOK_ASYNC_WRITES=1 to enqueue+drain instead of synchronous
+    insert. Sync default keeps the existing test suite working; async is opt-in
+    until validated under real workload."""
+    return os.environ.get("CAIRN_HOOK_ASYNC_WRITES", "").lower() in ("1", "true", "yes")
+
+
+def _enqueue_or_insert(entries, session_id, transcript_path) -> int:
+    """Either enqueue for async drain or call insert_memories directly.
+    Returns the number of entries that will be (or were) stored — for the
+    async path this is optimistic since dedup happens in the drain worker."""
+    if not entries:
+        return 0
+    if _async_writes_enabled():
+        from hooks.queue import enqueue_memories, spawn_drain
+        enqueue_memories(entries, session_id=session_id, transcript_path=transcript_path)
+        spawn_drain()
+        return len(entries)
+    return insert_memories(entries, session_id=session_id, transcript_path=transcript_path)
+
+
+def _enqueue_or_apply_confidence(updates, session_id) -> int:
+    if not updates:
+        return 0
+    if _async_writes_enabled():
+        from hooks.queue import enqueue_confidence_updates, spawn_drain
+        enqueue_confidence_updates(updates, session_id=session_id)
+        spawn_drain()
+        return len(updates)
+    return apply_confidence_updates(updates, session_id=session_id)
+
+
 def _snapshot_excerpts(session_id: str, transcript_path: str, assistant_message: str) -> None:
     """Snapshot the assistant message as source excerpt for recently stored memories."""
     if not session_id or not assistant_message:
@@ -60,8 +92,8 @@ from hooks.enforcement import check_trailing_intent, check_deferral, check_decli
 # blocks, NOT for behavioural blocks (incomplete work, trailing intent, context retrieval).
 AMEND_ONLY_SUFFIX = (
     "\n\nIMPORTANT: The user has already seen your previous response. "
-    "Do NOT restate or repeat it. Just output a single short line like "
-    "\"Memory block amended.\" followed by a corrected <memory> block."
+    "Do NOT restate or repeat it. Output ONLY the corrected memory block "
+    "with no other text — no acknowledgment, no summary, just the [cm] block."
 )
 from hooks.retrieval import (retrieve_context, layer2_cross_project_search,
                         load_context_cache, save_context_cache, is_context_cached, add_to_context_cache,
@@ -135,7 +167,7 @@ def collect_memory_notes(transcript_path: str, session_id: str,
         return 0
 
     to_store = unique_notes[:remaining_budget]
-    count = insert_memories(to_store, session_id=session_id, transcript_path=transcript_path)
+    count = _enqueue_or_insert(to_store, session_id=session_id, transcript_path=transcript_path)
 
     save_hook_state(session_id, "memory_notes_stored", str(notes_stored + count))
     log(f"Memory notes: stored {count} of {len(all_notes)} found ({len(all_notes) - len(unique_notes)} deduped)")
@@ -329,11 +361,11 @@ def main() -> None:
     # Subagent mode: opportunistic — store what's volunteered, skip enforcement
     if is_subagent:
         if confidence_updates:
-            apply_confidence_updates(confidence_updates, session_id=session_id)
+            _enqueue_or_apply_confidence(confidence_updates, session_id=session_id)
         if retrieval_outcome:
             record_metric(session_id, f"retrieval_{retrieval_outcome}", context_need[:100] if context_need else None)
         if entries:
-            count = insert_memories(entries, session_id=session_id, transcript_path=transcript_path)
+            count = _enqueue_or_insert(entries, session_id=session_id, transcript_path=transcript_path)
             record_metric(session_id, "memories_stored", None, count)
             log(f"Subagent: stored {count} memories opportunistically")
         record_metric(session_id, "hook_fired", f"subagent,entries={len(entries) if entries else 0}")
@@ -481,7 +513,7 @@ def main() -> None:
 
     # Apply confidence updates
     if confidence_updates:
-        applied: int = apply_confidence_updates(confidence_updates, session_id=session_id)
+        applied: int = _enqueue_or_apply_confidence(confidence_updates, session_id=session_id)
         record_metric(session_id, "confidence_updates", None, applied)
 
     # Record retrieval outcome (system-level learning signal)
@@ -489,9 +521,9 @@ def main() -> None:
         record_metric(session_id, f"retrieval_{retrieval_outcome}", context_need[:100] if context_need else None)
         log(f"Retrieval outcome: {retrieval_outcome}")
 
-    # Insert memories into DB
+    # Insert memories into DB (enqueues for drain when CAIRN_HOOK_ASYNC_WRITES=1)
     if entries:
-        count = insert_memories(entries, session_id=session_id, transcript_path=transcript_path)
+        count = _enqueue_or_insert(entries, session_id=session_id, transcript_path=transcript_path)
         record_metric(session_id, "memories_stored", None, count)
         log(f"Stored {count} memories (session: {session_id[:8]}...)" if session_id else f"Stored {count} memories")
 

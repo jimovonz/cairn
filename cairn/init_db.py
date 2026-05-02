@@ -297,6 +297,21 @@ def init_ephemeral(path=None):
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pair_mode ON pair_assessments(mode)")
+    # Pending memory writes — Stop hook enqueues parsed memory entries here and
+    # exits fast. A drain worker (hooks/drain_queue.py) holds an exclusive flock
+    # and processes rows in seq order via storage.insert_memories. Keeps the
+    # synchronous hook critical path off the slow embed+dedup pipeline.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pending_writes (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            session_id TEXT,
+            transcript_path TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_writes_seq ON pending_writes(seq)")
     conn.commit()
     conn.close()
 
