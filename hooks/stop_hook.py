@@ -31,10 +31,23 @@ SOURCE_EXCERPT_LINES = 15
 
 
 def _async_writes_enabled() -> bool:
-    """Set CAIRN_HOOK_ASYNC_WRITES=1 to enqueue+drain instead of synchronous
-    insert. Sync default keeps the existing test suite working; async is opt-in
-    until validated under real workload."""
-    return os.environ.get("CAIRN_HOOK_ASYNC_WRITES", "").lower() in ("1", "true", "yes")
+    """Async (queue+drain) is the default in production. Tests run synchronously
+    so they can read the memories table immediately after run_hook returns,
+    detected via PYTEST_CURRENT_TEST (set automatically by pytest per test).
+
+    Override matrix:
+      CAIRN_HOOK_SYNC_WRITES=1  → force sync (overrides everything)
+      CAIRN_HOOK_ASYNC_WRITES=1 → force async (overrides PYTEST_CURRENT_TEST)
+      neither + pytest          → sync
+      neither + production      → async"""
+    if os.environ.get("CAIRN_HOOK_SYNC_WRITES", "").lower() in ("1", "true", "yes"):
+        return False
+    forced_async = os.environ.get("CAIRN_HOOK_ASYNC_WRITES", "").lower() in ("1", "true", "yes")
+    if forced_async:
+        return True
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return False
+    return True
 
 
 def _enqueue_or_insert(entries, session_id, transcript_path) -> int:
