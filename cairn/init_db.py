@@ -197,6 +197,101 @@ def init():
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pair_mode ON pair_assessments(mode)")
+    # === Schema v4: multi-node sync ===
+    # New columns on memories — sync provenance and ordering
+    for col, coltype in [
+        ("created_by_node", "TEXT"),
+        ("updated_by_node", "TEXT"),
+        ("lamport", "INTEGER DEFAULT 0"),
+        ("visibility", "TEXT DEFAULT 'team'"),
+        ("embedding_model_version", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {coltype}")
+        except sqlite3.OperationalError:
+            pass
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_lamport ON memories(lamport)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_visibility ON memories(visibility)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_created_by_node ON memories(created_by_node)")
+    # node_state — single-row-per-key store for node identity, lamport clock, embedding model version
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS node_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    # confidence_log — convergent counter for multi-node confidence accumulation.
+    # confidence column on memories is recomputed deterministically from these entries.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS confidence_log (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            log_uuid      TEXT NOT NULL UNIQUE,
+            memory_origin TEXT NOT NULL,
+            direction     TEXT NOT NULL,
+            reason        TEXT,
+            node_id       TEXT NOT NULL,
+            user_id       TEXT,
+            session_id    TEXT,
+            lamport       INTEGER NOT NULL,
+            created_at    TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_conf_log_memory ON confidence_log(memory_origin)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_conf_log_lamport ON confidence_log(lamport)")
+    # sync_peers — outbound peer registry; bearer_token stored locally only (never synced)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sync_peers (
+            peer_node_id     TEXT PRIMARY KEY,
+            url              TEXT NOT NULL,
+            bearer_token     TEXT NOT NULL,
+            label            TEXT,
+            schema_version   INTEGER,
+            include_excerpts INTEGER DEFAULT 0,
+            last_attempted_at TEXT,
+            last_succeeded_at TEXT,
+            last_error       TEXT
+        )
+    """)
+    # sync_state — per-(peer, source-node) high-water lamport; the vector clock that makes
+    # pull-based gossip converge in O(N) bandwidth.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sync_state (
+            peer_node_id    TEXT NOT NULL,
+            source_node_id  TEXT NOT NULL,
+            last_lamport    INTEGER NOT NULL,
+            updated_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (peer_node_id, source_node_id)
+        )
+    """)
+    # memory_history needs a global UUID so re-anchoring on receipt is unambiguous
+    try:
+        conn.execute("ALTER TABLE memory_history ADD COLUMN history_uuid TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE memory_history ADD COLUMN memory_origin TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE memory_history ADD COLUMN changed_by_node TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE memory_history ADD COLUMN lamport INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_history_uuid ON memory_history(history_uuid)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_history_memory_origin ON memory_history(memory_origin)")
+    # memory_annotation_log mirrors confidence_log during transition; add UUIDs for sync
+    try:
+        conn.execute("ALTER TABLE memory_annotation_log ADD COLUMN annotation_uuid TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE memory_annotation_log ADD COLUMN node_id TEXT")
+    except sqlite3.OperationalError:
+        pass
     # Rebuild FTS index if we migrated
     if _fts_needs_rebuild:
         conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
@@ -246,6 +341,57 @@ def init():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (3, 'null_embedding_on_content_edit trigger — invalidates stale embeddings when content changes without re-embedding')"
         )
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 4").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (4, 'multi-node sync: created_by_node, updated_by_node, lamport, visibility, embedding_model_version + node_state, confidence_log, sync_peers, sync_state tables; memory_history.history_uuid')"
+        )
+    # v4 backfill — runs once per DB. Idempotent: guarded by NULL checks.
+    # Lazy-import to avoid a hard cycle (cairn.sync.identity imports nothing from init_db).
+    try:
+        from cairn.sync.identity import ensure_node_id, get_embedding_model_version
+        node_id = ensure_node_id()
+        model_version = get_embedding_model_version()
+    except Exception:
+        # If sync identity module isn't installed yet (e.g. partial install), defer backfill.
+        # Next init() call will complete it.
+        node_id = None
+        model_version = None
+    if node_id:
+        rows_no_node = conn.execute(
+            "SELECT id FROM memories WHERE created_by_node IS NULL"
+        ).fetchall()
+        if rows_no_node:
+            for (mem_id,) in rows_no_node:
+                conn.execute(
+                    "UPDATE memories SET created_by_node = ?, updated_by_node = ?, "
+                    "lamport = CASE WHEN lamport IS NULL OR lamport = 0 THEN id ELSE lamport END, "
+                    "visibility = COALESCE(visibility, 'team'), "
+                    "embedding_model_version = COALESCE(embedding_model_version, ?) WHERE id = ?",
+                    (node_id, node_id, model_version, mem_id)
+                )
+            print(f"v4 backfill: tagged {len(rows_no_node)} memories with node_id={node_id[:8]}…")
+        # Backfill memory_history.history_uuid for rows missing it (synced unit of append)
+        hist_no_uuid = conn.execute(
+            "SELECT id, memory_id FROM memory_history WHERE history_uuid IS NULL"
+        ).fetchall()
+        if hist_no_uuid:
+            for (hist_id, mem_id) in hist_no_uuid:
+                # Look up origin_id of the parent memory
+                origin = conn.execute("SELECT origin_id FROM memories WHERE id = ?", (mem_id,)).fetchone()
+                conn.execute(
+                    "UPDATE memory_history SET history_uuid = ?, memory_origin = ?, changed_by_node = ?, lamport = COALESCE(lamport, ?) WHERE id = ?",
+                    (str(uuid.uuid4()), origin[0] if origin else None, node_id, hist_id, hist_id)
+                )
+            print(f"v4 backfill: tagged {len(hist_no_uuid)} memory_history rows")
+        # Initialize node lamport clock to current max so subsequent local edits
+        # are causally after observed history
+        max_lamport = conn.execute("SELECT COALESCE(MAX(lamport), 0) FROM memories").fetchone()[0]
+        existing = conn.execute("SELECT value FROM node_state WHERE key = 'lamport'").fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO node_state (key, value) VALUES ('lamport', ?)",
+                (str(max_lamport),)
+            )
     # Indexes for new columns
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_origin_id ON memories(origin_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_deleted_at ON memories(deleted_at)")
