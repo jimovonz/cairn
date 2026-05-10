@@ -14,6 +14,32 @@ from hooks import hook_helpers
 from cairn.config import (DEDUP_THRESHOLD, CONFIDENCE_BOOST,
                      CONFIDENCE_MIN, CONFIDENCE_MAX, CONFIDENCE_DEFAULT,
                      DISTINCT_VARIANT_SIM_THRESHOLD, NEGATION_SIM_FLOOR)
+from cairn.sync.identity import (
+    ensure_node_id, get_user_id, get_embedding_model_version, bump_lamport,
+)
+
+
+_V4_READY_CACHE: dict[str, bool] = {}
+
+def _v4_ready(conn) -> bool:
+    """True iff this DB has the v4 sync columns and node_state table.
+
+    Cached per-conn-id so we don't pay the introspection cost on every insert.
+    Tests that hand-roll a v3-shaped schema get the legacy INSERT path; full
+    cairn installs get sync provenance.
+    """
+    key = str(id(conn))
+    cached = _V4_READY_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        ok = "lamport" in cols and "created_by_node" in cols and "node_state" in tables
+    except Exception:
+        ok = False
+    _V4_READY_CACHE[key] = ok
+    return ok
 
 
 def extract_associated_files(transcript_path: str, lookback: int = 30) -> list[str]:
@@ -144,39 +170,84 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
         return 0
     conn = get_conn()
     applied = 0
+    sync_on = _v4_ready(conn)
+    node_id = ensure_node_id() if sync_on else ""
+    user_id = get_user_id() if sync_on else ""
+    # Lazy-imported to avoid a hard dep cycle when sync module not yet installed
+    from cairn.sync.changeset import _recompute_confidence
     for update in updates:
         memory_id, direction = update[0], update[1]
         reason = update[2] if len(update) > 2 else None
-        row = conn.execute("SELECT confidence, content FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        # Need origin_id for confidence_log (cross-node memory identity)
+        row = conn.execute(
+            "SELECT confidence, content, origin_id FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
         if not row:
             log(f"Confidence update: memory {memory_id} not found")
             continue
+        memory_origin = row[2]
+
+        log_uuid_str = str(uuid.uuid4())
+        # Convergent path: append to confidence_log + recompute. Only available v4+.
+        if sync_on:
+            lam = bump_lamport(conn)
+            try:
+                conn.execute(
+                    "INSERT INTO confidence_log (log_uuid, memory_origin, direction, reason, "
+                    "node_id, user_id, session_id, lamport) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (log_uuid_str, memory_origin, direction, reason, node_id, user_id, session_id, lam)
+                )
+            except Exception as e:
+                log(f"confidence_log insert failed: {e}")
 
         if direction == "-!":
             annotation = reason or "contradicted by later session"
-            conn.execute(
-                "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (annotation, memory_id)
-            )
+            if not sync_on:
+                # Legacy in-place archive
+                conn.execute(
+                    "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (annotation, memory_id)
+                )
             log(f"Contradicted: memory {memory_id} — {annotation}")
             record_metric(session_id, "contradiction_annotated", f"{memory_id}: {annotation[:80]}")
             applied += 1
         elif direction == "+":
-            current = row[0] if row[0] is not None else CONFIDENCE_DEFAULT
-            new = min(current + CONFIDENCE_BOOST * (1 - current), CONFIDENCE_MAX)
-            conn.execute("UPDATE memories SET confidence = ? WHERE id = ?", (new, memory_id))
-            log(f"Corroborated: memory {memory_id} {current:.2f} → {new:.2f}")
+            if not sync_on:
+                # Legacy in-place boost
+                current = row[0] if row[0] is not None else CONFIDENCE_DEFAULT
+                new = min(current + CONFIDENCE_BOOST * (1 - current), CONFIDENCE_MAX)
+                conn.execute("UPDATE memories SET confidence = ? WHERE id = ?", (new, memory_id))
+                log(f"Corroborated: memory {memory_id} {current:.2f} → {new:.2f}")
+            else:
+                log(f"Corroborated: memory {memory_id} via confidence_log entry {log_uuid_str[:8]}")
             applied += 1
         else:
             log(f"Irrelevant: memory {memory_id} — no confidence change")
             record_metric(session_id, "confidence_irrelevant", f"{memory_id}")
             applied += 1
 
+        # Recompute confidence/archived_reason from the full log — convergent across nodes.
+        if sync_on and memory_origin:
+            try:
+                _recompute_confidence(conn, memory_origin)
+            except Exception as e:
+                log(f"confidence recompute failed for {memory_id}: {e}")
+
+        # Maintain memory_annotation_log during transition (legacy mirror)
         try:
-            conn.execute(
-                "INSERT INTO memory_annotation_log (memory_id, direction, reason, session_id) VALUES (?, ?, ?, ?)",
-                (memory_id, direction, reason, session_id)
-            )
+            if sync_on:
+                conn.execute(
+                    "INSERT INTO memory_annotation_log (memory_id, direction, reason, session_id, "
+                    "annotation_uuid, node_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (memory_id, direction, reason, session_id, log_uuid_str, node_id)
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO memory_annotation_log (memory_id, direction, reason, session_id) "
+                    "VALUES (?, ?, ?, ?)",
+                    (memory_id, direction, reason, session_id)
+                )
         except Exception:
             pass
     conn.commit()
@@ -205,6 +276,85 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     conn = get_conn()
     project: Optional[str] = get_session_project(conn, session_id)
     inserted: int = 0
+    # Sync provenance — captured once per call, propagated to every INSERT/UPDATE below.
+    # Skipped if the DB isn't v4-ready (legacy test fixtures, partial installs).
+    sync_on: bool = _v4_ready(conn)
+    node_id: str = ensure_node_id() if sync_on else ""
+    user_id: str = get_user_id() if sync_on else ""
+    model_version: str = get_embedding_model_version() if sync_on else ""
+
+    def _next_lamport() -> int:
+        return bump_lamport(conn) if sync_on else 0
+
+    def _insert_memory(mem_type, topic, content, embedding_blob, session_id, project,
+                       depth, keywords_csv) -> None:
+        """Single insertion path — branches on whether sync columns exist."""
+        if sync_on:
+            lam = _next_lamport()
+            conn.execute(
+                "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords, "
+                "origin_id, created_by_node, updated_by_node, user_id, updated_by, lamport, "
+                "visibility, embedding_model_version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv,
+                 str(uuid.uuid4()), node_id, node_id, user_id, user_id, lam, 'team', model_version)
+            )
+        else:
+            conn.execute(
+                "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords, origin_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv,
+                 str(uuid.uuid4()))
+            )
+
+    def _update_memory_full(mem_id, content, embedding_blob, session_id, project, keywords_csv,
+                            confidence=None) -> None:
+        """Full-content update — branches on sync columns."""
+        if sync_on:
+            lam = _next_lamport()
+            if confidence is not None:
+                conn.execute(
+                    "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, "
+                    "confidence = ?, keywords = ?, updated_at = CURRENT_TIMESTAMP, "
+                    "updated_by_node = ?, updated_by = ?, lamport = ?, embedding_model_version = ? WHERE id = ?",
+                    (content, embedding_blob, session_id, project, confidence, keywords_csv,
+                     node_id, user_id, lam, model_version, mem_id)
+                )
+            else:
+                conn.execute(
+                    "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, "
+                    "keywords = ?, updated_at = CURRENT_TIMESTAMP, "
+                    "updated_by_node = ?, updated_by = ?, lamport = ?, embedding_model_version = ? WHERE id = ?",
+                    (content, embedding_blob, session_id, project, keywords_csv,
+                     node_id, user_id, lam, model_version, mem_id)
+                )
+        else:
+            if confidence is not None:
+                conn.execute(
+                    "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, "
+                    "confidence = ?, keywords = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (content, embedding_blob, session_id, project, confidence, keywords_csv, mem_id)
+                )
+            else:
+                conn.execute(
+                    "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, "
+                    "keywords = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (content, embedding_blob, session_id, project, keywords_csv, mem_id)
+                )
+
+    def _annotate_archived(mem_id, reason) -> None:
+        if sync_on:
+            lam = _next_lamport()
+            conn.execute(
+                "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP, "
+                "updated_by_node = ?, updated_by = ?, lamport = ? WHERE id = ?",
+                (reason, node_id, user_id, lam, mem_id)
+            )
+        else:
+            conn.execute(
+                "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (reason, mem_id)
+            )
 
     # Lazy file extraction — associate touched files with all memory types
     _associated_files: Optional[list[str]] = None
@@ -274,26 +424,22 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     )
                     record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
                 log(f"Distinct variant: type={mem_type} topic={topic} (sim={old_sim:.2f}) — inserting as new")
-                conn.execute(
-                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords, origin_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv, str(uuid.uuid4()))
-                )
+                _insert_memory(mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv)
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
             else:
                 if old_content and old_content != content:
-                    # Annotate old content as superseded
-                    conn.execute(
-                        "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (f"superseded: {content[:200]}", same_topic[0])
-                    )
+                    _annotate_archived(same_topic[0], f"superseded: {content[:200]}")
                     log(f"Contradiction: type={mem_type} topic={topic} (sim={old_sim:.2f}) — old annotated as superseded")
                     record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
-                conn.execute(
-                    "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, confidence = ?, keywords = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (content, embedding_blob, session_id, project, CONFIDENCE_DEFAULT, keywords_csv, same_topic[0])
-                )
+                # Phantom-history guard: skip UPDATE entirely when content is byte-identical
+                # (memories_version trigger fires on UPDATE OF content regardless of value change).
+                if old_content == content:
+                    log(f"Skip identical-content update: type={mem_type} topic={topic}")
+                else:
+                    _update_memory_full(same_topic[0], content, embedding_blob, session_id, project,
+                                        keywords_csv, confidence=CONFIDENCE_DEFAULT)
                 if embedding_blob and emb:
                     emb.upsert_vec_index(conn, same_topic[0], embedding_blob)
         else:
@@ -306,29 +452,24 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     if nearest and nearest[0]["similarity"] >= DEDUP_THRESHOLD:
                         match = nearest[0]
                         log(f"Dedup: '{content[:50]}' ~= '{match['content'][:50]}' (sim={match['similarity']:.3f})")
-                        conn.execute(
-                            "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, keywords = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                            (content, embedding_blob, session_id, project, keywords_csv, match["id"])
-                        )
-                        emb.upsert_vec_index(conn, match["id"], embedding_blob)
+                        # Phantom-history guard: skip UPDATE when content is byte-identical
+                        if match.get("content") == content:
+                            log(f"Skip identical-content semantic dedup: topic={topic}")
+                        else:
+                            _update_memory_full(match["id"], content, embedding_blob, session_id, project, keywords_csv)
+                            emb.upsert_vec_index(conn, match["id"], embedding_blob)
                         deduped = True
                     elif nearest and nearest[0]["similarity"] >= NEGATION_SIM_FLOOR:
                         match = nearest[0]
                         if _has_negation_mismatch(content, match["content"]):
                             log(f"Negation mismatch: '{content[:40]}' vs '{match['content'][:40]}' — annotating old as superseded")
-                            conn.execute(
-                                "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                                (f"superseded: {content[:200]}", match["id"])
-                            )
+                            _annotate_archived(match["id"], f"superseded: {content[:200]}")
                             record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
                 except Exception:
                     pass  # Embedding issues don't block insertion
 
             if not deduped:
-                conn.execute(
-                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords, origin_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv, str(uuid.uuid4()))
-                )
+                _insert_memory(mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv)
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
