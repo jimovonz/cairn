@@ -117,8 +117,13 @@ def pull_from_peer(
         },
     )
 
+    # Build an opener that explicitly disables system proxies — cairn peer URLs
+    # are direct connections to known endpoints. Falling through to ALL_PROXY /
+    # HTTP_PROXY / HTTPS_PROXY env vars (e.g. corporate SOCKS5) would silently
+    # route sync traffic somewhere that doesn't speak the protocol.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         try:
