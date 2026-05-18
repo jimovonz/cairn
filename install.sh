@@ -135,6 +135,13 @@ else
     echo "Installed global hooks."
 fi
 
+# --- Copilot hooks ---
+COPILOT_HOOKS_DIR="$HOME/.github/hooks"
+mkdir -p "$COPILOT_HOOKS_DIR"
+sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" \
+    "$CAIRN_HOME/templates/copilot-hooks.json" > "$COPILOT_HOOKS_DIR/cairn.json"
+echo "Installed Copilot hooks."
+
 # --- Slash command ---
 sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" \
     "$CAIRN_HOME/templates/cairn-command.md" > "$CLAUDE_DIR/commands/cairn.md"
@@ -219,7 +226,7 @@ fi
 echo ""
 echo "=== Cairn installed successfully ==="
 echo ""
-echo "Restart Claude Code to activate hooks."
+echo "Restart Claude Code / VS Code Copilot to activate hooks."
 echo ""
 echo "Commands:"
 echo "  /cairn          — memory stats"
