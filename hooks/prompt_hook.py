@@ -376,6 +376,9 @@ def main() -> None:
             # otherwise hit the stop-hook fail-open path (uninstructed_session_skip)
             # forever. Claude Code sessions get this redundantly but it's harmless.
             context_parts.append(MEMORY_FORMAT_SPEC)
+            # Mark the session as instructed so stop_hook can enforce immediately
+            # instead of fail-opening on the first missing-block turn.
+            save_hook_state(session_id, "format_spec_injected", "1")
 
     elif not is_subagent:
         # Layer 1.5: Per-prompt semantic injection for subsequent prompts
