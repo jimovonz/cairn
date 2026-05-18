@@ -150,7 +150,30 @@ echo "Installed /cairn slash command."
 # --- Pre-download models ---
 echo ""
 echo "Pre-downloading models (one-time)..."
-HF_HUB_DISABLE_PROGRESS_BARS=1 CUDA_VISIBLE_DEVICES="" "$VENV_PYTHON" -c "
+
+# Corp TLS-inspection (Zscaler/Netskope/etc.) injects a non-public CA that the
+# venv's certifi bundle doesn't trust. If SSL_CERT_FILE isn't already set and
+# a system CA bundle exists, point HF/requests/httpx at it.
+SYSTEM_CA_BUNDLE=""
+for ca in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+    if [ -f "$ca" ]; then SYSTEM_CA_BUNDLE="$ca"; break; fi
+done
+CA_ENV=""
+if [ -n "$SYSTEM_CA_BUNDLE" ] && [ -z "$SSL_CERT_FILE" ]; then
+    CA_ENV="SSL_CERT_FILE=$SYSTEM_CA_BUNDLE REQUESTS_CA_BUNDLE=$SYSTEM_CA_BUNDLE CURL_CA_BUNDLE=$SYSTEM_CA_BUNDLE"
+    echo "Using system CA bundle: $SYSTEM_CA_BUNDLE"
+fi
+
+# httpx without the [socks] extra crashes when ALL_PROXY=socks5://... is set.
+# Strip proxy env vars for the model download — HF hub talks to public CDNs
+# that corp proxies typically allow direct anyway.
+PROXY_STRIP=""
+if [ -n "$ALL_PROXY$HTTPS_PROXY$HTTP_PROXY$all_proxy$https_proxy$http_proxy" ]; then
+    PROXY_STRIP="-u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY -u all_proxy -u https_proxy -u http_proxy"
+    echo "Unsetting proxy env vars for model download (httpx[socks] not required)."
+fi
+
+env $PROXY_STRIP $CA_ENV HF_HUB_DISABLE_PROGRESS_BARS=1 CUDA_VISIBLE_DEVICES="" "$VENV_PYTHON" -c "
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
 # Bi-encoder for embeddings
@@ -168,7 +191,23 @@ nli = CrossEncoder('cross-encoder/nli-MiniLM2-L6-H768')
 nli.predict([['test', 'test']])
 print('NLI model ready.')
 " 2>&1 | grep -v "^$\|Warning:\|Loading\|REPORT\|UNEXPECTED\|Notes:\|Key.*|.*Status\|---" \
-    || { echo "ERROR: Model download/load failed."; exit 1; }
+    || {
+        echo ""
+        echo "ERROR: Model download/load failed."
+        echo ""
+        echo "Common causes behind corporate networks:"
+        echo "  - SSL CERTIFICATE_VERIFY_FAILED: corp TLS inspection (Zscaler/Netskope) injects a CA"
+        echo "    the venv certifi bundle doesn't trust. Fix:"
+        echo "      $VENV_PATH/bin/pip install -U certifi"
+        echo "      export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+        echo "      export REQUESTS_CA_BUNDLE=\$SSL_CERT_FILE CURL_CA_BUNDLE=\$SSL_CERT_FILE"
+        echo "    If still failing, drop the corp root CA PEM in /usr/local/share/ca-certificates/"
+        echo "    and run: sudo update-ca-certificates"
+        echo "  - httpx 'Cannot send a request': proxy env vars set without httpx[socks]. Try:"
+        echo "      env -u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY ./install.sh"
+        echo "  - Air-gapped: pre-stage models in ~/.cache/huggingface and set HF_HUB_OFFLINE=1"
+        exit 1
+    }
 
 # --- Logs directory ---
 mkdir -p "$CAIRN_HOME/logs"
