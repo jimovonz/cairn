@@ -26,6 +26,38 @@ from hooks.hook_helpers import (
 )
 
 
+MEMORY_FORMAT_SPEC = """MEMORY BLOCK (REQUIRED): End every response with a markdown link-definition block in this exact format:
+
+[cm]: # '{"e":[{"t":"TYPE","to":"topic","c":"information-dense one-line content"}],"ok":true,"ctx":"s","kw":["keyword1","keyword2"]}'
+
+The block is invisible when rendered. A Stop hook parses it and stores entries in a SQLite memory system that persists across sessions.
+
+Required fields (short keys to save tokens):
+- ok = complete (true|false). If false, also include rem (what still needs doing).
+- ctx = context (s=sufficient | i=insufficient). If i, also include cn (what context is missing).
+- kw = keywords array — topic words for retrieval.
+- e = entries array (optional but expected when something was learned). Each entry needs t, to, c.
+
+Entry types (t): fact, correction, decision, preference, skill, project, workflow, person.
+
+When to add entries:
+- User corrects you → t:correction (HIGHEST value — prevents repeating mistakes across sessions).
+- Design choice made → t:decision (include alternatives rejected and why).
+- New system/environment fact revealed → t:fact (versions, paths, configs).
+- User states a preference → t:preference.
+- A technique or command worked → t:skill (exact command).
+
+Minimum valid block when nothing was learned:
+[cm]: # '{"ok":true,"ctx":"s","kw":["topic","of","conversation"]}'
+
+Rules:
+- Every response must end with a [cm] block. No exceptions.
+- One line per entry — no multi-line values. Pack what/why/context into that single line.
+- Never fabricate. If you don't understand something, omit it rather than invent.
+- On ANY new topic or question you have not received cairn context on this session: set ctx:i with cn:"specific terms from the question". The hook auto-searches and re-prompts you with relevant memories.
+- Confidence feedback on retrieved entries you were shown: cu:["42:+"] (corroborates), ["17:-"] (irrelevant), ["17:-! reason"] (memory is wrong, annotate)."""
+
+
 def log(msg: str) -> None:
     _base_log(f"[prompt] {msg}")
 
@@ -360,10 +392,11 @@ def main() -> None:
             context_parts.append(l1_context)
             log(f"Layer 1: injected context for: {user_message[:50]}...")
         if not is_subagent:
-            # Memory block reminder on first prompt (not needed for subagents)
-            context_parts.append(
-                "MEMORY BLOCK: End every response with a <memory> block — entries, control signals, and confidence feedback."
-            )
+            # Memory block format spec on first prompt. Critical for Copilot
+            # sessions which do not read ~/.claude/rules/memory-system.md and
+            # otherwise hit the stop-hook fail-open path (uninstructed_session_skip)
+            # forever. Claude Code sessions get this redundantly but it's harmless.
+            context_parts.append(MEMORY_FORMAT_SPEC)
 
     elif not is_subagent:
         # Layer 1.5: Per-prompt semantic injection for subsequent prompts
