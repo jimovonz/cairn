@@ -189,18 +189,29 @@ def handle_client(conn, emb):
         conn.close()
 
 
+def _detect_docker0_ip() -> str:
+    """Return the docker0 bridge IP if present, else fall back to 0.0.0.0."""
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "docker0"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if out.returncode == 0 and out.stdout:
+            # Line shape: "3: docker0    inet 172.17.0.1/16 ..."
+            for token in out.stdout.split():
+                if "/" in token and token.replace(".", "").replace("/", "").isdigit():
+                    return token.split("/", 1)[0]
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return "0.0.0.0"
+
+
 def _start_tcp_listener(emb, port: int) -> None:
     """Spawn a daemon thread that accepts TCP connections and dispatches to handle_client.
 
-    Binds 0.0.0.0 so containers on ANY Docker bridge network can reach the
-    daemon via their default gateway — not just containers on the default
-    docker0 bridge. Compose-created networks have their own bridge with a
-    different gateway IP (e.g. 172.18.0.1 instead of docker0's 172.17.0.1),
-    so binding only docker0 misses them.
-
-    Same JSON-over-stream protocol as the Unix socket — same handle_client.
+    Same JSON-over-stream protocol as the Unix socket — same handle_client function.
     """
-    bind_ip = "0.0.0.0"
+    bind_ip = _detect_docker0_ip()
 
     def serve():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -244,6 +255,16 @@ def run_server():
             print(f"Container injector watching {CONTAINER_AUTO_INSTALL_VSIX_DIR}")
     except Exception as e:  # noqa: BLE001 — never let injector failure kill daemon
         print(f"Container injector not started: {e}")
+
+    # Optional: TCP listener so container-side shims can reach the daemon
+    # without bind-mounting the Unix socket. Bound to docker0 bridge IP
+    # (containers' default gateway) when available, falling back to 0.0.0.0.
+    try:
+        from cairn.config import CAIRN_TCP_LISTENER_ENABLED, CAIRN_TCP_PORT
+        if CAIRN_TCP_LISTENER_ENABLED:
+            _start_tcp_listener(emb, CAIRN_TCP_PORT)
+    except Exception as e:  # noqa: BLE001
+        print(f"TCP listener not started: {e}")
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)
