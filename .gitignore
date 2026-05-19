@@ -23,3 +23,8 @@ cairn/cairn.db.test-*
 cairn/corruption.log
 cairn_memory.egg-info/
 transcripts/
+.claude/scheduled_tasks.lock
+cairn/cairn-ephemeral.db
+cairn/cairn-ephemeral.db-shm
+cairn/cairn-ephemeral.db-wal
+cairn/cairn.db.pre-v4-backup

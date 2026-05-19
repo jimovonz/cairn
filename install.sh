@@ -173,6 +173,18 @@ print('NLI model ready.')
 # --- Logs directory ---
 mkdir -p "$CAIRN_HOME/logs"
 
+# --- Container shim staging dir (VSIXes the daemon auto-installs into dev containers) ---
+VSIX_DIR="$HOME/.local/share/cairn-vsix"
+mkdir -p "$VSIX_DIR"
+echo "Container VSIX stage: $VSIX_DIR (drop .vsix files here for auto-install)."
+
+# --- Docker preflight (non-fatal — container injector only needs docker if used) ---
+if ! command -v docker >/dev/null 2>&1; then
+    echo "Note: docker not on PATH — container injector will be inert until docker is installed."
+elif ! docker info >/dev/null 2>&1; then
+    echo "Note: docker present but not accessible (add user to 'docker' group?) — container injector will log errors on container start events."
+fi
+
 # --- Start daemon ---
 echo "Starting embedding daemon..."
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" start
@@ -239,4 +251,9 @@ echo "Maintenance (cron, daily at 3:00 AM):"
 echo "  Consolidation — merge duplicate memories"
 echo "  Contradiction — detect and archive superseded memories"
 echo "  Logs: $CAIRN_HOME/logs/"
+echo ""
+echo "Dev container support:"
+echo "  TCP listener — port 47390 (container shims dial host daemon)"
+echo "  VSIX stage   — $VSIX_DIR (drop .vsix files for auto-install on container start)"
+echo "  See docs/container-setup.md for shim deploy and devcontainer.json wiring."
 echo ""
