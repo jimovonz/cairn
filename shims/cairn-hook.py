@@ -26,6 +26,46 @@ SOCK = os.environ.get("CAIRN_SOCK", "/run/cairn/.daemon.sock")
 MAX_INLINE = int(os.environ.get("CAIRN_TRANSCRIPT_INLINE_MAX", "2000000"))
 
 
+def _default_gateway() -> str | None:
+    """Return the default-route gateway IP from inside the container.
+
+    Reads /proc/net/route directly to avoid relying on `ip` or `route` CLIs
+    (absent in minimal container images like cpp-school's Dockerfile.dev).
+    Format: header line, then per-route rows where Destination=00000000
+    means the default route. Gateway is 8 hex chars in little-endian byte
+    order — e.g. 010011AC → 172.17.0.1.
+    """
+    try:
+        with open("/proc/net/route") as f:
+            next(f, None)  # header
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3 and parts[1] == "00000000":
+                    gw_hex = parts[2]
+                    if len(gw_hex) == 8:
+                        return ".".join(str(int(gw_hex[i:i + 2], 16))
+                                        for i in range(6, -1, -2))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _connect():
+    """Return a connected socket to the cairn daemon, or None on failure."""
+    if SOCK and os.path.exists(SOCK):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(120)
+        s.connect(SOCK)
+        return s
+    host = TCP_HOST_OVERRIDE or _default_gateway()
+    if not host:
+        return None
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(120)
+    s.connect((host, TCP_PORT))
+    return s
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("usage: cairn-hook.py <userpromptsubmit|stop|pretool|posttool>", file=sys.stderr)
