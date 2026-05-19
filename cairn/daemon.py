@@ -17,7 +17,6 @@ import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 from typing import Any
 
@@ -29,6 +28,18 @@ HOOK_ROUTES = {
     "pretool": os.path.join(HOOK_DIR, "pretool_hook.py"),
     "posttool": os.path.join(HOOK_DIR, "posttool_hook.py"),
 }
+# Persistent stash for container-sourced transcripts so query.py --context
+# can recover their conversation history after the originating container
+# session ends. One file per session_id, overwritten on each hook call
+# (shim always sends the full current transcript body).
+CONTAINER_TRANSCRIPTS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "transcripts", "container"
+)
+
+
+def _safe_session_filename(session_id: str) -> str:
+    """Allow only alnum, dash, underscore in stashed filename to avoid path traversal."""
+    return "".join(c for c in session_id if c.isalnum() or c in "-_")[:200] or "unknown"
 
 SOCKET_PATH = os.path.join(os.path.dirname(__file__), ".daemon.sock")
 PID_PATH = os.path.join(os.path.dirname(__file__), ".daemon.pid")
@@ -137,13 +148,18 @@ def handle_client(conn, emb):
             if not hook_path:
                 response = {"error": f"Unknown hook route: {route}"}
             else:
-                tmp_path = None
                 body = payload.pop("_transcript_body", None)
                 if body:
-                    fd, tmp_path = tempfile.mkstemp(prefix="cairn-transcript-", suffix=".jsonl")
-                    with os.fdopen(fd, "w") as f:
+                    session_id = payload.get("session_id") or payload.get("sessionId") or ""
+                    fname = _safe_session_filename(session_id) + ".jsonl"
+                    os.makedirs(CONTAINER_TRANSCRIPTS_DIR, exist_ok=True)
+                    stash_path = os.path.join(CONTAINER_TRANSCRIPTS_DIR, fname)
+                    # Write atomically so a concurrent reader never sees a partial file.
+                    tmp_write = stash_path + ".tmp"
+                    with open(tmp_write, "w") as f:
                         f.write(body)
-                    payload["transcript_path"] = tmp_path
+                    os.replace(tmp_write, stash_path)
+                    payload["transcript_path"] = stash_path
                 try:
                     result = subprocess.run(
                         [VENV_PYTHON, hook_path],
@@ -159,12 +175,6 @@ def handle_client(conn, emb):
                     }
                 except subprocess.TimeoutExpired as e:
                     response = {"stdout": "", "stderr": f"hook timeout: {e}", "exit_code": 124}
-                finally:
-                    if tmp_path:
-                        try:
-                            os.unlink(tmp_path)
-                        except OSError:
-                            pass
 
         else:
             response = {"error": f"Unknown action: {action}"}
