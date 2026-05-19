@@ -82,6 +82,16 @@ L2_KEYWORD_MIN_OVERLAP = 2         # Minimum shared keywords for a cross-project
 SOFT_SIM_OVERRIDE = 0.0            # Disabled — no confidence-based filtering
 SOFT_CONF_FLOOR = 0.0              # Disabled — no confidence floor
 
+# === Dev container extension auto-install ===
+# Daemon watches `docker events` for dev-container starts and pushes any VSIX
+# files staged in this directory into the new container via `docker cp` +
+# `docker exec code --install-extension`. Disabled when the directory is
+# absent or empty.
+import os as _os
+CONTAINER_AUTO_INSTALL_VSIX_DIR = _os.path.expanduser("~/.local/share/cairn-vsix")
+CONTAINER_AUTO_INSTALL_ENABLED = True
+del _os
+
 # === Dominance suppression ===
 DOMINANCE_EPSILON = 0.05           # If gap between top1 and top2 < epsilon, include both
 
