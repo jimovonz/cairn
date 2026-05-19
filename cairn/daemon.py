@@ -176,6 +176,34 @@ def handle_client(conn, emb):
                 except subprocess.TimeoutExpired as e:
                     response = {"stdout": "", "stderr": f"hook timeout: {e}", "exit_code": 124}
 
+        elif action == "cairn_recall":
+            # Semantic-search the cairn DB for entries matching `text`.
+            # Used by container-side clients (e.g. copilot-human-loop extension)
+            # that have no direct query.py access.
+            text = request.get("text", "") or ""
+            limit = int(request.get("limit", 10))
+            threshold = float(request.get("threshold", 0.3))
+            if not text.strip():
+                response = {"results": []}
+            else:
+                from cairn import query as _query
+                results = _query.semantic_search(text, limit=limit, threshold=threshold) or []
+                response = {"results": results}
+
+        elif action == "cairn_remember":
+            # Insert a memory via the same path as `query.py --add`.
+            mem_type = request.get("type") or "fact"
+            topic = request.get("topic") or ""
+            content = request.get("content") or ""
+            project = request.get("project")
+            session_id = request.get("session_id")
+            if not topic or not content:
+                response = {"error": "topic and content required"}
+            else:
+                from cairn import query as _query
+                _query.add_memory(mem_type, topic, content, project=project, session_id=session_id)
+                response = {"ok": True}
+
         else:
             response = {"error": f"Unknown action: {action}"}
 
