@@ -1,0 +1,34 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "command": "{{SHIM}} userpromptsubmit",
+        "type": "command",
+        "timeout": 30
+      }
+    ],
+    "Stop": [
+      {
+        "command": "{{SHIM}} stop",
+        "type": "command",
+        "timeout": 60
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|MultiEdit",
+        "command": "{{SHIM}} pretool",
+        "type": "command",
+        "timeout": 5
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Edit|Write",
+        "command": "{{SHIM}} posttool",
+        "type": "command",
+        "timeout": 5
+      }
+    ]
+  }
+}
