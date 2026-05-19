@@ -179,6 +179,40 @@ def handle_client(conn, emb):
         conn.close()
 
 
+def _start_tcp_listener(emb, port: int) -> None:
+    """Spawn a daemon thread that accepts TCP connections and dispatches to handle_client.
+
+    Binds 0.0.0.0 so containers on ANY Docker bridge network can reach the
+    daemon via their default gateway — not just containers on the default
+    docker0 bridge. Compose-created networks have their own bridge with a
+    different gateway IP (e.g. 172.18.0.1 instead of docker0's 172.17.0.1),
+    so binding only docker0 misses them.
+
+    Same JSON-over-stream protocol as the Unix socket — same handle_client.
+    """
+    bind_ip = "0.0.0.0"
+
+    def serve():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            srv.bind((bind_ip, port))
+        except OSError as e:
+            print(f"TCP listener bind {bind_ip}:{port} failed: {e}")
+            return
+        srv.listen(16)
+        print(f"TCP listener bound to {bind_ip}:{port}")
+        while True:
+            try:
+                conn, _addr = srv.accept()
+                t = threading.Thread(target=handle_client, args=(conn, emb), daemon=True)
+                t.start()
+            except OSError:
+                break
+
+    threading.Thread(target=serve, name="cairn-tcp-listener", daemon=True).start()
+
+
 def run_server():
     """Start the daemon server."""
     # Clean up stale socket
