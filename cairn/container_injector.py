@@ -30,7 +30,16 @@ def _list_staged_vsixes(stage_dir: str) -> list[str]:
 
 
 def _is_dev_container(container_id: str) -> bool:
-    """True if the container has the devcontainer.metadata label."""
+    """True if the container looks like a dev container.
+
+    Two recognition paths:
+      1. `devcontainer.metadata` label — set by the dev-container CLI when
+         VS Code launches via "Reopen in Container".
+      2. `com.docker.compose.project.config_files` contains a `.devcontainer/`
+         path — set when the user (or VS Code dev-container CLI) launched via
+         docker compose against a compose file inside .devcontainer/. Catches
+         manual `docker compose up` usage that VS Code didn't broker.
+    """
     try:
         out = subprocess.run(
             ["docker", "inspect", "--format", "{{json .Config.Labels}}", container_id],
@@ -39,7 +48,12 @@ def _is_dev_container(container_id: str) -> bool:
         if out.returncode != 0:
             return False
         labels = json.loads(out.stdout.strip() or "{}") or {}
-        return "devcontainer.metadata" in labels
+        if "devcontainer.metadata" in labels:
+            return True
+        cfg = labels.get("com.docker.compose.project.config_files", "")
+        if "/.devcontainer/" in cfg or cfg.endswith("/.devcontainer"):
+            return True
+        return False
     except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
         return False
 
@@ -117,21 +131,116 @@ def _install_vsix(container_id: str, vsix_host_path: str, code_cli: str) -> bool
         return False
 
 
+_SHIM_SRC = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shims", "cairn-hook.py"
+)
+_HOOK_TEMPLATE_SRC = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "templates", "copilot-hooks-container.json",
+)
+
+
+def _container_user_home(container_id: str) -> str | None:
+    """Resolve $HOME for the container's default user."""
+    r = subprocess.run(
+        ["docker", "exec", container_id, "bash", "-lc", "echo $HOME"],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    if r.returncode != 0:
+        return None
+    home = r.stdout.strip()
+    return home or None
+
+
+def _deploy_hook_files(container_id: str) -> bool:
+    """Copy the cairn shim + hook config into the container so it can talk
+    to the host daemon via TCP. No pre-existing devcontainer.json mounts
+    required.
+    """
+    if not os.path.isfile(_SHIM_SRC) or not os.path.isfile(_HOOK_TEMPLATE_SRC):
+        log.warning("Hook deploy skipped — shim or template missing on host")
+        return False
+    home = _container_user_home(container_id)
+    if not home:
+        log.warning("Hook deploy skipped — couldn't resolve container $HOME")
+        return False
+    try:
+        # 1. Shim
+        subprocess.run(
+            ["docker", "exec", container_id, "mkdir", "-p", "/opt/cairn-shims"],
+            timeout=10, check=False,
+        )
+        cp = subprocess.run(
+            ["docker", "cp", _SHIM_SRC, f"{container_id}:/opt/cairn-shims/cairn-hook.py"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        if cp.returncode != 0:
+            log.warning("shim cp failed: %s", cp.stderr.strip())
+            return False
+        subprocess.run(
+            ["docker", "exec", container_id, "chmod", "+x", "/opt/cairn-shims/cairn-hook.py"],
+            timeout=10, check=False,
+        )
+        # 2. Hook config — render {{SHIM}} placeholder, write to a host tmp,
+        # then docker cp to ~/.github/hooks/cairn.json
+        with open(_HOOK_TEMPLATE_SRC) as f:
+            tmpl = f.read()
+        rendered = tmpl.replace("{{SHIM}}", "/opt/cairn-shims/cairn-hook.py")
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+            tf.write(rendered)
+            tf_path = tf.name
+        try:
+            subprocess.run(
+                ["docker", "exec", container_id, "mkdir", "-p", f"{home}/.github/hooks"],
+                timeout=10, check=False,
+            )
+            cp2 = subprocess.run(
+                ["docker", "cp", tf_path, f"{container_id}:{home}/.github/hooks/cairn.json"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            if cp2.returncode != 0:
+                log.warning("hook config cp failed: %s", cp2.stderr.strip())
+                return False
+        finally:
+            try:
+                os.unlink(tf_path)
+            except OSError:
+                pass
+        log.info("Deployed cairn shim + hook config into container %s",
+                 container_id[:12])
+        return True
+    except (subprocess.SubprocessError, OSError) as e:
+        log.warning("hook deploy error: %s", e)
+        return False
+
+
 def _handle_container_start(container_id: str, stage_dir: str) -> None:
     if not _is_dev_container(container_id):
         return
-    vsixes = _list_staged_vsixes(stage_dir)
-    if not vsixes:
-        return
-    log.info("Dev container %s started — injecting %d extension(s)",
-             container_id[:12], len(vsixes))
+    # Always wait for code-server — we need it for the extension install path
+    # and it's also a good signal that the container is "ready" for our work.
     code_cli = _wait_for_code_cli(container_id)
-    if not code_cli:
-        log.warning("Container %s never exposed `code` CLI; skipping injection",
-                    container_id[:12])
-        return
-    for vsix in vsixes:
-        _install_vsix(container_id, vsix, code_cli)
+
+    # Deploy cairn shim + hook config (no project-side mount required)
+    try:
+        from cairn.config import CONTAINER_AUTO_DEPLOY_HOOKS
+    except ImportError:
+        CONTAINER_AUTO_DEPLOY_HOOKS = True
+    if CONTAINER_AUTO_DEPLOY_HOOKS:
+        _deploy_hook_files(container_id)
+
+    # Install any staged VSIXes
+    vsixes = _list_staged_vsixes(stage_dir)
+    if vsixes:
+        if not code_cli:
+            log.warning("Container %s never exposed code-server; skipping VSIX install",
+                        container_id[:12])
+        else:
+            log.info("Dev container %s started — injecting %d extension(s)",
+                     container_id[:12], len(vsixes))
+            for vsix in vsixes:
+                _install_vsix(container_id, vsix, code_cli)
 
 
 def watch_loop(stage_dir: str) -> None:

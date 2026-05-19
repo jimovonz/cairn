@@ -2,97 +2,70 @@
 """
 Cairn hook shim for use inside a dev container.
 
-Relays a hook payload from stdin to the host's cairn daemon over a
-mounted Unix socket, replays stdout/stderr/exit-code from the response.
+Relays a hook payload from stdin to the host's cairn daemon. Two transports
+in priority order:
 
-Inlines the contents of `transcript_path` (so the host-side hook can
-read transcripts that live in the container filesystem) up to a
-configurable byte cap.
+  1. Unix socket at $CAIRN_SOCK (when bind-mounted from host) — legacy path.
+  2. TCP to <host-gateway>:<CAIRN_TCP_PORT> — default; works with zero
+     per-container config because the host gateway from inside a Docker
+     container IS the host's docker0 IP, which is where the daemon's TCP
+     listener binds.
+
+Inlines `transcript_path` contents (so host-side hooks can read transcripts
+that live in the container filesystem) up to a configurable byte cap.
 
 Invoke as: cairn-hook.py <route>
   route: userpromptsubmit | stop | pretool | posttool
 
 Env:
-  CAIRN_SOCK   path to host's cairn .daemon.sock (default /run/cairn/.daemon.sock)
+  CAIRN_SOCK                   optional: Unix-socket path (preferred if set)
+  CAIRN_HOST                   optional: override host IP (default = gateway)
+  CAIRN_TCP_PORT               TCP port (default 47390)
   CAIRN_TRANSCRIPT_INLINE_MAX  max bytes to inline (default 2_000_000)
 """
 
 import json
 import os
 import socket
+import subprocess
 import sys
 
-SOCK = os.environ.get("CAIRN_SOCK", "/run/cairn/.daemon.sock")
+SOCK = os.environ.get("CAIRN_SOCK", "")
+TCP_PORT = int(os.environ.get("CAIRN_TCP_PORT", "47390"))
+TCP_HOST_OVERRIDE = os.environ.get("CAIRN_HOST", "")
 MAX_INLINE = int(os.environ.get("CAIRN_TRANSCRIPT_INLINE_MAX", "2000000"))
 
 
 def _default_gateway() -> str | None:
-    """Return the default-route gateway IP from inside the container.
-
-    Reads /proc/net/route directly to avoid relying on `ip` or `route` CLIs
-    (absent in minimal container images like cpp-school's Dockerfile.dev).
-    Format: header line, then per-route rows where Destination=00000000
-    means the default route. Gateway is 8 hex chars in little-endian byte
-    order — e.g. 010011AC → 172.17.0.1.
-    """
+    """Return the default-route gateway IP from inside the container."""
     try:
-        with open("/proc/net/route") as f:
-            next(f, None)  # header
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 3 and parts[1] == "00000000":
-                    gw_hex = parts[2]
-                    if len(gw_hex) == 8:
-                        return ".".join(str(int(gw_hex[i:i + 2], 16))
-                                        for i in range(6, -1, -2))
-    except (OSError, ValueError):
+        out = subprocess.run(
+            ["ip", "-4", "route", "show", "default"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        if out.returncode == 0 and out.stdout:
+            tokens = out.stdout.split()
+            if "via" in tokens:
+                return tokens[tokens.index("via") + 1]
+    except (subprocess.SubprocessError, OSError, ValueError):
         pass
     return None
 
 
 def _connect():
-    """Return a connected socket to the cairn daemon, or None on failure.
-
-    TCP host candidates are tried in order, first to connect wins:
-      1. $CAIRN_HOST — explicit override, when set nothing else is tried.
-      2. 127.0.0.1 — containers sharing the host network namespace
-         (network_mode: host): the default route is the LAN/VPN router,
-         NOT the host, so gateway discovery dials the wrong machine.
-         Loopback reaches the host daemon directly. Fails fast (refused)
-         in bridge-network containers, so it's cheap to try first.
-      3. default-route gateway — standard bridge-network case.
-      4. host.docker.internal — Docker Desktop.
-    Each candidate gets a short connect timeout so a wrong/unreachable
-    address fails fast instead of hanging the hook for minutes.
-    """
+    """Return a connected socket to the cairn daemon, or None on failure."""
     if SOCK and os.path.exists(SOCK):
-        try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.settimeout(120)
-            s.connect(SOCK)
-            return s
-        except OSError:
-            pass
-
-    if TCP_HOST_OVERRIDE:
-        candidates = [TCP_HOST_OVERRIDE]
-    else:
-        candidates = ["127.0.0.1"]
-        gw = _default_gateway()
-        if gw:
-            candidates.append(gw)
-        candidates.append("host.docker.internal")
-
-    for host in candidates:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(3)      # fast-fail on a wrong address
-            s.connect((host, TCP_PORT))
-            s.settimeout(120)    # generous for the actual exchange
-            return s
-        except OSError:
-            continue
-    return None
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(120)
+        s.connect(SOCK)
+        return s
+    host = TCP_HOST_OVERRIDE or _default_gateway()
+    if not host:
+        return None
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(120)
+    s.connect((host, TCP_PORT))
+    return s
 
 
 def main() -> int:
@@ -117,9 +90,10 @@ def main() -> int:
 
     request = {"action": "hook", "route": route, "payload": payload}
     try:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(120)
-        client.connect(SOCK)
+        client = _connect()
+        if client is None:
+            print("cairn-hook: no transport configured; skipping", file=sys.stderr)
+            return 0
         client.sendall(json.dumps(request).encode())
         client.shutdown(socket.SHUT_WR)
         data = b""
