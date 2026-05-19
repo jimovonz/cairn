@@ -225,6 +225,16 @@ def run_server():
     emb.get_model()
     print("Model loaded. Daemon ready.")
 
+    # Optional: dev-container extension auto-injector
+    try:
+        from cairn.config import CONTAINER_AUTO_INSTALL_ENABLED, CONTAINER_AUTO_INSTALL_VSIX_DIR
+        if CONTAINER_AUTO_INSTALL_ENABLED:
+            from cairn.container_injector import start_in_background
+            start_in_background(CONTAINER_AUTO_INSTALL_VSIX_DIR)
+            print(f"Container injector watching {CONTAINER_AUTO_INSTALL_VSIX_DIR}")
+    except Exception as e:  # noqa: BLE001 — never let injector failure kill daemon
+        print(f"Container injector not started: {e}")
+
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)
     server.listen(5)
