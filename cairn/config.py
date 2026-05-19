@@ -92,6 +92,19 @@ CONTAINER_AUTO_INSTALL_VSIX_DIR = _os.path.expanduser("~/.local/share/cairn-vsix
 CONTAINER_AUTO_INSTALL_ENABLED = True
 del _os
 
+# === Dev container cairn-hook auto-deploy ===
+# Daemon TCP listener so container-side hook shims can reach the host without
+# a bind-mounted Unix socket. Bound to docker0 bridge IP (auto-discovered) or
+# 0.0.0.0 if docker0 is absent. Containers reach it via their default-route
+# gateway, which IS the docker0 host IP — no --add-host / host.docker.internal
+# required.
+CAIRN_TCP_LISTENER_ENABLED = True
+CAIRN_TCP_PORT = 47390
+# When enabled, the container injector also docker cp's the shim and hook
+# config into every new dev container, so cairn works with zero per-project
+# devcontainer.json edits.
+CONTAINER_AUTO_DEPLOY_HOOKS = True
+
 # === Dominance suppression ===
 DOMINANCE_EPSILON = 0.05           # If gap between top1 and top2 < epsilon, include both
 

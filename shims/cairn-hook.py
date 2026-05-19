@@ -2,28 +2,70 @@
 """
 Cairn hook shim for use inside a dev container.
 
-Relays a hook payload from stdin to the host's cairn daemon over a
-mounted Unix socket, replays stdout/stderr/exit-code from the response.
+Relays a hook payload from stdin to the host's cairn daemon. Two transports
+in priority order:
 
-Inlines the contents of `transcript_path` (so the host-side hook can
-read transcripts that live in the container filesystem) up to a
-configurable byte cap.
+  1. Unix socket at $CAIRN_SOCK (when bind-mounted from host) — legacy path.
+  2. TCP to <host-gateway>:<CAIRN_TCP_PORT> — default; works with zero
+     per-container config because the host gateway from inside a Docker
+     container IS the host's docker0 IP, which is where the daemon's TCP
+     listener binds.
+
+Inlines `transcript_path` contents (so host-side hooks can read transcripts
+that live in the container filesystem) up to a configurable byte cap.
 
 Invoke as: cairn-hook.py <route>
   route: userpromptsubmit | stop | pretool | posttool
 
 Env:
-  CAIRN_SOCK   path to host's cairn .daemon.sock (default /run/cairn/.daemon.sock)
+  CAIRN_SOCK                   optional: Unix-socket path (preferred if set)
+  CAIRN_HOST                   optional: override host IP (default = gateway)
+  CAIRN_TCP_PORT               TCP port (default 47390)
   CAIRN_TRANSCRIPT_INLINE_MAX  max bytes to inline (default 2_000_000)
 """
 
 import json
 import os
 import socket
+import subprocess
 import sys
 
-SOCK = os.environ.get("CAIRN_SOCK", "/run/cairn/.daemon.sock")
+SOCK = os.environ.get("CAIRN_SOCK", "")
+TCP_PORT = int(os.environ.get("CAIRN_TCP_PORT", "47390"))
+TCP_HOST_OVERRIDE = os.environ.get("CAIRN_HOST", "")
 MAX_INLINE = int(os.environ.get("CAIRN_TRANSCRIPT_INLINE_MAX", "2000000"))
+
+
+def _default_gateway() -> str | None:
+    """Return the default-route gateway IP from inside the container."""
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "route", "show", "default"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        if out.returncode == 0 and out.stdout:
+            tokens = out.stdout.split()
+            if "via" in tokens:
+                return tokens[tokens.index("via") + 1]
+    except (subprocess.SubprocessError, OSError, ValueError):
+        pass
+    return None
+
+
+def _connect():
+    """Return a connected socket to the cairn daemon, or None on failure."""
+    if SOCK and os.path.exists(SOCK):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(120)
+        s.connect(SOCK)
+        return s
+    host = TCP_HOST_OVERRIDE or _default_gateway()
+    if not host:
+        return None
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(120)
+    s.connect((host, TCP_PORT))
+    return s
 
 
 def main() -> int:
@@ -48,9 +90,10 @@ def main() -> int:
 
     request = {"action": "hook", "route": route, "payload": payload}
     try:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(120)
-        client.connect(SOCK)
+        client = _connect()
+        if client is None:
+            print("cairn-hook: no transport configured; skipping", file=sys.stderr)
+            return 0
         client.sendall(json.dumps(request).encode())
         client.shutdown(socket.SHUT_WR)
         data = b""
