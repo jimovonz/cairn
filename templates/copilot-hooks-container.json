@@ -2,14 +2,14 @@
   "hooks": {
     "UserPromptSubmit": [
       {
-        "command": "{{SHIM}} userpromptsubmit",
+        "command": "python3 {{SHIM}} userpromptsubmit",
         "type": "command",
         "timeout": 30
       }
     ],
     "Stop": [
       {
-        "command": "{{SHIM}} stop",
+        "command": "python3 {{SHIM}} stop",
         "type": "command",
         "timeout": 60
       }
@@ -17,7 +17,7 @@
     "PreToolUse": [
       {
         "matcher": "Read|Edit|Write|MultiEdit",
-        "command": "{{SHIM}} pretool",
+        "command": "python3 {{SHIM}} pretool",
         "type": "command",
         "timeout": 5
       }
@@ -25,7 +25,7 @@
     "PostToolUse": [
       {
         "matcher": "Bash|Edit|Write",
-        "command": "{{SHIM}} posttool",
+        "command": "python3 {{SHIM}} posttool",
         "type": "command",
         "timeout": 5
       }

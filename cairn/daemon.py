@@ -15,9 +15,20 @@ import json
 import os
 import signal
 import socket
+import subprocess
 import sys
+import tempfile
 import threading
 from typing import Any
+
+HOOK_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks")
+VENV_PYTHON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv", "bin", "python3")
+HOOK_ROUTES = {
+    "userpromptsubmit": os.path.join(HOOK_DIR, "prompt_hook.py"),
+    "stop": os.path.join(HOOK_DIR, "stop_hook.py"),
+    "pretool": os.path.join(HOOK_DIR, "pretool_hook.py"),
+    "posttool": os.path.join(HOOK_DIR, "posttool_hook.py"),
+}
 
 SOCKET_PATH = os.path.join(os.path.dirname(__file__), ".daemon.sock")
 PID_PATH = os.path.join(os.path.dirname(__file__), ".daemon.pid")
@@ -118,6 +129,42 @@ def handle_client(conn, emb):
 
         elif action == "ping":
             response = {"status": "ok"}
+
+        elif action == "hook":
+            route = request.get("route", "")
+            payload = request.get("payload", {}) or {}
+            hook_path = HOOK_ROUTES.get(route)
+            if not hook_path:
+                response = {"error": f"Unknown hook route: {route}"}
+            else:
+                tmp_path = None
+                body = payload.pop("_transcript_body", None)
+                if body:
+                    fd, tmp_path = tempfile.mkstemp(prefix="cairn-transcript-", suffix=".jsonl")
+                    with os.fdopen(fd, "w") as f:
+                        f.write(body)
+                    payload["transcript_path"] = tmp_path
+                try:
+                    result = subprocess.run(
+                        [VENV_PYTHON, hook_path],
+                        input=json.dumps(payload),
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                    )
+                    response = {
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                        "exit_code": result.returncode,
+                    }
+                except subprocess.TimeoutExpired as e:
+                    response = {"stdout": "", "stderr": f"hook timeout: {e}", "exit_code": 124}
+                finally:
+                    if tmp_path:
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
 
         else:
             response = {"error": f"Unknown action: {action}"}
