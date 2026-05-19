@@ -37,17 +37,25 @@ MAX_INLINE = int(os.environ.get("CAIRN_TRANSCRIPT_INLINE_MAX", "2000000"))
 
 
 def _default_gateway() -> str | None:
-    """Return the default-route gateway IP from inside the container."""
+    """Return the default-route gateway IP from inside the container.
+
+    Reads /proc/net/route directly to avoid relying on `ip` or `route` CLIs
+    (absent in minimal container images like cpp-school's Dockerfile.dev).
+    Format: header line, then per-route rows where Destination=00000000
+    means the default route. Gateway is 8 hex chars in little-endian byte
+    order — e.g. 010011AC → 172.17.0.1.
+    """
     try:
-        out = subprocess.run(
-            ["ip", "-4", "route", "show", "default"],
-            capture_output=True, text=True, timeout=3, check=False,
-        )
-        if out.returncode == 0 and out.stdout:
-            tokens = out.stdout.split()
-            if "via" in tokens:
-                return tokens[tokens.index("via") + 1]
-    except (subprocess.SubprocessError, OSError, ValueError):
+        with open("/proc/net/route") as f:
+            next(f, None)  # header
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3 and parts[1] == "00000000":
+                    gw_hex = parts[2]
+                    if len(gw_hex) == 8:
+                        return ".".join(str(int(gw_hex[i:i + 2], 16))
+                                        for i in range(6, -1, -2))
+    except (OSError, ValueError):
         pass
     return None
 

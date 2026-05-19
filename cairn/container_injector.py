@@ -164,28 +164,30 @@ def _deploy_hook_files(container_id: str) -> bool:
     if not home:
         log.warning("Hook deploy skipped — couldn't resolve container $HOME")
         return False
+    shim_dir = f"{home}/.cairn-shims"
+    shim_path = f"{shim_dir}/cairn-hook.py"
     try:
         # 1. Shim
         subprocess.run(
-            ["docker", "exec", container_id, "mkdir", "-p", "/opt/cairn-shims"],
+            ["docker", "exec", container_id, "mkdir", "-p", shim_dir],
             timeout=10, check=False,
         )
         cp = subprocess.run(
-            ["docker", "cp", _SHIM_SRC, f"{container_id}:/opt/cairn-shims/cairn-hook.py"],
+            ["docker", "cp", _SHIM_SRC, f"{container_id}:{shim_path}"],
             capture_output=True, text=True, timeout=30, check=False,
         )
         if cp.returncode != 0:
             log.warning("shim cp failed: %s", cp.stderr.strip())
             return False
         subprocess.run(
-            ["docker", "exec", container_id, "chmod", "+x", "/opt/cairn-shims/cairn-hook.py"],
+            ["docker", "exec", container_id, "chmod", "+x", shim_path],
             timeout=10, check=False,
         )
         # 2. Hook config — render {{SHIM}} placeholder, write to a host tmp,
         # then docker cp to ~/.github/hooks/cairn.json
         with open(_HOOK_TEMPLATE_SRC) as f:
             tmpl = f.read()
-        rendered = tmpl.replace("{{SHIM}}", "/opt/cairn-shims/cairn-hook.py")
+        rendered = tmpl.replace("{{SHIM}}", shim_path)
         import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
             tf.write(rendered)
@@ -251,7 +253,7 @@ def watch_loop(stage_dir: str) -> None:
                 ["docker", "events",
                  "--filter", "type=container",
                  "--filter", "event=start",
-                 "--format", "{{.ID}}"],
+                 "--format", "{{.Actor.ID}}"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
             )
         except (FileNotFoundError, OSError) as e:
