@@ -119,6 +119,69 @@ def handle_client(conn, emb):
         elif action == "ping":
             response = {"status": "ok"}
 
+        elif action == "hook":
+            route = request.get("route", "")
+            payload = request.get("payload", {}) or {}
+            hook_path = HOOK_ROUTES.get(route)
+            if not hook_path:
+                response = {"error": f"Unknown hook route: {route}"}
+            else:
+                body = payload.pop("_transcript_body", None)
+                if body:
+                    session_id = payload.get("session_id") or payload.get("sessionId") or ""
+                    fname = _safe_session_filename(session_id) + ".jsonl"
+                    os.makedirs(CONTAINER_TRANSCRIPTS_DIR, exist_ok=True)
+                    stash_path = os.path.join(CONTAINER_TRANSCRIPTS_DIR, fname)
+                    # Write atomically so a concurrent reader never sees a partial file.
+                    tmp_write = stash_path + ".tmp"
+                    with open(tmp_write, "w") as f:
+                        f.write(body)
+                    os.replace(tmp_write, stash_path)
+                    payload["transcript_path"] = stash_path
+                try:
+                    result = subprocess.run(
+                        [VENV_PYTHON, hook_path],
+                        input=json.dumps(payload),
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                    )
+                    response = {
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                        "exit_code": result.returncode,
+                    }
+                except subprocess.TimeoutExpired as e:
+                    response = {"stdout": "", "stderr": f"hook timeout: {e}", "exit_code": 124}
+
+        elif action == "cairn_recall":
+            # Semantic-search the cairn DB for entries matching `text`.
+            # Used by container-side clients (e.g. copilot-human-loop extension)
+            # that have no direct query.py access.
+            text = request.get("text", "") or ""
+            limit = int(request.get("limit", 10))
+            threshold = float(request.get("threshold", 0.3))
+            if not text.strip():
+                response = {"results": []}
+            else:
+                from cairn import query as _query
+                results = _query.semantic_search(text, limit=limit, threshold=threshold) or []
+                response = {"results": results}
+
+        elif action == "cairn_remember":
+            # Insert a memory via the same path as `query.py --add`.
+            mem_type = request.get("type") or "fact"
+            topic = request.get("topic") or ""
+            content = request.get("content") or ""
+            project = request.get("project")
+            session_id = request.get("session_id")
+            if not topic or not content:
+                response = {"error": "topic and content required"}
+            else:
+                from cairn import query as _query
+                _query.add_memory(mem_type, topic, content, project=project, session_id=session_id)
+                response = {"ok": True}
+
         else:
             response = {"error": f"Unknown action: {action}"}
 
