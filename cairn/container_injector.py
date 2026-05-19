@@ -404,7 +404,10 @@ def _extension_instruction_entries(container_id: str, home: str) -> list[tuple[s
     )
     if listing.returncode != 0:
         return []
-    entries: list[tuple[str, str]] = []
+    # Dedupe by extension id (publisher.name) — multiple version dirs of the
+    # same extension can coexist (uninstall doesn't always clean prior dirs).
+    # Keep latest mtime version so we use the most recent instructions.
+    by_id: dict[str, tuple[float, str]] = {}  # ext_id -> (mtime, content)
     for ext_dir in listing.stdout.split():
         ext_path = f"{ext_root}/{ext_dir}"
         pkg = _read_container_file(container_id, f"{ext_path}/package.json")
@@ -417,18 +420,30 @@ def _extension_instruction_entries(container_id: str, home: str) -> list[tuple[s
         ci = data.get("contributes", {}).get("chatInstructions") or []
         if not ci:
             continue
-        # Extension id from name+publisher to match what VS Code displays
         ext_id = f"{data.get('publisher', '?')}.{data.get('name', ext_dir)}"
+        # Use ext-dir mtime as version-tiebreaker proxy
+        mt = subprocess.run(
+            ["docker", "exec", container_id, "stat", "-c", "%Y", ext_path],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        try:
+            mtime = float(mt.stdout.strip())
+        except ValueError:
+            mtime = 0.0
+        bodies: list[str] = []
         for item in ci:
-            rel = item.get("path")
+            rel = item.get("path", "").lstrip("./")
             if not rel:
                 continue
-            # Resolve relative to extension dir; path starts with ./
-            rel = rel.lstrip("./")
             content = _read_container_file(container_id, f"{ext_path}/{rel}")
             if content:
-                entries.append((ext_id, content))
-    return entries
+                bodies.append(content)
+        if not bodies:
+            continue
+        joined = "\n\n".join(bodies)
+        if ext_id not in by_id or mtime > by_id[ext_id][0]:
+            by_id[ext_id] = (mtime, joined)
+    return [(eid, body) for eid, (_, body) in sorted(by_id.items())]
 
 
 def _cairn_instruction_entry() -> tuple[str, str] | None:
