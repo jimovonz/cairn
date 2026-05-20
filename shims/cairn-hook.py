@@ -53,19 +53,48 @@ def _default_gateway() -> str | None:
 
 
 def _connect():
-    """Return a connected socket to the cairn daemon, or None on failure."""
+    """Return a connected socket to the cairn daemon, or None on failure.
+
+    TCP host candidates are tried in order, first to connect wins:
+      1. $CAIRN_HOST — explicit override, when set nothing else is tried.
+      2. 127.0.0.1 — containers sharing the host network namespace
+         (network_mode: host): the default route is the LAN/VPN router,
+         NOT the host, so gateway discovery dials the wrong machine.
+         Loopback reaches the host daemon directly. Fails fast (refused)
+         in bridge-network containers, so it's cheap to try first.
+      3. default-route gateway — standard bridge-network case.
+      4. host.docker.internal — Docker Desktop.
+    Each candidate gets a short connect timeout so a wrong/unreachable
+    address fails fast instead of hanging the hook for minutes.
+    """
     if SOCK and os.path.exists(SOCK):
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(120)
-        s.connect(SOCK)
-        return s
-    host = TCP_HOST_OVERRIDE or _default_gateway()
-    if not host:
-        return None
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(120)
-    s.connect((host, TCP_PORT))
-    return s
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(120)
+            s.connect(SOCK)
+            return s
+        except OSError:
+            pass
+
+    if TCP_HOST_OVERRIDE:
+        candidates = [TCP_HOST_OVERRIDE]
+    else:
+        candidates = ["127.0.0.1"]
+        gw = _default_gateway()
+        if gw:
+            candidates.append(gw)
+        candidates.append("host.docker.internal")
+
+    for host in candidates:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(3)      # fast-fail on a wrong address
+            s.connect((host, TCP_PORT))
+            s.settimeout(120)    # generous for the actual exchange
+            return s
+        except OSError:
+            continue
+    return None
 
 
 def main() -> int:
