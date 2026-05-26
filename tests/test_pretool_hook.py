@@ -39,6 +39,7 @@ def fresh_db():
         keywords TEXT,
         confidence REAL DEFAULT 0.7,
         archived_reason TEXT,
+        session_id TEXT,
         origin_id TEXT,
         user_id TEXT,
         updated_by TEXT,
@@ -191,6 +192,38 @@ def test_find_memories_for_file_adversarial():
     assert len(results) == 1
     assert results[0]["topic"] == "good"
     assert results[0]["content"] == "Good valid memory"
+
+
+#TAG: same-session filter
+# Verifies: memories whose session_id matches current_session_id are filtered out — they're
+# already in live conversation context, so re-injecting is pure token noise (the
+# pretool gotcha-echo bug fixed at this commit).
+@pytest.mark.behavioural
+def test_find_memories_for_file_excludes_current_session():
+    db_path, conn = fresh_db()
+    # written by current session — must be excluded
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, associated_files, confidence, archived_reason, session_id)"
+        " VALUES ('correction', 'echo-bug', 'fresh', ?, 0.9, NULL, 'sess-current')",
+        (json.dumps(["/src/auth.py"]),)
+    )
+    # written by a prior session — must be returned
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, associated_files, confidence, archived_reason, session_id)"
+        " VALUES ('correction', 'real-gotcha', 'from past', ?, 0.9, NULL, 'sess-old')",
+        (json.dumps(["/src/auth.py"]),)
+    )
+    conn.commit()
+    conn.close()
+
+    with patch.object(hook_helpers, "DB_PATH", db_path), \
+         patch("hooks.pretool_hook.log"):
+        results = find_memories_for_file(
+            "/src/auth.py", corrections_only=True, current_session_id="sess-current"
+        )
+
+    assert len(results) == 1
+    assert results[0]["topic"] == "real-gotcha"
 
 
 # ============================================================
