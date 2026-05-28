@@ -89,9 +89,9 @@ def test_extract_query_terms_filters_stopwords():
     terms = extract_query_terms("what is the best approach for debugging")
     assert "what" not in terms
     assert "the" not in terms
-    assert "debugging" in terms
-    assert "approach" in terms
-    assert "best" in terms
+    # Substantive content terms survive YAKE phrase extraction.
+    assert any("debug" in t for t in terms)
+    assert any("approach" in t for t in terms)
 
 
 # Verifies: keyword_overlap computes correct ratio
@@ -278,7 +278,8 @@ def _confidence_db():
         team_id TEXT,
         source_ref TEXT,
         deleted_at TIMESTAMP,
-        synced_at TIMESTAMP)""")
+        synced_at TIMESTAMP,
+        topic_embedding BLOB)""")
     conn.execute("""CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id INTEGER, content TEXT, session_id TEXT,
         changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")

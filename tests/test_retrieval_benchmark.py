@@ -71,8 +71,8 @@ def make_db(n_memories, project="benchmark"):
         team_id TEXT,
         source_ref TEXT,
         deleted_at TIMESTAMP,
-        synced_at TIMESTAMP
-    )""")
+        synced_at TIMESTAMP,
+        topic_embedding BLOB)""")
     conn.execute("""CREATE TABLE memory_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id INTEGER NOT NULL, content TEXT NOT NULL,
