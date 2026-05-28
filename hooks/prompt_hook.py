@@ -405,6 +405,25 @@ def main() -> None:
         except Exception as _e:
             log(f"repo_discovery failed open: {type(_e).__name__}: {_e}")
 
+        # Tier 1: one-off code-graph orientation (modules/flows/hubs) from
+        # .code-review-graph/graph.db. Deterministic, no LLM, fails open if the
+        # graph isn't built. Gives structural awareness so the model reads fewer files.
+        try:
+            from cairn.config import GRAPH_ORIENTATION_ENABLED
+            if GRAPH_ORIENTATION_ENABLED and cwd:
+                from cairn.graph import orientation_block
+                _orient = orientation_block(repo_root=cwd)
+                if _orient:
+                    context_parts.append(
+                        "<code_graph_orientation>\n"
+                        "Mechanistic repo structure (code-review-graph, zero-cost static analysis). "
+                        "Use to navigate without reading files.\n\n"
+                        f"{_orient}\n</code_graph_orientation>"
+                    )
+                    record_metric(session_id, "graph_orientation_injected", cwd)
+        except Exception as _e:
+            log(f"graph orientation failed open: {type(_e).__name__}: {_e}")
+
         l1_context = layer1_search(user_message, session_id)
         if l1_context:
             context_parts.append(l1_context)

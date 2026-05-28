@@ -494,3 +494,108 @@ class TestKnowledge:
         """Returns 'Symbol not found' for unknown symbol."""
         result = graph.knowledge("nonexistent", repo_root=str(graph_repo))
         assert result == "Symbol not found: nonexistent"
+
+
+# ---------------------------------------------------------------------------
+# orientation_block (Tier 1) + file_context_block (Tier 2)
+# ---------------------------------------------------------------------------
+
+COMMUNITY_SCHEMA = """
+CREATE TABLE community_summaries (
+    community_id INTEGER PRIMARY KEY,
+    name TEXT, purpose TEXT, key_symbols TEXT, risk TEXT,
+    size INTEGER, dominant_language TEXT
+);
+"""
+FLOW_SCHEMA = """
+CREATE TABLE flow_snapshots (
+    flow_id INTEGER PRIMARY KEY,
+    name TEXT, entry_point TEXT, critical_path TEXT,
+    criticality REAL, node_count INTEGER, file_count INTEGER
+);
+"""
+RISK_SCHEMA = """
+CREATE TABLE risk_index (
+    node_id INTEGER, qualified_name TEXT, risk_score REAL,
+    caller_count INTEGER, test_coverage TEXT, security_relevant INTEGER, last_computed TEXT
+);
+"""
+
+
+@pytest.fixture
+def rich_graph_repo(graph_repo):
+    """Extend graph_repo with postprocess tables (communities, flows, risk)."""
+    db = graph_repo / ".code-review-graph" / "graph.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute(COMMUNITY_SCHEMA)
+    conn.execute(FLOW_SCHEMA)
+    conn.execute(RISK_SCHEMA)
+    # A real module and a test-dominated "module" (should be filtered out).
+    conn.execute("INSERT INTO community_summaries VALUES (1,'core','','[\"foo\",\"do_thing\"]','',40,'python')")
+    conn.execute("INSERT INTO community_summaries VALUES (2,'suite','','[\"test_foo\",\"test_bar\",\"test_baz\"]','',99,'python')")
+    conn.execute("INSERT INTO flow_snapshots VALUES (1,'foo','src/main.py::foo','[]',0.81,5,2)")
+    # foo: high risk + security relevant + untested → must be flagged.
+    conn.execute("INSERT INTO risk_index VALUES (1,'src.main.foo',0.7,1,'untested',1,'now')")
+    conn.commit()
+    conn.close()
+    return graph_repo
+
+
+class TestOrientationBlock:
+    def test_none_when_no_graph(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert graph.orientation_block() is None
+
+    def test_modules_flows_hubs(self, rich_graph_repo):
+        block = graph.orientation_block(repo_root=str(rich_graph_repo))
+        assert block is not None
+        assert "Modules:" in block and "core" in block
+        assert "Key flows" in block and "foo" in block
+        assert "Hubs" in block  # foo has 1 caller via CALLS edge
+
+    def test_excludes_test_dominated_community(self, rich_graph_repo):
+        block = graph.orientation_block(repo_root=str(rich_graph_repo))
+        # 'suite' is >50% test_* symbols → must be dropped from Modules.
+        assert "suite" not in block
+
+    def test_works_without_postprocess_tables(self, graph_repo):
+        # No communities/flows/risk tables — should still emit hubs, not crash.
+        block = graph.orientation_block(repo_root=str(graph_repo))
+        assert block is not None and "Hubs" in block
+
+
+class TestFileContextBlock:
+    def test_none_when_no_graph(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert graph.file_context_block("src/main.py") is None
+
+    def test_none_for_unknown_file(self, graph_repo):
+        assert graph.file_context_block(str(graph_repo / "src" / "nope.py"),
+                                        repo_root=str(graph_repo)) is None
+
+    def test_signatures_and_fanin(self, graph_repo):
+        block = graph.file_context_block(str(graph_repo / "src" / "main.py"),
+                                         repo_root=str(graph_repo))
+        assert block is not None
+        assert "foo" in block
+        assert "callers:1" in block  # do_thing CALLS foo
+
+    def test_excludes_tests(self, graph_repo):
+        # test_foo lives in tests/test_main.py (is_test=1) — not a target file here,
+        # but ensure a file with only test nodes yields None.
+        block = graph.file_context_block(str(graph_repo / "tests" / "test_main.py"),
+                                         repo_root=str(graph_repo))
+        assert block is None
+
+    def test_risk_tail_highlight(self, rich_graph_repo):
+        block = graph.file_context_block(str(rich_graph_repo / "src" / "main.py"),
+                                         repo_root=str(rich_graph_repo))
+        assert block is not None
+        assert "High-risk:" in block
+        assert "security-relevant" in block
+        assert "foo" in block
+
+    def test_respects_max_symbols(self, graph_repo):
+        block = graph.file_context_block(str(graph_repo / "src" / "bar.py"),
+                                         repo_root=str(graph_repo), max_symbols=1)
+        assert block is not None
