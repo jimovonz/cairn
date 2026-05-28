@@ -64,11 +64,17 @@ THIN_RETRIEVAL_TOP_SIM_THRESHOLD = 0.45 # Max similarity below this → flag as 
 THIN_RETRIEVAL_MAX_REMINDERS = 4        # Re-stage limit; abandons after this many ignored reminders
 
 # === Injection quality gates ===
-MIN_INJECTION_SIMILARITY = 0.35    # If max similarity < this, don't inject at all (garbage gate)
-BORDERLINE_SIM_CEILING = 0.35      # If max similarity < this AND top score < BORDERLINE_SCORE_FLOOR, skip
+MIN_INJECTION_SIMILARITY = 0.45    # Batch-level garbage gate: if max similarity < this, drop the whole injection
+# Per-entry gate (not superseded by MIN_INJECTION_SIMILARITY): once the batch passes the
+# garbage gate above, individual entries with sim < BORDERLINE_SIM_CEILING are still
+# dropped unless their composite score clears BORDERLINE_SCORE_FLOOR.
+BORDERLINE_SIM_CEILING = 0.35      # Per-entry: sim < this requires score >= BORDERLINE_SCORE_FLOOR to survive
 BORDERLINE_SCORE_FLOOR = 0.50      # Minimum composite score for borderline similarity entries
 RELATIVE_FILTER_RATIO = 0.7        # Keep only entries where similarity >= ratio * max_similarity
 MAX_INJECTED_ENTRIES = 5            # Hard cap on entries injected per retrieval
+
+# === Cross-project keyword match (Layer 2) ===
+L2_KEYWORD_MIN_OVERLAP = 2         # Minimum shared keywords for a cross-project keyword match (filters single-keyword noise)
 
 # === Soft confidence inclusion (DISABLED) ===
 # Confidence no longer gates retrieval. All memories are retrievable regardless of confidence.
@@ -80,7 +86,7 @@ SOFT_CONF_FLOOR = 0.0              # Disabled — no confidence floor
 DOMINANCE_EPSILON = 0.05           # If gap between top1 and top2 < epsilon, include both
 
 # === Diversity filter (post-retrieval dedup) ===
-DIVERSITY_SIM_THRESHOLD = 0.9      # Drop retrieved entries with cosine > this to already-selected entries
+DIVERSITY_SIM_THRESHOLD = 0.85     # Drop retrieved entries with cosine > this to already-selected entries
 
 # === Trailing intent detection ===
 TRAILING_INTENT_SIM_THRESHOLD = 0.65   # Similarity above which last sentence is flagged as unfulfilled intent
