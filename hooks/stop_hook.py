@@ -392,25 +392,31 @@ def main() -> None:
             reset_continuation(session_id)
             sys.exit(0)
 
-        # Check if this session has ever produced a memory block. If not, the LLM
-        # likely doesn't have the rules loaded (e.g. hooks activated mid-session
-        # before restart). Fail open rather than enforcing on an uninstructed LLM.
-        conn = get_conn()
-        session_has_memories = conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE session_id = ?", (session_id,)
-        ).fetchone()[0] > 0
-        conn.close()
-        # Also check if we've seen any hook_fired metric for this session
-        eph_conn = get_ephemeral_conn()
-        session_hook_count = eph_conn.execute(
-            "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'hook_fired'", (session_id,)
-        ).fetchone()[0]
-        eph_conn.close()
+        # Fail open only if the prompt hook never delivered the [cm] format spec
+        # to this session. With prompt_hook injecting MEMORY_FORMAT_SPEC on the
+        # first non-subagent turn and recording format_spec_injected=1, the
+        # default is to enforce. Sessions without the flag (subagents, sessions
+        # that started before this code, hook misconfiguration) keep the old
+        # behaviour: fail open rather than enforcing on an uninstructed LLM.
+        from hooks.hook_helpers import load_hook_state
+        format_spec_injected = load_hook_state(session_id, "format_spec_injected") == "1"
 
-        if not session_has_memories and session_hook_count <= 1:
-            log(f"No prior memories for session {session_id[:8]}... — LLM may lack rules, allowing stop")
-            record_metric(session_id, "uninstructed_session_skip")
-            sys.exit(0)
+        if not format_spec_injected:
+            conn = get_conn()
+            session_has_memories = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE session_id = ?", (session_id,)
+            ).fetchone()[0] > 0
+            conn.close()
+            eph_conn = get_ephemeral_conn()
+            session_hook_count = eph_conn.execute(
+                "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'hook_fired'", (session_id,)
+            ).fetchone()[0]
+            eph_conn.close()
+
+            if not session_has_memories and session_hook_count <= 1:
+                log(f"No prior memories for session {session_id[:8]}... — LLM may lack rules, allowing stop")
+                record_metric(session_id, "uninstructed_session_skip")
+                sys.exit(0)
 
         increment_continuation(session_id)
 
