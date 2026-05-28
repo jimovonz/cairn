@@ -31,8 +31,8 @@ def fresh_db():
             origin_id TEXT, source_ref TEXT, keywords TEXT, depth INTEGER,
             associated_files TEXT, archived_reason TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        topic_embedding BLOB)
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sessions (

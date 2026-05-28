@@ -104,7 +104,7 @@ def api_memories(params):
     sort = params.get("sort", "updated_at")
     order = params.get("order", "desc")
 
-    allowed_sorts = {"id", "type", "topic", "confidence", "updated_at", "created_at", "project"}
+    allowed_sorts = {"id", "type", "topic", "confidence", "updated_at", "created_at", "project", "served_count"}
     if sort not in allowed_sorts:
         sort = "updated_at"
     order_dir = "ASC" if order.lower() == "asc" else "DESC"
@@ -147,11 +147,40 @@ def api_memories(params):
             where.append("session_id LIKE ?"); sql_params.append(f"{session_id}%")
         where_clause = " WHERE " + " AND ".join(where) if where else ""
         total = conn.execute(f"SELECT COUNT(*) FROM memories{where_clause}", sql_params).fetchone()[0]
-        rows = conn.execute(f"""
-            SELECT id, type, topic, content, confidence, project,
-                   session_id, updated_at, created_at, archived_reason, keywords
-            FROM memories{where_clause} ORDER BY {sort} {order_dir} LIMIT ? OFFSET ?
-        """, sql_params + [limit, offset]).fetchall()
+        if sort == "served_count":
+            # Special path: served_count is computed from layer_delivery
+            # metric events, not stored on memories. Fetch all matching
+            # IDs, score them, sort, page, then load full rows.
+            id_rows = conn.execute(
+                f"SELECT id FROM memories{where_clause}", sql_params
+            ).fetchall()
+            ids_all = [r["id"] for r in id_rows]
+            served = _memory_served_counts(ids_all) if ids_all else {}
+            reverse = order_dir == "DESC"
+            sorted_ids = sorted(
+                ids_all,
+                key=lambda i: (served.get(i, 0), i),
+                reverse=reverse,
+            )
+            page_ids = sorted_ids[offset:offset + limit]
+            if not page_ids:
+                rows = []
+            else:
+                placeholders = ",".join("?" * len(page_ids))
+                rows = conn.execute(f"""
+                    SELECT id, type, topic, content, confidence, project,
+                           session_id, updated_at, created_at, archived_reason, keywords
+                    FROM memories WHERE id IN ({placeholders})
+                """, page_ids).fetchall()
+                # Preserve sort order from page_ids
+                by_id = {r["id"]: r for r in rows}
+                rows = [by_id[i] for i in page_ids if i in by_id]
+        else:
+            rows = conn.execute(f"""
+                SELECT id, type, topic, content, confidence, project,
+                       session_id, updated_at, created_at, archived_reason, keywords
+                FROM memories{where_clause} ORDER BY {sort} {order_dir} LIMIT ? OFFSET ?
+            """, sql_params + [limit, offset]).fetchall()
 
     memories = [{
         "id": r["id"], "type": r["type"], "topic": r["topic"], "content": r["content"],
@@ -160,7 +189,45 @@ def api_memories(params):
         "keywords": r["keywords"],
     } for r in rows]
     conn.close()
-    return {"memories": memories, "total": total}, 200
+    # Enrich with served counts — how many times each memory has been
+    # surfaced via layer_delivery metric events. Lets the UI render a
+    # visual "served" indicator distinguishing live-used memories.
+    if memories:
+        ids = [m["id"] for m in memories]
+        served = _memory_served_counts(ids)
+        for m in memories:
+            m["served_count"] = served.get(m["id"], 0)
+    return {"memories": memories, "total": total, "sort": sort,
+            "order": order_dir.lower()}, 200
+
+
+def _memory_served_counts(memory_ids: list[int]) -> dict[int, int]:
+    """Count how many times each given memory_id appears in
+    layer_delivery metric events. One scan of the metric table; cheap
+    for typical page sizes (50 memories)."""
+    if not memory_ids:
+        return {}
+    eph = _get_eph_conn()
+    counts: dict[int, int] = {}
+    try:
+        # layer_delivery detail is JSON like {"layer": "L1.5", "ids": [..]}
+        rows = eph.execute(
+            "SELECT detail FROM metrics WHERE event = 'layer_delivery'"
+        ).fetchall()
+    finally:
+        eph.close()
+    wanted = set(memory_ids)
+    for (detail,) in rows:
+        if not detail:
+            continue
+        try:
+            data = json.loads(detail)
+            for mid in data.get("ids", []):
+                if mid in wanted:
+                    counts[mid] = counts.get(mid, 0) + 1
+        except (ValueError, TypeError):
+            continue
+    return counts
 
 
 def api_memory_detail(params, memory_id):
@@ -998,6 +1065,240 @@ def api_session_triage(params):
     return {"sessions": results[offset:offset + limit], "total": len(results)}, 200
 
 
+def _get_eph_conn():
+    """Open ephemeral DB connection for calibration_deliveries / metrics."""
+    eph_path = getattr(config, "EPHEMERAL_DB_PATH", None) or \
+        os.path.join(os.path.dirname(DB_PATH), "cairn-ephemeral.db")
+    conn = sqlite3.connect(eph_path)
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def api_calibration_profile(params):
+    """List active calibration rows for the Profile panel.
+
+    Query params:
+        limit (int, default 50)
+        offset (int, default 0)
+        sort (str, one of: pinned, source, id, delivered_count, confidence,
+              updated_at; default "pinned")
+        order (asc|desc, default desc)
+    """
+    sort_col = params.get("sort", "pinned")
+    if sort_col not in ("pinned", "source", "id", "delivered_count",
+                         "confidence", "updated_at", "created_at",
+                         "follow_rate"):
+        sort_col = "pinned"
+    order = params.get("order", "desc").lower()
+    if order not in ("asc", "desc"):
+        order = "desc"
+    try:
+        limit = max(1, min(500, int(params.get("limit", 50))))
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        offset = max(0, int(params.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+
+    # follow_rate is computed; emulate via expression in ORDER BY
+    if sort_col == "follow_rate":
+        order_expr = ("CASE WHEN delivered_count > 0 THEN "
+                      "followed_count * 1.0 / delivered_count ELSE -1 END "
+                      + order.upper())
+    elif sort_col == "pinned":
+        # Pin-first then by delivered_count desc, id asc as tiebreaker
+        order_expr = (f"pinned {order.upper()}, delivered_count DESC, "
+                       "source, id")
+    else:
+        order_expr = f"{sort_col} {order.upper()}, id ASC"
+
+    conn = get_conn()
+    try:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM calibration_rows "
+            "WHERE archived_at IS NULL AND superseded_by IS NULL"
+        ).fetchone()[0]
+        rows = conn.execute(
+            "SELECT id, content, kw, qf, source, confidence, pinned, layer, "
+            "delivered_count, followed_count, ignored_count, corrected_count, "
+            "created_at, updated_at "
+            "FROM calibration_rows "
+            "WHERE archived_at IS NULL AND superseded_by IS NULL "
+            f"ORDER BY {order_expr} "
+            "LIMIT ? OFFSET ?", (limit, offset)
+        ).fetchall()
+        by_source = dict(conn.execute(
+            "SELECT source, COUNT(*) FROM calibration_rows "
+            "WHERE archived_at IS NULL AND superseded_by IS NULL "
+            "GROUP BY source"
+        ).fetchall())
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        d = {"id": r[0], "content": r[1], "kw": r[2], "qf": r[3],
+             "source": r[4], "confidence": r[5], "pinned": bool(r[6]),
+             "layer": r[7], "delivered_count": r[8], "followed_count": r[9],
+             "ignored_count": r[10], "corrected_count": r[11],
+             "created_at": r[12], "updated_at": r[13]}
+        d["follow_rate"] = (r[9] / r[8]) if r[8] else None
+        out.append(d)
+    return {"rows": out, "total": total, "by_source": by_source,
+            "limit": limit, "offset": offset,
+            "sort": sort_col, "order": order}, 200
+
+
+def api_calibration_effectiveness(params):
+    """Per-row effectiveness table + aggregate counts."""
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, content, source, delivered_count, followed_count, "
+            "ignored_count, corrected_count "
+            "FROM calibration_rows WHERE archived_at IS NULL "
+            "AND delivered_count > 0 "
+            "ORDER BY delivered_count DESC LIMIT 200"
+        ).fetchall()
+    finally:
+        conn.close()
+    per_row = []
+    total_d = total_f = total_i = total_c = 0
+    flagged_low = []
+    for rid, content, source, dc, fc, ic, cc in rows:
+        rate = fc / dc if dc else 0.0
+        per_row.append({"id": rid, "content": content, "source": source,
+                        "delivered": dc, "followed": fc, "ignored": ic,
+                        "corrected": cc, "follow_rate": round(rate, 3)})
+        total_d += dc; total_f += fc; total_i += ic; total_c += cc
+        if dc >= 10 and rate < 0.20:
+            flagged_low.append(rid)
+    return {
+        "per_row": per_row,
+        "aggregate": {
+            "delivered": total_d, "followed": total_f,
+            "ignored": total_i, "corrected": total_c,
+            "overall_follow_rate": round(total_f / total_d, 3) if total_d else None,
+        },
+        "flagged_low_follow": flagged_low,
+    }, 200
+
+
+def api_calibration_review_queue(params):
+    """Unresolved Tier 2 review-queue items for the Review panel."""
+    conn = get_conn()
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT rq.id, rq.row_id, rq.suggestion_type, rq.detail, "
+                "rq.surfaced_at, cr.content "
+                "FROM calibration_review_queue rq "
+                "LEFT JOIN calibration_rows cr ON cr.id = rq.row_id "
+                "WHERE rq.resolved_at IS NULL "
+                "ORDER BY rq.surfaced_at DESC"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {"items": [], "total": 0}, 200
+    finally:
+        conn.close()
+    out = [{"item_id": r[0], "row_id": r[1], "suggestion_type": r[2],
+            "detail": r[3], "surfaced_at": r[4], "content": r[5]}
+           for r in rows]
+    return {"items": out, "total": len(out)}, 200
+
+
+def api_calibration_row(params, row_id):
+    """Detail view for a single calibration_row — full content, all
+    metadata, and the calibration_deliveries history grouped by session."""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id, content, kw, qf, source, confidence, pinned, layer, "
+            "session_scope, superseded_by, archived_at, archive_reason, "
+            "delivered_count, followed_count, ignored_count, "
+            "corrected_count, created_at, updated_at, origin_session_id "
+            "FROM calibration_rows WHERE id = ?", (row_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {"error": "not found"}, 404
+    detail = {
+        "id": row[0], "content": row[1], "kw": row[2], "qf": row[3],
+        "source": row[4], "confidence": row[5], "pinned": bool(row[6]),
+        "layer": row[7], "session_scope": row[8], "superseded_by": row[9],
+        "archived_at": row[10], "archive_reason": row[11],
+        "delivered_count": row[12], "followed_count": row[13],
+        "ignored_count": row[14], "corrected_count": row[15],
+        "created_at": row[16], "updated_at": row[17],
+        "origin_session_id": row[18],
+    }
+    detail["follow_rate"] = (row[13] / row[12]) if row[12] else None
+
+    # Deliveries grouped by session
+    eph = _get_eph_conn()
+    try:
+        rows = eph.execute(
+            "SELECT session_id, turn_index, delivered_at, similarity, "
+            "outcome, outcome_evidence "
+            "FROM calibration_deliveries WHERE row_id = ? "
+            "ORDER BY delivered_at DESC LIMIT 200",
+            (row_id,)
+        ).fetchall()
+    finally:
+        eph.close()
+    deliveries_by_session = {}
+    for sid, turn, at, sim, outcome, evidence in rows:
+        deliveries_by_session.setdefault(sid, []).append({
+            "turn": turn, "delivered_at": at, "similarity": sim,
+            "outcome": outcome, "outcome_evidence": evidence,
+        })
+    detail["deliveries_by_session"] = [
+        {"session_id": sid, "deliveries": d}
+        for sid, d in deliveries_by_session.items()
+    ]
+    return detail, 200
+
+
+def api_calibration_session(params, session_id):
+    """Per-session calibration delivery timeline + outcomes."""
+    eph = _get_eph_conn()
+    try:
+        deliveries = eph.execute(
+            "SELECT id, turn_index, row_id, delivered_at, similarity, "
+            "outcome, outcome_evidence "
+            "FROM calibration_deliveries WHERE session_id = ? "
+            "ORDER BY turn_index, id",
+            (session_id,),
+        ).fetchall()
+    finally:
+        eph.close()
+    if not deliveries:
+        return {"session_id": session_id, "deliveries": [], "total": 0}, 200
+    row_ids = list({d[2] for d in deliveries})
+    placeholders = ",".join("?" * len(row_ids))
+    conn = get_conn()
+    try:
+        crows = conn.execute(
+            f"SELECT id, content, source, confidence FROM calibration_rows "
+            f"WHERE id IN ({placeholders})", row_ids,
+        ).fetchall()
+    finally:
+        conn.close()
+    row_info = {c[0]: {"content": c[1], "source": c[2],
+                       "confidence": c[3]} for c in crows}
+    timeline = []
+    for did, turn, rid, at, sim, outcome, evidence in deliveries:
+        timeline.append({
+            "delivery_id": did, "turn": turn, "row_id": rid,
+            "delivered_at": at, "similarity": sim, "outcome": outcome,
+            "outcome_evidence": evidence,
+            "row": row_info.get(rid, {}),
+        })
+    return {"session_id": session_id, "deliveries": timeline,
+            "total": len(timeline)}, 200
+
+
 def api_health(params):
     from hooks.health import sentinel_info
     info = sentinel_info()
@@ -1065,6 +1366,11 @@ _ROUTES: list[tuple[str, str, callable]] = [
     ("GET", "/api/retention", lambda p, **kw: api_retention(p)),
     ("GET", "/api/session-triage", lambda p, **kw: api_session_triage(p)),
     ("GET", "/api/health", lambda p, **kw: api_health(p)),
+    ("GET", "/api/calibration/profile", lambda p, **kw: api_calibration_profile(p)),
+    ("GET", "/api/calibration/effectiveness", lambda p, **kw: api_calibration_effectiveness(p)),
+    ("GET", "/api/calibration/review-queue", lambda p, **kw: api_calibration_review_queue(p)),
+    ("GET", "/api/calibration/row/{row_id}", lambda p, **kw: api_calibration_row(p, int(kw["row_id"]))),
+    ("GET", "/api/calibration/session/{session_id}", lambda p, **kw: api_calibration_session(p, kw["session_id"])),
 ]
 
 # Compile route patterns to regex

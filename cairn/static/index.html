@@ -166,6 +166,10 @@ a:hover { text-decoration: underline; }
 .badge-project { background: #d1861633; color: var(--orange); }
 .badge-skill { background: #58a6ff33; color: var(--accent); }
 .badge-workflow { background: #8b949e33; color: var(--text-dim); }
+.badge-explicit { background: #1f6feb33; color: var(--accent); }
+.badge-observation { background: #58a6ff33; color: var(--accent); }
+.badge-meta-assessment { background: #bc8cff33; color: var(--purple); }
+.badge-pinned { background: #d2992233; color: var(--yellow); }
 
 /* Tables */
 .mem-table { width: 100%; border-collapse: collapse; }
@@ -456,6 +460,7 @@ a:hover { text-decoration: underline; }
     <button data-panel="sessions">Sessions</button>
     <button data-panel="metrics">Metrics</button>
     <button data-panel="enforcement">Enforcement</button>
+    <button data-panel="calibration">Calibration</button>
     <button data-panel="usage">Usage</button>
     <button data-panel="config">Config</button>
   </nav>
@@ -620,6 +625,30 @@ a:hover { text-decoration: underline; }
     </div>
   </div>
 
+  <!-- Calibration Panel (Phase 5) -->
+  <div id="panel-calibration" class="panel">
+    <p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">
+      Calibration system — captures <em>how to interact with this user</em> (level, style, preferences).
+      Complements memories (<em>what is known</em>). Populated by the session analyser; consumed at UserPromptSubmit.
+    </p>
+    <div class="stats-grid" id="calibration-summary"></div>
+    <div class="card">
+      <h2 data-tip="Active calibration rows grouped by source. Pinned rows show first.">Profile</h2>
+      <div id="calibration-profile-counts" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;font-size:13px;color:var(--text-dim)"></div>
+      <div id="calibration-profile-table"></div>
+      <div class="pagination" id="calibration-profile-pagination"></div>
+    </div>
+    <div class="card">
+      <h2 data-tip="Per-row effectiveness — deliveries, follow rate, ignore/correct counts. Flagged rows have &lt;20% follow after 10+ deliveries.">Effectiveness</h2>
+      <div id="calibration-effectiveness-aggregate" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:13px"></div>
+      <div id="calibration-effectiveness-table"></div>
+    </div>
+    <div class="card">
+      <h2 data-tip="Tier 2 surfaced items — agent suggestions for user approval. Approve / dismiss / edit per row.">Review Queue</h2>
+      <div id="calibration-review-queue"></div>
+    </div>
+  </div>
+
   <!-- Usage Panel -->
   <div id="panel-usage" class="panel">
     <div class="stats-grid" id="usage-summary"></div>
@@ -675,6 +704,10 @@ let currentPanel = 'overview';
 let memoryPage = 0;
 let memorySort = 'updated_at';
 let memoryOrder = 'desc';
+let calibrationPage = 0;
+let calibrationSort = 'pinned';
+let calibrationOrder = 'desc';
+const CALIBRATION_PAGE_SIZE = 50;
 let sessionPage = 0;
 const PAGE_SIZE = 50;
 
@@ -692,6 +725,7 @@ document.querySelectorAll('.header nav button').forEach(btn => {
     else if (panel === 'sessions') loadSessions();
     else if (panel === 'metrics') loadMetrics();
     else if (panel === 'enforcement') loadEnforcement();
+    else if (panel === 'calibration') loadCalibration();
     else if (panel === 'usage') loadUsage();
     else if (panel === 'config') loadConfig();
   });
@@ -906,20 +940,31 @@ function renderMemoryTable(memories, container, serverSort) {
     : `<th class="sortable" data-col="4" data-type="num">Confidence</th>`;
   const thDate = serverSort
     ? `<th class="${memorySortClass('updated_at')}" onclick="sortMemories('updated_at')">Updated</th>`
-    : `<th class="sortable" data-col="5" data-type="date">Updated</th>`;
+    : `<th class="sortable" data-col="6" data-type="date">Updated</th>`;
+  const thDeliv = serverSort
+    ? `<th class="${memorySortClass('served_count')}" onclick="sortMemories('served_count')">Deliv</th>`
+    : `<th class="sortable" data-col="5" data-type="num">Deliv</th>`;
 
   container.innerHTML = `<table class="mem-table">
     <thead><tr>
-      ${thId}${thType}${thTopic}<th>Content</th>${thConf}${thDate}
+      ${thId}${thType}${thTopic}<th>Content</th>${thConf}${thDeliv}${thDate}
     </tr></thead>
-    <tbody>${memories.map(m => `<tr onclick="showMemory(${m.id})">
-      <td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">${m.id}</td>
+    <tbody>${memories.map(m => {
+      const served = (m.served_count || 0) > 0;
+      const idCellStyle = served
+        ? 'font-family:var(--font-mono);font-size:12px;color:var(--text-dim);border-left:3px solid var(--green);padding-left:9px'
+        : 'font-family:var(--font-mono);font-size:12px;color:var(--text-dim)';
+      const idTitle = served ? ` title="served ${m.served_count}x"` : '';
+      return `<tr onclick="showMemory(${m.id})">
+      <td style="${idCellStyle}"${idTitle}>${m.id}</td>
       <td>${badge(m.type)}</td>
       <td class="topic-cell">${escapeHtml(m.topic || '')}</td>
       <td class="content-cell">${escapeHtml(m.content || '')}${m.keywords ? `<div style="margin-top:3px">${m.keywords.split(',').map(k => `<span style="display:inline-block;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;padding:0 4px;margin:1px 2px;font-size:11px;color:var(--text-dim)">${escapeHtml(k.trim())}</span>`).join('')}</div>` : ''}</td>
       <td class="conf-cell" style="color:${confColor(m.confidence)}">${(m.confidence||0).toFixed(2)}</td>
+      <td class="conf-cell" style="color:${(m.served_count||0)>0?'var(--green)':'var(--text-dim)'};font-weight:${(m.served_count||0)>0?'600':'normal'}">${m.served_count||0}</td>
       <td class="date-cell">${formatDate(m.updated_at)}</td>
-    </tr>`).join('')}</tbody>
+    </tr>`;
+    }).join('')}</tbody>
   </table>`;
   if (!serverSort) makeSortable(container.querySelector('table'));
 }
@@ -1393,6 +1438,240 @@ async function loadMetrics() {
 }
 
 // ─── Enforcement Panel ────────────────────────────────────────────────────
+function calibrationSortClass(col) {
+  if (calibrationSort !== col) return 'sortable';
+  return 'sortable sort-' + (calibrationOrder === 'asc' ? 'asc' : 'desc');
+}
+function sortCalibration(col) {
+  if (calibrationSort === col) {
+    calibrationOrder = calibrationOrder === 'asc' ? 'desc' : 'asc';
+  } else {
+    calibrationSort = col;
+    calibrationOrder = (col === 'pinned' || col === 'delivered_count' || col === 'follow_rate' || col === 'updated_at' || col === 'confidence') ? 'desc' : 'asc';
+  }
+  calibrationPage = 0;
+  loadCalibration();
+}
+async function loadCalibration() {
+  try {
+    const profileUrl = '/api/calibration/profile?limit=' + CALIBRATION_PAGE_SIZE
+      + '&offset=' + (calibrationPage * CALIBRATION_PAGE_SIZE)
+      + '&sort=' + calibrationSort + '&order=' + calibrationOrder;
+    const [profile, eff, queue] = await Promise.all([
+      fetch(profileUrl).then(r => r.json()),
+      fetch('/api/calibration/effectiveness').then(r => r.json()),
+      fetch('/api/calibration/review-queue').then(r => r.json()),
+    ]);
+    // Summary
+    const summary = document.getElementById('calibration-summary');
+    summary.innerHTML = '';
+    const cards = [
+      ['Rows', profile.total],
+      ['Deliveries', eff.aggregate.delivered || 0],
+      ['Followed', eff.aggregate.followed || 0],
+      ['Follow rate', eff.aggregate.overall_follow_rate != null ? (eff.aggregate.overall_follow_rate * 100).toFixed(0) + '%' : '—'],
+      ['Review queue', queue.total],
+      ['Flagged low-follow', (eff.flagged_low_follow || []).length],
+    ];
+    cards.forEach(([label, val]) => {
+      const d = document.createElement('div'); d.className = 'stat-card';
+      d.innerHTML = '<div class="label">' + label + '</div><div class="value">' + val + '</div>';
+      summary.appendChild(d);
+    });
+    // Profile counts
+    const pc = document.getElementById('calibration-profile-counts');
+    pc.innerHTML = '';
+    Object.entries(profile.by_source || {}).forEach(([src, n]) => {
+      const span = document.createElement('span');
+      span.textContent = src + ': ' + n;
+      span.style.padding = '2px 8px';
+      span.style.background = 'var(--bg-alt)';
+      span.style.borderRadius = '4px';
+      pc.appendChild(span);
+    });
+    // Profile table
+    const pt = document.getElementById('calibration-profile-table');
+    if (profile.rows.length === 0) {
+      pt.innerHTML = '<p style="color:var(--text-dim)">No active calibration rows yet.</p>';
+    } else {
+      pt.innerHTML = '<table class="mem-table"><thead><tr>'
+        + '<th class="' + calibrationSortClass('id') + '" onclick="sortCalibration(\'id\')">ID</th>'
+        + '<th class="' + calibrationSortClass('source') + '" onclick="sortCalibration(\'source\')">Source</th>'
+        + '<th class="' + calibrationSortClass('pinned') + '" onclick="sortCalibration(\'pinned\')">Pinned</th>'
+        + '<th>Content</th>'
+        + '<th class="' + calibrationSortClass('delivered_count') + '" onclick="sortCalibration(\'delivered_count\')">Deliv</th>'
+        + '<th class="' + calibrationSortClass('follow_rate') + '" onclick="sortCalibration(\'follow_rate\')">Follow %</th>'
+        + '<th class="' + calibrationSortClass('confidence') + '" onclick="sortCalibration(\'confidence\')">Confidence</th>'
+        + '<th class="' + calibrationSortClass('updated_at') + '" onclick="sortCalibration(\'updated_at\')">Updated</th>'
+        + '</tr></thead><tbody>'
+        + profile.rows.map(r => {
+          const rate = r.follow_rate != null ? (r.follow_rate * 100).toFixed(0) + '%' : '—';
+          const pin = r.pinned ? badge('pinned') : '';
+          const kwChips = r.kw ? '<div style="margin-top:3px">'
+            + r.kw.split(',').map(k => '<span style="display:inline-block;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;padding:0 4px;margin:1px 2px;font-size:11px;color:var(--text-dim)">'
+              + escapeHtml(k.trim()) + '</span>').join('') + '</div>' : '';
+          const served = r.delivered_count > 0;
+          const idCell = served
+            ? '<td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim);border-left:3px solid var(--green);padding-left:9px" title="served ' + r.delivered_count + 'x">' + r.id + '</td>'
+            : '<td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">' + r.id + '</td>';
+          const delivCell = served
+            ? '<td class="conf-cell" style="color:var(--green);font-weight:600">' + r.delivered_count + '</td>'
+            : '<td class="conf-cell" style="color:var(--text-dim)">' + r.delivered_count + '</td>';
+          return '<tr onclick="showCalibration(' + r.id + ')">'
+            + idCell
+            + '<td>' + badge(r.source) + '</td>'
+            + '<td>' + pin + '</td>'
+            + '<td class="content-cell">' + escapeHtml(r.content || '') + kwChips + '</td>'
+            + delivCell
+            + '<td class="conf-cell">' + rate + '</td>'
+            + '<td class="conf-cell" style="color:' + confColor(r.confidence) + '">' + r.confidence.toFixed(2) + '</td>'
+            + '<td class="date-cell">' + formatDate(r.updated_at) + '</td>'
+            + '</tr>';
+        }).join('')
+        + '</tbody></table>';
+    }
+    // Pagination controls
+    const pgn = document.getElementById('calibration-profile-pagination');
+    const totalPages = Math.max(1, Math.ceil(profile.total / CALIBRATION_PAGE_SIZE));
+    pgn.innerHTML = ''
+      + '<button ' + (calibrationPage === 0 ? 'disabled' : '') + ' onclick="calibrationPage--;loadCalibration()">&larr; Prev</button>'
+      + '<span>Page ' + (calibrationPage + 1) + ' / ' + totalPages + ' &middot; ' + profile.total + ' rows</span>'
+      + '<button ' + (calibrationPage >= totalPages - 1 ? 'disabled' : '') + ' onclick="calibrationPage++;loadCalibration()">Next &rarr;</button>';
+    // Effectiveness aggregate
+    const ea = document.getElementById('calibration-effectiveness-aggregate');
+    const agg = eff.aggregate;
+    ea.innerHTML = ''
+      + '<span>Deliveries: <b>' + (agg.delivered || 0) + '</b></span>'
+      + '<span>Followed: <b>' + (agg.followed || 0) + '</b></span>'
+      + '<span>Ignored: <b>' + (agg.ignored || 0) + '</b></span>'
+      + '<span>Corrected: <b>' + (agg.corrected || 0) + '</b></span>'
+      + '<span>Flagged low-follow: <b>' + (eff.flagged_low_follow || []).length + '</b></span>';
+    // Per-row effectiveness table
+    const et = document.getElementById('calibration-effectiveness-table');
+    if (eff.per_row.length === 0) {
+      et.innerHTML = '<p style="color:var(--text-dim)">No deliveries recorded yet.</p>';
+    } else {
+      et.innerHTML = '<table class="mem-table"><thead><tr>'
+        + '<th>ID</th><th>Source</th><th>Content</th>'
+        + '<th>Deliv</th><th>Follow</th><th>Ignore</th><th>Correct</th><th>Follow %</th>'
+        + '</tr></thead><tbody>'
+        + eff.per_row.map(r => {
+          const flagged = (r.delivered >= 10 && r.follow_rate < 0.20);
+          const rowStyle = flagged ? ' style="background:rgba(220,53,69,0.08)"' : '';
+          return '<tr' + rowStyle + ' onclick="showCalibration(' + r.id + ')">'
+            + '<td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">' + r.id + '</td>'
+            + '<td>' + badge(r.source) + '</td>'
+            + '<td class="content-cell">' + escapeHtml(r.content || '') + '</td>'
+            + '<td class="conf-cell">' + r.delivered + '</td>'
+            + '<td class="conf-cell" style="color:var(--green)">' + r.followed + '</td>'
+            + '<td class="conf-cell" style="color:var(--text-dim)">' + r.ignored + '</td>'
+            + '<td class="conf-cell" style="color:var(--red)">' + r.corrected + '</td>'
+            + '<td class="conf-cell">' + (r.follow_rate * 100).toFixed(0) + '%</td>'
+            + '</tr>';
+        }).join('')
+        + '</tbody></table>';
+    }
+    // Review queue
+    const rq = document.getElementById('calibration-review-queue');
+    if (queue.items.length === 0) {
+      rq.innerHTML = '<p style="color:var(--text-dim)">No surfaced items.</p>';
+    } else {
+      rq.innerHTML = '<table class="mem-table"><thead><tr>'
+        + '<th>Row</th><th>Suggestion</th><th>Content</th><th>Detail</th><th>Surfaced</th>'
+        + '</tr></thead><tbody>'
+        + queue.items.map(i => '<tr onclick="showCalibration(' + i.row_id + ')">'
+          + '<td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">' + i.row_id + '</td>'
+          + '<td>' + badge(i.suggestion_type) + '</td>'
+          + '<td class="content-cell">' + escapeHtml(i.content || '') + '</td>'
+          + '<td class="conf-cell" style="color:var(--text-dim);font-size:11px">' + escapeHtml(i.detail || '') + '</td>'
+          + '<td class="date-cell">' + formatDate(i.surfaced_at) + '</td>'
+          + '</tr>').join('')
+        + '</tbody></table>';
+    }
+  } catch (e) {
+    document.getElementById('calibration-summary').innerHTML = '<p style="color:var(--text-dim)">Failed to load: ' + e.message + '</p>';
+  }
+}
+
+async function showCalibration(id) {
+  const modal = document.getElementById('memory-modal');
+  const content = document.getElementById('modal-content');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+  modal.classList.add('active');
+  try {
+    const r = await fetch('/api/calibration/row/' + id).then(x => x.json());
+    if (r.error) { content.innerHTML = '<p>' + r.error + '</p>'; return; }
+    let html = '<h2>' + r.source + ' &middot; calibration_row #' + r.id + (r.pinned ? ' &nbsp;★ pinned' : '') + '</h2>';
+    html += '<div style="color:var(--text);line-height:1.7;margin-bottom:16px">' + escapeHtml(r.content) + '</div>';
+
+    // Metadata grid
+    html += '<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:13px;margin-bottom:16px">';
+    html += '<span style="color:var(--text-dim)">Source</span><span>' + r.source + '</span>';
+    html += '<span style="color:var(--text-dim)">Confidence</span><span style="color:' + confColor(r.confidence) + '">' + r.confidence.toFixed(2) + '</span>';
+    html += '<span style="color:var(--text-dim)">Layer</span><span>' + r.layer + '</span>';
+    html += '<span style="color:var(--text-dim)">Pinned</span><span>' + (r.pinned ? 'yes' : 'no') + '</span>';
+    html += '<span style="color:var(--text-dim)">Session scope</span><span>' + (r.session_scope || 'global') + '</span>';
+    if (r.origin_session_id) {
+      html += '<span style="color:var(--text-dim)">Origin session</span><span style="font-family:var(--font-mono);font-size:12px"><a href="#" onclick="closeModal();showSessionDetail(\'' + r.origin_session_id + '\');return false">' + r.origin_session_id.slice(0,12) + '...</a></span>';
+    }
+    html += '<span style="color:var(--text-dim)">Created</span><span>' + formatDate(r.created_at) + '</span>';
+    html += '<span style="color:var(--text-dim)">Updated</span><span>' + formatDate(r.updated_at) + '</span>';
+    if (r.archived_at) {
+      html += '<span style="color:var(--red)">Archived</span><span style="color:var(--red)">' + r.archived_at + ' &mdash; ' + (r.archive_reason || '') + '</span>';
+    }
+    if (r.superseded_by) {
+      html += '<span style="color:var(--text-dim)">Superseded by</span><span><a href="#" onclick="closeModal();showCalibration(' + r.superseded_by + ');return false">#' + r.superseded_by + '</a></span>';
+    }
+    html += '</div>';
+
+    // Keywords as chips
+    if (r.kw) {
+      html += '<div style="margin-bottom:12px"><div style="color:var(--text-dim);font-size:12px;margin-bottom:4px">Keywords</div>';
+      html += '<div>' + r.kw.split(',').map(k => '<span style="display:inline-block;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;padding:2px 6px;margin:2px;font-size:12px">' + escapeHtml(k.trim()) + '</span>').join('') + '</div></div>';
+    }
+
+    // qf list — the symmetric-intent retrieval payload
+    let qfArr = [];
+    try { qfArr = JSON.parse(r.qf || '[]'); } catch (e) {}
+    if (qfArr.length > 0) {
+      html += '<div style="margin-bottom:12px"><div style="color:var(--text-dim);font-size:12px;margin-bottom:4px">qf &mdash; hypothetical user prompts this row should fire before</div>';
+      html += '<ul style="margin:0;padding-left:20px">' + qfArr.map(q => '<li style="font-size:13px;color:var(--text)">' + escapeHtml(q) + '</li>').join('') + '</ul></div>';
+    }
+
+    // Effectiveness summary
+    html += '<div class="card" style="margin-top:12px"><h3>Effectiveness</h3>';
+    html += '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;font-size:13px;text-align:center">';
+    html += '<div><div style="color:var(--text-dim);font-size:11px">Delivered</div><div style="font-size:18px">' + r.delivered_count + '</div></div>';
+    html += '<div><div style="color:var(--text-dim);font-size:11px">Followed</div><div style="font-size:18px;color:var(--green)">' + r.followed_count + '</div></div>';
+    html += '<div><div style="color:var(--text-dim);font-size:11px">Ignored</div><div style="font-size:18px;color:var(--text-dim)">' + r.ignored_count + '</div></div>';
+    html += '<div><div style="color:var(--text-dim);font-size:11px">Corrected</div><div style="font-size:18px;color:var(--red)">' + r.corrected_count + '</div></div>';
+    const rate = r.follow_rate != null ? (r.follow_rate * 100).toFixed(0) + '%' : '—';
+    html += '<div><div style="color:var(--text-dim);font-size:11px">Follow rate</div><div style="font-size:18px">' + rate + '</div></div>';
+    html += '</div></div>';
+
+    // Deliveries per session
+    if (r.deliveries_by_session && r.deliveries_by_session.length > 0) {
+      html += '<div class="card" style="margin-top:12px"><h3>Delivery history (' + r.deliveries_by_session.length + ' sessions)</h3>';
+      r.deliveries_by_session.forEach(s => {
+        const sid = s.session_id || '';
+        const outcomes = s.deliveries.map(d => d.outcome).filter(o => o);
+        const sessLink = sid ? '<a href="#" onclick="closeModal();showSessionDetail(\'' + sid + '\');return false">' + sid.slice(0, 12) + '...</a>' : '—';
+        html += '<div style="padding:8px 0;border-bottom:1px solid var(--border)">';
+        html += '<div style="font-family:var(--font-mono);font-size:12px">' + sessLink + ' &middot; ' + s.deliveries.length + ' deliver' + (s.deliveries.length === 1 ? 'y' : 'ies') + (outcomes.length ? ' &middot; outcomes: ' + outcomes.join(', ') : '') + '</div>';
+        s.deliveries.slice(0, 5).forEach(d => {
+          const sim = d.similarity != null ? d.similarity.toFixed(2) : '—';
+          html += '<div style="font-size:11px;color:var(--text-dim);margin-top:2px">turn ' + d.turn + ' &middot; sim=' + sim + ' &middot; ' + (d.outcome || 'pending') + (d.outcome_evidence ? ' &middot; ' + escapeHtml(d.outcome_evidence) : '') + '</div>';
+        });
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+    content.innerHTML = html;
+  } catch (e) {
+    content.innerHTML = '<p>Failed to load: ' + e.message + '</p>';
+  }
+}
+
 async function loadEnforcement() {
   const data = await api('/api/enforcement');
   const totals = data.totals || {};

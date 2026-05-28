@@ -28,6 +28,7 @@ dependencies = [
     "sentence-transformers>=5.0,<6.0",
     "sqlite-vec>=0.1.6,<0.2",
     "pysqlite3-binary>=0.5.4",
+    "yake>=0.4,<0.8",
 ]
 
 [project.optional-dependencies]
@@ -54,6 +55,11 @@ Issues = "https://github.com/jimovonz/cairn/issues"
 cairn-query = "cairn.query:main_entry"
 cairn-dashboard = "cairn.dashboard:main"
 cairn-graph = "cairn.graph:main"
+cairn-calibration = "cairn.calibration:main"
+cairn-session-extract = "cairn.session_extract:main"
+cairn-calibration-analyser = "cairn.analyser:main"
+cairn-calibration-selfmod = "cairn.calibration_selfmod:main"
+cairn-calibration-import-claude-md = "cairn.calibration_import_claude_md:main"
 
 [tool.setuptools.packages.find]
 include = ["cairn*", "hooks*"]

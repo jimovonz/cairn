@@ -35,7 +35,8 @@ def fresh_env():
         team_id TEXT,
         source_ref TEXT,
         deleted_at TIMESTAMP,
-        synced_at TIMESTAMP)""")
+        synced_at TIMESTAMP,
+        topic_embedding BLOB)""")
     conn.execute("""CREATE TABLE sessions (session_id TEXT PRIMARY KEY,
         parent_session_id TEXT, project TEXT, transcript_path TEXT,
         started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")

@@ -230,8 +230,8 @@ init_db.init()
             team_id TEXT,
             source_ref TEXT,
             deleted_at TIMESTAMP,
-            synced_at TIMESTAMP
-        )""")
+            synced_at TIMESTAMP,
+        topic_embedding BLOB)""")
         conn.commit()
         conn.close()
 
