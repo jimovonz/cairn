@@ -52,7 +52,17 @@ Ingest a git repository into Cairn as portable knowledge entries:
 - `cairn-graph --summary` / `--orientation` — repo-level modules/flows/hubs
 - `cairn-graph --file-context FILE` — a file's symbols, signatures, fan-in/out, risk tail
 
-This data is also surfaced automatically into sessions: a repo orientation block at session start (Tier 1, prompt hook) and per-file structural context on Read/Edit (Tier 2, pretool hook, deduped once-per-file). Both are gated by `GRAPH_ORIENTATION_ENABLED` / `GRAPH_FILE_CONTEXT_ENABLED` and fail open if no graph is built. Rebuild the graph with `code-review-graph build --repo <root>` (incremental: `update`).
+This data is also surfaced automatically into sessions: a repo orientation block at session start (Tier 1, prompt hook) and per-file structural context on Read/Edit (Tier 2, pretool hook, deduped once-per-file). Both are gated by `GRAPH_ORIENTATION_ENABLED` / `GRAPH_FILE_CONTEXT_ENABLED` and fail open if no graph is built.
+
+### Fleet — keeping every repo graph-ready
+
+`code-review-graph` installs inside cairn's venv (`code-review-graph` is **not** on PATH; resolve via `.venv/bin/` or `cairn.repo_discovery._resolve_crg`). Freshness is **not** driven by git hooks — git-ai (and other git proxies) own the native hook path and don't chain repo hooks, so `.git/hooks/post-commit` is unreliable. Instead:
+
+- **`cairn/graph_fleet.py`** discovers every git repo under the configured roots (`CAIRN_GRAPH_ROOTS`, colon-separated; default = parent of `CAIRN_HOME`), builds any missing graph, and registers each with the `code-review-graph` **watch daemon** (`crg daemon`, 2s poll) which keeps them current in real time. Run `python3 -m cairn.graph_fleet` (sweep) or `--status`.
+- An **hourly cron** sweep catches new repos and self-heals the daemon; `install.sh` kicks an initial background bootstrap.
+- The **prompt hook** (`repo_discovery.kick_graph_build`) also build/updates the current repo's graph on first contact, as a per-session fallback for brand-new repos.
+
+So every repo is graph-ready before first contact, independent of whether cairn has been active in it.
 
 ## Calibration system (Phase 1 + 2)
 

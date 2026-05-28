@@ -78,24 +78,31 @@ def _resolve_crg() -> Optional[str]:
 
 
 def kick_graph_build(cwd: str, *, env_override: Optional[dict] = None) -> bool:
-    """Tier 1: fire `code-review-graph build` in background if appropriate.
+    """Tier 1: keep the code-review-graph current, in the background.
 
-    Returns True if a build was kicked, False otherwise. Non-blocking —
-    subprocess.Popen with detached stdio so prompt-hook returns immediately.
+    Fired from the cairn prompt hook (not a git hook) so it works regardless of
+    the active git wrapper — git-ai and other proxies own the native hook path
+    and do not chain repo hooks, so `.git/hooks/post-commit`-based refresh is
+    unreliable; this is the portable path.
+
+    No graph yet  -> `build` (full).
+    Graph present -> `update` (incremental, ~sub-second, only changed files).
+
+    Returns True if a build/update was kicked, False otherwise. Non-blocking —
+    subprocess.Popen with detached stdio so the prompt hook returns immediately.
     """
     env = env_override if env_override is not None else os.environ
     if env.get("CAIRN_AUTO_GRAPH", "1") == "0":
         return False
     if not _is_git_repo(cwd):
         return False
-    if _graph_db_present(cwd):
-        return False
     crg = _resolve_crg()
     if crg is None:
         return False
+    subcmd = "update" if _graph_db_present(cwd) else "build"
     try:
         subprocess.Popen(
-            [crg, "build", "--repo", cwd],
+            [crg, subcmd, "--repo", cwd],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
