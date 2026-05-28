@@ -69,12 +69,22 @@ def _run(crg: str, args: list[str], timeout: int = 600) -> tuple[bool, str]:
         return False, str(e)
 
 
-def sweep(roots: Optional[list[str]] = None, *, build_missing: bool = True,
-          start_daemon: bool = True, verbose: bool = True) -> dict:
-    """Ensure every discovered repo has a graph and is watched by the daemon.
+def _watch_daemon_enabled() -> bool:
+    # Opt-in. The watch daemon adds real-time freshness but is fragile (doesn't
+    # always persist when spawned outside a login shell) and churns on volatile
+    # files (e.g. cairn's own ephemeral DB). The hourly sweep below is the robust
+    # freshness backbone; enable the daemon with CAIRN_GRAPH_WATCH=1 on top.
+    return os.environ.get("CAIRN_GRAPH_WATCH", "0").lower() in ("1", "true", "yes")
 
-    Existing graphs are left to the daemon to keep current (real-time); this
-    only *builds* repos with no graph yet and *registers* every repo (idempotent).
+
+def sweep(roots: Optional[list[str]] = None, *, build_missing: bool = True,
+          refresh_existing: bool = True, verbose: bool = True) -> dict:
+    """Make every discovered repo's code graph present and current.
+
+    Build missing graphs, and incrementally `update` existing ones. This is the
+    freshness backbone — daemon-independent, so it holds even when the watch
+    daemon isn't running. When CAIRN_GRAPH_WATCH=1, also register repos with the
+    watch daemon and ensure it's up for real-time updates between sweeps.
     """
     crg = _resolve_crg()
     if crg is None:
@@ -83,32 +93,46 @@ def sweep(roots: Optional[list[str]] = None, *, build_missing: bool = True,
         return {"error": "crg-not-found"}
 
     repos = discover_repos(roots)
-    stats = {"discovered": len(repos), "built": 0, "registered": 0, "build_failed": [], "repos": repos}
+    stats = {"discovered": len(repos), "built": 0, "updated": 0, "registered": 0,
+             "failed": [], "repos": repos}
+    use_daemon = _watch_daemon_enabled()
+    newly_registered = 0
 
     for repo in repos:
-        if build_missing and not _graph_db_present(repo):
+        present = _graph_db_present(repo)
+        if not present and build_missing:
             ok, out = _run(crg, ["build", "--repo", repo])
             if ok:
                 stats["built"] += 1
                 if verbose:
                     print(f"built  {repo}")
             else:
-                stats["build_failed"].append(repo)
+                stats["failed"].append(repo)
                 if verbose:
                     print(f"FAILED build {repo}: {out[:160]}", file=sys.stderr)
                 continue
-        # Register with the watch daemon (idempotent — re-adding is a no-op/update).
-        ok, _ = _run(crg, ["daemon", "add", repo, "--alias", os.path.basename(repo)], timeout=30)
-        if ok:
-            stats["registered"] += 1
+        elif present and refresh_existing:
+            # Incremental — only re-parses changed files; ~sub-second when clean.
+            ok, _ = _run(crg, ["update", "--repo", repo], timeout=300)
+            if ok:
+                stats["updated"] += 1
+        if use_daemon:
+            ok, _ = _run(crg, ["daemon", "add", repo, "--alias", os.path.basename(repo)], timeout=30)
+            if ok:
+                stats["registered"] += 1
+                newly_registered += 1
 
-    if start_daemon:
-        # Idempotent: 'start' is a no-op if already running; this also self-heals a dead daemon.
-        _run(crg, ["daemon", "start"], timeout=30)
+    if use_daemon:
+        # Ensure the daemon is up; restart only if we registered new repos this
+        # sweep (a running daemon does not hot-load newly-added repos).
+        running, _ = _run(crg, ["daemon", "status"], timeout=15)
+        sub = "restart" if (running and newly_registered) else "start"
+        _run(crg, ["daemon", sub], timeout=30)
 
     if verbose:
         print(f"\nfleet: {stats['discovered']} repos, {stats['built']} built, "
-              f"{stats['registered']} registered, {len(stats['build_failed'])} failed")
+              f"{stats['updated']} updated, {len(stats['failed'])} failed"
+              + (f", {stats['registered']} watched" if use_daemon else ""))
     return stats
 
 
@@ -133,7 +157,7 @@ def main() -> None:
         status(roots)
         return
     sweep(roots, build_missing="--no-build" not in args,
-          start_daemon="--no-daemon" not in args)
+          refresh_existing="--no-refresh" not in args)
 
 
 if __name__ == "__main__":

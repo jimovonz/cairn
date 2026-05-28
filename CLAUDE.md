@@ -58,9 +58,10 @@ This data is also surfaced automatically into sessions: a repo orientation block
 
 `code-review-graph` installs inside cairn's venv (`code-review-graph` is **not** on PATH; resolve via `.venv/bin/` or `cairn.repo_discovery._resolve_crg`). Freshness is **not** driven by git hooks — git-ai (and other git proxies) own the native hook path and don't chain repo hooks, so `.git/hooks/post-commit` is unreliable. Instead:
 
-- **`cairn/graph_fleet.py`** discovers every git repo under the configured roots (`CAIRN_GRAPH_ROOTS`, colon-separated; default = parent of `CAIRN_HOME`), builds any missing graph, and registers each with the `code-review-graph` **watch daemon** (`crg daemon`, 2s poll) which keeps them current in real time. Run `python3 -m cairn.graph_fleet` (sweep) or `--status`.
-- An **hourly cron** sweep catches new repos and self-heals the daemon; `install.sh` kicks an initial background bootstrap.
-- The **prompt hook** (`repo_discovery.kick_graph_build`) also build/updates the current repo's graph on first contact, as a per-session fallback for brand-new repos.
+- **`cairn/graph_fleet.py`** discovers every git repo under the configured roots (`CAIRN_GRAPH_ROOTS`, colon-separated; default = parent of `CAIRN_HOME`), **builds** any missing graph and incrementally **`update`s** existing ones. Run `python3 -m cairn.graph_fleet` (sweep) or `--status`.
+- An **hourly cron** runs this sweep — the freshness backbone, daemon-independent. `install.sh` kicks an initial background bootstrap that builds all repos.
+- The **prompt hook** (`repo_discovery.kick_graph_build`) also build/updates the current repo's graph on first contact, as a per-session fast path.
+- **Optional real-time layer:** set `CAIRN_GRAPH_WATCH=1` to also register repos with the `code-review-graph` watch daemon (`crg daemon`, 2s poll) for sub-hour freshness. Off by default — the daemon doesn't reliably persist when spawned outside a login shell and churns on volatile files (e.g. cairn's own ephemeral DB), so the cron sweep is the dependable mechanism.
 
 So every repo is graph-ready before first contact, independent of whether cairn has been active in it.
 
