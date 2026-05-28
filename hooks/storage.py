@@ -286,24 +286,25 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     def _next_lamport() -> int:
         return bump_lamport(conn) if sync_on else 0
 
-    def _insert_memory(mem_type, topic, content, embedding_blob, session_id, project,
-                       depth, keywords_csv) -> None:
-        """Single insertion path — branches on whether sync columns exist."""
+    def _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob,
+                       session_id, project, depth, keywords_csv) -> None:
+        """Single insertion path — branches on whether sync columns exist.
+        Always stores topic_embedding (schema v8 dual-embedding)."""
         if sync_on:
             lam = _next_lamport()
             conn.execute(
-                "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords, "
+                "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, "
                 "origin_id, created_by_node, updated_by_node, user_id, updated_by, lamport, "
                 "visibility, embedding_model_version) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv,
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv,
                  str(uuid.uuid4()), node_id, node_id, user_id, user_id, lam, 'team', model_version)
             )
         else:
             conn.execute(
-                "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords, origin_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv,
+                "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, origin_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv,
                  str(uuid.uuid4()))
             )
 
@@ -430,11 +431,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     )
                     record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
                 log(f"Distinct variant: type={mem_type} topic={topic} (sim={old_sim:.2f}) — inserting as new")
-                conn.execute(
-                    "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, origin_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, str(uuid.uuid4()))
-                )
-                _insert_memory(mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv)
+                _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv)
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
@@ -479,11 +476,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     pass  # Embedding issues don't block insertion
 
             if not deduped:
-                conn.execute(
-                    "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, origin_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, str(uuid.uuid4()))
-                )
-                _insert_memory(mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv)
+                _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv)
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
