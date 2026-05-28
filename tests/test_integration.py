@@ -47,8 +47,8 @@ def setup_test_db():
             team_id TEXT,
             source_ref TEXT,
             deleted_at TIMESTAMP,
-            synced_at TIMESTAMP
-        )
+            synced_at TIMESTAMP,
+        topic_embedding BLOB)
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS memory_history (

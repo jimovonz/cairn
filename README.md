@@ -374,6 +374,19 @@ Things that can go wrong and how the system handles them:
 | Contradictory memories | Same type+topic overwrites with confidence suppression; NLI-based contradiction detection auto-archives superseded memories daily | Old content preserved in version history; daily cron catches cross-type contradictions |
 | Database grows large | sqlite-vec provides indexed vector search; brute-force fallback for small DBs | All quality gates reduce injected volume regardless of DB size |
 
+## Calibration (experimental, Phase 1 + 2 on `feature/calibration-system`)
+
+Cairn answers *what* is known; calibration shapes *how* responses are generated — level, style, preferences, approach. Phase 1 + Phase 2 cover the foundation and the analyser:
+
+- `calibration_rows` table (durable DB) — populated by the analyser
+- `calibration_deliveries` table (ephemeral DB) — turn-indexed log used by the future injector and scored by the analyser's effectiveness pass
+- `cairn/session_extract.py` — strips tool blocks, thinking, `<cairn_context>`, `<system-reminder>`, and `[cm]` link-defs from a Claude Code session JSONL. Reduces a ~110K-token session to a signal-only view for the analyser.
+- `cairn-calibration-analyser analyse <jsonl>` — runs the analyser on a single session. 13 bounded dimensions, sectioned JSON output, dual write paths (`calibration_rows` for *how* signal, existing `memories` table with `source_ref="analyser-session-arc"` for *what* signal that requires the arc).
+- `cairn-calibration-analyser cron` — one pass over `~/.claude/projects/*/*.jsonl`, processes idle un-analysed sessions, per-session error isolation.
+- `cairn-calibration` CLI scaffolding (commands stubbed for Phase 4).
+
+UserPromptSubmit injector, dashboard panels land in Phases 3–6. See `docs/spec-calibration-system.md` (Amendment 1 for analyser dimension list and dual-write rationale).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test coverage, and platform compatibility contributions are especially welcome.

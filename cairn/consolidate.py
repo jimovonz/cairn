@@ -398,27 +398,43 @@ def _record_assessments(conn: sqlite3.Connection, pairs: list[dict], mode: str) 
     conn.commit()
 
 
-def find_contradiction_pairs(conn: sqlite3.Connection) -> list[dict]:
+def find_contradiction_pairs(conn: sqlite3.Connection, scope_ids: Optional[set[int]] = None) -> list[dict]:
     """Find candidate pairs of memories that may contradict each other.
 
     Uses bi-encoder similarity at a lower threshold than consolidation (0.55 vs 0.85)
     since contradicting memories may use different phrasing. Returns pairs sorted by
     similarity descending. Skips previously assessed pairs.
+
+    If scope_ids is provided, only form pairs where both members are in the set.
     """
     from cairn.embeddings import from_blob, cosine_similarity
     from cairn.config import CONTRADICTION_SIMILARITY_THRESHOLD, CONTRADICTION_MAX_PAIRS
 
-    assessed = _load_assessed_pairs(conn, "contradiction")
+    if scope_ids:
+        assessed = set()
+    else:
+        assessed = _load_assessed_pairs(conn, "contradiction")
     if assessed:
         print(f"  Skipping {len(assessed)} previously assessed pairs")
 
-    rows = conn.execute(
-        "SELECT id, type, topic, content, embedding, created_at, project, confidence "
-        "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '') AND deleted_at IS NULL"
-    ).fetchall()
+    if scope_ids:
+        placeholders = ",".join("?" * len(scope_ids))
+        rows = conn.execute(
+            f"SELECT id, type, topic, content, embedding, created_at, project, confidence "
+            f"FROM memories WHERE id IN ({placeholders}) AND embedding IS NOT NULL "
+            f"AND (archived_reason IS NULL OR archived_reason = '') AND deleted_at IS NULL",
+            list(scope_ids)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, type, topic, content, embedding, created_at, project, confidence "
+            "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '') AND deleted_at IS NULL"
+        ).fetchall()
 
     entries = []
     for row in rows:
+        if not isinstance(row[4], bytes):
+            continue
         vec = from_blob(row[4])
         entries.append({
             "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
@@ -673,19 +689,22 @@ def execute_supersession(conn: sqlite3.Connection, superseded: list[dict]) -> in
     return count
 
 
-def run_contradiction_detection(execute: bool = False) -> dict:
+def run_contradiction_detection(execute: bool = False, scope_ids: Optional[set[int]] = None) -> dict:
     """Run the contradiction detection pipeline.
 
     Phase 1: Bi-encoder candidate pairs (cosine >= 0.55)
     Phase 2: NLI contradiction scoring (filters to genuine contradictions)
     Phase 3: Haiku assessment in batches (SUPERSEDED/SEQUENTIAL/COMPLEMENTARY)
     Phase 4: Archive superseded memories (if --execute)
+
+    If scope_ids is provided, only compare memories within that set.
     """
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA busy_timeout=5000")
 
-    print("Phase 1: Finding candidate pairs via bi-encoder similarity...")
-    pairs = find_contradiction_pairs(conn)
+    scope_label = f" (scoped to {len(scope_ids)} memories)" if scope_ids else ""
+    print(f"Phase 1: Finding candidate pairs via bi-encoder similarity...{scope_label}")
+    pairs = find_contradiction_pairs(conn, scope_ids=scope_ids)
     same = sum(1 for p in pairs if p["same_topic"])
     cross = len(pairs) - same
     print(f"  Found {len(pairs)} candidate pairs ({same} same-topic, {cross} cross-topic)")
@@ -751,8 +770,12 @@ def run_contradiction_detection(execute: bool = False) -> dict:
 
 if __name__ == "__main__":
     execute = "--execute" in sys.argv
+    scope_ids = None
+    for arg in sys.argv:
+        if arg.startswith("--scope-ids="):
+            scope_ids = {int(x) for x in arg.split("=", 1)[1].split(",")}
     if "--contradictions" in sys.argv:
-        run_contradiction_detection(execute=execute)
+        run_contradiction_detection(execute=execute, scope_ids=scope_ids)
     else:
         use_llm = "--no-llm" not in sys.argv
         run_consolidation(execute=execute, use_llm=use_llm)
