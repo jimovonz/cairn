@@ -1046,10 +1046,10 @@ def check():
                     # Keep only leading column names before the first `content=` option
                     before_opts = cols_text.split("content=")[0]
                     cols = [c.strip() for c in before_opts.split(",") if c.strip() and "=" not in c]
-                    if cols == ["topic", "content"]:
+                    if cols == ["topic", "content", "keywords"]:
                         ok("FTS5 schema correct")
                     else:
-                        fail(f"FTS5 schema drifted: cols={cols}, expected ['topic', 'content']")
+                        fail(f"FTS5 schema drifted: cols={cols}, expected ['topic', 'content', 'keywords']")
                 else:
                     fail("FTS5 schema unparseable")
             else:
