@@ -299,11 +299,12 @@ $CRON_GRAPH_FLEET" | sed '/^$/d' | crontab -
 echo "Installed cron: consolidation (3:00 AM), contradiction scan (3:30 AM), calibration analyser (00:00), calibration selfmod (00:30), graph fleet sweep (hourly :17)."
 
 # --- Code-graph fleet bootstrap ---
-# Build graphs for all local repos and start the watch daemon so every repo is
-# ready for first contact. Backgrounded — the initial all-repo build can take a
-# while; the daemon keeps them current thereafter. Skips if crg isn't installed.
+# Build graphs for all local repos so every repo is graph-ready for first contact.
+# Backgrounded — the initial all-repo build can take a while. The hourly cron sweep
+# keeps them current thereafter (set CAIRN_GRAPH_WATCH=1 for the real-time daemon on
+# top). Skips if code-review-graph isn't installed.
 if [ -x "$VENV_PATH/bin/code-review-graph" ]; then
-    echo "Bootstrapping code-graph fleet in background (build all repos + start watch daemon)..."
+    echo "Bootstrapping code-graph fleet in background (building graphs for all repos)..."
     nohup "$VENV_PYTHON" -m cairn.graph_fleet >> "$CAIRN_HOME/logs/graph-fleet.log" 2>&1 &
 fi
 

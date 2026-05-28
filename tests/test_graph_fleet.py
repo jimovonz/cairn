@@ -41,39 +41,45 @@ def test_discover_repos_skips_noise_dirs(tmp_path):
     assert not any("node_modules" in f for f in found)
 
 
-def test_sweep_builds_missing_and_registers(tmp_path):
+def test_sweep_builds_missing_no_daemon_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("CAIRN_GRAPH_WATCH", raising=False)  # daemon off by default
     _mk_repo(tmp_path, "r1")
     _mk_repo(tmp_path, "r2")
     calls = []
-
-    def fake_run(crg, args, timeout=600):
-        calls.append(args)
-        return True, ""
-
     with patch.object(graph_fleet, "_resolve_crg", return_value="/fake/crg"), \
          patch.object(graph_fleet, "_graph_db_present", return_value=False), \
-         patch.object(graph_fleet, "_run", side_effect=fake_run):
+         patch.object(graph_fleet, "_run", side_effect=lambda c, a, timeout=600: calls.append(a) or (True, "")):
         stats = graph_fleet.sweep([str(tmp_path)], verbose=False)
-
-    assert stats["discovered"] == 2
-    assert stats["built"] == 2
-    assert stats["registered"] == 2
-    # Each repo: one build + one daemon-add; plus one daemon-start at the end.
+    assert stats["discovered"] == 2 and stats["built"] == 2
+    assert stats["registered"] == 0
     assert [c for c in calls if c[0] == "build"]
-    assert [c for c in calls if c[:2] == ["daemon", "add"]]
-    assert ["daemon", "start"] in calls
+    assert not [c for c in calls if c and c[0] == "daemon"]  # no daemon calls when off
 
 
-def test_sweep_skips_build_when_graph_present(tmp_path):
+def test_sweep_updates_existing_graphs(tmp_path, monkeypatch):
+    monkeypatch.delenv("CAIRN_GRAPH_WATCH", raising=False)
     _mk_repo(tmp_path, "r1")
     calls = []
     with patch.object(graph_fleet, "_resolve_crg", return_value="/fake/crg"), \
          patch.object(graph_fleet, "_graph_db_present", return_value=True), \
          patch.object(graph_fleet, "_run", side_effect=lambda c, a, timeout=600: calls.append(a) or (True, "")):
         stats = graph_fleet.sweep([str(tmp_path)], verbose=False)
-    assert stats["built"] == 0
-    assert stats["registered"] == 1  # still registered with the daemon
+    assert stats["built"] == 0 and stats["updated"] == 1
+    assert [c for c in calls if c[0] == "update"]
     assert not [c for c in calls if c and c[0] == "build"]
+
+
+def test_sweep_registers_with_daemon_when_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAIRN_GRAPH_WATCH", "1")
+    _mk_repo(tmp_path, "r1")
+    calls = []
+    with patch.object(graph_fleet, "_resolve_crg", return_value="/fake/crg"), \
+         patch.object(graph_fleet, "_graph_db_present", return_value=False), \
+         patch.object(graph_fleet, "_run", side_effect=lambda c, a, timeout=600: calls.append(a) or (True, "")):
+        stats = graph_fleet.sweep([str(tmp_path)], verbose=False)
+    assert stats["registered"] == 1
+    assert [c for c in calls if c[:2] == ["daemon", "add"]]
+    assert any(c[:1] == ["daemon"] and c[1] in ("start", "restart") for c in calls)
 
 
 def test_sweep_noop_without_crg(tmp_path):
