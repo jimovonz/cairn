@@ -48,20 +48,22 @@ echo "Installing dependencies (this may take a few minutes on first install)..."
 if ! "$VENV_PYTHON" -c "import torch" 2>/dev/null; then
     if [ "$USE_GPU" = true ]; then
         echo "Installing PyTorch (CUDA)..."
+        # Use PIPESTATUS so pip exit code (not grep's) determines success.
+        # grep -E '...' || true keeps the pipeline alive if no output line matches the filter.
         "$VENV_PATH/bin/pip" install torch 2>&1 \
-            | grep -E "^(Collecting|Downloading|Installing|Successfully)" \
-            || { echo "ERROR: PyTorch install failed."; exit 1; }
+            | { grep -E "^(Collecting|Downloading|Installing|Successfully)" || true; }
+        [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "ERROR: PyTorch install failed."; exit 1; }
     else
         echo "Installing PyTorch (CPU-only, ~200MB)..."
         "$VENV_PATH/bin/pip" install torch --index-url https://download.pytorch.org/whl/cpu 2>&1 \
-            | grep -E "^(Collecting|Downloading|Installing|Successfully)" \
-            || { echo "ERROR: PyTorch install failed."; exit 1; }
+            | { grep -E "^(Collecting|Downloading|Installing|Successfully)" || true; }
+        [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "ERROR: PyTorch install failed."; exit 1; }
     fi
 fi
 
 "$VENV_PATH/bin/pip" install --progress-bar on -e "$CAIRN_HOME[test,ast]" 2>&1 \
-    | grep -E "^(Collecting|Downloading|Installing|Successfully)" \
-    || { echo "ERROR: Dependency install failed. Run manually:"; \
+    | { grep -E "^(Collecting|Downloading|Installing|Successfully)" || true; }
+[ "${PIPESTATUS[0]}" -eq 0 ] || { echo "ERROR: Dependency install failed. Run manually:"; \
          echo "  $VENV_PATH/bin/pip install -e \"$CAIRN_HOME[test,ast]\""; exit 1; }
 
 # Verify critical imports before proceeding
@@ -75,18 +77,28 @@ echo "Initializing database..."
 # --- Schema upgrade backfills (idempotent — only fills rows missing data) ---
 # v7 calibration_qf_embeddings sidecar — embeds existing calibration row qf
 # strings into the per-qf retrieval index. Cheap local embedder, no LLM cost.
+# Distinguish "daemon unavailable" (acceptable; --check-daemon flag returns nonzero
+# from backfill scripts) from real errors. Capture stderr so failures are visible.
 if [ -f "$CAIRN_HOME/cairn/calibration_qf_backfill.py" ]; then
     echo "Backfilling per-qf calibration embeddings (if needed)..."
-    "$VENV_PYTHON" "$CAIRN_HOME/cairn/calibration_qf_backfill.py" >/dev/null 2>&1 || \
-        echo "  (calibration qf backfill skipped — daemon may be unavailable)"
+    qf_err=$("$VENV_PYTHON" "$CAIRN_HOME/cairn/calibration_qf_backfill.py" 2>&1 >/dev/null) && qf_rc=0 || qf_rc=$?
+    if [ "$qf_rc" -ne 0 ]; then
+        echo "  WARNING: calibration qf backfill exited with code $qf_rc"
+        echo "  stderr: $qf_err"
+        echo "  (continuing; rerun manually after fixing daemon)"
+    fi
 fi
 # v8 memories.topic_embedding — embeds each memory's topic separately for
 # dual-embedding retrieval. Backfill is idempotent (only fills NULL rows) so
 # safe to repeat on every install/upgrade.
 if [ -f "$CAIRN_HOME/cairn/memory_topic_embedding_backfill.py" ]; then
     echo "Backfilling memory topic embeddings (if needed)..."
-    "$VENV_PYTHON" "$CAIRN_HOME/cairn/memory_topic_embedding_backfill.py" >/dev/null 2>&1 || \
-        echo "  (topic embedding backfill skipped — daemon may be unavailable)"
+    te_err=$("$VENV_PYTHON" "$CAIRN_HOME/cairn/memory_topic_embedding_backfill.py" 2>&1 >/dev/null) && te_rc=0 || te_rc=$?
+    if [ "$te_rc" -ne 0 ]; then
+        echo "  WARNING: topic embedding backfill exited with code $te_rc"
+        echo "  stderr: $te_err"
+        echo "  (continuing; rerun manually after fixing daemon)"
+    fi
 fi
 
 # --- Directories ---

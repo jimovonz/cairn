@@ -471,6 +471,10 @@ def main() -> None:
             log(f"Calibration: injected {cal_block.count(chr(10))} lines")
     except Exception as _e:
         log(f"calibration_inject failed open: {type(_e).__name__}: {_e}")
+        # Surface silent failures — exact regression mode of the
+        # pre-per-qf-sidecar bug where deliveries silently went to 0.
+        record_metric(session_id, "calibration_inject_failed",
+                      f"{type(_e).__name__}: {str(_e)[:120]}")
 
     if not context_parts:
         sys.exit(0)

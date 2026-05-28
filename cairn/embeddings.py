@@ -750,27 +750,84 @@ def find_similar(
 
 def find_nearest(conn: sqlite3.Connection, text: str, limit: int = 1) -> list[dict[str, Any]]:
     """Find the single nearest memory by raw similarity. Used for deduplication.
-    Uses vec index if available. No confidence or threshold filtering."""
+
+    Dual-embedding (schema v8): score row as max(cos(query, embedding),
+    cos(query, topic_embedding)). Without this, dedup is blind on the
+    topic axis — a new memory whose topic vector closely matches an
+    existing row but whose content diverges would slip past the 0.85
+    floor and be inserted as a duplicate. Mirrors find_similar''s
+    read-side dual-embedding behaviour.
+
+    Uses vec index if available, supplemented by a brute-force topic
+    scan so topic-only matches surface as candidates. No confidence or
+    threshold filtering.
+    """
     query_vec = embed(text)
 
+    vec_candidates: list[dict[str, Any]] = []
     if _load_vec(conn):
         try:
-            candidates = _vec_candidates(conn, query_vec, limit)
-            if candidates:
-                candidates.sort(key=lambda x: x["similarity"], reverse=True)
-                return candidates[:limit]
+            vec_candidates = _vec_candidates(conn, query_vec, limit * 5)
         except Exception as e:
             _log_embed(f"vec nearest search failed, falling back to brute-force: {type(e).__name__}: {e}", "warning")
 
-    # Brute-force fallback
+    # Topic supplement: scan topic_embedding column and merge by id (max sim).
+    # On the vec path, this surfaces topic-only candidates that the content
+    # index missed. On the brute fallback, we fold this into the loop below.
+    if vec_candidates:
+        try:
+            topic_rows = conn.execute(
+                "SELECT id, topic_embedding FROM memories "
+                "WHERE topic_embedding IS NOT NULL AND deleted_at IS NULL"
+            ).fetchall()
+        except Exception:
+            topic_rows = []
+        by_id = {c["id"]: c for c in vec_candidates}
+        for rid, blob in topic_rows:
+            try:
+                topic_vec = from_blob(blob)
+            except Exception:
+                continue
+            t_sim = float(cosine_similarity(query_vec, topic_vec))
+            existing = by_id.get(rid)
+            if existing is not None and t_sim > existing["similarity"]:
+                existing["similarity"] = t_sim
+            elif existing is None and t_sim >= 0.30:
+                # Fetch full row metadata for topic-only matches above a coarse floor.
+                # 0.30 chosen as the lowest plausible dedup-relevant signal; callers
+                # apply their own DEDUP_THRESHOLD on top.
+                row = conn.execute(
+                    "SELECT id, type, topic, content, updated_at, project, confidence "
+                    "FROM memories WHERE id = ?", (rid,)
+                ).fetchone()
+                if row:
+                    by_id[rid] = {
+                        "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
+                        "similarity": t_sim, "updated_at": row[4], "project": row[5],
+                        "confidence": row[6] if row[6] is not None else 0.7,
+                    }
+        merged = list(by_id.values())
+        merged.sort(key=lambda x: x["similarity"], reverse=True)
+        return merged[:limit]
+
+    # Brute-force fallback — dual-score inline.
     rows = conn.execute(
-        "SELECT id, type, topic, content, embedding, updated_at, project, confidence FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, topic_embedding "
+        "FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
     ).fetchall()
 
     results: list[dict[str, Any]] = []
     for row in rows:
         row_vec = from_blob(row[4])
-        sim = cosine_similarity(query_vec, row_vec)
+        sim = float(cosine_similarity(query_vec, row_vec))
+        if row[8] is not None:
+            try:
+                topic_vec = from_blob(row[8])
+                t_sim = float(cosine_similarity(query_vec, topic_vec))
+                if t_sim > sim:
+                    sim = t_sim
+            except Exception:
+                pass
         results.append({
             "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
             "similarity": sim, "updated_at": row[5], "project": row[6],

@@ -118,3 +118,38 @@ def test_dual_embedding_falls_back_when_topic_embedding_null():
     assert len(candidates) == 1
     # Self-match should be near 1.0 regardless of topic_embedding presence
     assert candidates[0]["similarity"] > 0.8
+
+
+def test_find_nearest_dedup_catches_topic_only_match():
+    """Dedup invariant: a new memory matching only on topic embedding
+    (content embedding diverges) must still be discovered by find_nearest
+    so storage.py can dedup it. Closes P0 #3 from the 2026-05-28 audit."""
+    durable, _ = _fresh_db()
+    from cairn.embeddings import embed, to_blob, find_nearest
+    import numpy as np
+    import sqlite3 as sql
+
+    target_topic = "calibration profile injection validation"
+    query_text = "calibration injection validation"
+
+    topic_vec = embed(target_topic)
+    bogus_content_vec = np.zeros_like(topic_vec)
+    bogus_content_vec[0] = 1.0  # orthogonal to the query
+
+    conn = sql.connect(durable)
+    conn.execute(
+        "INSERT INTO memories (id, type, topic, content, embedding, topic_embedding) "
+        "VALUES (1, 'fact', ?, 'unrelated content', ?, ?)",
+        (target_topic, to_blob(bogus_content_vec), to_blob(topic_vec)),
+    )
+    conn.commit()
+
+    nearest = find_nearest(conn, query_text, limit=1)
+    conn.close()
+
+    assert len(nearest) == 1
+    # Content cosine would be ~0; topic cosine is high. Without dual-embed
+    # find_nearest, this row would slip past the 0.85 DEDUP_THRESHOLD even
+    # though it's semantically identical.
+    assert nearest[0]["id"] == 1
+    assert nearest[0]["similarity"] >= 0.5
