@@ -424,9 +424,19 @@ def init():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (8, 'memories.topic_embedding column — dual embedding for symmetric topic retrieval')"
         )
-            "INSERT INTO schema_version (version, description) VALUES (4, 'multi-node sync: created_by_node, updated_by_node, lamport, visibility, embedding_model_version + node_state, confidence_log, sync_peers, sync_state tables; memory_history.history_uuid')"
+    # v9 — multi-node sync schema additions (created_by_node, updated_by_node,
+    # lamport, visibility, embedding_model_version on memories; node_state,
+    # confidence_log, sync_peers, sync_state tables; memory_history.history_uuid).
+    # Reassigned from v4 → v9 during consolidation merge 2026-05-29: HEAD owned v4
+    # for memory_relations (tree-sitter dep graph) before E branch existed, so E''s
+    # sync schema needed a new slot. The wire-protocol constant SCHEMA_VERSION in
+    # cairn/sync/__init__.py is updated to 9 to match — any pre-existing sync nodes
+    # would have to upgrade, but no production peers exist yet.
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 9").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (9, 'multi-node sync: created_by_node, updated_by_node, lamport, visibility, embedding_model_version + node_state, confidence_log, sync_peers, sync_state tables; memory_history.history_uuid')"
         )
-    # v4 backfill — runs once per DB. Idempotent: guarded by NULL checks.
+    # v9 backfill — runs once per DB. Idempotent: guarded by NULL checks.
     # Lazy-import to avoid a hard cycle (cairn.sync.identity imports nothing from init_db).
     try:
         from cairn.sync.identity import ensure_node_id, get_embedding_model_version
@@ -450,7 +460,7 @@ def init():
                     "embedding_model_version = COALESCE(embedding_model_version, ?) WHERE id = ?",
                     (node_id, node_id, model_version, mem_id)
                 )
-            print(f"v4 backfill: tagged {len(rows_no_node)} memories with node_id={node_id[:8]}…")
+            print(f"v9 sync backfill: tagged {len(rows_no_node)} memories with node_id={node_id[:8]}…")
         # Backfill memory_history.history_uuid for rows missing it (synced unit of append)
         hist_no_uuid = conn.execute(
             "SELECT id, memory_id FROM memory_history WHERE history_uuid IS NULL"
@@ -463,7 +473,7 @@ def init():
                     "UPDATE memory_history SET history_uuid = ?, memory_origin = ?, changed_by_node = ?, lamport = COALESCE(lamport, ?) WHERE id = ?",
                     (str(uuid.uuid4()), origin[0] if origin else None, node_id, hist_id, hist_id)
                 )
-            print(f"v4 backfill: tagged {len(hist_no_uuid)} memory_history rows")
+            print(f"v9 sync backfill: tagged {len(hist_no_uuid)} memory_history rows")
         # Initialize node lamport clock to current max so subsequent local edits
         # are causally after observed history
         max_lamport = conn.execute("SELECT COALESCE(MAX(lamport), 0) FROM memories").fetchone()[0]
