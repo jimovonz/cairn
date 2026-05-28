@@ -302,6 +302,19 @@ def init():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (7, 'calibration_qf_embeddings sidecar table — per-qf symmetric intent retrieval')"
         )
+    # v8 — dual embedding for memories. topic_embedding column stores the
+    # topic field's embedding separately from the row''s main embedding (which
+    # is content+kw+project mashup). Retrieval scores row as
+    # max(cos(prompt, embedding), cos(prompt, topic_embedding)) — empirically
+    # lifts top-K candidate count by ~189% on prompt-shaped short queries
+    # against the existing memory corpus (audit 2026-05-28).
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
+    if "topic_embedding" not in cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN topic_embedding BLOB")
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 8").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (8, 'memories.topic_embedding column — dual embedding for symmetric topic retrieval')"
+        )
     # Indexes for new columns
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_origin_id ON memories(origin_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_deleted_at ON memories(deleted_at)")

@@ -44,8 +44,8 @@ def _create_test_db(db_path):
             team_id TEXT,
             source_ref TEXT,
             deleted_at TIMESTAMP,
-            synced_at TIMESTAMP
-        )
+            synced_at TIMESTAMP,
+        topic_embedding BLOB)
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sessions (

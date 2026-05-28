@@ -232,6 +232,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
         search_text: str = f"{project_prefix}{mem_type} {topic} {content}"
 
         embedding_blob: Optional[bytes] = None
+        topic_embedding_blob: Optional[bytes] = None
         if emb:
             try:
                 vec = emb.embed(search_text, allow_slow=False)
@@ -239,6 +240,11 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     log(f"No daemon — storing '{topic}' without embedding (will backfill)")
                     raise Exception("daemon_unavailable")
                 embedding_blob = emb.to_blob(vec)
+                # Dual embedding (schema v8): topic embedded separately so
+                # retrieval can score max(cos(prompt, content_emb), cos(prompt, topic_emb)).
+                topic_vec = emb.embed(topic, allow_slow=False)
+                if topic_vec is not None:
+                    topic_embedding_blob = emb.to_blob(topic_vec)
             except (ConnectionError, TimeoutError, OSError) as e:
                 log(f"Embedding unavailable: {e}")
             except Exception as e:
@@ -275,8 +281,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
                 log(f"Distinct variant: type={mem_type} topic={topic} (sim={old_sim:.2f}) — inserting as new")
                 conn.execute(
-                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords, origin_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv, str(uuid.uuid4()))
+                    "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, origin_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, str(uuid.uuid4()))
                 )
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -326,8 +332,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
 
             if not deduped:
                 conn.execute(
-                    "INSERT INTO memories (type, topic, content, embedding, session_id, project, depth, keywords, origin_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mem_type, topic, content, embedding_blob, session_id, project, depth, keywords_csv, str(uuid.uuid4()))
+                    "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, origin_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, str(uuid.uuid4()))
                 )
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
