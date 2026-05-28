@@ -236,6 +236,72 @@ def init():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (4, 'memory_relations table — dependency graph edges from tree-sitter AST parsing')"
         )
+    # calibration_rows — store for *how to interact with this user* (style,
+    # level, preferences). Populated by the session analyser; consumed by
+    # the UserPromptSubmit hook to inject <calibration_profile> blocks.
+    # Sibling system to memories: complements *what* knowledge with *how*
+    # behavioural priming. See docs/spec-calibration-system.md.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS calibration_rows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL,
+            kw TEXT,
+            qf TEXT,
+            source TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.5,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            layer TEXT NOT NULL DEFAULT 'subject',
+            session_scope TEXT,
+            superseded_by INTEGER REFERENCES calibration_rows(id),
+            archived_at TIMESTAMP,
+            archive_reason TEXT,
+            delivered_count INTEGER NOT NULL DEFAULT 0,
+            followed_count INTEGER NOT NULL DEFAULT 0,
+            ignored_count INTEGER NOT NULL DEFAULT 0,
+            corrected_count INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            embedding BLOB
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_rows_source ON calibration_rows(source)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_rows_layer ON calibration_rows(layer)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_rows_archived ON calibration_rows(archived_at)")
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 5").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (5, 'calibration_rows table — calibration system Phase 1 foundation')"
+        )
+    # v6 — origin_session_id on calibration_rows so the row's analyser
+    # session can be cross-linked from the dashboard popup.
+    try:
+        conn.execute("ALTER TABLE calibration_rows ADD COLUMN origin_session_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_rows_origin_session ON calibration_rows(origin_session_id)")
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 6").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (6, 'calibration_rows.origin_session_id for source-session cross-link')"
+        )
+    # v7 — per-qf sidecar embeddings. Each qf string is embedded individually
+    # so retrieval can score row as max_i cos(prompt_embedding, qf_i_embedding).
+    # Fixes the conflated first-person/third-person embedding problem where
+    # row.embedding (built from content+kw+qf joined) clustered prompt
+    # similarities at 0.20-0.36, below any sensible floor.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS calibration_qf_embeddings (
+            row_id INTEGER NOT NULL,
+            qf_index INTEGER NOT NULL,
+            qf_text TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            PRIMARY KEY (row_id, qf_index),
+            FOREIGN KEY (row_id) REFERENCES calibration_rows(id) ON DELETE CASCADE
+        )
+    ''')
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_qf_row ON calibration_qf_embeddings(row_id)")
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 7").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (7, 'calibration_qf_embeddings sidecar table — per-qf symmetric intent retrieval')"
+        )
     # Indexes for new columns
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_origin_id ON memories(origin_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_deleted_at ON memories(deleted_at)")
@@ -320,6 +386,26 @@ def init_ephemeral(path=None):
             conn.execute(f"ALTER TABLE pending_writes ADD COLUMN {col} {coltype}")
         except sqlite3.OperationalError:
             pass
+    # calibration_deliveries — turn-indexed log of which calibration_rows
+    # were injected into which UserPromptSubmit turn. High-frequency
+    # write path (every user prompt), so lives in ephemeral alongside
+    # metrics/hook_state. The analyser joins this against subsequent
+    # turns to score outcome (followed / ignored / corrected).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS calibration_deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            turn_index INTEGER NOT NULL,
+            row_id INTEGER NOT NULL,
+            delivered_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            similarity REAL,
+            outcome TEXT,
+            outcome_evidence TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_deliv_session ON calibration_deliveries(session_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_deliv_row ON calibration_deliveries(row_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_deliv_outcome ON calibration_deliveries(outcome)")
     conn.commit()
     conn.close()
 
