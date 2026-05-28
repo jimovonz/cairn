@@ -45,6 +45,12 @@ ast = [
 test = [
     "pytest>=7.0",
 ]
+# code-review-graph powers the code-graph fleet + live-session structural
+# injection (cairn/graph.py, cairn/graph_fleet.py). Separate extra because it
+# pulls a large transitive set (fastmcp/uvicorn/cryptography/tree-sitter pack).
+graph = [
+    "code-review-graph>=2.3",
+]
 
 [project.urls]
 Homepage = "https://github.com/jimovonz/cairn"
