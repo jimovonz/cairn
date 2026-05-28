@@ -15,9 +15,31 @@ import json
 import os
 import signal
 import socket
+import subprocess
 import sys
 import threading
 from typing import Any
+
+HOOK_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks")
+VENV_PYTHON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv", "bin", "python3")
+HOOK_ROUTES = {
+    "userpromptsubmit": os.path.join(HOOK_DIR, "prompt_hook.py"),
+    "stop": os.path.join(HOOK_DIR, "stop_hook.py"),
+    "pretool": os.path.join(HOOK_DIR, "pretool_hook.py"),
+    "posttool": os.path.join(HOOK_DIR, "posttool_hook.py"),
+}
+# Persistent stash for container-sourced transcripts so query.py --context
+# can recover their conversation history after the originating container
+# session ends. One file per session_id, overwritten on each hook call
+# (shim always sends the full current transcript body).
+CONTAINER_TRANSCRIPTS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "transcripts", "container"
+)
+
+
+def _safe_session_filename(session_id: str) -> str:
+    """Allow only alnum, dash, underscore in stashed filename to avoid path traversal."""
+    return "".join(c for c in session_id if c.isalnum() or c in "-_")[:200] or "unknown"
 
 SOCKET_PATH = os.path.join(os.path.dirname(__file__), ".daemon.sock")
 PID_PATH = os.path.join(os.path.dirname(__file__), ".daemon.pid")
@@ -195,6 +217,51 @@ def handle_client(conn, emb):
         conn.close()
 
 
+def _detect_docker0_ip() -> str:
+    """Return the docker0 bridge IP if present, else fall back to 0.0.0.0."""
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "docker0"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if out.returncode == 0 and out.stdout:
+            # Line shape: "3: docker0    inet 172.17.0.1/16 ..."
+            for token in out.stdout.split():
+                if "/" in token and token.replace(".", "").replace("/", "").isdigit():
+                    return token.split("/", 1)[0]
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return "0.0.0.0"
+
+
+def _start_tcp_listener(emb, port: int) -> None:
+    """Spawn a daemon thread that accepts TCP connections and dispatches to handle_client.
+
+    Same JSON-over-stream protocol as the Unix socket — same handle_client function.
+    """
+    bind_ip = _detect_docker0_ip()
+
+    def serve():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            srv.bind((bind_ip, port))
+        except OSError as e:
+            print(f"TCP listener bind {bind_ip}:{port} failed: {e}")
+            return
+        srv.listen(16)
+        print(f"TCP listener bound to {bind_ip}:{port}")
+        while True:
+            try:
+                conn, _addr = srv.accept()
+                t = threading.Thread(target=handle_client, args=(conn, emb), daemon=True)
+                t.start()
+            except OSError:
+                break
+
+    threading.Thread(target=serve, name="cairn-tcp-listener", daemon=True).start()
+
+
 def run_server():
     """Start the daemon server."""
     # Clean up stale socket
@@ -206,6 +273,26 @@ def run_server():
     from cairn import embeddings as emb
     emb.get_model()
     print("Model loaded. Daemon ready.")
+
+    # Optional: dev-container extension auto-injector
+    try:
+        from cairn.config import CONTAINER_AUTO_INSTALL_ENABLED, CONTAINER_AUTO_INSTALL_VSIX_DIR
+        if CONTAINER_AUTO_INSTALL_ENABLED:
+            from cairn.container_injector import start_in_background
+            start_in_background(CONTAINER_AUTO_INSTALL_VSIX_DIR)
+            print(f"Container injector watching {CONTAINER_AUTO_INSTALL_VSIX_DIR}")
+    except Exception as e:  # noqa: BLE001 — never let injector failure kill daemon
+        print(f"Container injector not started: {e}")
+
+    # Optional: TCP listener so container-side shims can reach the daemon
+    # without bind-mounting the Unix socket. Bound to docker0 bridge IP
+    # (containers' default gateway) when available, falling back to 0.0.0.0.
+    try:
+        from cairn.config import CAIRN_TCP_LISTENER_ENABLED, CAIRN_TCP_PORT
+        if CAIRN_TCP_LISTENER_ENABLED:
+            _start_tcp_listener(emb, CAIRN_TCP_PORT)
+    except Exception as e:  # noqa: BLE001
+        print(f"TCP listener not started: {e}")
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)

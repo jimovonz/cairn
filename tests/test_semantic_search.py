@@ -65,7 +65,8 @@ def fresh_db():
         team_id TEXT,
         source_ref TEXT,
         deleted_at TIMESTAMP,
-        synced_at TIMESTAMP)""")
+        synced_at TIMESTAMP,
+        topic_embedding BLOB)""")
     conn.execute("""CREATE TABLE memory_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id INTEGER, content TEXT, session_id TEXT,

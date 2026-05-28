@@ -1,0 +1,34 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "command": "{{VENV_PYTHON}} {{CAIRN_HOME}}/hooks/prompt_hook.py",
+        "type": "command",
+        "timeout": 30
+      }
+    ],
+    "Stop": [
+      {
+        "command": "{{VENV_PYTHON}} {{CAIRN_HOME}}/hooks/stop_hook.py",
+        "type": "command",
+        "timeout": 60
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|MultiEdit",
+        "command": "{{VENV_PYTHON}} {{CAIRN_HOME}}/hooks/pretool_hook.py",
+        "type": "command",
+        "timeout": 5
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Edit|Write",
+        "command": "{{VENV_PYTHON}} {{CAIRN_HOME}}/hooks/posttool_hook.py",
+        "type": "command",
+        "timeout": 5
+      }
+    ]
+  }
+}

@@ -44,8 +44,8 @@ def _init_db(path):
             team_id TEXT,
             source_ref TEXT,
             deleted_at TIMESTAMP,
-            synced_at TIMESTAMP
-        )
+            synced_at TIMESTAMP,
+        topic_embedding BLOB)
     """)
     conn.execute("""
         CREATE TABLE sessions (

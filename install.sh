@@ -164,6 +164,13 @@ else
     echo "Installed global hooks."
 fi
 
+# --- Copilot hooks ---
+COPILOT_HOOKS_DIR="$HOME/.github/hooks"
+mkdir -p "$COPILOT_HOOKS_DIR"
+sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" \
+    "$CAIRN_HOME/templates/copilot-hooks.json" > "$COPILOT_HOOKS_DIR/cairn.json"
+echo "Installed Copilot hooks."
+
 # --- Slash command ---
 sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{CAIRN_HOME}}|$CAIRN_HOME|g" \
     "$CAIRN_HOME/templates/cairn-command.md" > "$CLAUDE_DIR/commands/cairn.md"
@@ -172,7 +179,30 @@ echo "Installed /cairn slash command."
 # --- Pre-download models ---
 echo ""
 echo "Pre-downloading models (one-time)..."
-HF_HUB_DISABLE_PROGRESS_BARS=1 CUDA_VISIBLE_DEVICES="" "$VENV_PYTHON" -c "
+
+# Corp TLS-inspection (Zscaler/Netskope/etc.) injects a non-public CA that the
+# venv's certifi bundle doesn't trust. If SSL_CERT_FILE isn't already set and
+# a system CA bundle exists, point HF/requests/httpx at it.
+SYSTEM_CA_BUNDLE=""
+for ca in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+    if [ -f "$ca" ]; then SYSTEM_CA_BUNDLE="$ca"; break; fi
+done
+CA_ENV=""
+if [ -n "$SYSTEM_CA_BUNDLE" ] && [ -z "$SSL_CERT_FILE" ]; then
+    CA_ENV="SSL_CERT_FILE=$SYSTEM_CA_BUNDLE REQUESTS_CA_BUNDLE=$SYSTEM_CA_BUNDLE CURL_CA_BUNDLE=$SYSTEM_CA_BUNDLE"
+    echo "Using system CA bundle: $SYSTEM_CA_BUNDLE"
+fi
+
+# httpx without the [socks] extra crashes when ALL_PROXY=socks5://... is set.
+# Strip proxy env vars for the model download — HF hub talks to public CDNs
+# that corp proxies typically allow direct anyway.
+PROXY_STRIP=""
+if [ -n "$ALL_PROXY$HTTPS_PROXY$HTTP_PROXY$all_proxy$https_proxy$http_proxy" ]; then
+    PROXY_STRIP="-u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY -u all_proxy -u https_proxy -u http_proxy"
+    echo "Unsetting proxy env vars for model download (httpx[socks] not required)."
+fi
+
+env $PROXY_STRIP $CA_ENV HF_HUB_DISABLE_PROGRESS_BARS=1 CUDA_VISIBLE_DEVICES="" "$VENV_PYTHON" -c "
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
 # Bi-encoder for embeddings
@@ -190,10 +220,38 @@ nli = CrossEncoder('cross-encoder/nli-MiniLM2-L6-H768')
 nli.predict([['test', 'test']])
 print('NLI model ready.')
 " 2>&1 | grep -v "^$\|Warning:\|Loading\|REPORT\|UNEXPECTED\|Notes:\|Key.*|.*Status\|---" \
-    || { echo "ERROR: Model download/load failed."; exit 1; }
+    || {
+        echo ""
+        echo "ERROR: Model download/load failed."
+        echo ""
+        echo "Common causes behind corporate networks:"
+        echo "  - SSL CERTIFICATE_VERIFY_FAILED: corp TLS inspection (Zscaler/Netskope) injects a CA"
+        echo "    the venv certifi bundle doesn't trust. Fix:"
+        echo "      $VENV_PATH/bin/pip install -U certifi"
+        echo "      export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+        echo "      export REQUESTS_CA_BUNDLE=\$SSL_CERT_FILE CURL_CA_BUNDLE=\$SSL_CERT_FILE"
+        echo "    If still failing, drop the corp root CA PEM in /usr/local/share/ca-certificates/"
+        echo "    and run: sudo update-ca-certificates"
+        echo "  - httpx 'Cannot send a request': proxy env vars set without httpx[socks]. Try:"
+        echo "      env -u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY ./install.sh"
+        echo "  - Air-gapped: pre-stage models in ~/.cache/huggingface and set HF_HUB_OFFLINE=1"
+        exit 1
+    }
 
 # --- Logs directory ---
 mkdir -p "$CAIRN_HOME/logs"
+
+# --- Container shim staging dir (VSIXes the daemon auto-installs into dev containers) ---
+VSIX_DIR="$HOME/.local/share/cairn-vsix"
+mkdir -p "$VSIX_DIR"
+echo "Container VSIX stage: $VSIX_DIR (drop .vsix files here for auto-install)."
+
+# --- Docker preflight (non-fatal — container injector only needs docker if used) ---
+if ! command -v docker >/dev/null 2>&1; then
+    echo "Note: docker not on PATH — container injector will be inert until docker is installed."
+elif ! docker info >/dev/null 2>&1; then
+    echo "Note: docker present but not accessible (add user to 'docker' group?) — container injector will log errors on container start events."
+fi
 
 # --- Start daemon ---
 echo "Starting embedding daemon..."
@@ -278,7 +336,7 @@ fi
 echo ""
 echo "=== Cairn installed successfully ==="
 echo ""
-echo "Restart Claude Code to activate hooks."
+echo "Restart Claude Code / VS Code Copilot to activate hooks."
 echo ""
 echo "Commands:"
 echo "  /cairn          — memory stats"
@@ -291,4 +349,9 @@ echo "Maintenance (cron, daily at 3:00 AM):"
 echo "  Consolidation — merge duplicate memories"
 echo "  Contradiction — detect and archive superseded memories"
 echo "  Logs: $CAIRN_HOME/logs/"
+echo ""
+echo "Dev container support:"
+echo "  TCP listener — port 47390 (container shims dial host daemon)"
+echo "  VSIX stage   — $VSIX_DIR (drop .vsix files for auto-install on container start)"
+echo "  See docs/container-setup.md for shim deploy and devcontainer.json wiring."
 echo ""
