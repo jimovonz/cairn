@@ -19,6 +19,8 @@ Commands:
   --knowledge SYMBOL     Join graph data with cairn memories
   --context-pack SYMBOL  All-in-one context for a symbol
   --impact SYMBOL        One-line blast-radius summary
+  --orientation          Tier-1 repo orientation block (modules/flows/hubs)
+  --file-context FILE    Tier-2 structural context for a file's symbols
 """
 
 
@@ -179,7 +181,7 @@ def summary(repo_root=None):
         FROM nodes n
         WHERE n.kind IN ('Function', 'method')
           AND n.is_test = 0
-          AND n.name NOT LIKE '\_%' ESCAPE '\\'
+          AND n.name NOT LIKE '\\_%' ESCAPE '\\'
           AND n.qualified_name NOT IN (
             SELECT DISTINCT target_qualified FROM edges WHERE kind = 'CALLS'
           )
@@ -202,7 +204,7 @@ def summary(repo_root=None):
         FROM nodes n
         WHERE n.kind IN ('Function', 'method')
           AND n.is_test = 0
-          AND n.name NOT LIKE '\_%' ESCAPE '\\'
+          AND n.name NOT LIKE '\\_%' ESCAPE '\\'
           AND n.qualified_name NOT IN (
             SELECT source_qualified FROM edges WHERE kind = 'TESTED_BY'
           )
@@ -399,6 +401,210 @@ def impact(symbol, repo_root=None):
     return f"callers:{caller_count} tests:{test_count} files:{len(caller_files)}"
 
 
+# Generic/builtin call targets that dominate fan-in counts but carry no
+# architectural signal — excluded from hub surfacing.
+_GENERIC_HUBS = {
+    "execute", "get", "set", "len", "close", "print", "append", "join", "format",
+    "split", "strip", "fetchone", "fetchall", "fetchmany", "str", "int", "float",
+    "dict", "list", "set", "tuple", "open", "write", "read", "items", "keys",
+    "values", "encode", "decode", "commit", "sort", "sorted", "range", "enumerate",
+    "isinstance", "getattr", "setattr", "hasattr", "super", "log", "add", "pop",
+}
+
+
+def orientation_block(repo_root=None):
+    """Tier 1: deterministic ~200-token repo orientation from the code graph.
+
+    Modules (communities, test-dominated ones excluded), top flows by criticality,
+    and real project hubs (builtins/stdlib and test helpers filtered out). Pure
+    SQL, no LLM. Returns None if no graph.db is present or nothing useful is found.
+    """
+    try:
+        db_path = _find_graph_db(repo_root)
+    except FileNotFoundError:
+        return None
+    conn = sqlite3.connect(str(db_path)); conn.execute("PRAGMA busy_timeout=3000")
+    try:
+        parts = []
+
+        # Modules — architectural communities. Drop the test-dominated ones.
+        try:
+            comms = conn.execute(
+                "SELECT name, key_symbols, size FROM community_summaries "
+                "WHERE name NOT LIKE 'tests-%' AND name NOT LIKE 'test-%' "
+                "ORDER BY size DESC LIMIT 5"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            comms = []
+        if comms:
+            mod_lines = []
+            for name, key_symbols, size in comms:
+                try:
+                    arr = json.loads(key_symbols) if key_symbols else []
+                except (json.JSONDecodeError, TypeError):
+                    arr = []
+                # Skip test-dominated communities — they aren't architecture.
+                if arr and sum(s.startswith("test") for s in arr) > len(arr) / 2:
+                    continue
+                arr = [s for s in dict.fromkeys(arr) if s not in _GENERIC_HUBS][:4]
+                syms = ", ".join(arr)
+                mod_lines.append(f"  {name} ({size}): {syms}" if syms else f"  {name} ({size})")
+            if mod_lines:
+                parts.append("Modules:")
+                parts.extend(mod_lines)
+                parts.append("")
+
+        # Key flows by criticality — entry-point function + its file.
+        try:
+            flows = conn.execute(
+                "SELECT name, entry_point, criticality FROM flow_snapshots "
+                "ORDER BY criticality DESC LIMIT 5"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            flows = []
+        if flows:
+            parts.append("Key flows (by criticality):")
+            for name, entry, crit in flows:
+                ep = entry.split("::")[-1] if entry and "::" in entry else (name or "?")
+                fp = os.path.basename(entry.split("::")[0]) if entry and "::" in entry else ""
+                crit_s = f" {crit:.2f}" if isinstance(crit, (int, float)) else ""
+                parts.append(f"  {ep} ({fp}){crit_s}" if fp else f"  {ep}{crit_s}")
+            parts.append("")
+
+        # Hubs — top fan-in. Join to nodes drops stdlib/external (no node row) and
+        # is_test=1 helpers; _GENERIC_HUBS drops project-defined generic names.
+        try:
+            hub_rows = conn.execute(
+                "SELECT e.target_qualified, COUNT(*) c FROM edges e "
+                "JOIN nodes n ON n.qualified_name = e.target_qualified "
+                "WHERE e.kind='CALLS' AND n.is_test=0 "
+                "GROUP BY e.target_qualified ORDER BY c DESC LIMIT 40"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            hub_rows = []
+        hubs = []
+        for tgt, c in hub_rows:
+            short = tgt.split("::")[-1]
+            if short in _GENERIC_HUBS:
+                continue
+            fp = os.path.basename(tgt.split("::")[0])
+            hubs.append(f"{short} ({fp}) {c}x")
+            if len(hubs) >= 6:
+                break
+        if hubs:
+            parts.append("Hubs (high fan-in — edits ripple widely):")
+            parts.append("  " + "; ".join(hubs))
+
+        block = "\n".join(parts).strip()
+        return block or None
+    finally:
+        conn.close()
+
+
+def _graph_file_path(conn, file_path, rr):
+    """Map a (possibly symlinked) absolute path to the file_path stored in the graph.
+
+    The graph bakes in whatever absolute path the build used (e.g. /mnt/ssd/...),
+    while a hook may report /home/jameo/... for the same bind-mounted checkout.
+    Match by realpath, then by repo-relative tail, then basename.
+    """
+    for cand in (os.path.realpath(file_path), os.path.abspath(file_path)):
+        if conn.execute("SELECT 1 FROM nodes WHERE file_path = ? LIMIT 1", (cand,)).fetchone():
+            return cand
+    try:
+        rel = os.path.relpath(os.path.realpath(file_path), os.path.realpath(rr))
+        if not rel.startswith(".."):
+            row = conn.execute(
+                "SELECT file_path FROM nodes WHERE file_path LIKE '%/' || ? LIMIT 1", (rel,)
+            ).fetchone()
+            if row:
+                return row[0]
+    except ValueError:
+        pass
+    row = conn.execute(
+        "SELECT file_path FROM nodes WHERE file_path LIKE '%/' || ? LIMIT 1",
+        (os.path.basename(file_path),)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def file_context_block(file_path, repo_root=None, max_symbols=12, risk_threshold=0.55):
+    """Tier 2: structural context for one file's symbols, so the model can reason
+    about it without reading it. Per-symbol signature + fan-in/out, plus a risk-tail
+    callout for security-relevant / high-risk symbols. Pure SQL, no LLM. Returns
+    None if no graph.db, the file isn't in the graph, or it has no symbols.
+    """
+    try:
+        db_path = _find_graph_db(repo_root)
+    except FileNotFoundError:
+        return None
+    rr = repo_root or str(db_path.parent.parent)
+    conn = sqlite3.connect(str(db_path)); conn.execute("PRAGMA busy_timeout=3000")
+    try:
+        stored = _graph_file_path(conn, file_path, rr)
+        if not stored:
+            return None
+        nodes = conn.execute(
+            "SELECT qualified_name, name, kind, line_start, params, return_type "
+            "FROM nodes WHERE file_path = ? AND kind IN ('Function','Class','method') "
+            "AND is_test=0 ORDER BY line_start", (stored,)
+        ).fetchall()
+        if not nodes:
+            return None
+
+        # Per-symbol fan-in/out (CALLS) in one pass each.
+        def _count(col, qn):
+            return conn.execute(
+                f"SELECT COUNT(*) FROM edges WHERE {col} = ? AND kind='CALLS'", (qn,)
+            ).fetchone()[0]
+
+        # Risk tail — security_relevant or high risk_score.
+        risk_by_qn = {}
+        try:
+            for qn, rs, sec, cov in conn.execute(
+                "SELECT qualified_name, risk_score, security_relevant, test_coverage FROM risk_index"
+            ).fetchall():
+                risk_by_qn[qn] = (rs or 0.0, sec or 0, cov or "")
+        except sqlite3.OperationalError:
+            pass
+
+        highlights, lines = [], []
+        for qn, name, kind, ls, params, ret in nodes[:max_symbols]:
+            params = " ".join((params or "").split())  # collapse multi-line signatures
+            sig = f"{name}{params}" if params else name
+            if ret:
+                sig += f" -> {ret}"
+            cin, cout = _count("target_qualified", qn), _count("source_qualified", qn)
+            fan = f"callers:{cin}" + (f" callees:{cout}" if cout else "")
+            lines.append(f"  {sig}  [{fan}]")
+            rs, sec, cov = risk_by_qn.get(qn, (0.0, 0, ""))
+            if sec or rs >= risk_threshold:
+                flags = []
+                if sec:
+                    flags.append("security-relevant")
+                if rs >= risk_threshold:
+                    flags.append(f"risk {rs:.2f}")
+                if cov == "untested":
+                    flags.append("untested")
+                highlights.append(f"  ⚠ {name} ({', '.join(flags)})")
+
+        try:
+            rel = os.path.relpath(stored, os.path.realpath(rr))
+        except ValueError:
+            rel = os.path.basename(stored)
+        head = f"{rel} — {len(nodes)} symbol(s)"
+        if len(nodes) > max_symbols:
+            head += f" (showing {max_symbols})"
+        out = [head]
+        if highlights:
+            out.append("High-risk:")
+            out.extend(highlights)
+        out.extend(lines)
+        return "\n".join(out)
+    finally:
+        conn.close()
+
+
 def main():
     """CLI entry point."""
     if len(sys.argv) < 2:
@@ -425,6 +631,12 @@ def main():
             print(context_pack(symbol))
         elif cmd == "--impact" and symbol:
             print(impact(symbol))
+        elif cmd == "--orientation":
+            block = orientation_block()
+            print(block if block else "No graph.db found — run: code-review-graph build")
+        elif cmd == "--file-context" and symbol:
+            block = file_context_block(symbol)
+            print(block if block else f"No graph data for file: {symbol}")
         else:
             print(USAGE.strip())
             sys.exit(1)
