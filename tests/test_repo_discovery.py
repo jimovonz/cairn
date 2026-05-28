@@ -36,12 +36,20 @@ def test_kick_graph_build_skips_when_disabled():
         assert repo_discovery.kick_graph_build(td, env_override={"CAIRN_AUTO_GRAPH": "0"}) is False
 
 
-def test_kick_graph_build_skips_when_graph_db_already_present():
+def test_kick_graph_build_updates_when_graph_db_already_present():
+    """Graph present → incremental `update` (not skip), so it stays fresh
+    without relying on git hooks (git-ai bypasses native .git/hooks)."""
     with tempfile.TemporaryDirectory() as td:
         _init_git_repo(td)
         os.makedirs(os.path.join(td, ".code-review-graph"))
         open(os.path.join(td, ".code-review-graph", "graph.db"), "w").write("x")
-        assert repo_discovery.kick_graph_build(td, env_override={"CAIRN_AUTO_GRAPH": "1"}) is False
+        with patch.object(repo_discovery, "_resolve_crg", return_value="/fake/code-review-graph"), \
+             patch.object(repo_discovery.subprocess, "Popen") as mock_popen:
+            result = repo_discovery.kick_graph_build(td, env_override={"CAIRN_AUTO_GRAPH": "1"})
+            assert result is True
+            args = mock_popen.call_args[0][0]
+            assert args[0] == "/fake/code-review-graph"
+            assert "update" in args
 
 
 def test_kick_graph_build_skips_when_binary_missing():
