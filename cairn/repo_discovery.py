@@ -58,6 +58,25 @@ def _has_ingest_record(conn, repo_root: str) -> bool:
         return False
 
 
+def _resolve_crg() -> Optional[str]:
+    """Locate the code-review-graph binary.
+
+    code-review-graph is installed inside cairn's own venv, which is usually not
+    on PATH. Prefer the venv sibling of the running interpreter (hooks run under
+    .venv/bin/python3), then CAIRN_HOME/.venv/bin, then fall back to PATH.
+    """
+    import sys
+    cand = os.path.join(os.path.dirname(sys.executable), "code-review-graph")
+    if os.path.isfile(cand) and os.access(cand, os.X_OK):
+        return cand
+    home = os.environ.get("CAIRN_HOME")
+    if home:
+        cand = os.path.join(home, ".venv", "bin", "code-review-graph")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return shutil.which("code-review-graph")
+
+
 def kick_graph_build(cwd: str, *, env_override: Optional[dict] = None) -> bool:
     """Tier 1: fire `code-review-graph build` in background if appropriate.
 
@@ -71,11 +90,12 @@ def kick_graph_build(cwd: str, *, env_override: Optional[dict] = None) -> bool:
         return False
     if _graph_db_present(cwd):
         return False
-    if shutil.which("code-review-graph") is None:
+    crg = _resolve_crg()
+    if crg is None:
         return False
     try:
         subprocess.Popen(
-            ["code-review-graph", "build", "--repo", cwd],
+            [crg, "build", "--repo", cwd],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
