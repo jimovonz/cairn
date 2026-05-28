@@ -283,22 +283,14 @@ def _scope_weight(
 
 
 def extract_query_terms(text: str) -> set[str]:
-    """Extract meaningful terms from query text for keyword matching."""
-    import re
-    _STOPWORDS = frozenset({
-        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-        "of", "with", "by", "from", "is", "it", "its", "was", "are", "be",
-        "has", "had", "have", "do", "did", "does", "will", "can", "could",
-        "would", "should", "may", "might", "not", "no", "what", "when",
-        "where", "who", "how", "why", "that", "this", "these", "those",
-        "my", "your", "his", "her", "our", "their", "me", "you", "him",
-        "them", "about", "into", "over", "after", "before", "between",
-        "other", "some", "any", "all", "just", "also", "than", "then",
-        "very", "too", "here", "there", "been", "being", "were",
-    })
-    words = re.findall(r'\w+', text.lower())
-    meaningful = {w for w in words if len(w) > 2 and w not in _STOPWORDS}
-    return meaningful if meaningful else {w for w in words if len(w) > 2}
+    """Extract meaningful terms from query text for keyword matching.
+
+    Delegates to `cairn.keywords.prompt_keywords` (YAKE phrase
+    extraction + compound-identifier preservation). Signature
+    preserved for callers; falls back internally if yake import fails.
+    """
+    from cairn.keywords import prompt_keywords
+    return prompt_keywords(text)
 
 
 def keyword_overlap(query_terms: set[str], keywords_csv: Optional[str]) -> float:
@@ -389,9 +381,16 @@ def _brute_force_candidates(
     current_project: Optional[str] = None,
     query_terms: Optional[set[str]] = None,
 ) -> list[dict[str, Any]]:
-    """Get top-k candidates via brute-force scan."""
+    """Get top-k candidates via brute-force scan.
+
+    Dual-embedding (schema v8): scores row as max(cos(prompt, embedding),
+    cos(prompt, topic_embedding)). Topic embedding lives in a prompt-shaped
+    region of vector space — short queries match short topics far better
+    than long content+kw mashup. Rows without topic_embedding (legacy,
+    pre-backfill) fall back to content-only cosine.
+    """
     rows = conn.execute(
-        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, depth, archived_reason, session_id, keywords "
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, depth, archived_reason, session_id, keywords, topic_embedding "
         "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '') AND deleted_at IS NULL"
     ).fetchall()
     if len(rows) >= _BRUTE_FORCE_WARN_THRESHOLD:
@@ -405,7 +404,15 @@ def _brute_force_candidates(
     for row in rows:
         confidence = row[7] if row[7] is not None else 0.7
         row_vec = from_blob(row[4])
-        sim = cosine_similarity(query_vec, row_vec)
+        sim = float(cosine_similarity(query_vec, row_vec))
+        if row[12] is not None:
+            try:
+                topic_vec = from_blob(row[12])
+                topic_sim = float(cosine_similarity(query_vec, topic_vec))
+                if topic_sim > sim:
+                    sim = topic_sim
+            except Exception:
+                pass
         kw_ov = keyword_overlap(qt, row[11])
         results.append({
             "id": row[0],
@@ -423,6 +430,48 @@ def _brute_force_candidates(
             "score": composite_score(sim, confidence, row[5], row[6], current_project, row[1], kw_ov)
         })
 
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:k]
+
+
+def _topic_candidates_brute(
+    conn: sqlite3.Connection,
+    query_vec: np.ndarray,
+    k: int,
+    current_project: Optional[str] = None,
+    query_terms: Optional[set[str]] = None,
+    min_sim: float = 0.30,
+) -> list[dict[str, Any]]:
+    """Brute-force scan over topic_embedding (schema v8) — supplements vec-index
+    content lookup to surface rows whose topic is a strong prompt match even
+    when the content embedding is weak. Returns rows scoring >= min_sim on
+    topic similarity.
+    """
+    rows = conn.execute(
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, depth, archived_reason, session_id, keywords, topic_embedding "
+        "FROM memories WHERE topic_embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '') AND deleted_at IS NULL"
+    ).fetchall()
+    results: list[dict[str, Any]] = []
+    qt = query_terms or set()
+    for row in rows:
+        try:
+            topic_vec = from_blob(row[12])
+        except Exception:
+            continue
+        topic_sim = float(cosine_similarity(query_vec, topic_vec))
+        if topic_sim < min_sim:
+            continue
+        confidence = row[7] if row[7] is not None else 0.7
+        kw_ov = keyword_overlap(qt, row[11])
+        results.append({
+            "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
+            "similarity": topic_sim,
+            "updated_at": row[5], "project": row[6], "confidence": confidence,
+            "session_id": row[10], "depth": row[8], "archived_reason": row[9],
+            "keywords": row[11],
+            "score": composite_score(topic_sim, confidence, row[5], row[6], current_project, row[1], kw_ov),
+            "_topic_only": True,
+        })
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:k]
 
@@ -510,6 +559,28 @@ def find_similar(
         candidates = _brute_force_candidates(conn, query_vec, k, current_project, qt)
         search_method = "brute"
     _record_embed_metric(f"search_{search_method}_ms", (_time.perf_counter() - t_search) * 1000)
+
+    # Dual-embedding supplement (schema v8): vec-index only scans `embedding`,
+    # missing rows whose topic matches strongly even when content is weak.
+    # Brute-force path already handles dual lookup internally; vec path needs
+    # this supplemental topic scan. Merge by id, keeping max similarity per row.
+    if search_method == "vec":
+        t_topic = _time.perf_counter()
+        topic_candidates = _topic_candidates_brute(
+            conn, query_vec, k, current_project, qt, min_sim=max(threshold, 0.30)
+        )
+        _record_embed_metric("search_topic_supplement_ms", (_time.perf_counter() - t_topic) * 1000)
+        by_id = {c["id"]: c for c in candidates}
+        for t in topic_candidates:
+            existing = by_id.get(t["id"])
+            if existing is None:
+                by_id[t["id"]] = t
+            elif t["similarity"] > existing["similarity"]:
+                existing["similarity"] = t["similarity"]
+                existing["score"] = t["score"]
+        candidates = list(by_id.values())
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        candidates = candidates[:k * 2]
 
     # Type-prefix fan-out: search with each memory type prefix, keep max similarity per memory.
     # Memories are embedded as "{project} {type} {topic} {content}" — a bare query misses the

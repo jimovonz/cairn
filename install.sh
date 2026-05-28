@@ -72,6 +72,23 @@ fi
 echo "Initializing database..."
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/init_db.py"
 
+# --- Schema upgrade backfills (idempotent — only fills rows missing data) ---
+# v7 calibration_qf_embeddings sidecar — embeds existing calibration row qf
+# strings into the per-qf retrieval index. Cheap local embedder, no LLM cost.
+if [ -f "$CAIRN_HOME/cairn/calibration_qf_backfill.py" ]; then
+    echo "Backfilling per-qf calibration embeddings (if needed)..."
+    "$VENV_PYTHON" "$CAIRN_HOME/cairn/calibration_qf_backfill.py" >/dev/null 2>&1 || \
+        echo "  (calibration qf backfill skipped — daemon may be unavailable)"
+fi
+# v8 memories.topic_embedding — embeds each memory's topic separately for
+# dual-embedding retrieval. Backfill is idempotent (only fills NULL rows) so
+# safe to repeat on every install/upgrade.
+if [ -f "$CAIRN_HOME/cairn/memory_topic_embedding_backfill.py" ]; then
+    echo "Backfilling memory topic embeddings (if needed)..."
+    "$VENV_PYTHON" "$CAIRN_HOME/cairn/memory_topic_embedding_backfill.py" >/dev/null 2>&1 || \
+        echo "  (topic embedding backfill skipped — daemon may be unavailable)"
+fi
+
 # --- Directories ---
 mkdir -p "$CLAUDE_DIR" "$CLAUDE_DIR/rules" "$CLAUDE_DIR/commands"
 
