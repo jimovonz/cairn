@@ -68,9 +68,11 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
             conn.close()
             return None
 
+        from hooks.hook_helpers import load_injected_ids as _li
         project_results, global_results, _ = hybrid_search(
             user_message, conn, project=project, session_id=session_id,
             threshold=L1_5_SIM_THRESHOLD, limit=L1_5_MAX_RESULTS,
+            exclude_ids=_li(session_id),
         )
         conn.close()
     except Exception as e:
@@ -277,9 +279,11 @@ def layer1_search(user_message: str, session_id: str) -> Optional[str]:
             conn.close()
             return None
 
+        from hooks.hook_helpers import load_injected_ids as _li
         project_results, global_results, _ = hybrid_search(
             user_message, conn, project=project, session_id=session_id,
             threshold=L1_SIM_THRESHOLD, limit=L1_MAX_RESULTS,
+            exclude_ids=_li(session_id),
         )
         conn.close()
     except Exception as e:
@@ -333,6 +337,20 @@ def main() -> None:
         pb_context = project_bootstrap(session_id, cwd, transcript_path)
         if pb_context:
             context_parts.append(pb_context)
+
+        # Repo auto-discovery — first-prompt only, gated by env vars. Tier 1
+        # kicks a background graph build for new git repos (free); Tier 2
+        # surfaces a one-line suggestion to manually run ingest.py when this
+        # repo has no cairn ingest record (never invokes it automatically).
+        try:
+            from cairn.repo_discovery import kick_graph_build, should_suggest_ingest
+            kick_graph_build(cwd)
+            ingest_suggestion = should_suggest_ingest(cwd, get_conn())
+            if ingest_suggestion:
+                context_parts.append(ingest_suggestion)
+                record_metric(session_id, "repo_ingest_suggested", cwd)
+        except Exception as _e:
+            log(f"repo_discovery failed open: {type(_e).__name__}: {_e}")
 
         l1_context = layer1_search(user_message, session_id)
         if l1_context:
@@ -440,6 +458,19 @@ def main() -> None:
                 log(f"Question-before-cairn reminder injected (deferred)")
         except Exception as e:
             log(f"Failed to load question-before-cairn reminder: {e}")
+
+    # Phase 3 — calibration_profile injection. Distinct from cairn_context
+    # (priming, not facts). Independent of L1/L1.5 layering — fires every
+    # prompt with a session-dedup filter against calibration_deliveries.
+    # Fails open: any error returns "" so it never blocks the hook.
+    try:
+        from cairn.calibration_inject import inject_for_prompt
+        cal_block = inject_for_prompt(user_message, session_id)
+        if cal_block:
+            context_parts.append(cal_block)
+            log(f"Calibration: injected {cal_block.count(chr(10))} lines")
+    except Exception as _e:
+        log(f"calibration_inject failed open: {type(_e).__name__}: {_e}")
 
     if not context_parts:
         sys.exit(0)

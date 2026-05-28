@@ -367,14 +367,17 @@ def test_layer1_5_skips_already_injected():
 
         with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path), \
              patch('hooks.hook_helpers.get_embedder', return_value=mock_emb):
-            # L1.5 returns XML (dedup moved to central gate)
+            # SQL-level dedup: hybrid_search receives exclude_ids={99} and
+            # filters before L1.5 ever builds XML. L1.5 returns None directly.
             result = prompt_hook.layer1_5_search("some query", "s1")
-            assert result is not None  # L1.5 builds XML without filtering
+            assert result is None  # SQL gate excluded the only candidate
 
-            # Central gate strips already-seen entries
+            # Belt-and-braces: strip_seen_entries still works on XML if it
+            # somehow contained id=99 (e.g. format-mismatch leak in future).
             from hooks.hook_helpers import strip_seen_entries
-            stripped = strip_seen_entries(result, "s1")
-            assert stripped is None  # All entries were already injected
+            synthetic = '<cairn_context query="x"><entry id="99" sim="0.5">x</entry></cairn_context>'
+            stripped = strip_seen_entries(synthetic, "s1")
+            assert stripped is None
 
         conn.close()
     finally:

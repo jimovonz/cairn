@@ -175,15 +175,45 @@ echo "Configuring cron jobs..."
 CRON_MARKER="# cairn-maintenance"
 CRON_CONSOLIDATION="0 3 * * * $VENV_PYTHON $CAIRN_HOME/cairn/daemon.py start >/dev/null 2>&1; $VENV_PYTHON $CAIRN_HOME/cairn/consolidate.py --execute >> $CAIRN_HOME/logs/consolidation.log 2>&1 $CRON_MARKER"
 CRON_CONTRADICTION="30 3 * * * $VENV_PYTHON $CAIRN_HOME/cairn/consolidate.py --contradictions --execute >> $CAIRN_HOME/logs/contradiction.log 2>&1 $CRON_MARKER"
+# Detect nvm node bin (claude CLI requires modern node — cron's default
+# PATH /usr/bin:/bin can find a stale node that breaks claude -p).
+NVM_NODE_BIN=""
+if [ -d "$HOME/.nvm/versions/node" ]; then
+    NVM_NODE_BIN="$(ls -1d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -1)"
+fi
+CRON_PATH_PREFIX=""
+if [ -n "$NVM_NODE_BIN" ]; then
+    CRON_PATH_PREFIX="PATH=$NVM_NODE_BIN:/usr/local/bin:/usr/bin:/bin "
+fi
+# Calibration analyser — distills idle sessions into calibration_rows + memories. Runs at midnight.
+CRON_ANALYSER="0 0 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON -m cairn.analyser cron --limit 20 >> $CAIRN_HOME/logs/calibration-analyser.log 2>&1 $CRON_MARKER"
+# Calibration self-modification — Tier 1 auto-archive/promote/decay + Tier 2 surfacing. Runs 30 minutes after analyser so today's writes are evaluated.
+CRON_SELFMOD="30 0 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON -m cairn.calibration_selfmod >> $CAIRN_HOME/logs/calibration-selfmod.log 2>&1 $CRON_MARKER"
 
-# Remove any existing cairn cron entries (including legacy contradiction_scan.py)
-EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan" || true)
+# Remove any existing cairn cron entries (including legacy contradiction_scan.py and calibration variants)
+EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.analyser\|cairn.calibration_selfmod" || true)
 
 # Install fresh entries
 echo "$EXISTING_CRON
 $CRON_CONSOLIDATION
-$CRON_CONTRADICTION" | sed '/^$/d' | crontab -
-echo "Installed cron: consolidation (3:00 AM) + contradiction scan (3:30 AM) daily."
+$CRON_CONTRADICTION
+$CRON_ANALYSER
+$CRON_SELFMOD" | sed '/^$/d' | crontab -
+echo "Installed cron: consolidation (3:00 AM), contradiction scan (3:30 AM), calibration analyser (00:00), calibration selfmod (00:30) daily."
+
+# --- Git post-commit hook: auto-refresh code-review-graph ---
+# Skips silently if code-review-graph not installed or this is not a git checkout.
+if [ -d "$CAIRN_HOME/.git" ] && command -v code-review-graph >/dev/null 2>&1; then
+    HOOK_PATH="$CAIRN_HOME/.git/hooks/post-commit"
+    cat > "$HOOK_PATH" <<'POST_COMMIT_HOOK'
+#!/bin/sh
+# Auto-refresh code-review-graph after every commit.
+# Backgrounded so commit returns immediately. ~2s for cairn-sized repo.
+code-review-graph build --repo "$(git rev-parse --show-toplevel)" >/dev/null 2>&1 &
+POST_COMMIT_HOOK
+    chmod +x "$HOOK_PATH"
+    echo "Installed git post-commit hook: code-review-graph auto-refresh."
+fi
 
 # --- Health check ---
 echo ""
