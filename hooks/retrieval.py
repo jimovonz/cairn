@@ -35,6 +35,7 @@ def hybrid_search(
     limit: int = 10,
     use_adaptive: bool = True,
     exclude_project: bool = False,
+    exclude_ids: Optional[set[int]] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float]:
     """Hybrid semantic + FTS5 search with RRF fusion.
 
@@ -198,6 +199,15 @@ def hybrid_search(
             global_results.append(r)
             seen_ids.add(mid)
 
+    if exclude_ids:
+        n_before = len(project_results) + len(global_results)
+        project_results = [r for r in project_results if r["id"] not in exclude_ids]
+        global_results = [r for r in global_results if r["id"] not in exclude_ids]
+        n_after = len(project_results) + len(global_results)
+        if n_before != n_after:
+            record_metric(session_id, "retrieval_dedup_filtered",
+                          f"hybrid_search excluded {n_before - n_after}",
+                          n_before - n_after)
     project_results = project_results[:limit]
     global_results = global_results[:limit]
 
@@ -377,7 +387,8 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
 
 
 def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str],
-                          limit: int) -> list[dict]:
+                          limit: int,
+                          exclude_ids: Optional[set[int]] = None) -> list[dict]:
     """Find cross-project memories that share exact keywords.
 
     Uses the persisted keywords column for precise matching — no embedding needed.
@@ -443,6 +454,8 @@ def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str]
 
     results.sort(key=lambda x: (-x["keyword_overlap"], x["updated_at"] or ""), reverse=False)
     results.sort(key=lambda x: x["keyword_overlap"], reverse=True)
+    if exclude_ids:
+        results = [r for r in results if r["id"] not in exclude_ids]
     return results[:limit]
 
 
@@ -454,6 +467,7 @@ def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[s
     Stages results for next UserPromptSubmit injection.
     """
     from cairn.config import L2_SIM_THRESHOLD, L2_MAX_RESULTS
+    from hooks.hook_helpers import load_injected_ids
 
     if not keywords_list:
         return
@@ -461,8 +475,13 @@ def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[s
     conn = get_conn()
     project = get_session_project(conn, session_id)
 
+    # SQL-level session-dedup gate — never return memories already injected
+    # this session. Belt-and-braces complement to strip_seen_entries.
+    exclude_ids = load_injected_ids(session_id) if session_id else None
+
     # Exact keyword matching (no embedder needed) — catches cross-project by shared keywords
-    keyword_results = _keyword_match_search(conn, keywords_list, project, L2_MAX_RESULTS)
+    keyword_results = _keyword_match_search(conn, keywords_list, project, L2_MAX_RESULTS,
+                                            exclude_ids=exclude_ids)
     keyword_ids = {r["id"] for r in keyword_results}
 
     if keyword_results:
@@ -475,6 +494,7 @@ def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[s
         query, conn, project=project, session_id=session_id,
         threshold=L2_SIM_THRESHOLD, limit=L2_MAX_RESULTS,
         exclude_project=True,
+        exclude_ids=exclude_ids,
     )
 
     # Merge: keyword matches + hybrid results, deduplicated

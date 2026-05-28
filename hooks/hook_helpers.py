@@ -459,19 +459,33 @@ def build_context_xml(query: str, project: Optional[str], layer: str,
 # --- Central dedup gate ---
 
 def strip_seen_entries(xml: str, session_id: str) -> Optional[str]:
-    """Remove already-injected memory entries from XML context. Returns None if nothing remains."""
+    """Remove already-injected memory entries from XML context. Returns None if nothing remains.
+
+    SQL-level retrieval now excludes already-seen IDs in retrieval.py (hybrid_search,
+    _keyword_match_search), so this regex gate is belt-and-braces — should normally
+    filter 0 entries. If it filters any, record a metric so the SQL-level gap is
+    visible.
+    """
     seen = load_injected_ids(session_id)
     if not seen:
         return xml
 
+    stripped_count = [0]
     def _filter_entry(m: re.Match) -> str:
         entry_id = int(m.group(1))
-        return "" if entry_id in seen else m.group(0)
+        if entry_id in seen:
+            stripped_count[0] += 1
+            return ""
+        return m.group(0)
 
     filtered = re.sub(
         r'[ \t]*<entry id="(\d+)"[^>]*>.*?</entry>\n?',
         _filter_entry, xml
     )
+    if stripped_count[0]:
+        record_metric(session_id, "strip_seen_leaked",
+                      f"sql-gate missed {stripped_count[0]} entries",
+                      stripped_count[0])
 
     # Clean up empty scopes
     filtered = re.sub(
