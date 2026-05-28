@@ -1500,8 +1500,12 @@ def distill_with_haiku(result, verbose=False, sections_filter=None):
     response_text = re.sub(r"^```json\s*", "", response_text).strip()
     response_text = re.sub(r"\s*```$", "", response_text).strip()
 
+    # strict=False permits unescaped control characters (newlines, tabs)
+    # inside JSON string values — the Haiku output regularly contains
+    # multi-line content strings with literal newlines/backticks that the
+    # default strict parser rejects with 'Invalid control character'.
     try:
-        entries = json.loads(response_text)
+        entries = json.loads(response_text, strict=False)
         if not isinstance(entries, list):
             print(f"ERROR: Expected JSON array, got {type(entries).__name__}", file=sys.stderr)
             return None
