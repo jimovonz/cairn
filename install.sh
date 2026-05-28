@@ -253,8 +253,12 @@ elif ! docker info >/dev/null 2>&1; then
     echo "Note: docker present but not accessible (add user to 'docker' group?) — container injector will log errors on container start events."
 fi
 
-# --- Start daemon ---
-echo "Starting embedding daemon..."
+# --- Start (or restart) daemon ---
+# On upgrade installs the daemon may already be running with stale model_version
+# or schema knowledge — stop it first so the fresh `start` picks up current state.
+# `daemon.py stop` returns 0 if not running, so this is safe on fresh installs too.
+echo "Restarting embedding daemon..."
+"$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" stop >/dev/null 2>&1 || true
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" start
 
 # --- Cron jobs (memory consolidation + contradiction detection) ---
