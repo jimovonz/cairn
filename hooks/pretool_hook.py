@@ -35,6 +35,7 @@ MAX_CONTEXT_INJECTIONS = 5
 def find_memories_for_file(
     file_path: str,
     corrections_only: bool = False,
+    current_session_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Find memories associated with a given file path.
 
@@ -44,6 +45,9 @@ def find_memories_for_file(
 
     If corrections_only=True, returns only correction-type memories (gotcha path).
     Otherwise returns all non-correction types (context path).
+
+    Memories written by current_session_id are excluded — they're already in
+    the live conversation context, so re-injecting them is pure token noise.
     """
     if not file_path:
         return []
@@ -55,7 +59,7 @@ def find_memories_for_file(
 
     try:
         rows = conn.execute(f"""
-            SELECT id, type, topic, content, associated_files, confidence
+            SELECT id, type, topic, content, associated_files, confidence, session_id
             FROM memories
             WHERE {type_filter}
               AND associated_files IS NOT NULL
@@ -71,7 +75,9 @@ def find_memories_for_file(
 
     matches: list[dict[str, Any]] = []
     for row in rows:
-        mid, mem_type, topic, content, files_json, confidence = row
+        mid, mem_type, topic, content, files_json, confidence, mem_session = row
+        if current_session_id and mem_session == current_session_id:
+            continue
         try:
             files = json.loads(files_json)
         except (json.JSONDecodeError, TypeError):
@@ -113,7 +119,7 @@ def main() -> None:
     sections: list[str] = []
 
     # Path 1: corrections (gotcha warnings) — highest priority
-    corrections = find_memories_for_file(file_path, corrections_only=True)
+    corrections = find_memories_for_file(file_path, corrections_only=True, current_session_id=session_id)
     if corrections:
         warnings = [f"- [{c['topic']}] {c['content']}" for c in corrections[:MAX_GOTCHA_INJECTIONS]]
         ids = [str(c["id"]) for c in corrections[:MAX_GOTCHA_INJECTIONS]]
@@ -124,7 +130,7 @@ def main() -> None:
         record_metric(session_id, "gotcha_injected", basename, len(corrections))
 
     # Path 2: all other memory types (decisions, facts, skills, etc.)
-    context_memories = find_memories_for_file(file_path, corrections_only=False)
+    context_memories = find_memories_for_file(file_path, corrections_only=False, current_session_id=session_id)
     if context_memories:
         # Sort by confidence descending, cap at MAX_CONTEXT_INJECTIONS
         context_memories.sort(key=lambda m: m["confidence"], reverse=True)
