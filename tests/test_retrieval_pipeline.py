@@ -51,7 +51,8 @@ def fresh_db():
         team_id TEXT,
         source_ref TEXT,
         deleted_at TIMESTAMP,
-        synced_at TIMESTAMP)""")
+        synced_at TIMESTAMP,
+        topic_embedding BLOB)""")
     conn.execute("""CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id INTEGER, content TEXT, session_id TEXT,
         changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
@@ -195,7 +196,8 @@ def test_insert_distinct_variant_preserved():
 
     # Second insert — same type+topic but different content, low embedding similarity
     mock_emb = MagicMock()
-    mock_emb.embed.side_effect = [make_vector(200), make_vector(200), make_vector(100)]
+    # 4 embed calls per insert: content search_text, topic (v8 dual-embedding), old content negation, new content negation
+    mock_emb.embed.side_effect = [make_vector(200), make_vector(200), make_vector(200), make_vector(100)]
     mock_emb.to_blob.return_value = make_blob(200)
     mock_emb.find_nearest.return_value = []  # Below dedup threshold
     mock_emb.cosine_similarity.return_value = 0.3  # Low similarity — distinct variant
@@ -225,7 +227,8 @@ def test_insert_contradiction_overwrites_with_confidence_drop():
     conn.commit()
 
     mock_emb = MagicMock()
-    mock_emb.embed.side_effect = [make_vector(101), make_vector(101), make_vector(100)]  # Similar but not identical
+    # 4 embed calls: content search_text, topic (v8 dual-embedding), old content for negation, new content for negation
+    mock_emb.embed.side_effect = [make_vector(101), make_vector(101), make_vector(101), make_vector(100)]
     mock_emb.to_blob.return_value = make_blob(101)
     mock_emb.find_nearest.return_value = []
     mock_emb.cosine_similarity.return_value = 0.95  # High similarity — true update, not variant

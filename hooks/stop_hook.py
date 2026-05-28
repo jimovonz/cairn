@@ -79,7 +79,7 @@ def _snapshot_excerpts(session_id: str, transcript_path: str, assistant_message:
     """Snapshot the assistant message as source excerpt for recently stored memories."""
     if not session_id or not assistant_message:
         return
-    conn = hook_helpers.get_conn()
+    conn = get_conn()
     rows = conn.execute(
         "SELECT id FROM memories WHERE session_id = ? AND id NOT IN "
         "(SELECT memory_id FROM memory_source_excerpt) ORDER BY id DESC LIMIT 10",

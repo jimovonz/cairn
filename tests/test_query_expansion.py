@@ -159,8 +159,8 @@ def build_expansion_db():
         team_id TEXT,
         source_ref TEXT,
         deleted_at TIMESTAMP,
-        synced_at TIMESTAMP
-    )""")
+        synced_at TIMESTAMP,
+        topic_embedding BLOB)""")
     conn.execute("""CREATE TABLE memory_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id INTEGER NOT NULL, content TEXT NOT NULL,
@@ -267,10 +267,12 @@ def run_baseline(db_path: str, query: str, limit: int = 10) -> list[int]:
 def run_type_fanout(db_path: str, query: str, limit: int = 10) -> list[int]:
     """Type-prefix fan-out strategy."""
     import cairn.embeddings as embeddings
-    from hooks.query_expansion import type_prefix_fanout
+    # Production fan-out is inlined in find_similar (with z-score normalisation),
+    # not hooks/query_expansion. Call the production path so this benchmark
+    # tracks actual retrieval behaviour rather than a drifted helper.
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA busy_timeout=5000")
-    results = type_prefix_fanout(conn, query, embeddings.embed,
+    results = embeddings.find_similar(conn, query,
                                   current_project="exptest", limit=limit)
     conn.close()
     return [r["id"] for r in results]
