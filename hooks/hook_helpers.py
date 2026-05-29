@@ -92,15 +92,59 @@ def get_ephemeral_conn() -> sqlite3.Connection:
     Tests share path by patching cairn.config.EPHEMERAL_DB_PATH to the test
     DB_PATH; auto-init via init_ephemeral handles missing tables on first use."""
     from cairn.config import EPHEMERAL_DB_PATH
-    conn = sqlite3.connect(EPHEMERAL_DB_PATH)
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA journal_mode=WAL")
+
+    def _open() -> sqlite3.Connection:
+        c = sqlite3.connect(EPHEMERAL_DB_PATH)
+        c.execute("PRAGMA busy_timeout=5000")
+        c.execute("PRAGMA journal_mode=WAL")
+        return c
+
+    # Self-heal the ephemeral schema. The old probe checked ONLY `metrics`, so a
+    # DB that had `metrics` but was missing `hook_state` (older init, schema
+    # drift, or a partial rebuild after a corruption reset) was never repaired —
+    # producing the recurring "no such table: hook_state" that silently dropped
+    # graph dedup state and the fleet sweep-state write. Probe every core table,
+    # and rebuild outright if the file itself is corrupt (ephemeral = disposable).
+    # The whole open+probe is guarded so corruption surfacing at PRAGMA (e.g. a
+    # non-database file) is handled too.
+    conn = None
     try:
-        conn.execute("SELECT 1 FROM metrics LIMIT 0")
-    except sqlite3.OperationalError:
-        from cairn.init_db import init_ephemeral
-        init_ephemeral(EPHEMERAL_DB_PATH)
-    return conn
+        conn = _open()
+        for _t in ("metrics", "hook_state", "pending_writes", "pair_assessments"):
+            conn.execute(f"SELECT 1 FROM {_t} LIMIT 0")
+        return conn
+    except sqlite3.DatabaseError as exc:
+        msg = str(exc).lower()
+        if "no such table" in msg and conn is not None:
+            # Missing table(s) — init_ephemeral is idempotent (CREATE IF NOT EXISTS);
+            # the existing autocommit conn sees the new tables on its next query.
+            from cairn.init_db import init_ephemeral
+            init_ephemeral(EPHEMERAL_DB_PATH)
+            return conn
+        if not _is_corruption_error(exc):
+            raise
+        # Malformed / unreadable image — the file is unusable; rebuild empty.
+        log_error(f"ephemeral DB corrupt ({type(exc).__name__}: {exc}); rebuilding")
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+        _reset_ephemeral_db(EPHEMERAL_DB_PATH)
+        return _open()
+
+
+def _reset_ephemeral_db(path: str) -> None:
+    """Delete a corrupt ephemeral DB (and its WAL/SHM sidecars) and rebuild the
+    empty schema. Ephemeral data (metrics, hook_state, transient queues) is
+    disposable by design, so a clean rebuild beats a permanently unreadable file."""
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.remove(path + suffix)
+        except OSError:
+            pass
+    from cairn.init_db import init_ephemeral
+    init_ephemeral(path)
 
 
 def query_py_invoked_since(transcript_path: str, since_iso: str) -> bool:
