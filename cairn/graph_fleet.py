@@ -21,13 +21,36 @@ are resolved and de-duplicated so a symlink + its target aren't swept twice.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from cairn.repo_discovery import _resolve_crg, _graph_db_present
+
+# Sentinel "session" under which the fleet records its last-sweep summary in the
+# ephemeral hook_state table (hook_state PK is (session_id, key)).
+_FLEET_STATE_SESSION = "graph_fleet"
+_FLEET_LAST_SWEEP_KEY = "graph_fleet_last_sweep"
+
+
+def _record_sweep_state(stats: dict) -> None:
+    """Persist the sweep summary so the dashboard can surface freshness without
+    scraping logs. Fail-open — observability must never break the sweep."""
+    try:
+        from hooks.hook_helpers import save_hook_state
+        save_hook_state(_FLEET_STATE_SESSION, _FLEET_LAST_SWEEP_KEY, json.dumps({
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "discovered": stats.get("discovered", 0),
+            "built": stats.get("built", 0),
+            "updated": stats.get("updated", 0),
+            "failed": len(stats.get("failed", [])),
+        }))
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"(could not record sweep state: {exc})", file=sys.stderr)
 
 # Directory names never worth graphing — skip to save build time/noise.
 _SKIP_DIRS = {"node_modules", ".venv", "venv", "__pycache__", ".cache", "vendor"}
@@ -128,6 +151,8 @@ def sweep(roots: Optional[list[str]] = None, *, build_missing: bool = True,
         running, _ = _run(crg, ["daemon", "status"], timeout=15)
         sub = "restart" if (running and newly_registered) else "start"
         _run(crg, ["daemon", sub], timeout=30)
+
+    _record_sweep_state(stats)
 
     if verbose:
         print(f"\nfleet: {stats['discovered']} repos, {stats['built']} built, "

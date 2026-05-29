@@ -191,3 +191,12 @@ if __name__ == "__main__":
         except Exception:
             pass
         sys.exit(0)
+    finally:
+        # main() exits via sys.exit() on every path; flush buffered metrics
+        # (e.g. graph_file_context_injected) explicitly here rather than relying
+        # solely on the atexit backstop. SystemExit propagates through finally;
+        # a second flush is a no-op once the buffer is drained.
+        try:
+            flush_metrics()
+        except Exception:
+            pass
