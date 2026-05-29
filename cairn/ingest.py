@@ -14,7 +14,14 @@ import json
 import os
 import re
 import select
-import sqlite3
+# Prefer pysqlite3 (SQLite 3.51.1) — every other durable-cairn.db writer (hooks,
+# daemon, init_db) uses it. ingest.py writes cairn.db concurrently with hooks, so
+# a stdlib-vs-pysqlite3 version mix on the same WAL file is the documented cause
+# of page-1 corruption (be91366); keep this writer on the same library.
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import subprocess
 import sys
 import time

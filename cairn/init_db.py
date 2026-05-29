@@ -10,6 +10,13 @@ import uuid
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 
+# Tables owned by the ephemeral DB (all created by init_ephemeral below). Single
+# source of truth so the hook self-heal probe (hooks.hook_helpers.get_ephemeral_conn)
+# verifies the FULL set and can never silently fall behind a newly-added table —
+# the metrics-only probe is exactly how "no such table: hook_state" went unrepaired.
+EPHEMERAL_TABLES = ("metrics", "hook_state", "pair_assessments",
+                    "pending_writes", "calibration_deliveries")
+
 def init():
     conn = sqlite3.connect(DB_PATH)
     # Enable WAL mode for concurrent access (persistent across connections)

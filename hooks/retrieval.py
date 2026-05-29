@@ -327,19 +327,26 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
     # doesn't run query.py or re-declare with a refined need.
     is_thin, thin_diag = _is_thin_retrieval(project_results + global_results)
     if is_thin:
-        from datetime import datetime
-        from hooks.hook_helpers import save_hook_state
-        save_hook_state(session_id, "pending_thin_retrieval", json.dumps({
-            "timestamp": datetime.now().isoformat(),
-            "context_need": context_need[:200],
-            "diagnostics": thin_diag,
-        }))
         record_metric(session_id, "thin_retrieval_detected", context_need[:100], thin_diag.get("count", 0))
         log(f"Thin retrieval flagged: {thin_diag}")
-    else:
-        # Healthy retrieval — clear any prior pending flag
-        from hooks.hook_helpers import delete_hook_state
-        delete_hook_state(session_id, "pending_thin_retrieval")
+    # hook_state is keyed by (session_id, key) with session_id NOT NULL, so the
+    # pending-flag persistence is meaningful only with a session. Guard it the
+    # same way the already-served filter above does (`if session_id`) — without
+    # this, a session-less retrieve_context call hit "NOT NULL constraint failed:
+    # hook_state.session_id" on every thin/healthy result.
+    if session_id:
+        if is_thin:
+            from datetime import datetime
+            from hooks.hook_helpers import save_hook_state
+            save_hook_state(session_id, "pending_thin_retrieval", json.dumps({
+                "timestamp": datetime.now().isoformat(),
+                "context_need": context_need[:200],
+                "diagnostics": thin_diag,
+            }))
+        else:
+            # Healthy retrieval — clear any prior pending flag
+            from hooks.hook_helpers import delete_hook_state
+            delete_hook_state(session_id, "pending_thin_retrieval")
 
     if not project_results and not global_results:
         record_metric(session_id, "context_empty", context_need[:100])
