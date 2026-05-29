@@ -568,6 +568,11 @@ def file_context_block(file_path, repo_root=None, max_symbols=12, risk_threshold
         except sqlite3.OperationalError:
             pass
 
+        try:
+            rel = os.path.relpath(stored, os.path.realpath(rr))
+        except ValueError:
+            rel = os.path.basename(stored)
+
         highlights, lines = [], []
         for qn, name, kind, ls, params, ret in nodes[:max_symbols]:
             params = " ".join((params or "").split())  # collapse multi-line signatures
@@ -576,7 +581,11 @@ def file_context_block(file_path, repo_root=None, max_symbols=12, risk_threshold
                 sig += f" -> {ret}"
             cin, cout = _count("target_qualified", qn), _count("source_qualified", qn)
             fan = f"callers:{cin}" + (f" callees:{cout}" if cout else "")
-            lines.append(f"  {sig}  [{fan}]")
+            # Emit file:line per symbol so a surfaced symbol is directly jump-to-able
+            # — clickable, and the agent can Read/Edit at the exact line — instead of
+            # paying a follow-up `cairn-graph --location` tool call + turn to recover it.
+            loc = f"{rel}:{ls}" if ls else rel
+            lines.append(f"  {sig}  {loc}  [{fan}]")
             rs, sec, cov = risk_by_qn.get(qn, (0.0, 0, ""))
             if sec or rs >= risk_threshold:
                 flags = []
@@ -586,12 +595,8 @@ def file_context_block(file_path, repo_root=None, max_symbols=12, risk_threshold
                     flags.append(f"risk {rs:.2f}")
                 if cov == "untested":
                     flags.append("untested")
-                highlights.append(f"  ⚠ {name} ({', '.join(flags)})")
+                highlights.append(f"  ⚠ {name} {rel}:{ls} ({', '.join(flags)})")
 
-        try:
-            rel = os.path.relpath(stored, os.path.realpath(rr))
-        except ValueError:
-            rel = os.path.basename(stored)
         head = f"{rel} — {len(nodes)} symbol(s)"
         if len(nodes) > max_symbols:
             head += f" (showing {max_symbols})"
