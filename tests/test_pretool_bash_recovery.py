@@ -150,3 +150,33 @@ def test_main_read_path_still_injects():
     lines = obj["hookSpecificOutput"]["additionalContext"].splitlines()
     assert code == 0
     assert lines[0] == f"CAIRN GOTCHA for {base}:"
+
+
+# Verifies: graph dedup persists across calls — once a file's graph block is
+# served (graph_files_seen written), a second access in the same session does not
+# re-serve it. Exercised end-to-end now that fresh_db provides hook_state.
+@pytest.mark.behavioural
+def test_graph_dedup_persists_across_calls(monkeypatch):
+    src = _make_source("dedup.py")
+    db_path, conn = fresh_db()
+    conn.close()
+
+    calls = {"n": 0}
+
+    def fake_block(file_path, max_symbols=0, risk_threshold=0):
+        calls["n"] += 1
+        return "graph-structure-block"
+
+    monkeypatch.setattr("cairn.graph.file_context_block", fake_block)
+    monkeypatch.setattr(
+        "cairn.config.GRAPH_FILE_CONTEXT_ENABLED", True, raising=False
+    )
+
+    payload = {"tool_name": "Bash", "session_id": "dedup-s", "tool_input": {"command": f"cat {src}"}}
+    out1, _ = run_main(payload, db_path)
+    out2, _ = run_main(payload, db_path)
+
+    # Block generated only on the first access; second is deduped via hook_state.
+    assert calls["n"] == 1
+    assert "CAIRN GRAPH for dedup.py" in out1
+    assert "CAIRN GRAPH" not in out2
