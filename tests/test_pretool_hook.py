@@ -56,6 +56,13 @@ def fresh_db():
         value REAL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""")
+    conn.execute("""CREATE TABLE hook_state (
+        session_id TEXT,
+        key TEXT,
+        value TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (session_id, key)
+    )""")
     conn.commit()
     return db_path, conn
 

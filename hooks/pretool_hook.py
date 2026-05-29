@@ -97,24 +97,66 @@ def find_memories_for_file(
     return matches
 
 
-def main() -> None:
-    raw = sys.stdin.read()
-    hook_input = json.loads(raw)
+# --- Bash file-access recovery -------------------------------------------------
+# In environments where Read/Edit/Write are blocked and routed through Bash
+# helpers (e.g. claude-context-hooks: cat/sed and cch-edit.py/cch-write.py), the
+# native Read/Edit PreToolUse event never fires — so file-context injection would
+# silently never trigger. Both hooks fire on the SAME PreToolUse:Bash event, so we
+# recover the target file(s) from the command string and inject for them too.
 
-    tool_name = hook_input.get("tool_name", "")
-    session_id = hook_input.get("session_id", "") or hook_input.get("sessionId", "")
+# File-reading verbs whose operand is a path we should inject context for.
+_BASH_FILE_VERBS = {"cat", "head", "tail", "sed", "less", "more", "bat", "nl", "view"}
+# Helper editors are invoked as scripts; match by suffix to catch python3 .../cch-edit.py.
+_BASH_EDITOR_SUFFIXES = ("cch-edit.py", "cch-write.py", "cch-edit", "cch-write")
+# Only inject for source/text files — keeps DB/log/binary args from triggering queries.
+_SOURCE_EXTS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".c", ".cc", ".cpp",
+    ".h", ".hpp", ".java", ".rb", ".sh", ".sql", ".md", ".toml", ".yaml", ".yml",
+}
 
-    # Only fire for file-access tools
-    if tool_name not in ("Read", "Edit", "Write", "MultiEdit"):
-        sys.exit(0)
 
-    # Extract file path from tool input
-    tool_input = hook_input.get("tool_input") or hook_input.get("input") or {}
-    file_path = tool_input.get("file_path") or tool_input.get("filePath") or ""
+def extract_bash_file_paths(command: str, max_files: int = 3) -> list[str]:
+    """Recover source-file paths a Bash command is about to read or edit.
 
-    if not file_path:
-        sys.exit(0)
+    Conservative by design: engages only when the command invokes a known
+    file-reading/editing verb, and returns only existing files with a source
+    extension. Returns realpaths, deduped, capped at max_files.
+    """
+    if not command:
+        return []
+    import shlex
+    try:
+        toks = shlex.split(command, posix=True)
+    except ValueError:
+        toks = command.split()
+    if not toks:
+        return []
+    verbs = {os.path.basename(t) for t in toks}
+    is_editor = any(t.endswith(_BASH_EDITOR_SUFFIXES) for t in toks)
+    if not (verbs & _BASH_FILE_VERBS or is_editor):
+        return []
+    out: list[str] = []
+    for t in toks:
+        if t.startswith("-"):
+            continue
+        if os.path.splitext(t)[1].lower() not in _SOURCE_EXTS:
+            continue
+        if not os.path.isfile(t):
+            continue
+        rp = os.path.realpath(t)
+        if rp not in out:
+            out.append(rp)
+        if len(out) >= max_files:
+            break
+    return out
 
+
+def sections_for_file(file_path: str, session_id: str, seen: set, graph_cfg) -> list[str]:
+    """Build the gotcha / context / graph injection sections for one file.
+
+    seen is the shared graph_files_seen set (mutated in place when a graph block
+    is served). graph_cfg is (enabled, max_symbols, risk_threshold) or None.
+    """
     basename = os.path.basename(file_path)
     sections: list[str] = []
 
@@ -132,7 +174,6 @@ def main() -> None:
     # Path 2: all other memory types (decisions, facts, skills, etc.)
     context_memories = find_memories_for_file(file_path, corrections_only=False, current_session_id=session_id)
     if context_memories:
-        # Sort by confidence descending, cap at MAX_CONTEXT_INJECTIONS
         context_memories.sort(key=lambda m: m["confidence"], reverse=True)
         top = context_memories[:MAX_CONTEXT_INJECTIONS]
         lines = [f"- [{m['type']}/{m['topic']}] {m['content']}" for m in top]
@@ -143,31 +184,72 @@ def main() -> None:
         log(f"File context injection: {len(top)} memories for {basename}")
         record_metric(session_id, "file_context_injected", basename, len(top))
 
-    # Path 3: code-graph structural context — file's symbols, signatures, fan-in/out,
-    # risk tail. Deterministic, no LLM. Once-per-file-per-session (already-seen cache)
-    # so repeated tool calls on the same file don't re-serve the block. Fails open.
-    try:
-        from cairn.config import GRAPH_FILE_CONTEXT_ENABLED, GRAPH_FILE_CONTEXT_MAX_SYMBOLS, GRAPH_RISK_TAIL_THRESHOLD
-        if GRAPH_FILE_CONTEXT_ENABLED:
-            seen_raw = load_hook_state(session_id, "graph_files_seen") or ""
-            seen = set(seen_raw.split("\n")) if seen_raw else set()
+    # Path 3: code-graph structural context — deterministic, no LLM. Once-per-file
+    # via the shared seen cache. Fails open.
+    if graph_cfg is not None:
+        try:
+            enabled, max_symbols, risk_threshold = graph_cfg
             key = os.path.realpath(file_path)
-            if key not in seen:
+            if enabled and key not in seen:
                 from cairn.graph import file_context_block
-                block = file_context_block(
-                    file_path,
-                    max_symbols=GRAPH_FILE_CONTEXT_MAX_SYMBOLS,
-                    risk_threshold=GRAPH_RISK_TAIL_THRESHOLD,
-                )
+                block = file_context_block(file_path, max_symbols=max_symbols, risk_threshold=risk_threshold)
                 if block:
                     sections.append(
                         f"CAIRN GRAPH for {basename} (code-review-graph — structure, no need to re-read):\n{block}"
                     )
                     seen.add(key)
-                    save_hook_state(session_id, "graph_files_seen", "\n".join(seen))
                     record_metric(session_id, "graph_file_context_injected", basename)
-    except Exception as _e:
-        log(f"graph file-context failed open: {type(_e).__name__}: {_e}")
+        except Exception as _e:
+            log(f"graph file-context failed open: {type(_e).__name__}: {_e}")
+
+    return sections
+
+
+def main() -> None:
+    raw = sys.stdin.read()
+    hook_input = json.loads(raw)
+
+    tool_name = hook_input.get("tool_name", "")
+    session_id = hook_input.get("session_id", "") or hook_input.get("sessionId", "")
+
+    tool_input = hook_input.get("tool_input") or hook_input.get("input") or {}
+
+    # Determine the file(s) this tool call touches.
+    file_paths: list[str] = []
+    if tool_name in ("Read", "Edit", "Write", "MultiEdit"):
+        fp = tool_input.get("file_path") or tool_input.get("filePath") or ""
+        if fp:
+            file_paths = [fp]
+    elif tool_name == "Bash":
+        # Read/Edit are routed through Bash helpers in some environments; recover paths.
+        file_paths = extract_bash_file_paths(tool_input.get("command") or "")
+
+    if not file_paths:
+        sys.exit(0)
+
+    # Resolve graph config once (shared across files).
+    graph_cfg = None
+    try:
+        from cairn.config import (
+            GRAPH_FILE_CONTEXT_ENABLED,
+            GRAPH_FILE_CONTEXT_MAX_SYMBOLS,
+            GRAPH_RISK_TAIL_THRESHOLD,
+        )
+        graph_cfg = (GRAPH_FILE_CONTEXT_ENABLED, GRAPH_FILE_CONTEXT_MAX_SYMBOLS, GRAPH_RISK_TAIL_THRESHOLD)
+    except Exception:
+        graph_cfg = None
+
+    # Shared once-per-file-per-session graph cache.
+    seen_raw = load_hook_state(session_id, "graph_files_seen") or ""
+    seen = set(seen_raw.split("\n")) if seen_raw else set()
+    seen_before = len(seen)
+
+    sections: list[str] = []
+    for fp in file_paths:
+        sections.extend(sections_for_file(fp, session_id, seen, graph_cfg))
+
+    if len(seen) != seen_before:
+        save_hook_state(session_id, "graph_files_seen", "\n".join(seen))
 
     if not sections:
         sys.exit(0)
