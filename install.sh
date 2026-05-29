@@ -61,10 +61,10 @@ if ! "$VENV_PYTHON" -c "import torch" 2>/dev/null; then
     fi
 fi
 
-"$VENV_PATH/bin/pip" install --progress-bar on -e "$CAIRN_HOME[test,ast]" 2>&1 \
+"$VENV_PATH/bin/pip" install --progress-bar on -e "$CAIRN_HOME[test,ast,graph]" 2>&1 \
     | { grep -E "^(Collecting|Downloading|Installing|Successfully)" || true; }
 [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "ERROR: Dependency install failed. Run manually:"; \
-         echo "  $VENV_PATH/bin/pip install -e \"$CAIRN_HOME[test,ast]\""; exit 1; }
+         echo "  $VENV_PATH/bin/pip install -e \"$CAIRN_HOME[test,ast,graph]\""; exit 1; }
 
 # Verify critical imports before proceeding
 "$VENV_PYTHON" -c "from cairn import embeddings; from hooks.hook_helpers import log" 2>/dev/null \
@@ -280,30 +280,55 @@ fi
 CRON_ANALYSER="0 0 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON -m cairn.analyser cron --limit 20 >> $CAIRN_HOME/logs/calibration-analyser.log 2>&1 $CRON_MARKER"
 # Calibration self-modification — Tier 1 auto-archive/promote/decay + Tier 2 surfacing. Runs 30 minutes after analyser so today's writes are evaluated.
 CRON_SELFMOD="30 0 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON -m cairn.calibration_selfmod >> $CAIRN_HOME/logs/calibration-selfmod.log 2>&1 $CRON_MARKER"
+# Code-graph fleet sweep — discover new repos, build missing graphs, register with
+# the watch daemon, and self-heal the daemon if it died. Hourly so new repos become
+# graph-ready quickly without waiting for a session. The daemon keeps existing repos
+# current in real time between sweeps. Only runs if code-review-graph is installed.
+CRON_GRAPH_FLEET="17 * * * * $VENV_PYTHON -m cairn.graph_fleet >> $CAIRN_HOME/logs/graph-fleet.log 2>&1 $CRON_MARKER"
 
 # Remove any existing cairn cron entries (including legacy contradiction_scan.py and calibration variants)
-EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.analyser\|cairn.calibration_selfmod" || true)
+EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.analyser\|cairn.calibration_selfmod\|cairn.graph_fleet" || true)
 
 # Install fresh entries
 echo "$EXISTING_CRON
 $CRON_CONSOLIDATION
 $CRON_CONTRADICTION
 $CRON_ANALYSER
-$CRON_SELFMOD" | sed '/^$/d' | crontab -
-echo "Installed cron: consolidation (3:00 AM), contradiction scan (3:30 AM), calibration analyser (00:00), calibration selfmod (00:30) daily."
+$CRON_SELFMOD
+$CRON_GRAPH_FLEET" | sed '/^$/d' | crontab -
+echo "Installed cron: consolidation (3:00 AM), contradiction scan (3:30 AM), calibration analyser (00:00), calibration selfmod (00:30), graph fleet sweep (hourly :17)."
+
+# --- Code-graph fleet bootstrap ---
+# Build graphs for all local repos so every repo is graph-ready for first contact.
+# Backgrounded — the initial all-repo build can take a while. The hourly cron sweep
+# keeps them current thereafter (set CAIRN_GRAPH_WATCH=1 for the real-time daemon on
+# top). Skips if code-review-graph isn't installed.
+if [ -x "$VENV_PATH/bin/code-review-graph" ]; then
+    echo "Bootstrapping code-graph fleet in background (building graphs for all repos)..."
+    nohup "$VENV_PYTHON" -m cairn.graph_fleet >> "$CAIRN_HOME/logs/graph-fleet.log" 2>&1 &
+fi
 
 # --- Git post-commit hook: auto-refresh code-review-graph ---
-# Skips silently if code-review-graph not installed or this is not a git checkout.
-if [ -d "$CAIRN_HOME/.git" ] && command -v code-review-graph >/dev/null 2>&1; then
-    HOOK_PATH="$CAIRN_HOME/.git/hooks/post-commit"
-    cat > "$HOOK_PATH" <<'POST_COMMIT_HOOK'
+# code-review-graph lives inside cairn's venv (usually not on PATH), so bake the
+# absolute venv binary path into the hook. Skips silently if absent or not a git checkout.
+CRG_BIN="$VENV_PATH/bin/code-review-graph"
+if [ -d "$CAIRN_HOME/.git" ] && [ -x "$CRG_BIN" ]; then
+    HOOK_DIR="$(git -C "$CAIRN_HOME" rev-parse --git-path hooks 2>/dev/null || echo "$CAIRN_HOME/.git/hooks")"
+    case "$HOOK_DIR" in /*) ;; *) HOOK_DIR="$CAIRN_HOME/$HOOK_DIR" ;; esac
+    mkdir -p "$HOOK_DIR"
+    HOOK_PATH="$HOOK_DIR/post-commit"
+    # Unquoted heredoc: $CRG_BIN expands now (baked absolute path); runtime vars are escaped.
+    cat > "$HOOK_PATH" <<POST_COMMIT_HOOK
 #!/bin/sh
-# Auto-refresh code-review-graph after every commit.
-# Backgrounded so commit returns immediately. ~2s for cairn-sized repo.
-code-review-graph build --repo "$(git rev-parse --show-toplevel)" >/dev/null 2>&1 &
+# Auto-refresh code-review-graph after every commit (cairn-managed).
+# Backgrounded so commit returns immediately. Incremental update, full-build fallback.
+CRG="$CRG_BIN"
+[ -x "\$CRG" ] || exit 0
+ROOT="\$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+{ "\$CRG" update --repo "\$ROOT" >/dev/null 2>&1 || "\$CRG" build --repo "\$ROOT" >/dev/null 2>&1; } &
 POST_COMMIT_HOOK
     chmod +x "$HOOK_PATH"
-    echo "Installed git post-commit hook: code-review-graph auto-refresh."
+    echo "Installed git post-commit hook: code-review-graph auto-refresh ($CRG_BIN)."
 fi
 
 # --- Health check ---

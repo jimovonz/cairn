@@ -25,7 +25,7 @@ except ImportError:
 import sys
 from typing import Any, Optional
 
-from hooks.hook_helpers import log, get_conn, record_metric, flush_metrics
+from hooks.hook_helpers import log, get_conn, record_metric, flush_metrics, load_hook_state, save_hook_state
 
 # Max entries to inject per file access (avoid flooding context)
 MAX_GOTCHA_INJECTIONS = 3
@@ -142,6 +142,32 @@ def main() -> None:
         )
         log(f"File context injection: {len(top)} memories for {basename}")
         record_metric(session_id, "file_context_injected", basename, len(top))
+
+    # Path 3: code-graph structural context — file's symbols, signatures, fan-in/out,
+    # risk tail. Deterministic, no LLM. Once-per-file-per-session (already-seen cache)
+    # so repeated tool calls on the same file don't re-serve the block. Fails open.
+    try:
+        from cairn.config import GRAPH_FILE_CONTEXT_ENABLED, GRAPH_FILE_CONTEXT_MAX_SYMBOLS, GRAPH_RISK_TAIL_THRESHOLD
+        if GRAPH_FILE_CONTEXT_ENABLED:
+            seen_raw = load_hook_state(session_id, "graph_files_seen") or ""
+            seen = set(seen_raw.split("\n")) if seen_raw else set()
+            key = os.path.realpath(file_path)
+            if key not in seen:
+                from cairn.graph import file_context_block
+                block = file_context_block(
+                    file_path,
+                    max_symbols=GRAPH_FILE_CONTEXT_MAX_SYMBOLS,
+                    risk_threshold=GRAPH_RISK_TAIL_THRESHOLD,
+                )
+                if block:
+                    sections.append(
+                        f"CAIRN GRAPH for {basename} (code-review-graph — structure, no need to re-read):\n{block}"
+                    )
+                    seen.add(key)
+                    save_hook_state(session_id, "graph_files_seen", "\n".join(seen))
+                    record_metric(session_id, "graph_file_context_injected", basename)
+    except Exception as _e:
+        log(f"graph file-context failed open: {type(_e).__name__}: {_e}")
 
     if not sections:
         sys.exit(0)

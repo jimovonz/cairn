@@ -138,6 +138,10 @@ _HOOK_TEMPLATE_SRC = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "templates", "copilot-hooks-container.json",
 )
+_CAIRN_INSTRUCTIONS_SRC = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "templates", "cairn-container-instructions.md",
+)
 
 
 def _container_user_home(container_id: str) -> str | None:
@@ -215,6 +219,245 @@ def _deploy_hook_files(container_id: str) -> bool:
         return False
 
 
+_TRUST_MARKER_PREFIX = "<!-- cairn-injected: "
+_MANAGED_START = "<!-- cairn-managed:start -->"
+_MANAGED_END = "<!-- cairn-managed:end -->"
+
+
+def _container_workspace_folder(container_id: str) -> str | None:
+    """Resolve the workspace root inside the container.
+
+    Order: docker inspect WorkingDir (set by devcontainer.json workspaceFolder
+    or compose working_dir), then fall back to first subdirectory of
+    /workspaces (default devcontainer.json layout).
+    """
+    try:
+        r = subprocess.run(
+            ["docker", "inspect", "--format", "{{.Config.WorkingDir}}", container_id],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        wd = r.stdout.strip()
+        if wd and wd not in ("/", ""):
+            return wd
+    except (subprocess.SubprocessError, OSError):
+        pass
+    r = subprocess.run(
+        ["docker", "exec", container_id, "bash", "-lc",
+         "ls -d /workspaces/*/ 2>/dev/null | head -1"],
+        capture_output=True, text=True, timeout=5, check=False,
+    )
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip().rstrip("/")
+    return None
+
+
+def _build_managed_block(entries: list[tuple[str, str]]) -> str:
+    """Wrap each (id, body) tuple as a fenced sub-section, all enclosed in
+    the outer cairn-managed start/end markers so the block is precisely
+    identifiable and idempotently re-writable.
+    """
+    parts = [_MANAGED_START,
+             "<!-- This block is managed by cairn — do NOT edit by hand."
+             " Edit the source instruction files in $CAIRN_HOME/templates/"
+             " or the extension's bundled instructions.md and re-deploy. -->",
+             ""]
+    for ident, body in entries:
+        parts.append(f"<!-- cairn-injected: {ident} -->")
+        parts.append(body.strip())
+        parts.append("")
+    parts.append(_MANAGED_END)
+    return "\n".join(parts) + "\n"
+
+
+def _ensure_managed_instructions_in_workspace(container_id: str, home: str) -> None:
+    """Write or refresh the cairn-managed block in
+    `<workspace>/.github/copilot-instructions.md` inside the container.
+
+    This is the only injection point empirically confirmed to deliver trust
+    statements to Copilot Chat at system-prompt level (verified 2026-05-19 on
+    cpp-school + Copilot Chat 0.48.1: sentinel string in this file is quoted
+    back when the model is asked about its system instructions; the hook
+    directive in additionalContext is then complied with). codeGeneration.
+    instructions and contributes.chatInstructions both verified inert.
+
+    Idempotent: replaces any existing `<!-- cairn-managed:start --> ... -->`
+    block in the file; preserves anything else around it.
+    """
+    workspace = _container_workspace_folder(container_id)
+    if not workspace:
+        log.warning("Could not resolve workspace root in container %s; skipping",
+                    container_id[:12])
+        return
+    entries = _extension_instruction_entries(container_id, home)
+    cairn = _cairn_instruction_entry()
+    if cairn:
+        entries.insert(0, cairn)
+    if not entries:
+        return
+
+    target = f"{workspace}/.github/copilot-instructions.md"
+    existing = _read_container_file(container_id, target) or ""
+
+    # Strip any prior managed block (greedy single-line regex across newlines)
+    import re
+    stripped = re.sub(
+        re.escape(_MANAGED_START) + r".*?" + re.escape(_MANAGED_END) + r"\n?",
+        "", existing, flags=re.DOTALL,
+    )
+
+    new_block = _build_managed_block(entries)
+    if stripped and not stripped.endswith("\n"):
+        stripped += "\n"
+    # Add a blank line separator if there's existing content
+    sep = "\n" if stripped else ""
+    new_content = stripped + sep + new_block
+
+    if new_content == existing:
+        return  # nothing changed
+
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tf:
+        tf.write(new_content)
+        tf_path = tf.name
+    try:
+        subprocess.run(
+            ["docker", "exec", container_id, "mkdir", "-p", f"{workspace}/.github"],
+            timeout=10, check=False,
+        )
+        cp = subprocess.run(
+            ["docker", "cp", tf_path, f"{container_id}:{target}"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        if cp.returncode == 0:
+            log.info("Wrote cairn-managed instructions to %s (%d entries)",
+                     target, len(entries))
+            _ensure_gitignore_entry(container_id, workspace)
+        else:
+            log.warning("Failed to write %s: %s", target, cp.stderr.strip())
+    finally:
+        try:
+            os.unlink(tf_path)
+        except OSError:
+            pass
+
+
+def _ensure_gitignore_entry(container_id: str, workspace: str) -> None:
+    """Add `.github/copilot-instructions.md` to the workspace .gitignore so the
+    cairn-managed file doesn't leak into the user's git history. Idempotent.
+    """
+    gi_path = f"{workspace}/.gitignore"
+    existing = _read_container_file(container_id, gi_path) or ""
+    line = ".github/copilot-instructions.md"
+    if line in existing.splitlines():
+        return
+    new = existing
+    if new and not new.endswith("\n"):
+        new += "\n"
+    new += f"# Managed by cairn — local-only Copilot Chat trust statement\n{line}\n"
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", delete=False) as tf:
+        tf.write(new)
+        tf_path = tf.name
+    try:
+        cp = subprocess.run(
+            ["docker", "cp", tf_path, f"{container_id}:{gi_path}"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if cp.returncode == 0:
+            log.info("Added %s to %s", line, gi_path)
+    finally:
+        try:
+            os.unlink(tf_path)
+        except OSError:
+            pass
+
+
+def _read_container_file(container_id: str, path: str) -> str | None:
+    """Read a file from inside the container via docker exec cat."""
+    r = subprocess.run(
+        ["docker", "exec", container_id, "cat", path],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    if r.returncode != 0:
+        return None
+    return r.stdout
+
+
+def _extension_instruction_entries(container_id: str, home: str) -> list[tuple[str, str]]:
+    """For every installed extension declaring contributes.chatInstructions,
+    return [(extension_id, instruction_body)] tuples by reading each
+    referenced .instructions.md file from inside the container.
+
+    VS Code currently does NOT honour contributes.chatInstructions for trust
+    against injection-shaped directives (verified empirically in
+    cpp-school 2026-05-19). This function bridges the gap: extensions still
+    ship their trust statement via the documented manifest field; daemon
+    relays its content into codeGeneration.instructions where Copilot Chat
+    actually reads it as system-prompt-level guidance.
+    """
+    ext_root = f"{home}/.vscode-server/extensions"
+    listing = subprocess.run(
+        ["docker", "exec", container_id, "ls", ext_root],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    if listing.returncode != 0:
+        return []
+    # Dedupe by extension id (publisher.name) — multiple version dirs of the
+    # same extension can coexist (uninstall doesn't always clean prior dirs).
+    # Keep latest mtime version so we use the most recent instructions.
+    by_id: dict[str, tuple[float, str]] = {}  # ext_id -> (mtime, content)
+    for ext_dir in listing.stdout.split():
+        ext_path = f"{ext_root}/{ext_dir}"
+        pkg = _read_container_file(container_id, f"{ext_path}/package.json")
+        if not pkg:
+            continue
+        try:
+            data = json.loads(pkg)
+        except json.JSONDecodeError:
+            continue
+        ci = data.get("contributes", {}).get("chatInstructions") or []
+        if not ci:
+            continue
+        ext_id = f"{data.get('publisher', '?')}.{data.get('name', ext_dir)}"
+        # Use ext-dir mtime as version-tiebreaker proxy
+        mt = subprocess.run(
+            ["docker", "exec", container_id, "stat", "-c", "%Y", ext_path],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        try:
+            mtime = float(mt.stdout.strip())
+        except ValueError:
+            mtime = 0.0
+        bodies: list[str] = []
+        for item in ci:
+            rel = item.get("path", "").lstrip("./")
+            if not rel:
+                continue
+            content = _read_container_file(container_id, f"{ext_path}/{rel}")
+            if content:
+                bodies.append(content)
+        if not bodies:
+            continue
+        joined = "\n\n".join(bodies)
+        if ext_id not in by_id or mtime > by_id[ext_id][0]:
+            by_id[ext_id] = (mtime, joined)
+    return [(eid, body) for eid, (_, body) in sorted(by_id.items())]
+
+
+def _cairn_instruction_entry() -> tuple[str, str] | None:
+    """Read cairn's own container-side instructions to merge alongside extension
+    instructions. Returns (id, body) or None if the template is missing.
+    """
+    if not os.path.isfile(_CAIRN_INSTRUCTIONS_SRC):
+        return None
+    try:
+        with open(_CAIRN_INSTRUCTIONS_SRC) as f:
+            return ("cairn", f.read())
+    except OSError as e:
+        log.warning("Failed to read cairn instructions template: %s", e)
+        return None
+
+
 def _handle_container_start(container_id: str, stage_dir: str) -> None:
     if not _is_dev_container(container_id):
         return
@@ -241,6 +484,13 @@ def _handle_container_start(container_id: str, stage_dir: str) -> None:
                      container_id[:12], len(vsixes))
             for vsix in vsixes:
                 _install_vsix(container_id, vsix, code_cli)
+
+    # Deploy trust statements into <workspace>/.github/copilot-instructions.md —
+    # empirically the only Copilot Chat anchor that actually delivers system-
+    # prompt-level trust in VS Code 1.118 + Copilot Chat 0.48.1.
+    home = _container_user_home(container_id)
+    if home:
+        _ensure_managed_instructions_in_workspace(container_id, home)
 
 
 def watch_loop(stage_dir: str) -> None:

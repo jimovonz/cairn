@@ -40,6 +40,31 @@ Ingest a git repository into Cairn as portable knowledge entries:
 
 24 extractors: docs, deps, tree, config, schemas, entrypoints, HTTP routes, CLI args, exports, comments, TODOs, env vars, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI, tree-sitter AST (Python, JS, TS, TSX, Go, Rust, C, C++), dependency graph. Graph edges queryable via `python3 ./cairn/query.py --deps <project>`.
 
+## Code graph navigation (cairn-graph)
+
+`cairn-graph` is a zero-cost, no-LLM query layer over `.code-review-graph/graph.db` (built by the `code-review-graph` tool). **Prefer it over grep/file-reads for structural questions** — it's faster and structurally aware:
+
+- `cairn-graph --location SYMBOL` — where a symbol is defined (replaces grep)
+- `cairn-graph --callers SYMBOL` / `--callees SYMBOL` — who calls it / what it calls
+- `cairn-graph --impact SYMBOL` — one-line blast radius (`callers:N tests:M files:F`)
+- `cairn-graph --context-pack SYMBOL` — body + callers + tests + related cairn memories
+- `cairn-graph --tests SYMBOL` — tests covering a symbol
+- `cairn-graph --summary` / `--orientation` — repo-level modules/flows/hubs
+- `cairn-graph --file-context FILE` — a file's symbols, signatures, fan-in/out, risk tail
+
+This data is also surfaced automatically into sessions: a repo orientation block at session start (Tier 1, prompt hook) and per-file structural context on Read/Edit (Tier 2, pretool hook, deduped once-per-file). Both are gated by `GRAPH_ORIENTATION_ENABLED` / `GRAPH_FILE_CONTEXT_ENABLED` and fail open if no graph is built.
+
+### Fleet — keeping every repo graph-ready
+
+`code-review-graph` installs inside cairn's venv (`code-review-graph` is **not** on PATH; resolve via `.venv/bin/` or `cairn.repo_discovery._resolve_crg`). Freshness is **not** driven by git hooks — git-ai (and other git proxies) own the native hook path and don't chain repo hooks, so `.git/hooks/post-commit` is unreliable. Instead:
+
+- **`cairn/graph_fleet.py`** discovers every git repo under the configured roots (`CAIRN_GRAPH_ROOTS`, colon-separated; default = parent of `CAIRN_HOME`), **builds** any missing graph and incrementally **`update`s** existing ones. Run `python3 -m cairn.graph_fleet` (sweep) or `--status`.
+- An **hourly cron** runs this sweep — the freshness backbone, daemon-independent. `install.sh` kicks an initial background bootstrap that builds all repos.
+- The **prompt hook** (`repo_discovery.kick_graph_build`) also build/updates the current repo's graph on first contact, as a per-session fast path.
+- **Optional real-time layer:** set `CAIRN_GRAPH_WATCH=1` to also register repos with the `code-review-graph` watch daemon (`crg daemon`, 2s poll) for sub-hour freshness. Off by default — the daemon doesn't reliably persist when spawned outside a login shell and churns on volatile files (e.g. cairn's own ephemeral DB), so the cron sweep is the dependable mechanism.
+
+So every repo is graph-ready before first contact, independent of whether cairn has been active in it.
+
 ## Calibration system (Phase 1 + 2)
 
 Phase 1 shipped scaffolding (schema, extractor, stubbed CLI). Phase 2 ships the analyser: a single LLM pass per session over a cleaned transcript produces sectioned JSON across 13 bounded dimensions, writing 8 dimensions to `calibration_rows` and 5 to the existing `memories` table with `source_ref="analyser-session-arc"`. A post-pass scores effectiveness on prior `calibration_deliveries`. See `docs/spec-calibration-system.md` (especially Amendment 1) for the dimension list and design rationale.

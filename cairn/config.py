@@ -144,6 +144,16 @@ PROJECT_BOOTSTRAP_MAX = 5           # Max memories to inject from project bootst
 PROJECT_BOOTSTRAP_TYPES = "project,preference,fact"  # Comma-separated standing-context types
 CORRECTION_BOOTSTRAP_MAX = 5        # Max behavioural corrections to inject per session
 
+# === Code-graph injection (code-review-graph / .code-review-graph/graph.db) ===
+# Deterministic, zero-LLM surfacing of mechanistic repo structure into sessions.
+# Tier 1: one-off repo orientation (modules/flows/hubs) at first prompt via the bootstrap path.
+# Tier 2: per-file structural context (signatures, fan-in/out, risk tail) on Read/Edit, deduped.
+# Both fail open (no graph.db → no injection). Disable via CAIRN_GRAPH_*_ENABLED=0.
+GRAPH_ORIENTATION_ENABLED = True       # Tier 1 — repo orientation block at session start
+GRAPH_FILE_CONTEXT_ENABLED = True      # Tier 2 — per-file structural context on tool use
+GRAPH_FILE_CONTEXT_MAX_SYMBOLS = 12    # Cap symbols listed per file (token discipline)
+GRAPH_RISK_TAIL_THRESHOLD = 0.55       # risk_score above which a symbol is flagged high-risk
+
 # === Correction trigger matching ===
 # Stop hook compares response against stored correction triggers (embedded phrases
 # describing what the bad response looks like). Blocks on match so the LLM can self-correct.
