@@ -58,24 +58,51 @@ def _has_ingest_record(conn, repo_root: str) -> bool:
         return False
 
 
-def kick_graph_build(cwd: str, *, env_override: Optional[dict] = None) -> bool:
-    """Tier 1: fire `code-review-graph build` in background if appropriate.
+def _resolve_crg() -> Optional[str]:
+    """Locate the code-review-graph binary.
 
-    Returns True if a build was kicked, False otherwise. Non-blocking —
-    subprocess.Popen with detached stdio so prompt-hook returns immediately.
+    code-review-graph is installed inside cairn's own venv, which is usually not
+    on PATH. Prefer the venv sibling of the running interpreter (hooks run under
+    .venv/bin/python3), then CAIRN_HOME/.venv/bin, then fall back to PATH.
+    """
+    import sys
+    cand = os.path.join(os.path.dirname(sys.executable), "code-review-graph")
+    if os.path.isfile(cand) and os.access(cand, os.X_OK):
+        return cand
+    home = os.environ.get("CAIRN_HOME")
+    if home:
+        cand = os.path.join(home, ".venv", "bin", "code-review-graph")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return shutil.which("code-review-graph")
+
+
+def kick_graph_build(cwd: str, *, env_override: Optional[dict] = None) -> bool:
+    """Tier 1: keep the code-review-graph current, in the background.
+
+    Fired from the cairn prompt hook (not a git hook) so it works regardless of
+    the active git wrapper — git-ai and other proxies own the native hook path
+    and do not chain repo hooks, so `.git/hooks/post-commit`-based refresh is
+    unreliable; this is the portable path.
+
+    No graph yet  -> `build` (full).
+    Graph present -> `update` (incremental, ~sub-second, only changed files).
+
+    Returns True if a build/update was kicked, False otherwise. Non-blocking —
+    subprocess.Popen with detached stdio so the prompt hook returns immediately.
     """
     env = env_override if env_override is not None else os.environ
     if env.get("CAIRN_AUTO_GRAPH", "1") == "0":
         return False
     if not _is_git_repo(cwd):
         return False
-    if _graph_db_present(cwd):
+    crg = _resolve_crg()
+    if crg is None:
         return False
-    if shutil.which("code-review-graph") is None:
-        return False
+    subcmd = "update" if _graph_db_present(cwd) else "build"
     try:
         subprocess.Popen(
-            ["code-review-graph", "build", "--repo", cwd],
+            [crg, subcmd, "--repo", cwd],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,

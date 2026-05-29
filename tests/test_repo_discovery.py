@@ -36,31 +36,39 @@ def test_kick_graph_build_skips_when_disabled():
         assert repo_discovery.kick_graph_build(td, env_override={"CAIRN_AUTO_GRAPH": "0"}) is False
 
 
-def test_kick_graph_build_skips_when_graph_db_already_present():
+def test_kick_graph_build_updates_when_graph_db_already_present():
+    """Graph present → incremental `update` (not skip), so it stays fresh
+    without relying on git hooks (git-ai bypasses native .git/hooks)."""
     with tempfile.TemporaryDirectory() as td:
         _init_git_repo(td)
         os.makedirs(os.path.join(td, ".code-review-graph"))
         open(os.path.join(td, ".code-review-graph", "graph.db"), "w").write("x")
-        assert repo_discovery.kick_graph_build(td, env_override={"CAIRN_AUTO_GRAPH": "1"}) is False
+        with patch.object(repo_discovery, "_resolve_crg", return_value="/fake/code-review-graph"), \
+             patch.object(repo_discovery.subprocess, "Popen") as mock_popen:
+            result = repo_discovery.kick_graph_build(td, env_override={"CAIRN_AUTO_GRAPH": "1"})
+            assert result is True
+            args = mock_popen.call_args[0][0]
+            assert args[0] == "/fake/code-review-graph"
+            assert "update" in args
 
 
 def test_kick_graph_build_skips_when_binary_missing():
     with tempfile.TemporaryDirectory() as td:
         _init_git_repo(td)
-        with patch.object(repo_discovery.shutil, "which", return_value=None):
+        with patch.object(repo_discovery, "_resolve_crg", return_value=None):
             assert repo_discovery.kick_graph_build(td, env_override={"CAIRN_AUTO_GRAPH": "1"}) is False
 
 
 def test_kick_graph_build_fires_subprocess_when_all_conditions_met():
     with tempfile.TemporaryDirectory() as td:
         _init_git_repo(td)
-        with patch.object(repo_discovery.shutil, "which", return_value="/fake/code-review-graph"), \
+        with patch.object(repo_discovery, "_resolve_crg", return_value="/fake/code-review-graph"), \
              patch.object(repo_discovery.subprocess, "Popen") as mock_popen:
             result = repo_discovery.kick_graph_build(td, env_override={"CAIRN_AUTO_GRAPH": "1"})
             assert result is True
             mock_popen.assert_called_once()
             args = mock_popen.call_args[0][0]
-            assert args[0] == "code-review-graph"
+            assert args[0] == "/fake/code-review-graph"
             assert "build" in args
 
 
@@ -126,3 +134,24 @@ def test_should_suggest_ingest_handles_db_exception_gracefully():
             td, broken_conn, min_files=50,
             env_override={"CAIRN_INGEST_SUGGEST": "1"})
         assert msg is not None
+
+
+def test_resolve_crg_prefers_venv_sibling(monkeypatch, tmp_path):
+    """_resolve_crg prefers the binary next to the running interpreter (venv)."""
+    import sys
+    fake_bin = tmp_path / "code-review-graph"
+    fake_bin.write_text("#!/bin/sh\n"); fake_bin.chmod(0o755)
+    fake_py = tmp_path / "python3"; fake_py.write_text(""); fake_py.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(fake_py))
+    assert repo_discovery._resolve_crg() == str(fake_bin)
+
+
+def test_resolve_crg_falls_back_to_path(monkeypatch, tmp_path):
+    """Falls back to PATH lookup when no venv sibling exists."""
+    import sys
+    empty = tmp_path / "bin"; empty.mkdir()
+    fake_py = empty / "python3"; fake_py.write_text(""); fake_py.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(fake_py))
+    monkeypatch.delenv("CAIRN_HOME", raising=False)
+    monkeypatch.setattr(repo_discovery.shutil, "which", lambda _n: "/usr/bin/code-review-graph")
+    assert repo_discovery._resolve_crg() == "/usr/bin/code-review-graph"
