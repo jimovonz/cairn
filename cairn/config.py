@@ -226,14 +226,25 @@ DB_BUSY_TIMEOUT_MS = 5000          # SQLite busy timeout — wait up to 5s for l
 import os as _os_path
 CAIRN_DIR = _os_path.path.dirname(_os_path.path.abspath(__file__))
 # Test convenience: when CAIRN_DB_PATH is set without a separate
-# CAIRN_EPHEMERAL_DB_PATH override, default ephemeral to the same path so
-# subprocess-based tests share one DB file. The env-override loop below still
+# CAIRN_EPHEMERAL_DB_PATH override, derive a SIBLING ephemeral file next to the
+# durable DB rather than aliasing onto it. Aliasing let init_ephemeral create
+# the ephemeral tables (metrics/hook_state/…) inside the durable DB — observed
+# as stray hook_state/metrics tables contaminating the real cairn.db — and
+# defeated the corruption-blast-radius isolation the split exists for. A
+# deterministic sibling keeps subprocess-based tests sharing one ephemeral file
+# while never touching the durable one. The env-override loop below still
 # upgrades EPHEMERAL_DB_PATH if CAIRN_EPHEMERAL_DB_PATH is explicitly set.
-_test_shared = (_os_path.environ.get("CAIRN_DB_PATH")
+_db_override = (_os_path.environ.get("CAIRN_DB_PATH")
                 if not _os_path.environ.get("CAIRN_EPHEMERAL_DB_PATH") else None)
-EPHEMERAL_DB_PATH = _test_shared or _os_path.path.join(CAIRN_DIR, "cairn-ephemeral.db")
+if _db_override:
+    _r, _e = _os_path.path.splitext(_db_override)
+    _derived_eph = f"{_r}-ephemeral{_e or '.db'}"
+    del _r, _e
+else:
+    _derived_eph = None
+EPHEMERAL_DB_PATH = _derived_eph or _os_path.path.join(CAIRN_DIR, "cairn-ephemeral.db")
 SENTINEL_PATH = _os_path.path.join(CAIRN_DIR, ".impaired")
-del _os_path, _test_shared
+del _os_path, _db_override, _derived_eph
 
 # === Health monitoring ===
 DAEMON_FAIL_THRESHOLD = 5

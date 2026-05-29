@@ -30,10 +30,36 @@ LOG_PATH = os.path.join(CAIRN_DIR, "hook.log")
 _LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB per file
 _LOG_BACKUP_COUNT = 3             # Keep 3 rotated backups (20 MB total max)
 
+
+class _RetargetableFileHandler(logging.handlers.RotatingFileHandler):
+    """RotatingFileHandler that re-resolves its target from the module-level
+    ``LOG_PATH`` on every emit.
+
+    A plain RotatingFileHandler binds the production ``hook.log`` path at import
+    time, so the widespread test pattern of reassigning/patching
+    ``hook_helpers.LOG_PATH`` was silently ineffective — every such test was
+    really writing into the live ``hook.log`` (e.g. test_db_error_logging's
+    fake "database disk image is malformed" lines polluting production), and its
+    log-content assertions were vacuous. Re-checking ``LOG_PATH`` per emit makes
+    that redirection actually work and stops the pollution, with no churn across
+    the ~15 test files that already use the pattern."""
+
+    def emit(self, record):  # type: ignore[override]
+        target = os.path.abspath(LOG_PATH)
+        if target != self.baseFilename:
+            self.baseFilename = target
+            if self.stream:
+                try:
+                    self.stream.close()
+                finally:
+                    self.stream = None
+        super().emit(record)
+
+
 _logger = logging.getLogger("cairn")
 if not _logger.handlers:
     _logger.setLevel(logging.DEBUG)
-    _handler = logging.handlers.RotatingFileHandler(
+    _handler = _RetargetableFileHandler(
         LOG_PATH, maxBytes=_LOG_MAX_BYTES, backupCount=_LOG_BACKUP_COUNT,
         encoding="utf-8",
     )
@@ -92,6 +118,7 @@ def get_ephemeral_conn() -> sqlite3.Connection:
     Tests share path by patching cairn.config.EPHEMERAL_DB_PATH to the test
     DB_PATH; auto-init via init_ephemeral handles missing tables on first use."""
     from cairn.config import EPHEMERAL_DB_PATH
+    from cairn.init_db import EPHEMERAL_TABLES
 
     def _open() -> sqlite3.Connection:
         c = sqlite3.connect(EPHEMERAL_DB_PATH)
@@ -103,14 +130,17 @@ def get_ephemeral_conn() -> sqlite3.Connection:
     # DB that had `metrics` but was missing `hook_state` (older init, schema
     # drift, or a partial rebuild after a corruption reset) was never repaired —
     # producing the recurring "no such table: hook_state" that silently dropped
-    # graph dedup state and the fleet sweep-state write. Probe every core table,
-    # and rebuild outright if the file itself is corrupt (ephemeral = disposable).
+    # graph dedup state and the fleet sweep-state write. Probe EVERY ephemeral
+    # table (EPHEMERAL_TABLES is the single source of truth shared with
+    # init_ephemeral, so the probe can never drift behind a newly-added table —
+    # calibration_deliveries was missing from the old hand-maintained list), and
+    # rebuild outright if the file itself is corrupt (ephemeral = disposable).
     # The whole open+probe is guarded so corruption surfacing at PRAGMA (e.g. a
     # non-database file) is handled too.
     conn = None
     try:
         conn = _open()
-        for _t in ("metrics", "hook_state", "pending_writes", "pair_assessments"):
+        for _t in EPHEMERAL_TABLES:
             conn.execute(f"SELECT 1 FROM {_t} LIMIT 0")
         return conn
     except sqlite3.DatabaseError as exc:

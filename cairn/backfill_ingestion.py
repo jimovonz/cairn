@@ -15,7 +15,13 @@ Usage:
 import argparse
 import json
 import os
-import sqlite3
+# Prefer pysqlite3 (SQLite 3.51.1) to match every other durable-cairn.db writer —
+# a stdlib/pysqlite3 version mix on the shared WAL is the documented page-1
+# corruption cause (be91366).
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError:
+    import sqlite3
 import sys
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
