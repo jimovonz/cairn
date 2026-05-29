@@ -459,6 +459,7 @@ a:hover { text-decoration: underline; }
     <button data-panel="memories">Memories</button>
     <button data-panel="sessions">Sessions</button>
     <button data-panel="metrics">Metrics</button>
+    <button data-panel="graph">Graph Fleet</button>
     <button data-panel="enforcement">Enforcement</button>
     <button data-panel="calibration">Calibration</button>
     <button data-panel="usage">Usage</button>
@@ -472,6 +473,7 @@ a:hover { text-decoration: underline; }
   <!-- Overview Panel -->
   <div id="panel-overview" class="panel active">
     <div class="stats-grid" id="stats-grid"></div>
+    <div class="stats-grid" id="health-tiles"></div>
     <div class="card">
       <h2 data-tip="How well-corroborated memories are across sessions. High confidence = verified by multiple sessions. Low = unverified or contradicted.">Confidence Distribution</h2>
       <div id="conf-bar-container"></div>
@@ -549,6 +551,10 @@ a:hover { text-decoration: underline; }
   <div id="panel-metrics" class="panel">
     <div class="stats-grid" id="metrics-summary"></div>
     <div class="card">
+      <h2 data-tip="Deterministic code-graph context pushed into sessions: Tier-1 repo orientation at session start, Tier-2 per-file structural context on Read/Edit. Zero LLM cost.">Code-Graph Injection</h2>
+      <div class="stats-grid" id="graph-injection"></div>
+    </div>
+    <div class="card">
       <h2 data-tip="Time to search and rank memories per retrieval request. Includes embedding generation, vector search, scoring, and filtering.">Retrieval Latency (daily avg)</h2>
       <div class="chart-container" id="latency-chart"></div>
     </div>
@@ -561,6 +567,38 @@ a:hover { text-decoration: underline; }
       <p style="color:var(--text-dim);font-size:12px;margin-bottom:12px">Per-call timing for embedding generation, vector search, and fan-out expansion.</p>
       <div id="embed-stats"></div>
       <div class="chart-container" id="embed-chart" style="margin-top:12px"></div>
+    </div>
+  </div>
+
+  <!-- Graph Fleet Panel -->
+  <div id="panel-graph" class="panel">
+    <div class="stats-grid" id="graph-coverage"></div>
+    <div class="card">
+      <h2 data-tip="Last fleet sweep summary (cairn/graph_fleet.py) and the real-time watch daemon state. The hourly cron sweep is the freshness backbone; the daemon is opt-in (CAIRN_GRAPH_WATCH=1).">Fleet Status</h2>
+      <div id="graph-fleet-status" style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)"></div>
+    </div>
+    <div class="card">
+      <h2 data-tip="Every git repo cairn keeps graph-ready. Stale = graph built against a different HEAD than the repo is on now; missing = no graph yet.">Repositories</h2>
+      <table class="sortable" id="graph-repos-table">
+        <thead><tr>
+          <th data-sort="str">Repo</th><th data-sort="str">State</th>
+          <th data-sort="num">Nodes</th><th data-sort="num">Edges</th>
+          <th data-sort="str">Languages</th><th data-sort="date">Last updated</th>
+          <th>Explore</th>
+        </tr></thead>
+        <tbody id="graph-repos-body"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2 data-tip="Read-only navigator over a repo's code graph: orientation (modules/flows/hubs) or a per-symbol context pack (body, callers, callees, tests, cairn knowledge).">Graph Explorer</h2>
+      <div class="search-bar" style="margin-bottom:12px">
+        <select id="graph-repo-select"></select>
+        <input type="text" id="graph-symbol" placeholder="symbol (blank = repo orientation)">
+        <button onclick="runGraphExplorer()">Explore</button>
+        <button onclick="showGraphViz()" title="Interactive community visualization">Visualize</button>
+      </div>
+      <pre id="graph-explorer-out" style="background:var(--bg);padding:12px;border-radius:6px;overflow:auto;max-height:420px;font-size:12px;white-space:pre-wrap"></pre>
+      <iframe id="graph-viz-frame" style="display:none;width:100%;height:600px;border:1px solid var(--border);border-radius:6px;margin-top:12px"></iframe>
     </div>
   </div>
 
@@ -720,10 +758,12 @@ document.querySelectorAll('.header nav button').forEach(btn => {
     const panel = btn.dataset.panel;
     document.getElementById('panel-' + panel).classList.add('active');
     currentPanel = panel;
+    if (history.replaceState) history.replaceState(null, '', '#' + panel);
     if (panel === 'overview') loadOverview();
     else if (panel === 'memories') loadMemories();
     else if (panel === 'sessions') loadSessions();
     else if (panel === 'metrics') loadMetrics();
+    else if (panel === 'graph') loadGraph();
     else if (panel === 'enforcement') loadEnforcement();
     else if (panel === 'calibration') loadCalibration();
     else if (panel === 'usage') loadUsage();
@@ -820,6 +860,22 @@ async function loadOverview() {
     { v: formatBytes(data.db_size_bytes), l: 'Database Size', t: 'Total size of cairn.db including memories, embeddings, and indexes' },
     { v: data.confidence.average.toFixed(3), l: 'Avg Confidence', t: 'Mean veracity score. 0.7=default (unverified), higher=corroborated across sessions' },
   ].map(s => `<div class="stat-box"><div class="value">${s.v}</div><div class="label" data-tip="${s.t}">${s.l}</div></div>`).join('');
+
+  // Health tiles — dual-embedding coverage + exact-duplicate groups
+  api('/api/health').then(h => {
+    const te = h.topic_embedding || {}, dup = h.exact_duplicates || {};
+    const tiles = [
+      { v: (te.pct != null ? te.pct + '%' : '—'), l: 'Topic-Embedding Coverage',
+        t: 'Share of live memories with a v8 topic_embedding (symmetric topic retrieval). <95% = backfill drift.',
+        warn: te.warn },
+      { v: (dup.count != null ? dup.count : '—'), l: 'Exact-Duplicate Groups',
+        t: 'Groups of live memories sharing identical (topic, content). Non-zero flags double-insert-class regressions.',
+        warn: dup.warn },
+    ];
+    document.getElementById('health-tiles').innerHTML = tiles.map(s =>
+      `<div class="stat-box"><div class="value" style="color:${s.warn ? 'var(--orange)' : 'var(--green)'}">${s.v}</div>` +
+      `<div class="label" data-tip="${s.t}">${s.l}</div></div>`).join('');
+  });
 
   // Confidence bar
   const c = data.confidence;
@@ -1316,6 +1372,78 @@ async function loadTranscript(sessionId) {
 }
 
 // ─── Metrics Panel ─────────────────────────────────────────────────────────
+// ─── Graph Fleet Panel ───────────────────────────────────────────────────────
+async function loadGraph() {
+  const data = await api('/api/graph-fleet');
+  const c = data.coverage || {};
+  const tiles = [
+    { v: c.total || 0, l: 'Repos', warn: false },
+    { v: c.with_graph || 0, l: 'With Graph', warn: false },
+    { v: c.fresh || 0, l: 'Fresh', warn: false },
+    { v: c.stale || 0, l: 'Stale', warn: (c.stale || 0) > 0 },
+    { v: c.missing || 0, l: 'Missing', warn: (c.missing || 0) > 0 },
+  ];
+  document.getElementById('graph-coverage').innerHTML = tiles.map(s =>
+    `<div class="stat-box"><div class="value" style="color:${s.warn ? 'var(--orange)' : 'var(--green)'}">${s.v}</div>` +
+    `<div class="label">${s.l}</div></div>`).join('');
+
+  const sw = data.last_sweep;
+  const swText = sw
+    ? `Last sweep ${formatDate(sw.ts)} — discovered ${sw.discovered}, built ${sw.built}, updated ${sw.updated}, failed ${sw.failed}`
+    : 'No sweep recorded yet (runs hourly via cron).';
+  document.getElementById('graph-fleet-status').innerHTML =
+    escapeHtml(swText) + `<br>Watch daemon: ${escapeHtml(String(data.daemon || 'disabled'))}`;
+
+  const stateColor = { fresh: 'var(--green)', stale: 'var(--orange)', missing: 'var(--red)' };
+  document.getElementById('graph-repos-body').innerHTML = (data.repos || []).map(r =>
+    `<tr>
+      <td>${escapeHtml(r.alias)}</td>
+      <td><span style="color:${stateColor[r.state] || 'var(--text-dim)'}">${r.state}</span></td>
+      <td>${r.nodes != null ? r.nodes : '—'}</td>
+      <td>${r.edges != null ? r.edges : '—'}</td>
+      <td>${escapeHtml((r.languages || []).join(', '))}</td>
+      <td>${formatDate(r.last_updated) || '—'}</td>
+      <td>${r.state !== 'missing' ? `<button onclick="exploreRepo('${encodeURIComponent(r.path)}')">open</button>` : ''}</td>
+    </tr>`).join('');
+  makeSortable(document.getElementById('graph-repos-table'));
+
+  // Populate the explorer repo selector (graphed repos only).
+  const sel = document.getElementById('graph-repo-select');
+  sel.innerHTML = (data.repos || []).filter(r => r.state !== 'missing')
+    .map(r => `<option value="${escapeHtml(r.path)}">${escapeHtml(r.alias)}</option>`).join('');
+}
+
+function exploreRepo(encodedPath) {
+  document.getElementById('graph-repo-select').value = decodeURIComponent(encodedPath);
+  document.getElementById('graph-symbol').value = '';
+  runGraphExplorer();
+}
+
+async function runGraphExplorer() {
+  const repo = document.getElementById('graph-repo-select').value;
+  const symbol = document.getElementById('graph-symbol').value.trim();
+  const out = document.getElementById('graph-explorer-out');
+  document.getElementById('graph-viz-frame').style.display = 'none';
+  if (!repo) { out.textContent = 'No repo selected.'; return; }
+  out.textContent = 'Loading…';
+  let url = '/api/graph-explorer?repo=' + encodeURIComponent(repo);
+  if (symbol) url += '&symbol=' + encodeURIComponent(symbol);
+  const data = await api(url);
+  out.textContent = data.error ? ('Error: ' + data.error)
+    : (data.context_pack || data.orientation || '(empty)');
+}
+
+function showGraphViz() {
+  const repo = document.getElementById('graph-repo-select').value;
+  if (!repo) return;
+  const frame = document.getElementById('graph-viz-frame');
+  document.getElementById('graph-explorer-out').textContent =
+    'Generating interactive visualization (community mode)…';
+  frame.src = '/api/graph-viz?repo=' + encodeURIComponent(repo);
+  frame.style.display = 'block';
+  frame.onload = () => { document.getElementById('graph-explorer-out').textContent = ''; };
+}
+
 async function loadMetrics() {
   const data = await api('/api/metrics');
 
@@ -1327,6 +1455,14 @@ async function loadMetrics() {
     const avg = s.avg_value != null ? ` (avg ${s.avg_value.toFixed(1)})` : '';
     return `<div class="stat-box"><div class="value">${s.count}</div><div class="label">${s.event}${avg}</div></div>`;
   }).join('');
+
+  // Code-graph injection counts (Tier-1 orientation + Tier-2 file context)
+  const gi = {};
+  (data.graph_injection || []).forEach(r => { gi[r.event] = r.count; });
+  document.getElementById('graph-injection').innerHTML = [
+    { v: gi.graph_orientation_injected || 0, l: 'Orientation (Tier 1)' },
+    { v: gi.graph_file_context_injected || 0, l: 'File context (Tier 2)' },
+  ].map(s => `<div class="stat-box"><div class="value">${s.v}</div><div class="label">${s.l}</div></div>`).join('');
 
   // Latency chart
   if (data.latency_series.length > 0) {
@@ -2101,7 +2237,13 @@ function toggleTheme() {
 })();
 
 // ─── Init ──────────────────────────────────────────────────────────────────
-loadOverview();
+// Honor a #panel deep link (e.g. #graph) so panels are shareable; default Overview.
+(function initPanel() {
+  const hash = (location.hash || '').replace('#', '');
+  const btn = hash && document.querySelector(`.header nav button[data-panel="${hash}"]`);
+  if (btn) btn.click();
+  else loadOverview();
+})();
 </script>
 
 </body>
