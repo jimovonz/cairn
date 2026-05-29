@@ -580,13 +580,14 @@ class TestFileContextBlock:
         assert "foo" in block
         assert "callers:1" in block  # do_thing CALLS foo
 
-    def test_includes_file_line_locations(self, graph_repo):
-        # Each surfaced symbol must carry its file:line so it's jump-to-able
-        # without a follow-up --location call. foo is at line 10 in src/main.py.
+    def test_includes_file_line_range(self, graph_repo):
+        # Each surfaced symbol must carry its file:line RANGE (start-end) so the
+        # agent can Read exactly its span without over-selecting or a follow-up
+        # --location call. foo spans lines 10-25 in src/main.py.
         block = graph.file_context_block(str(graph_repo / "src" / "main.py"),
                                          repo_root=str(graph_repo))
         assert block is not None
-        assert "src/main.py:10" in block
+        assert "src/main.py:10-25" in block
 
     def test_excludes_tests(self, graph_repo):
         # test_foo lives in tests/test_main.py (is_test=1) — not a target file here,
