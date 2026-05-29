@@ -466,21 +466,58 @@ def api_session_transcript(params, session_id):
     return {"messages": messages}, 200
 
 
+def _metrics_conn():
+    """Connection for reading metrics across BOTH the live ephemeral DB and the
+    frozen historical metrics in the main DB.
+
+    Metrics writes moved to the ephemeral DB on 2026-05-27, freezing the main
+    `metrics` table. The dashboard previously read only the main DB via get_conn(),
+    so it showed stale pre-cutover data and *no* live events — including the
+    graph_orientation_injected / graph_file_context_injected metrics. This unions
+    both tables behind a TEMP VIEW `all_metrics` so existing aggregate SQL is
+    unchanged and history is preserved. When ephemeral == main (test fixtures
+    point both at one file) we skip the union to avoid double-counting."""
+    eph_path = getattr(config, "EPHEMERAL_DB_PATH", None) or \
+        os.path.join(os.path.dirname(DB_PATH), "cairn-ephemeral.db")
+    conn = sqlite3.connect(eph_path)
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.row_factory = sqlite3.Row
+    cols = "event, session_id, detail, value, created_at"
+    same = os.path.realpath(eph_path) == os.path.realpath(DB_PATH)
+    union_main = False
+    if not same and os.path.exists(DB_PATH):
+        conn.execute("ATTACH DATABASE ? AS maindb", (DB_PATH,))
+        # The main metrics table only exists on installs that predate the
+        # 2026-05-27 move to the ephemeral DB; a fresh install / test DB has none.
+        union_main = conn.execute(
+            "SELECT 1 FROM maindb.sqlite_master WHERE type='table' AND name='metrics'"
+        ).fetchone() is not None
+    if union_main:
+        conn.execute(
+            f"CREATE TEMP VIEW all_metrics AS "
+            f"SELECT {cols} FROM metrics "
+            f"UNION ALL SELECT {cols} FROM maindb.metrics"
+        )
+    else:
+        conn.execute(f"CREATE TEMP VIEW all_metrics AS SELECT {cols} FROM metrics")
+    return conn
+
+
 def api_metrics(params):
-    conn = get_conn()
+    conn = _metrics_conn()
     summary = rows_to_list(conn.execute("""
         SELECT event, COUNT(*) as count, AVG(value) as avg_value,
                MIN(value) as min_value, MAX(value) as max_value
-        FROM metrics GROUP BY event ORDER BY count DESC
+        FROM all_metrics GROUP BY event ORDER BY count DESC
     """).fetchall())
     latency_series = rows_to_list(conn.execute("""
         SELECT DATE(created_at) as date, AVG(value) as avg_ms, COUNT(*) as count
-        FROM metrics WHERE event = 'retrieval_latency_ms'
+        FROM all_metrics WHERE event = 'retrieval_latency_ms'
         GROUP BY DATE(created_at) ORDER BY date
     """).fetchall())
     layer_series = rows_to_list(conn.execute("""
         SELECT DATE(created_at) as date, event, COUNT(*) as count
-        FROM metrics WHERE event LIKE 'layer%' OR event LIKE 'retrieval_%'
+        FROM all_metrics WHERE event LIKE 'layer%' OR event LIKE 'retrieval_%'
         GROUP BY DATE(created_at), event ORDER BY date
     """).fetchall())
     embed_events = ("embed_daemon_ms", "embed_local_ms", "search_vec_ms", "search_brute_ms", "fanout_ms")
@@ -489,20 +526,29 @@ def api_metrics(params):
         SELECT event, COUNT(*) as count, AVG(value) as avg_ms,
                MIN(value) as min_ms, MAX(value) as max_ms,
                (SELECT AVG(sub.value) FROM (
-                   SELECT value FROM metrics m2 WHERE m2.event = metrics.event
+                   SELECT value FROM all_metrics m2 WHERE m2.event = all_metrics.event
                    ORDER BY m2.created_at DESC LIMIT 20
                ) sub) as recent_avg_ms
-        FROM metrics WHERE event IN ({placeholders}) GROUP BY event
+        FROM all_metrics WHERE event IN ({placeholders}) GROUP BY event
     """, embed_events).fetchall())
     embed_series = rows_to_list(conn.execute(f"""
         SELECT DATE(created_at) as date, event, AVG(value) as avg_ms, COUNT(*) as count
-        FROM metrics WHERE event IN ({placeholders})
+        FROM all_metrics WHERE event IN ({placeholders})
         GROUP BY DATE(created_at), event ORDER BY date
     """, embed_events).fetchall())
+    # Graph-injection metrics surfaced explicitly so the frontend can render them
+    # alongside gotcha_injected / file_context_injected without scanning `summary`.
+    graph_events = ("graph_orientation_injected", "graph_file_context_injected")
+    gph = ",".join("?" * len(graph_events))
+    graph_injection = rows_to_list(conn.execute(f"""
+        SELECT event, COUNT(*) as count
+        FROM all_metrics WHERE event IN ({gph}) GROUP BY event
+    """, graph_events).fetchall())
     conn.close()
     return {
         "summary": summary, "latency_series": latency_series, "layer_series": layer_series,
         "embed_stats": embed_stats, "embed_series": embed_series,
+        "graph_injection": graph_injection,
     }, 200
 
 
@@ -1302,7 +1348,57 @@ def api_calibration_session(params, session_id):
 def api_health(params):
     from hooks.health import sentinel_info
     info = sentinel_info()
-    return {"impaired": info is not None, "info": info}, 200
+    return {
+        "impaired": info is not None,
+        "info": info,
+        "topic_embedding": _topic_embedding_coverage(),
+        "exact_duplicates": _exact_duplicate_groups(),
+    }, 200
+
+
+# Topic name used by the cairn self-test; excluded from duplicate detection so a
+# repeatedly-run smoke test doesn't masquerade as a double-insert regression.
+_SMOKE_TEST_TOPIC = "cairn-smoke-test"
+
+
+def _topic_embedding_coverage():
+    """Dual-embedding (v8 topic_embedding) coverage over live memories.
+
+    Drift below 100% means the topic_embedding backfill hasn't kept up with
+    content edits / inserts; <95% is flagged so symmetric topic retrieval doesn't
+    silently degrade."""
+    conn = get_conn()
+    try:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL"
+        ).fetchone()[0]
+        with_topic = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL AND topic_embedding IS NOT NULL"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    pct = (with_topic / total * 100.0) if total else 100.0
+    return {"with_topic_embedding": with_topic, "total": total,
+            "pct": round(pct, 1), "warn": pct < 95.0}
+
+
+def _exact_duplicate_groups():
+    """Count groups of live memories sharing identical (topic, content).
+
+    Non-zero is a defensive signal for double-insert-class regressions (e.g. the
+    dual-embedding + sync-merge double-insert fixed in a871775). The smoke-test
+    topic is excluded so self-test churn doesn't inflate the count."""
+    conn = get_conn()
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM memories "
+            "WHERE deleted_at IS NULL AND topic != ? "
+            "GROUP BY topic, content HAVING COUNT(*) > 1)",
+            (_SMOKE_TEST_TOPIC,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    return {"count": count, "warn": count > 0}
 
 
 def api_snapshot_session(params, session_id):
@@ -1345,6 +1441,194 @@ def api_snapshot_session(params, session_id):
     return {"snapshotted": count, "skipped": 0}, 200
 
 
+# ─── Code-graph fleet + explorer ──────────────────────────────────────────────
+# Observability + navigation over the per-repo code-review-graph databases that
+# cairn keeps fresh across the whole repo fleet (see cairn/graph_fleet.py).
+
+import subprocess as _subprocess
+
+
+def _discovered_repos():
+    """All git repos the fleet manages, as realpaths. Empty list if the fleet
+    module / graph tooling isn't importable (fail-open)."""
+    try:
+        from cairn import graph_fleet
+        return graph_fleet.discover_repos()
+    except Exception:
+        return []
+
+
+def _resolve_fleet_repo(repo):
+    """Map a repo path/alias from the client to a managed repo realpath, or None.
+
+    Guards the visualize/explorer endpoints against running tooling on arbitrary
+    paths: the input must resolve to a repo the fleet actually manages."""
+    if not repo:
+        return None
+    repos = _discovered_repos()
+    target = os.path.realpath(os.path.expanduser(repo))
+    if target in repos:
+        return target
+    # Allow addressing by basename alias (unique match only).
+    by_alias = [r for r in repos if os.path.basename(r) == repo]
+    return by_alias[0] if len(by_alias) == 1 else None
+
+
+def _git_head_sha(repo):
+    try:
+        r = _subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"],
+                            capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except (OSError, _subprocess.SubprocessError):
+        return None
+
+
+def _repo_graph_stats(repo):
+    """Read a repo's .code-review-graph/graph.db: nodes, edges, languages,
+    last_updated, recorded HEAD sha. Returns None if no graph DB present."""
+    db = os.path.join(repo, ".code-review-graph", "graph.db")
+    if not os.path.exists(db):
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
+        conn.execute("PRAGMA busy_timeout=2000")
+        nodes = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+        edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        langs = [r[0] for r in conn.execute(
+            "SELECT DISTINCT language FROM nodes WHERE language IS NOT NULL ORDER BY language"
+        ).fetchall()]
+        meta = dict(conn.execute("SELECT key, value FROM metadata").fetchall())
+        conn.close()
+        return {
+            "nodes": nodes, "edges": edges, "languages": langs,
+            "last_updated": meta.get("last_updated"),
+            "graph_head_sha": meta.get("git_head_sha"),
+            "db_mtime": os.path.getmtime(db),
+        }
+    except Exception:
+        return {"nodes": None, "edges": None, "languages": [],
+                "last_updated": None, "graph_head_sha": None, "locked": True}
+
+
+def _repo_state(repo, stats):
+    """fresh | stale | missing for a repo's graph.
+
+    Stale = the graph was built against a different HEAD than the repo is on now
+    (cheap, precise). Falls back to db-mtime vs HEAD commit time when sha is
+    unavailable."""
+    if stats is None:
+        return "missing"
+    if stats.get("locked"):
+        return "stale"
+    head = _git_head_sha(repo)
+    graph_head = stats.get("graph_head_sha")
+    if head and graph_head:
+        return "fresh" if head == graph_head else "stale"
+    # Fallback: compare graph mtime to HEAD commit time.
+    try:
+        r = _subprocess.run(["git", "-C", repo, "log", "-1", "--format=%ct"],
+                            capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            head_time = float(r.stdout.strip())
+            return "fresh" if (stats.get("db_mtime") or 0) >= head_time else "stale"
+    except (OSError, _subprocess.SubprocessError, ValueError):
+        pass
+    return "fresh"
+
+
+def api_graph_fleet(params):
+    """Fleet observability: coverage + per-repo graph stats + last sweep + daemon."""
+    repos = _discovered_repos()
+    per_repo = []
+    counts = {"with_graph": 0, "missing": 0, "stale": 0, "fresh": 0}
+    for repo in repos:
+        stats = _repo_graph_stats(repo)
+        state = _repo_state(repo, stats)
+        counts[state if state in counts else "fresh"] += 1
+        if stats is not None:
+            counts["with_graph"] += 1
+        per_repo.append({
+            "alias": os.path.basename(repo), "path": repo,
+            "nodes": (stats or {}).get("nodes"),
+            "edges": (stats or {}).get("edges"),
+            "languages": (stats or {}).get("languages", []),
+            "last_updated": (stats or {}).get("last_updated"),
+            "state": state,
+        })
+    per_repo.sort(key=lambda r: ({"stale": 0, "missing": 1, "fresh": 2}.get(r["state"], 3),
+                                 r["alias"]))
+
+    # Last sweep summary written by graph_fleet.sweep() into ephemeral hook_state.
+    last_sweep = None
+    try:
+        from hooks.hook_helpers import load_hook_state
+        raw = load_hook_state("graph_fleet", "graph_fleet_last_sweep")
+        if raw:
+            last_sweep = json.loads(raw)
+    except Exception:
+        pass
+
+    # Daemon status only when the opt-in real-time layer is enabled.
+    daemon = "disabled"
+    if os.environ.get("CAIRN_GRAPH_WATCH", "0").lower() in ("1", "true", "yes"):
+        try:
+            from cairn.repo_discovery import _resolve_crg
+            crg = _resolve_crg()
+            if crg:
+                r = _subprocess.run([crg, "daemon", "status"],
+                                    capture_output=True, text=True, timeout=15)
+                daemon = (r.stdout + r.stderr).strip()[:500] or "unknown"
+        except Exception:
+            daemon = "error"
+
+    coverage = {
+        "total": len(repos), "with_graph": counts["with_graph"],
+        "missing": counts["missing"], "stale": counts["stale"], "fresh": counts["fresh"],
+    }
+    return {"coverage": coverage, "repos": per_repo,
+            "last_sweep": last_sweep, "daemon": daemon}, 200
+
+
+def api_graph_explorer(params):
+    """Per-repo graph navigator backed by cairn.graph.
+
+    Params: repo (required, path or alias). Optional symbol — when given, returns
+    a context pack (body + callers + callees + tests + cairn knowledge); otherwise
+    a repo orientation block (modules / flows / hubs)."""
+    repo = _resolve_fleet_repo(params.get("repo", ""))
+    if not repo:
+        return {"error": "unknown or unmanaged repo"}, 404
+    if not os.path.exists(os.path.join(repo, ".code-review-graph", "graph.db")):
+        return {"error": "no graph for this repo", "repo": repo}, 404
+    try:
+        from cairn import graph
+        symbol = (params.get("symbol") or "").strip()
+        if symbol:
+            return {"repo": repo, "symbol": symbol,
+                    "context_pack": graph.context_pack(symbol, repo_root=repo)}, 200
+        return {"repo": repo, "orientation": graph.orientation_block(repo_root=repo)}, 200
+    except Exception as e:
+        return {"error": str(e), "repo": repo}, 500
+
+
+def _generate_graph_viz(repo):
+    """Regenerate the community-mode interactive HTML for a repo and return its
+    path. Community mode is the only sane default — full mode never settles in
+    the browser at fleet scale. Returns None on failure."""
+    try:
+        from cairn.repo_discovery import _resolve_crg
+        crg = _resolve_crg()
+        if not crg:
+            return None
+        r = _subprocess.run(
+            [crg, "visualize", "--repo", repo, "--mode", "community", "--format", "html"],
+            capture_output=True, text=True, timeout=120)
+        html = os.path.join(repo, ".code-review-graph", "graph.html")
+        return html if (r.returncode == 0 and os.path.exists(html)) else None
+    except (OSError, _subprocess.SubprocessError):
+        return None
+
+
 # ─── HTTP Server ────────────────────────────────────────────────────────────
 
 # Route table: (method, pattern) -> handler
@@ -1371,6 +1655,8 @@ _ROUTES: list[tuple[str, str, callable]] = [
     ("GET", "/api/calibration/review-queue", lambda p, **kw: api_calibration_review_queue(p)),
     ("GET", "/api/calibration/row/{row_id}", lambda p, **kw: api_calibration_row(p, int(kw["row_id"]))),
     ("GET", "/api/calibration/session/{session_id}", lambda p, **kw: api_calibration_session(p, kw["session_id"])),
+    ("GET", "/api/graph-fleet", lambda p, **kw: api_graph_fleet(p)),
+    ("GET", "/api/graph-explorer", lambda p, **kw: api_graph_explorer(p)),
 ]
 
 # Compile route patterns to regex
@@ -1413,6 +1699,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self.send_error(404)
 
+    def _serve_graph_viz(self, params):
+        repo = _resolve_fleet_repo(params.get("repo", ""))
+        if not repo:
+            self.send_error(404, "unknown or unmanaged repo")
+            return
+        html_path = _generate_graph_viz(repo)
+        if not html_path:
+            self.send_error(500, "could not generate visualization")
+            return
+        self._send_file(html_path, "text/html; charset=utf-8")
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
@@ -1421,6 +1718,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Static files
         if path == "/" or path == "/index.html":
             self._send_file(os.path.join(STATIC_DIR, "index.html"), "text/html; charset=utf-8")
+            return
+
+        # Interactive code-graph visualization (raw HTML, not JSON) — embedded
+        # in an iframe by the Graph Explorer view.
+        if path == "/api/graph-viz":
+            self._serve_graph_viz(params)
             return
 
         # API routes
