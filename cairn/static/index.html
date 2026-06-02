@@ -1286,25 +1286,30 @@ async function showSessionDetail(sessionId) {
       });
     });
 
-    html += `<div class="card" style="border-left:3px solid var(--accent)"><h2 style="color:var(--accent)">Consumed (${consumed.length} memories retrieved into session)</h2>`;
+    const withScores = consumed.filter(m => m.sim != null).length;
+    const scoreNote = withScores < consumed.length ? ` <span style="font-size:11px;color:var(--text-dim);font-weight:normal">(sim scores available for ${withScores}/${consumed.length} — older sessions lack score data)</span>` : '';
+    html += `<div class="card" style="border-left:3px solid var(--accent)"><h2 style="color:var(--accent)">Consumed (${consumed.length} memories retrieved into session)${scoreNote}</h2>`;
     html += `<table class="mem-table" id="session-consumed-table"><thead><tr>
-      <th class="sortable" data-col="0" data-type="num">ID</th>
-      <th class="sortable" data-col="1">Type</th>
-      <th class="sortable" data-col="2">Topic</th>
+      <th class="sortable" data-col="0" data-type="num" style="width:38px">ID</th>
+      <th class="sortable" data-col="1" style="width:80px">Type</th>
+      <th class="sortable" data-col="2" style="width:130px">Topic</th>
       <th>Content</th>
-      <th class="sortable" data-col="4">Source</th>
-      <th class="sortable" data-col="5">Origin</th>
+      <th class="sortable" data-col="4" data-type="num" style="width:50px" title="Retrieval similarity score — higher = more relevant to the query that triggered injection">Sim</th>
+      <th class="sortable" data-col="5" style="width:90px">Layer</th>
     </tr></thead><tbody>`;
     consumed.forEach(m => {
-      const layers = idToLayers[m.id] ? idToLayers[m.id].join(', ') : '';
-      const origin = m.session_id ? `<a href="#" onclick="event.stopPropagation();showSessionDetail('${m.session_id}');return false" style="font-family:var(--font-mono);font-size:11px">${m.session_id.slice(0,8)}...</a>` : '';
-      html += `<tr onclick="showMemory(${m.id})">
+      const layers = (m.layers || idToLayers[m.id] || []).join(', ');
+      const sim = m.sim != null ? m.sim : null;
+      const simColor = sim == null ? 'var(--text-dim)' : sim >= 0.6 ? 'var(--green)' : sim >= 0.4 ? 'var(--yellow, #f0a500)' : 'var(--red, #e05)';
+      const simText = sim != null ? sim.toFixed(2) : '—';
+      const rowStyle = sim != null && sim < 0.3 ? ' style="opacity:0.55"' : '';
+      html += `<tr onclick="showMemory(${m.id})"${rowStyle}>
         <td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">${m.id}</td>
         <td>${badge(m.type)}</td>
         <td class="topic-cell">${escapeHtml(m.topic || '')}</td>
         <td class="content-cell">${escapeHtml(m.content || '')}</td>
+        <td style="font-family:var(--font-mono);font-size:12px;color:${simColor};text-align:right">${simText}</td>
         <td style="font-size:11px;color:var(--purple);white-space:nowrap">${layers}</td>
-        <td>${origin}</td>
       </tr>`;
     });
     html += `</tbody></table></div>`;

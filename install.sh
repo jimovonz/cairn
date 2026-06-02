@@ -113,6 +113,7 @@ fi
 # --- Global rules ---
 sed "s|{{CAIRN_HOME}}|$CAIRN_HOME|g" "$CAIRN_HOME/.claude/rules/memory-system.md" | \
     sed "s|\\\$CAIRN_HOME|$CAIRN_HOME|g" > "$CLAUDE_DIR/rules/memory-system.md"
+cp "$CAIRN_HOME/.claude/rules/code-graph-navigation.md" "$CLAUDE_DIR/rules/code-graph-navigation.md"
 echo "Installed global rules."
 
 # --- Global settings (hooks) ---
@@ -329,6 +330,15 @@ ROOT="\$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 POST_COMMIT_HOOK
     chmod +x "$HOOK_PATH"
     echo "Installed git post-commit hook: code-review-graph auto-refresh ($CRG_BIN)."
+fi
+
+# --- cairn-graph on PATH ---
+# Symlink cairn-graph into ~/.local/bin so it is available without activating the venv.
+CAIRN_GRAPH_BIN="$VENV_PATH/bin/cairn-graph"
+if [ -x "$CAIRN_GRAPH_BIN" ]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$CAIRN_GRAPH_BIN" "$HOME/.local/bin/cairn-graph"
+    echo "Symlinked cairn-graph to ~/.local/bin/cairn-graph."
 fi
 
 # --- Health check ---

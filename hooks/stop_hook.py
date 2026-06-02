@@ -128,21 +128,26 @@ def collect_memory_notes(transcript_path: str, session_id: str,
     if not transcript_path or not os.path.exists(transcript_path):
         return 0
 
-    # Collect all memory_notes from assistant messages in the transcript
+    # Collect all memory_notes from assistant messages in the transcript,
+    # tagging each with its source turn index for per-turn file association.
     all_notes: list[dict[str, str]] = []
     from hooks.transcript_adapter import iter_normalized_entries
     try:
-        for entry in iter_normalized_entries(transcript_path):
+        for turn_idx, entry in enumerate(iter_normalized_entries(transcript_path)):
             msg = entry.get("message", {})
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
                 continue
             content = msg.get("content", [])
+            turn_notes: list[dict[str, str]] = []
             if isinstance(content, str):
-                all_notes.extend(parse_memory_notes(content))
+                turn_notes.extend(parse_memory_notes(content))
             elif isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "text":
-                        all_notes.extend(parse_memory_notes(block.get("text", "")))
+                        turn_notes.extend(parse_memory_notes(block.get("text", "")))
+            for note in turn_notes:
+                note["_source_turn"] = turn_idx
+            all_notes.extend(turn_notes)
     except (OSError, PermissionError) as e:
         log(f"Memory note collection error: {e}")
         return 0

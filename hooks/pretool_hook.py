@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 try:
     import pysqlite3 as sqlite3  # type: ignore[import-untyped]
 except ImportError:
@@ -30,6 +31,21 @@ from hooks.hook_helpers import log, get_conn, record_metric, flush_metrics, load
 # Max entries to inject per file access (avoid flooding context)
 MAX_GOTCHA_INJECTIONS = 3
 MAX_CONTEXT_INJECTIONS = 5
+
+
+def _looks_like_code_search(command: str) -> Optional[str]:
+    """Return a candidate symbol name if the Bash command looks like a code-symbol grep."""
+    if "grep" not in command:
+        return None
+    # grep with a quoted identifier-like pattern
+    m = re.search(r'\bgrep\b[^"\n]*["\']([A-Za-z_][A-Za-z0-9_]{2,})["\']', command)
+    if m:
+        return m.group(1)
+    # grep with an unquoted identifier before a space/end (skip flag-only invocations)
+    m = re.search(r'\bgrep\b(?:\s+-\S+)*\s+([A-Za-z_][A-Za-z0-9_]{2,})(?:\s|$)', command)
+    if m:
+        return m.group(1)
+    return None
 
 
 def find_memories_for_file(
@@ -124,6 +140,19 @@ def extract_bash_file_paths(command: str, max_files: int = 3) -> list[str]:
     """
     if not command:
         return []
+    # cch-batch.py with heredoc: extract paths from each embedded command line
+    if "cch-batch.py" in command and "\n" in command:
+        batch_out: list[str] = []
+        for line in command.split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#") or "<<" in line or "cch-batch" in line or line == "EOF":
+                continue
+            for p in extract_bash_file_paths(line, max_files=max_files - len(batch_out)):
+                if p not in batch_out:
+                    batch_out.append(p)
+                if len(batch_out) >= max_files:
+                    return batch_out
+        return batch_out
     import shlex
     try:
         toks = shlex.split(command, posix=True)
@@ -211,6 +240,7 @@ def main() -> None:
 
     tool_name = hook_input.get("tool_name", "")
     session_id = hook_input.get("session_id", "") or hook_input.get("sessionId", "")
+    cwd = hook_input.get("cwd", os.getcwd())
 
     tool_input = hook_input.get("tool_input") or hook_input.get("input") or {}
 
@@ -223,9 +253,6 @@ def main() -> None:
     elif tool_name == "Bash":
         # Read/Edit are routed through Bash helpers in some environments; recover paths.
         file_paths = extract_bash_file_paths(tool_input.get("command") or "")
-
-    if not file_paths:
-        sys.exit(0)
 
     # Resolve graph config once (shared across files).
     graph_cfg = None
@@ -250,6 +277,26 @@ def main() -> None:
 
     if len(seen) != seen_before:
         save_hook_state(session_id, "graph_files_seen", "\n".join(seen))
+
+    # Grep hint: when the model searches for a code symbol, remind it about cairn-graph
+    # (once per session, only when a graph is present for this repo).
+    if tool_name == "Bash" and not load_hook_state(session_id, "graph_grep_hint_shown"):
+        command = tool_input.get("command") or ""
+        symbol = _looks_like_code_search(command)
+        if symbol:
+            gdb = os.path.join(cwd, ".code-review-graph", "graph.db")
+            if os.path.exists(gdb):
+                save_hook_state(session_id, "graph_grep_hint_shown", "1")
+                sections.append(
+                    f"CODE GRAPH AVAILABLE — prefer cairn-graph over grep for structural queries:\n"
+                    f"  cairn-graph --location {symbol}      # where it is defined\n"
+                    f"  cairn-graph --callers {symbol}       # who calls it\n"
+                    f"  cairn-graph --callees {symbol}       # what it calls\n"
+                    f"  cairn-graph --impact {symbol}        # one-line blast radius\n"
+                    f"  cairn-graph --context-pack {symbol}  # body + callers + tests"
+                )
+                log(f"graph grep hint injected for symbol: {symbol}")
+                record_metric(session_id, "graph_grep_hint_injected", symbol)
 
     if not sections:
         sys.exit(0)

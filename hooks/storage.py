@@ -42,18 +42,26 @@ def _v4_ready(conn) -> bool:
     return ok
 
 
-def extract_associated_files(transcript_path: str, lookback: int = 30) -> list[str]:
+def extract_associated_files(transcript_path: str, lookback: int = 30,
+                              center_turn: int = -1) -> list[str]:
     """Extract file paths from recent tool calls in the transcript.
 
-    Scans the last `lookback` entries for Read, Edit, Write, and MultiEdit
-    tool uses and returns unique file paths found.
+    Scans entries around `center_turn` (±lookback/2) for Read, Edit, Write,
+    and MultiEdit tool uses. When center_turn is -1, scans the last `lookback`
+    entries (session-level default).
     """
     if not transcript_path:
         return []
     from hooks.transcript_adapter import iter_normalized_entries
     try:
         entries = list(iter_normalized_entries(transcript_path))
-        recent = entries if lookback == 0 else (entries[-lookback:] if len(entries) > lookback else entries)
+        if center_turn >= 0:
+            half = lookback // 2
+            start = max(0, center_turn - half)
+            end = min(len(entries), center_turn + half + 1)
+            recent = entries[start:end]
+        else:
+            recent = entries if lookback == 0 else (entries[-lookback:] if len(entries) > lookback else entries)
 
         files: list[str] = []
         seen: set[str] = set()
@@ -482,20 +490,24 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
         inserted += 1
 
-        # Associate file paths with all memories
-        if _associated_files:
-            files_json = json.dumps(_associated_files)
-            # Get the ID of the memory we just inserted/updated
+        # Associate file paths — use per-memory source_turn for notes, batch for others
+        source_turn: int = entry.get("_source_turn", -1)
+        if source_turn >= 0 and transcript_path:
+            entry_files = extract_associated_files(transcript_path, center_turn=source_turn)
+        else:
+            entry_files = _associated_files or []
+        if entry_files:
+            files_json = json.dumps(entry_files)
             last_id = conn.execute(
                 "SELECT id FROM memories WHERE type = ? AND topic = ? ORDER BY updated_at DESC LIMIT 1",
                 (mem_type, topic)
             ).fetchone()
             if last_id:
                 conn.execute(
-                    "UPDATE memories SET associated_files = ? WHERE id = ?",
-                    (files_json, last_id[0])
+                    "UPDATE memories SET associated_files = ?, source_start = ? WHERE id = ?",
+                    (files_json, source_turn if source_turn >= 0 else None, last_id[0])
                 )
-                log(f"Associated {len(_associated_files)} files with {mem_type} {last_id[0]}: {_associated_files[:3]}")
+                log(f"Associated {len(entry_files)} files with {mem_type} {last_id[0]} (turn={source_turn}): {entry_files[:3]}")
 
         # Store correction trigger if present
         trigger_text: Optional[str] = entry.get("trigger")
