@@ -90,6 +90,17 @@ def _is_high_signal_bash(tool_input: dict, tool_output: dict) -> tuple[bool, str
     if line_count >= CHECKPOINT_MIN_OUTPUT_LINES:
         return True, f"large output ({line_count} lines)"
 
+    # CCH-routed file modification (cch-edit.py / cch-write.py via Bash)
+    cmd = tool_input.get("command") or ""
+    if "cch-edit.py" in cmd or "cch-write.py" in cmd:
+        parts = cmd.split()
+        target = "file"
+        for i, p in enumerate(parts):
+            if p.endswith(("cch-edit.py", "cch-write.py")) and i + 1 < len(parts):
+                target = os.path.basename(parts[i + 1])
+                break
+        return True, f"file modified via cch: {target}"
+
     return False, ""
 
 

@@ -357,13 +357,15 @@ def api_session_detail(params, session_id):
                (SELECT COUNT(*) FROM memories m WHERE m.session_id = s.session_id) as memory_count
         FROM chain c JOIN sessions s ON s.session_id = c.sid ORDER BY s.started_at
     """, (full_id,)).fetchall())
-    retrieved_row = conn.execute(
+    _eph = _get_eph_conn()
+    retrieved_row = _eph.execute(
         "SELECT value FROM hook_state WHERE session_id = ? AND key = 'retrieved_ids'", (full_id,)
     ).fetchone()
+    _eph.close()
     consumed_ids = []
-    if retrieved_row and retrieved_row["value"]:
+    if retrieved_row and retrieved_row[0]:
         try:
-            consumed_ids = json.loads(retrieved_row["value"])
+            consumed_ids = json.loads(retrieved_row[0])
         except Exception:
             pass
     consumed = []
@@ -373,17 +375,56 @@ def api_session_detail(params, session_id):
             SELECT id, type, topic, content, confidence, project, session_id, updated_at
             FROM memories WHERE id IN ({placeholders})
         """, consumed_ids).fetchall())
-    layer_rows = conn.execute(
+    conn.close()
+    _eph2 = _get_eph_conn()
+    layer_rows = _eph2.execute(
         "SELECT detail FROM metrics WHERE session_id = ? AND event = 'layer_delivery' AND detail IS NOT NULL",
         (full_id,)
     ).fetchall()
+    _eph2.close()
     layer_detail = []
+    _id_layers: dict = {}  # id -> list of layers (from layer_delivery metrics)
     for r in layer_rows:
         try:
-            layer_detail.append(json.loads(r["detail"]))
+            d = json.loads(r[0])
+            layer_detail.append(d)
+            lname = d.get("layer", "")
+            for mid in d.get("ids", []):
+                if mid not in _id_layers:
+                    _id_layers[mid] = []
+                if lname not in _id_layers[mid]:
+                    _id_layers[mid].append(lname)
         except Exception:
             pass
-    conn.close()
+    # Parse sim scores from transcript cairn_context blocks (sim attr on each <entry>)
+    import re as _re
+    _id_scores: dict = {}
+    transcript_path = session.get("transcript_path", "") if isinstance(session, dict) else (session["transcript_path"] if session else "")
+    if transcript_path:
+        try:
+            with open(transcript_path) as _tf:
+                for _line in _tf:
+                    if "cairn_context" not in _line:
+                        continue
+                    for _m in _re.finditer(r'<entry[^>]+?id=\\"(\d+)\\"[^>]*?sim=\\"([0-9.]+)\\"', _line):
+                        _eid, _sim = int(_m.group(1)), float(_m.group(2))
+                        if _eid not in _id_scores:
+                            _id_scores[_eid] = _sim
+                    # Also try unescaped form (direct string content)
+                    for _m in _re.finditer(r'id="(\d+)"[^>]*?sim="([0-9.]+)"', _line):
+                        _eid, _sim = int(_m.group(1)), float(_m.group(2))
+                        if _eid not in _id_scores:
+                            _id_scores[_eid] = _sim
+        except Exception:
+            pass
+    # Attach sim score and layer info to consumed entries
+    for m in consumed:
+        mid = m.get("id") if isinstance(m, dict) else None
+        if mid is not None:
+            m["sim"] = _id_scores.get(mid)
+            m["layers"] = _id_layers.get(mid, [])
+    # Sort consumed by sim desc (None/missing scores sort last)
+    consumed.sort(key=lambda m: (m.get("sim") is None, -(m.get("sim") or 0)))
     is_ingestion = full_id.startswith("ingest-")
     tokens = _estimate_tokens(session["transcript_path"]) if not is_ingestion else {}
     source_info = None

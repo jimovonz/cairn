@@ -197,8 +197,8 @@ CHECKPOINT_MAX_NOTES_PER_SESSION = 20  # Hard cap on memory_notes stored per ses
 CROSS_ENCODER_ENABLED = True
 CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 CROSS_ENCODER_WEIGHT = 0.6         # Blend: (1-w)*composite + w*cross_encoder
-CROSS_ENCODER_MIN_CANDIDATES = 3   # Skip re-ranking if fewer candidates than this
-CROSS_ENCODER_SCORE_FLOOR = 0.0    # Drop candidates scoring below this (raw CE score, not normalized)
+CROSS_ENCODER_MIN_CANDIDATES = 1   # Apply CE floor even on small candidate sets
+CROSS_ENCODER_SCORE_FLOOR = -3.0   # Drop candidates below this raw ms-marco logit (negative = irrelevant)
 
 # === NLI (Natural Language Inference) for consolidation ===
 # Used by the consolidation pipeline to detect entailment between memory pairs.

@@ -88,19 +88,82 @@ _ACTION_PROMPT_RE = re.compile(
 )
 
 
+_SHORT_PROMPT_STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "it", "its", "was", "are", "be",
+    "has", "had", "have", "do", "did", "does", "will", "can", "could",
+    "would", "should", "may", "might", "not", "no", "what", "when",
+    "that", "this", "these", "those",
+    "my", "your", "his", "her", "our", "their", "me", "you", "him",
+    "them", "about", "into", "over", "after", "before", "between",
+    "also", "just", "so", "as", "well", "any", "all", "than", "then",
+    "very", "too", "here", "there", "been", "being", "were",
+})
+_MIN_MEANINGFUL_WORDS = 2
+
+
 def _is_action_prompt(user_message: str) -> bool:
     """Detect short confirmation/action prompts that don't need retrieval."""
     stripped = user_message.strip()
     if len(stripped) > 80:
         return False
-    return bool(_ACTION_PROMPT_RE.match(stripped))
+    if _ACTION_PROMPT_RE.match(stripped):
+        return True
+    # Skip retrieval when prompt has too few meaningful words — weak embeddings
+    # produce high-noise low-relevance matches against the full memory DB.
+    # Empty/whitespace-only prompts are handled upstream; do not classify them here.
+    if not stripped:
+        return False
+    words = re.findall(r"\w+", stripped.lower())
+    meaningful = [w for w in words if len(w) > 2 and w not in _SHORT_PROMPT_STOPWORDS]
+    return len(meaningful) < _MIN_MEANINGFUL_WORDS
 
 
-def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
+def _last_assistant_excerpt(transcript_path: str, max_chars: int = 400) -> str:
+    """Extract text from the last assistant turn for query enrichment.
+
+    Returns a truncated plaintext excerpt, stripping tool use blocks and
+    cairn metadata. Empty string if transcript unavailable or last turn
+    is too short to add signal.
+    """
+    if not transcript_path:
+        return ""
+    try:
+        from hooks.transcript_adapter import iter_normalized_entries
+        last_text = ""
+        for entry in iter_normalized_entries(transcript_path):
+            msg = entry.get("message", {})
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", [])
+            parts: list[str] = []
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(block.get("text", ""))
+            text = " ".join(parts)
+            # Strip cairn metadata and tool noise
+            import re as _re
+            text = _re.sub(r"\[cm\]:[^\n]+", "", text)
+            text = _re.sub(r"<[^>]{1,40}>", " ", text)
+            text = _re.sub(r"\s+", " ", text).strip()
+            if len(text) > 50:
+                last_text = text
+        return last_text[:max_chars] if last_text else ""
+    except Exception:
+        return ""
+
+
+def layer1_5_search(user_message: str, session_id: str,
+                    transcript_path: str = "") -> Optional[str]:
     """Layer 1.5: Per-prompt hybrid injection for subsequent prompts.
 
     Fires on every message after the first. Higher threshold than Layer 1 (0.55 vs 0.30)
     to avoid mid-session noise. Uses full hybrid search (semantic + FTS5 + RRF).
+    Enriches the embedding query with the last assistant excerpt for better
+    contextual relevance on short follow-up prompts.
     """
     from cairn.config import L1_5_ENABLED, L1_5_SIM_THRESHOLD, L1_5_MAX_RESULTS
     from hooks.retrieval import hybrid_search
@@ -113,6 +176,14 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
         record_metric(session_id, "layer1_5_action_skip", user_message[:80])
         return None
 
+    # Enrich the query with last assistant excerpt for short/ambiguous prompts
+    excerpt = _last_assistant_excerpt(transcript_path)
+    if excerpt and len(user_message.split()) < 10:
+        query = f"{excerpt} {user_message}"
+        log(f"Layer 1.5: query enriched with {len(excerpt)}ch assistant excerpt")
+    else:
+        query = user_message
+
     try:
         conn = get_conn()
         project = get_session_project(conn, session_id)
@@ -123,7 +194,7 @@ def layer1_5_search(user_message: str, session_id: str) -> Optional[str]:
 
         from hooks.hook_helpers import load_injected_ids as _li
         project_results, global_results, _ = hybrid_search(
-            user_message, conn, project=project, session_id=session_id,
+            query, conn, project=project, session_id=session_id,
             threshold=L1_5_SIM_THRESHOLD, limit=L1_5_MAX_RESULTS,
             exclude_ids=_li(session_id),
         )
@@ -408,6 +479,8 @@ def main() -> None:
         # Tier 1: one-off code-graph orientation (modules/flows/hubs) from
         # .code-review-graph/graph.db. Deterministic, no LLM, fails open if the
         # graph isn't built. Gives structural awareness so the model reads fewer files.
+        # If orientation returns empty (race: kick_graph_build still postprocessing),
+        # stage a pending flag so the next prompt retries and injects.
         try:
             from cairn.config import GRAPH_ORIENTATION_ENABLED
             if GRAPH_ORIENTATION_ENABLED and cwd:
@@ -417,10 +490,22 @@ def main() -> None:
                     context_parts.append(
                         "<code_graph_orientation>\n"
                         "Mechanistic repo structure (code-review-graph, zero-cost static analysis). "
-                        "Use to navigate without reading files.\n\n"
+                        "Prefer cairn-graph CLI over grep/file-reads for structural questions:\n"
+                        "  cairn-graph --location SYMBOL      # where defined\n"
+                        "  cairn-graph --callers SYMBOL       # who calls it\n"
+                        "  cairn-graph --callees SYMBOL       # what it calls\n"
+                        "  cairn-graph --impact SYMBOL        # blast radius\n"
+                        "  cairn-graph --context-pack SYMBOL  # body + callers + tests\n"
+                        "  cairn-graph --file-context FILE    # file structural map\n\n"
                         f"{_orient}\n</code_graph_orientation>"
                     )
                     record_metric(session_id, "graph_orientation_injected", cwd)
+                else:
+                    # Graph exists but postprocess not yet complete — retry next prompt.
+                    _gdb = os.path.join(cwd, ".code-review-graph", "graph.db")
+                    if os.path.exists(_gdb):
+                        save_hook_state(session_id, "graph_orientation_pending", cwd)
+                        log("graph orientation pending (graph not yet postprocessed) — queued for next prompt")
         except Exception as _e:
             log(f"graph orientation failed open: {type(_e).__name__}: {_e}")
 
@@ -441,7 +526,7 @@ def main() -> None:
     elif not is_subagent:
         # Layer 1.5: Per-prompt semantic injection for subsequent prompts
         # Skipped for subagents — short-lived, adds latency
-        l1_5_context = layer1_5_search(user_message, session_id)
+        l1_5_context = layer1_5_search(user_message, session_id, transcript_path)
         if l1_5_context:
             context_parts.append(l1_5_context)
             log(f"Layer 1.5: injected per-prompt context for: {user_message[:50]}...")
@@ -475,6 +560,35 @@ def main() -> None:
             cleanup_conn.close()
         except Exception as e:
             log(f"Staged context cleanup failed: {e}")
+
+        # Deferred graph orientation — retry if first prompt raced with postprocess.
+        _pending_cwd = load_hook_state(session_id, "graph_orientation_pending")
+        if _pending_cwd:
+            delete_hook_state(session_id, "graph_orientation_pending")
+            try:
+                from cairn.config import GRAPH_ORIENTATION_ENABLED
+                if GRAPH_ORIENTATION_ENABLED:
+                    from cairn.graph import orientation_block
+                    _orient = orientation_block(repo_root=_pending_cwd)
+                    if _orient:
+                        context_parts.append(
+                            "<code_graph_orientation>\n"
+                            "Mechanistic repo structure (code-review-graph, zero-cost static analysis). "
+                            "Prefer cairn-graph CLI over grep/file-reads for structural questions:\n"
+                            "  cairn-graph --location SYMBOL      # where defined\n"
+                            "  cairn-graph --callers SYMBOL       # who calls it\n"
+                            "  cairn-graph --callees SYMBOL       # what it calls\n"
+                            "  cairn-graph --impact SYMBOL        # blast radius\n"
+                            "  cairn-graph --context-pack SYMBOL  # body + callers + tests\n"
+                            "  cairn-graph --file-context FILE    # file structural map\n\n"
+                            f"{_orient}\n</code_graph_orientation>"
+                        )
+                        record_metric(session_id, "graph_orientation_injected", _pending_cwd)
+                        log("graph orientation injected (deferred from previous prompt)")
+                    else:
+                        log("graph orientation deferred retry: still not ready, dropping")
+            except Exception as _e:
+                log(f"graph orientation deferred retry failed open: {type(_e).__name__}: {_e}")
 
         # Layer 2: Staged cross-project context from previous stop hook
         staged = load_staged_context(session_id)

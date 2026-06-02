@@ -109,7 +109,6 @@ def hybrid_search(
             JOIN memories m ON f.rowid = m.id
             WHERE memories_fts MATCH ?
               AND m.deleted_at IS NULL
-              AND (m.archived_reason IS NULL OR m.archived_reason = '')
             ORDER BY rank LIMIT ?
         """, (fts_query, limit * 3)).fetchall()
         rank = 0

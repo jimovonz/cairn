@@ -696,7 +696,7 @@ def find_similar(
                 r["ce_score"] = ce_scores[i]
             pre_filter = len(diverse)
             above_floor = [r for r in diverse if r["ce_score"] >= CROSS_ENCODER_SCORE_FLOOR]
-            diverse = above_floor if len(above_floor) >= CROSS_ENCODER_MIN_CANDIDATES else diverse
+            diverse = above_floor if above_floor else diverse[:1]
             ce_min = min(r["ce_score"] for r in diverse) if diverse else 0
             ce_max = max(r["ce_score"] for r in diverse) if diverse else 1
             ce_range = ce_max - ce_min if ce_max > ce_min else 1.0
