@@ -126,7 +126,7 @@ def test_get_adaptive_threshold_boost_insufficient_data():
 def test_get_adaptive_threshold_boost_db_error():
     # Use the same sqlite3 module as retrieval.py (may be pysqlite3)
     from hooks import retrieval as _ret_mod
-    with patch('hooks.retrieval.get_conn', side_effect=_ret_mod.sqlite3.OperationalError("locked")):
+    with patch('hooks.retrieval.get_ephemeral_conn', side_effect=_ret_mod.sqlite3.OperationalError("locked")):
         boost = retrieval.get_adaptive_threshold_boost()
 
     assert boost == 0.0, f"Expected 0.0 on DB error, got {boost}"
