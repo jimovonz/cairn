@@ -90,7 +90,8 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Veracity tracking** — confidence represents corroboration, not retrieval rank; `+` corroborates, `-!` annotates contradictions with reasons that persist for future sessions
 - **Cross-encoder re-ranking** — after diversity filtering, a cross-encoder (`ms-marco-MiniLM-L-6-v2`) jointly scores (query, memory) pairs, catching semantic relationships that independent embeddings miss; blended with composite score at configurable weight
 - **Memory consolidation** — automated pipeline merges duplicate memories using NLI entailment scoring, with Haiku generating consolidated entries; runs daily via cron
-- **Contradiction detection** — NLI-based contradiction scoring with Haiku assessment identifies superseded memories and auto-archives them; incremental via pair assessment cache
+- **Contradiction detection** — NLI-based contradiction scoring with Haiku assessment identifies superseded memories and auto-archives them; also detects plan→implementation pairs (older intent confirmed built by a newer memory) and archives the stale plan as EXECUTED; incremental via pair assessment cache
+- **Session handoff digest** — every 10 turns the LLM emits a structured session summary (branch, in-progress work, decisions, blockers, next action) as a project memory; the next session resumes from it via project bootstrap
 - **Semantic search** — local embeddings via `all-MiniLM-L6-v2` with sqlite-vec indexed vector search; no API key required
 - **Project bootstrap** — on session start, injects standing-context memories (preferences, facts, project state) for the current working directory; gives Claude project awareness from CWD alone, independent of prompt content
 - **Per-prompt context injection** — on every subsequent prompt, searches for relevant past context mid-conversation; catches cases where relevant memories exist but the LLM didn't know to ask

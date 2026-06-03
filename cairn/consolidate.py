@@ -505,6 +505,18 @@ def find_contradiction_pairs(conn: sqlite3.Connection, scope_ids: Optional[set[i
     return all_pairs[:CONTRADICTION_MAX_PAIRS]
 
 
+_PLAN_KEYWORDS = frozenset({
+    "plan", "candidate", "candidates", "intent", "intention", "should", "will",
+    "todo", "fix candidate", "start with", "next step", "proposed", "approach",
+    "option", "options", "design", "investigate", "consider", "could",
+})
+
+def _is_plan_candidate(pair: dict) -> bool:
+    """Return True if the older memory reads as a plan/intent rather than a fact."""
+    content = (pair["older"].get("content") or "").lower()
+    words = set(content.replace(",", " ").replace(":", " ").replace("(", " ").replace(")", " ").split())
+    return bool(words & _PLAN_KEYWORDS) and pair["older"].get("type") in ("decision", "fact", "project", "workflow")
+
 def score_contradictions_nli(pairs: list[dict]) -> list[dict]:
     """Score candidate pairs for contradiction using NLI model.
 
@@ -559,14 +571,16 @@ def assess_contradictions_haiku(contradictions: list[dict]) -> list[dict]:
         return []
 
     lines = [
-        f"You are reviewing {len(contradictions)} pairs of memories flagged as potentially contradictory.",
+        f"You are reviewing {len(contradictions)} pairs of memories flagged as potentially contradictory or plan→implementation pairs.",
         "",
         "For EACH pair, reply with exactly one line:",
         "  PAIR <n>: SUPERSEDED: <reason why the older is now wrong>",
+        "  PAIR <n>: EXECUTED: <the older described a plan that the newer confirms was implemented>",
         "  PAIR <n>: COMPLEMENTARY: <they coexist without contradiction>",
         "  PAIR <n>: SEQUENTIAL: <older describes a previous state, not wrong just historical>",
         "",
         "SUPERSEDED = the older memory would actively mislead if acted upon.",
+        "EXECUTED = the older described intent/plan/candidates and the newer confirms it was built/shipped.",
         "COMPLEMENTARY = different aspects of the same topic, both valid.",
         "SEQUENTIAL = natural evolution, older captures valid historical state.",
         "",
@@ -632,7 +646,7 @@ def assess_contradictions_haiku(contradictions: list[dict]) -> list[dict]:
 
     superseded = []
     for line in response_text.split("\n"):
-        match = re.match(r"PAIR\s+(\d+)\s*:\s*(SUPERSEDED|COMPLEMENTARY|SEQUENTIAL)\s*:?\s*(.*)", line.strip())
+        match = re.match(r"PAIR\s+(\d+)\s*:\s*(SUPERSEDED|EXECUTED|COMPLEMENTARY|SEQUENTIAL)\s*:?\s*(.*)", line.strip())
         if not match:
             continue
         pair_idx = int(match.group(1)) - 1
@@ -655,8 +669,9 @@ def assess_contradictions_haiku(contradictions: list[dict]) -> list[dict]:
 
         c["verdict"] = verdict.lower()
         c["reason"] = reason
-        if verdict == "SUPERSEDED":
-            c["reason"] = reason or f"superseded by #{n['id']}"
+        if verdict in ("SUPERSEDED", "EXECUTED"):
+            prefix = "superseded" if verdict == "SUPERSEDED" else "executed"
+            c["reason"] = reason or f"{prefix} — see #{n['id']}"
             superseded.append(c)
 
     # Report unparsed pairs
@@ -714,22 +729,49 @@ def run_contradiction_detection(execute: bool = False, scope_ids: Optional[set[i
         conn.close()
         return {"pairs_found": 0, "nli_confirmed": 0, "superseded": 0}
 
-    print(f"\nPhase 2: NLI contradiction scoring...")
-    contradictions = score_contradictions_nli(pairs)
+    # Split: plan candidates bypass NLI (plan+fact never scores as contradiction)
+    plan_candidates = [p for p in pairs if _is_plan_candidate(p)]
+    nli_candidates = [p for p in pairs if not _is_plan_candidate(p)]
+    print(f"  {len(plan_candidates)} plan candidates (bypass NLI), {len(nli_candidates)} for NLI")
+
+    print(f"\nPhase 2: NLI contradiction scoring ({len(nli_candidates)} pairs)...")
+    contradictions = score_contradictions_nli(nli_candidates)
     print(f"  {len(contradictions)} pairs confirmed as contradictions by NLI")
 
-    if not contradictions:
-        print("  No contradictions passed NLI check.")
+    # Merge: NLI-confirmed contradictions + plan candidates
+    all_for_haiku = contradictions + plan_candidates
+    if not all_for_haiku:
+        print("  No pairs for Haiku assessment.")
         conn.close()
-        return {"pairs_found": len(pairs), "nli_confirmed": 0, "superseded": 0}
+        return {"pairs_found": len(pairs), "nli_confirmed": len(contradictions), "superseded": 0}
 
     # Batch Haiku assessment — 10 pairs per batch (50 overwhelmed Haiku output budget)
     BATCH_SIZE = 10
-    print(f"\nPhase 3: Haiku assessment ({len(contradictions)} pairs in {(len(contradictions) + BATCH_SIZE - 1) // BATCH_SIZE} batches)...")
+    MAX_PROMPT_CHARS = 6000
+    print(f"\nPhase 3: Haiku assessment ({len(all_for_haiku)} pairs, max {MAX_PROMPT_CHARS} chars/batch)...")
+    # Build char-limited batches: accumulate pairs until adding the next would exceed the cap
+    HEADER_CHARS = 400  # prompt preamble overhead
+    batches: list[list[dict]] = []
+    current: list[dict] = []
+    current_chars = HEADER_CHARS
+    for pair in all_for_haiku:
+        o, n = pair["older"], pair["newer"]
+        pair_chars = len(o.get("content", "")) + len(n.get("content", "")) + 120
+        if current and current_chars + pair_chars > MAX_PROMPT_CHARS:
+            batches.append(current)
+            current = []
+            current_chars = HEADER_CHARS
+        if len(current) >= BATCH_SIZE:
+            batches.append(current)
+            current = []
+            current_chars = HEADER_CHARS
+        current.append(pair)
+        current_chars += pair_chars
+    if current:
+        batches.append(current)
     all_superseded = []
-    for batch_start in range(0, len(contradictions), BATCH_SIZE):
-        batch = contradictions[batch_start:batch_start + BATCH_SIZE]
-        print(f"  Batch {batch_start // BATCH_SIZE + 1}: pairs {batch_start + 1}-{batch_start + len(batch)}")
+    for i, batch in enumerate(batches):
+        print(f"  Batch {i + 1}/{len(batches)}: {len(batch)} pairs")
         superseded = assess_contradictions_haiku(batch)
         all_superseded.extend(superseded)
         # Record all verdicts from this batch (not just superseded)
@@ -751,15 +793,17 @@ def run_contradiction_detection(execute: bool = False, scope_ids: Optional[set[i
 
     summary = {
         "pairs_found": len(pairs),
+        "plan_candidates": len(plan_candidates),
         "nli_confirmed": len(contradictions),
         "haiku_superseded": len(superseded),
         "archived": archived,
     }
 
-    print(f"\n=== Contradiction Detection Summary ===")
+    print(f"\n=== Contradiction + Plan-Completion Detection Summary ===")
     print(f"  Candidate pairs (bi-encoder): {summary['pairs_found']}")
+    print(f"  Plan candidates (bypass NLI): {summary['plan_candidates']}")
     print(f"  Contradictions (NLI): {summary['nli_confirmed']}")
-    print(f"  Superseded (Haiku): {summary['haiku_superseded']}")
+    print(f"  Superseded/Executed (Haiku): {summary['haiku_superseded']}")
     if execute:
         print(f"  Memories archived: {summary['archived']}")
     else:
