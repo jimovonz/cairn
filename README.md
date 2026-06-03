@@ -358,8 +358,6 @@ All tunable parameters are in `cairn/config.py`. Any value can be overridden via
 
 **Distillation is lossy.** Memories are one-line summaries. The `--context` command can recover the full conversation around any memory, but only while Claude Code retains the transcript file. Claude Code's `cleanupPeriodDays` setting (default 30) controls how long transcripts are kept — increase it if you need longer context recovery. After cleanup, the one-line summary persists permanently.
 
-**Early stage.** Limited cross-platform testing — may have edge cases around permissions, venv conflicts, or long-running daemon stability. Bug reports welcome.
-
 ## Failure modes
 
 Things that can go wrong and how the system handles them:
