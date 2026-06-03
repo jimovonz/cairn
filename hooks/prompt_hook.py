@@ -546,6 +546,62 @@ def main() -> None:
             record_metric(session_id, "active_bootstrap_triggered", user_message[:100])
             log(f"Active bootstrap triggered for knowledge question: {user_message[:80]}")
 
+        # Session handoff digest — every N turns ask the LLM to emit a project memory
+        # summarising current state so the next session can resume via project_bootstrap.
+        try:
+            from cairn.config import SESSION_HANDOFF_INTERVAL
+            if SESSION_HANDOFF_INTERVAL > 0:
+                from hooks.hook_helpers import get_ephemeral_conn
+                _eph = get_ephemeral_conn()
+                _fired = _eph.execute(
+                    "SELECT COUNT(*) FROM metrics WHERE session_id = ? AND event = 'hook_fired'",
+                    (session_id,)
+                ).fetchone()[0]
+                _eph.close()
+                _last_handoff = load_hook_state(session_id, "last_handoff_turn") or "0"
+                if _fired > 0 and _fired % SESSION_HANDOFF_INTERVAL == 0 and str(_fired) != _last_handoff:
+                    save_hook_state(session_id, "last_handoff_turn", str(_fired))
+
+                    # Fetch last handoff from a PREVIOUS session for this project
+                    # so the LLM can write a delta rather than start from scratch.
+                    _prior_handoff_snippet = ""
+                    try:
+                        from hooks.hook_helpers import resolve_project, get_conn
+                        _proj = resolve_project(cwd, transcript_path)
+                        if _proj:
+                            _conn = get_conn()
+                            _prior = _conn.execute(
+                                "SELECT content FROM memories "
+                                "WHERE project = ? AND topic = 'session handoff' AND type = 'project' "
+                                "AND session_id != ? AND deleted_at IS NULL "
+                                "ORDER BY updated_at DESC LIMIT 1",
+                                (_proj, session_id)
+                            ).fetchone()
+                            _conn.close()
+                            if _prior:
+                                _prior_handoff_snippet = (
+                                    f"\n\nLAST SESSION HANDOFF (for reference — update it, do not repeat it):\n{_prior[0]}"
+                                )
+                    except Exception as _pe:
+                        log(f"Prior handoff fetch failed open: {type(_pe).__name__}: {_pe}")
+
+                    context_parts.append(
+                        f"SESSION HANDOFF REQUESTED (turn {_fired}): In your [cm] block, include a "
+                        "project entry with type=project, topic=session handoff. The content should "
+                        "cover the following on separate lines (use \\n in the JSON string):\n"
+                        "  Branch: current git branch if known\n"
+                        "  In progress: what is actively being worked on\n"
+                        "  Decisions: key decisions made this session with rejected alternatives\n"
+                        "  Blockers: unresolved questions or dependencies\n"
+                        "  Next: the single clearest next action\n"
+                        "This entry is injected at the start of your next session via project_bootstrap."
+                        + _prior_handoff_snippet
+                    )
+                    record_metric(session_id, "session_handoff_requested", None, _fired)
+                    log(f"Session handoff requested at turn {_fired}")
+        except Exception as _e:
+            log(f"Session handoff check failed open: {type(_e).__name__}: {_e}")
+
     if not is_subagent:
         # Clean up stale staged context (older than 7 days — sessions unlikely to resume)
         try:
