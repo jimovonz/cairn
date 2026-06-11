@@ -97,6 +97,8 @@ When context is retrieved, you receive a `<cairn_context>` XML block. This is **
 </cairn_context>
 ```
 
+**Layer legend** (the `layer` attribute on the root tag): `first-prompt`/`per-prompt` = semantic match to your current message; `project-bootstrap` = standing project context (decisions, preferences, facts that apply regardless of task); `correction-bootstrap` = behavioural corrections from past sessions — apply these to avoid repeating mistakes; `L3` = response to your context_need declaration; `cross-project` = staged keyword matches from other projects.
+
 **Weighting rules:**
 - **Scope**: Project-level entries (weight=high) are directly relevant to current work. Global entries (weight=low) are cross-project — use only when project context is insufficient.
 - **Recency**: More recent `date` values indicate more current information. Prefer recent over old. Old entries may be stale.

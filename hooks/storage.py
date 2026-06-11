@@ -207,6 +207,7 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
         return 0
     conn = get_conn()
     applied = 0
+    corroborated_ids: list[int] = []
     sync_on = _v4_ready(conn)
     node_id = ensure_node_id() if sync_on else ""
     user_id = get_user_id() if sync_on else ""
@@ -258,6 +259,7 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
                 log(f"Corroborated: memory {memory_id} {current:.2f} → {new:.2f}")
             else:
                 log(f"Corroborated: memory {memory_id} via confidence_log entry {log_uuid_str[:8]}")
+            corroborated_ids.append(memory_id)
             applied += 1
         else:
             log(f"Irrelevant: memory {memory_id} — no confidence change")
@@ -289,6 +291,25 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
             pass
     conn.commit()
     conn.close()
+
+    # Corroboration earns a fresh delivery lease: reset lifetime delivery
+    # counters so over-delivery dampening (per-file path) does not retire a
+    # memory the LLM just confirmed is still useful. Done AFTER the main
+    # commit — opening the ephemeral connection mid-transaction would deadlock
+    # when both point at the same file (test DBs).
+    if corroborated_ids:
+        try:
+            from hooks.hook_helpers import get_ephemeral_conn
+            _ec = get_ephemeral_conn()
+            _ec.executemany(
+                "UPDATE delivery_counts SET count = 0 WHERE memory_id = ?",
+                [(i,) for i in corroborated_ids]
+            )
+            _ec.commit()
+            _ec.close()
+        except Exception:
+            pass
+
     return applied
 
 

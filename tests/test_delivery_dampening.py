@@ -37,9 +37,13 @@ def fresh_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT NOT NULL, topic TEXT NOT NULL, content TEXT NOT NULL,
         associated_files TEXT, keywords TEXT, confidence REAL DEFAULT 0.7,
-        archived_reason TEXT, session_id TEXT, project TEXT,
+        archived_reason TEXT, session_id TEXT, project TEXT, origin_id TEXT,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         deleted_at TIMESTAMP, topic_embedding BLOB)""")
+    conn.execute("""CREATE TABLE memory_annotation_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, memory_id INTEGER, direction TEXT,
+        reason TEXT, session_id TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE metrics (
         id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT, session_id TEXT,
         detail TEXT, value REAL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
@@ -204,3 +208,33 @@ def test_maybe_optimize_fts_behavioural(tmp_path):
         merged = conn.execute("SELECT COUNT(*) FROM memories_fts_data").fetchone()[0]
         assert merged < before
     conn.close()
+
+
+#TAG: [DC07] 2026-06-12
+# Verifies: + corroboration resets the lifetime delivery counter — an
+# LLM-confirmed memory earns a fresh lease instead of staying retired
+@pytest.mark.behavioural
+def test_apply_confidence_updates_behavioural_resets_delivery_count():
+    db_path, conn = fresh_db()
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, confidence)"
+        " VALUES ('fact', 'useful-evergreen', 'Still true and useful', 0.8)"
+    )
+    conn.commit()
+    conn.close()
+
+    with patch.object(hook_helpers, "DB_PATH", db_path), \
+         patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
+         patch("hooks.storage.log"), patch("hooks.storage.record_metric"):
+        for s in ("s1", "s2", "s3"):
+            hook_helpers.record_layer_delivery(s, "per-file", [1])
+        assert hook_helpers.overdelivered_ids(3) == {1}
+
+        storage.apply_confidence_updates([(1, "+", None)], session_id="s4")
+
+        assert hook_helpers.overdelivered_ids(1) == set()
+
+    check = sqlite3.connect(db_path)
+    count = check.execute("SELECT count FROM delivery_counts WHERE memory_id = 1").fetchone()[0]
+    check.close()
+    assert count == 0
