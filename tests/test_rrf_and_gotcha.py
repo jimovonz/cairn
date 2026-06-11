@@ -235,8 +235,10 @@ def test_extract_associated_files_from_transcript():
     files = storage.extract_associated_files(transcript.name)
     os.unlink(transcript.name)
 
+    # Edited-files preference: when any file was edited in the window, only
+    # edited files are associated (Read foo.py is dropped — sessions read far
+    # more than they change, and edits mark what the memory is about).
     assert sorted(files) == sorted([
-        "/home/user/project/foo.py",
         "/home/user/project/bar.py",
         "/home/user/project/baz.ts",
     ])
@@ -300,7 +302,8 @@ def test_insert_memories_correction_gets_files():
 
     row = conn.execute("SELECT associated_files FROM memories WHERE topic = 'fts-scoring'").fetchone()
     files = json.loads(row[0])
-    assert sorted(files) == sorted(["/project/retrieval.py", "/project/config.py"])
+    # Edited-files preference: Read retrieval.py is dropped, Edit config.py kept
+    assert files == ["/project/config.py"]
     conn.close()
 
 
@@ -471,21 +474,31 @@ def test_find_memories_for_file_exact_path():
 # Verifies: find_memories_for_file with corrections_only=True falls back to basename match when full paths differ
 @pytest.mark.behavioural
 def test_find_memories_for_file_by_basename():
-    """find_corrections_for_file should match on basename when full path differs."""
+    """Basename match requires the SAME project — and is skipped without a
+    project (cross-project basename noise was the main S/N failure). Note
+    config.py would be generic-blocked if listed in GENERIC_BASENAMES;
+    helpers.py is a project-meaningful basename."""
     import hooks.pretool_hook as pretool_hook
     db_path, conn = fresh_db()
     conn.execute(
-        "INSERT INTO memories (type, topic, content, associated_files, confidence) VALUES (?,?,?,?,?)",
-        ("correction", "config-issue", "Config had wrong default",
-         json.dumps(["/old/path/config.py"]), 0.7)
+        "INSERT INTO memories (type, topic, content, associated_files, confidence, project) VALUES (?,?,?,?,?,?)",
+        ("correction", "helpers-issue", "Helpers had wrong default",
+         json.dumps(["/old/path/helpers.py"]), 0.7, "proj")
     )
     conn.commit()
 
     with patch.object(hook_helpers, 'DB_PATH', db_path), patch('cairn.config.EPHEMERAL_DB_PATH', db_path):
-        matches = pretool_hook.find_memories_for_file("/new/path/config.py", corrections_only=True)
+        same_proj = pretool_hook.find_memories_for_file(
+            "/new/path/helpers.py", corrections_only=True, project="proj")
+        other_proj = pretool_hook.find_memories_for_file(
+            "/new/path/helpers.py", corrections_only=True, project="other")
+        no_proj = pretool_hook.find_memories_for_file(
+            "/new/path/helpers.py", corrections_only=True)
 
-    assert len(matches) == 1
-    assert matches[0]["topic"] == "config-issue"
+    assert len(same_proj) == 1
+    assert same_proj[0]["topic"] == "helpers-issue"
+    assert other_proj == []
+    assert no_proj == []
     conn.close()
 
 
