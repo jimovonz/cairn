@@ -193,10 +193,13 @@ def layer1_5_search(user_message: str, session_id: str,
             return None
 
         from hooks.hook_helpers import load_injected_ids as _li
+        # rerank=False: L1.5 fires on every prompt — the cross-encoder pass
+        # (~0.5-1s) is reserved for the quality-critical L1/L3 paths. The 0.55
+        # similarity threshold already gates noise here.
         project_results, global_results, _ = hybrid_search(
             query, conn, project=project, session_id=session_id,
             threshold=L1_5_SIM_THRESHOLD, limit=L1_5_MAX_RESULTS,
-            exclude_ids=_li(session_id),
+            exclude_ids=_li(session_id), rerank=False,
         )
         conn.close()
     except Exception as e:

@@ -42,6 +42,18 @@ def _v4_ready(conn) -> bool:
     return ok
 
 
+def _is_junk_path(fp: str) -> bool:
+    """True for paths that are session noise, not project signal — venvs,
+    caches, logs, DBs, temp output. These were the main source of
+    associated_files bloat (avg 25.9 files/memory before hygiene)."""
+    from cairn.config import ASSOC_JUNK_SEGMENTS, ASSOC_JUNK_SUFFIXES, ASSOC_JUNK_PREFIXES
+    if fp.startswith(ASSOC_JUNK_PREFIXES):
+        return True
+    if fp.endswith(ASSOC_JUNK_SUFFIXES):
+        return True
+    return any(part in ASSOC_JUNK_SEGMENTS for part in fp.split("/"))
+
+
 def extract_associated_files(transcript_path: str, lookback: int = 30,
                               center_turn: int = -1) -> list[str]:
     """Extract file paths from recent tool calls in the transcript.
@@ -49,9 +61,15 @@ def extract_associated_files(transcript_path: str, lookback: int = 30,
     Scans entries around `center_turn` (±lookback/2) for Read, Edit, Write,
     and MultiEdit tool uses. When center_turn is -1, scans the last `lookback`
     entries (session-level default).
+
+    Hygiene (write-time S/N): junk paths are dropped; when any files were
+    EDITED in the window, only those are returned (a session reads far more
+    than it changes — edits mark what the memory is actually about); the
+    result is capped at ASSOC_FILES_MAX.
     """
     if not transcript_path:
         return []
+    from cairn.config import ASSOC_FILES_MAX
     from hooks.transcript_adapter import iter_normalized_entries
     try:
         entries = list(iter_normalized_entries(transcript_path))
@@ -63,22 +81,32 @@ def extract_associated_files(transcript_path: str, lookback: int = 30,
         else:
             recent = entries if lookback == 0 else (entries[-lookback:] if len(entries) > lookback else entries)
 
-        files: list[str] = []
+        read_files: list[str] = []
+        edited_files: list[str] = []
         seen: set[str] = set()
 
-        def _record_file(fp: str) -> None:
-            if fp and fp not in seen:
-                files.append(fp)
-                seen.add(fp)
+        def _record_file(fp: str, edited: bool = False) -> None:
+            if not fp or _is_junk_path(fp):
+                return
+            if edited:
+                if fp not in edited_files:
+                    edited_files.append(fp)
+            elif fp not in seen:
+                read_files.append(fp)
+            seen.add(fp)
 
         def _scan_tool_use(tool_name: str, params: dict) -> None:
+            edited = tool_name in ("Edit", "Write", "MultiEdit")
             if tool_name in ("Read", "Edit", "Write", "MultiEdit"):
-                _record_file(params.get("file_path") or params.get("filePath") or "")
+                _record_file(params.get("file_path") or params.get("filePath") or "", edited)
                 for edit in params.get("edits") or []:
                     if isinstance(edit, dict):
-                        _record_file(edit.get("file_path") or edit.get("filePath") or "")
+                        _record_file(edit.get("file_path") or edit.get("filePath") or "", edited)
             if tool_name == "Bash":
                 cmd = params.get("command", "") if isinstance(params, dict) else ""
+                # Bash-routed edit helpers mark their target as edited
+                for match in re.findall(r'cch-(?:edit|write)\.py\s+(?:--\S+\s+)*([^\s;|&>]+)', str(cmd)):
+                    _record_file(match, edited=True)
                 for match in re.findall(r'(?:^|\s)(/[^\s;|&>]+\.[a-zA-Z0-9]+)', str(cmd)):
                     _record_file(match)
 
@@ -100,7 +128,8 @@ def extract_associated_files(transcript_path: str, lookback: int = 30,
                         if isinstance(block_input, dict):
                             _scan_tool_use(block.get("name", ""), block_input)
 
-        return files
+        files = edited_files if edited_files else read_files
+        return files[:ASSOC_FILES_MAX]
     except (FileNotFoundError, PermissionError, OSError):
         return []
 

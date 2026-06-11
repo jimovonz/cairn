@@ -40,6 +40,8 @@ def fresh_db():
         confidence REAL DEFAULT 0.7,
         archived_reason TEXT,
         session_id TEXT,
+        project TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         origin_id TEXT,
         user_id TEXT,
         updated_by TEXT,
@@ -124,20 +126,22 @@ def test_find_memories_for_file_behavioural():
 
 
 #TAG: [970A] 2026-04-05
-# Verifies: basename match works across different absolute paths; archived memories are excluded
+# Verifies: basename match works across different absolute paths ONLY for
+# same-project memories; archived memories are excluded regardless
 @pytest.mark.edge
 def test_find_memories_for_file_edge():
     db_path, conn = fresh_db()
-    # stored with old path — should match new path by basename "storage.py"
+    # stored with old path — matches new path by basename "storage.py" because
+    # the memory belongs to the same project as the querying session
     conn.execute(
-        "INSERT INTO memories (type, topic, content, associated_files, confidence, archived_reason)"
-        " VALUES ('fact', 'wal-mode', 'Uses WAL mode for concurrency', ?, 0.8, NULL)",
+        "INSERT INTO memories (type, topic, content, associated_files, confidence, archived_reason, project)"
+        " VALUES ('fact', 'wal-mode', 'Uses WAL mode for concurrency', ?, 0.8, NULL, 'proj')",
         (json.dumps(["/old/project/storage.py"]),)
     )
     # archived — must be excluded regardless of path match
     conn.execute(
-        "INSERT INTO memories (type, topic, content, associated_files, confidence, archived_reason)"
-        " VALUES ('fact', 'stale', 'Old outdated fact', ?, 0.7, 'superseded by new approach')",
+        "INSERT INTO memories (type, topic, content, associated_files, confidence, archived_reason, project)"
+        " VALUES ('fact', 'stale', 'Old outdated fact', ?, 0.7, 'superseded by new approach', 'proj')",
         (json.dumps(["/old/project/storage.py"]),)
     )
     conn.commit()
@@ -145,11 +149,13 @@ def test_find_memories_for_file_edge():
 
     with patch.object(hook_helpers, "DB_PATH", db_path), patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
          patch("hooks.pretool_hook.log"):
-        results = find_memories_for_file("/new/project/storage.py", corrections_only=False)
+        results = find_memories_for_file("/new/project/storage.py", corrections_only=False, project="proj")
+        cross_project = find_memories_for_file("/new/project/storage.py", corrections_only=False, project="elsewhere")
 
     assert len(results) == 1
     assert results[0]["topic"] == "wal-mode"
     assert results[0]["content"] == "Uses WAL mode for concurrency"
+    assert cross_project == []
 
 
 #TAG: [F91F] 2026-04-05
@@ -238,13 +244,20 @@ def test_find_memories_for_file_excludes_current_session():
 # ============================================================
 
 #TAG: [1722] 2026-04-05
-# Verifies: Read tool with a correction in DB produces hookSpecificOutput JSON with CAIRN GOTCHA section
+# Verifies: Read tool with corrections in DB produces hookSpecificOutput JSON with CAIRN GOTCHA
+# section (tuple contract: sections_for_file returns (sections, new_ids)); a re-touch of the
+# same file in the same session delivers nothing — already-served IDs are dropped, not redelivered.
 @pytest.mark.behavioural
 def test_main_behavioural():
     db_path, conn = fresh_db()
     conn.execute(
         "INSERT INTO memories (type, topic, content, associated_files, confidence, archived_reason)"
         " VALUES ('correction', 'off-by-one', 'Range end is exclusive — use len(x) not len(x)-1', ?, 0.95, NULL)",
+        (json.dumps(["/src/parser.py"]),)
+    )
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, associated_files, confidence, archived_reason)"
+        " VALUES ('correction', 'encoding', 'parser.py must open files with utf-8, not locale default', ?, 0.90, NULL)",
         (json.dumps(["/src/parser.py"]),)
     )
     conn.commit()
@@ -266,7 +279,14 @@ def test_main_behavioural():
     lines = additional.split("\n")
     assert lines[0] == "CAIRN GOTCHA for parser.py:"
     assert lines[1] == "- [off-by-one] Range end is exclusive — use len(x) not len(x)-1"
-    assert lines[2].startswith("Sources: ")
+    assert lines[2] == "- [encoding] parser.py must open files with utf-8, not locale default"
+    assert lines[3] == "Sources: 1, 2"
+
+    # Re-touch the same file in the same session: both corrections are already in
+    # the served ledger, so the hook must deliver nothing (silent exit, no output).
+    output_text2, exit_code2 = run_main(hook_input, db_path)
+    assert exit_code2 == 0
+    assert output_text2 == "", f"Re-touched file must deliver nothing, got: {output_text2!r}"
 
 
 #TAG: [693F] 2026-04-05
@@ -308,14 +328,32 @@ def test_main_error():
 
 
 #TAG: [A5E5] 2026-04-05
-# Verifies: alternate key names ("input" + "filePath") are resolved and produce CAIRN CONTEXT output
+# Verifies: alternate key names ("input" + "filePath") are resolved and produce CAIRN CONTEXT
+# output; per-file top-N is computed BEFORE the served-ledger filter, so a re-touched file
+# delivers nothing (weaker matches beyond top-N are never backfilled); and a memory shared
+# across two files is delivered at most once per session (never the same ID in two deliveries).
 @pytest.mark.adversarial
 def test_main_adversarial():
     db_path, conn = fresh_db()
+    # id 1: shared between models.py and other.py — highest confidence, wins a top-5 slot.
     conn.execute(
         "INSERT INTO memories (type, topic, content, associated_files, confidence, archived_reason)"
-        " VALUES ('decision', 'schema-choice', 'Chose flat schema for query speed over nested', ?, 0.85, NULL)",
-        (json.dumps(["/project/models.py"]),)
+        " VALUES ('decision', 'schema-choice', 'Chose flat schema for query speed over nested', ?, 0.99, NULL)",
+        (json.dumps(["/project/models.py", "/project/other.py"]),)
+    )
+    # ids 2-7: six more memories on models.py with strictly descending confidence.
+    # MAX_CONTEXT_INJECTIONS=5 means ids 6 (0.75) and 7 (0.70) never make the top-5 cut.
+    for i, conf in enumerate([0.95, 0.90, 0.85, 0.80, 0.75, 0.70], start=2):
+        conn.execute(
+            "INSERT INTO memories (type, topic, content, associated_files, confidence, archived_reason)"
+            f" VALUES ('fact', 'models-{i}', 'Models fact number {i}', ?, {conf}, NULL)",
+            (json.dumps(["/project/models.py"]),)
+        )
+    # id 8: only on other.py — the sole new memory when other.py is touched later.
+    conn.execute(
+        "INSERT INTO memories (type, topic, content, associated_files, confidence, archived_reason)"
+        " VALUES ('fact', 'other-encoding', 'other.py serialises as msgpack not json', ?, 0.50, NULL)",
+        (json.dumps(["/project/other.py"]),)
     )
     conn.commit()
     conn.close()
@@ -335,4 +373,33 @@ def test_main_adversarial():
     lines = additional.split("\n")
     assert lines[0] == "CAIRN CONTEXT for models.py:"
     assert lines[1] == "- [decision/schema-choice] Chose flat schema for query speed over nested"
-    assert lines[2].startswith("Sources: ")
+    assert lines[2] == "- [fact/models-2] Models fact number 2"
+    assert lines[3] == "- [fact/models-3] Models fact number 3"
+    assert lines[4] == "- [fact/models-4] Models fact number 4"
+    assert lines[5] == "- [fact/models-5] Models fact number 5"
+    assert lines[6] == "Sources: 1, 2, 3, 4, 5"
+    first_ids = {int(s) for s in lines[6].removeprefix("Sources: ").split(", ")}
+
+    # Re-touch models.py in the same session: the top-5 are all served, and ids 6/7
+    # (below the top-N cut) must NOT be backfilled — the hook delivers nothing.
+    output_text2, exit_code2 = run_main(hook_input, db_path)
+    assert exit_code2 == 0
+    assert output_text2 == "", f"Re-touched file must not backfill weaker matches, got: {output_text2!r}"
+
+    # Touch other.py in the same session: shared memory id 1 was already delivered via
+    # models.py, so only id 8 is new. The same ID never appears in two deliveries.
+    hook_input_other = {
+        "tool_name": "Edit",
+        "session_id": "sess3",
+        "input": {"filePath": "/project/other.py"},
+    }
+    output_text3, exit_code3 = run_main(hook_input_other, db_path)
+    assert exit_code3 == 0
+    assert output_text3 != "", "Expected output for other.py with one unserved memory"
+    parsed3 = json.loads(output_text3)
+    lines3 = parsed3["hookSpecificOutput"]["additionalContext"].split("\n")
+    assert lines3[0] == "CAIRN CONTEXT for other.py:"
+    assert lines3[1] == "- [fact/other-encoding] other.py serialises as msgpack not json"
+    assert lines3[2] == "Sources: 8"
+    third_ids = {int(s) for s in lines3[2].removeprefix("Sources: ").split(", ")}
+    assert first_ids.isdisjoint(third_ids), "Same memory ID delivered twice in one session"

@@ -104,6 +104,12 @@ def handle_client(conn, emb):
             vec = model.encode(text, normalize_embeddings=True)
             response = {"vector": emb.to_blob(vec).hex()}
 
+        elif action == "embed_batch":
+            texts = request["texts"]
+            model = emb.get_model()
+            vecs = model.encode(texts, normalize_embeddings=True)
+            response = {"vectors": [emb.to_blob(v).hex() for v in vecs]}
+
         elif action == "rerank":
             query = request["query"]
             candidates = request["candidates"]

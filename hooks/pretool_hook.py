@@ -26,7 +26,11 @@ except ImportError:
 import sys
 from typing import Any, Optional
 
-from hooks.hook_helpers import log, get_conn, record_metric, flush_metrics, load_hook_state, save_hook_state
+from hooks.hook_helpers import (
+    log, get_conn, record_metric, flush_metrics, load_hook_state, save_hook_state,
+    load_injected_ids, save_injected_ids, record_layer_delivery,
+    get_session_project, overdelivered_ids,
+)
 
 # Max entries to inject per file access (avoid flooding context)
 MAX_GOTCHA_INJECTIONS = 3
@@ -52,12 +56,19 @@ def find_memories_for_file(
     file_path: str,
     corrections_only: bool = False,
     current_session_id: Optional[str] = None,
+    project: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Find memories associated with a given file path.
 
-    Matches by:
-    1. Exact path match in associated_files JSON array
-    2. Basename match (for when the same file is referenced by different absolute paths)
+    Matching rules (S/N scoping):
+    1. Exact path match in associated_files — always serves.
+    2. Basename match — only for memories from the SAME project, and never
+       for generic basenames (README.md, __init__.py, ...) which are weak
+       retrieval keys that resolve to the same cross-project set everywhere.
+
+    Ordering: match quality (exact > basename), then recency. Confidence is
+    deliberately NOT an ordering signal here — it made the same stale
+    high-confidence set win in every project forever.
 
     If corrections_only=True, returns only correction-type memories (gotcha path).
     Otherwise returns all non-correction types (context path).
@@ -67,21 +78,28 @@ def find_memories_for_file(
     """
     if not file_path:
         return []
+    from cairn.config import GENERIC_BASENAMES
+
+    basename = os.path.basename(file_path)
+    generic = basename in GENERIC_BASENAMES
 
     conn = get_conn()
-    basename = os.path.basename(file_path)
-
     type_filter = "type = 'correction'" if corrections_only else "type != 'correction'"
 
     try:
+        # The LIKE prefilter culls the table in C before per-row JSON parsing
+        # in Python — any row associated with this file contains the basename
+        # as a substring of its associated_files JSON.
         rows = conn.execute(f"""
-            SELECT id, type, topic, content, associated_files, confidence, session_id
+            SELECT id, type, topic, content, associated_files, confidence,
+                   session_id, project, updated_at
             FROM memories
             WHERE {type_filter}
               AND associated_files IS NOT NULL
               AND archived_reason IS NULL
               AND deleted_at IS NULL
-        """).fetchall()
+              AND associated_files LIKE '%' || ? || '%'
+        """, (basename,)).fetchall()
     except sqlite3.Error as e:
         log(f"File context query error: {e}")
         conn.close()
@@ -91,7 +109,8 @@ def find_memories_for_file(
 
     matches: list[dict[str, Any]] = []
     for row in rows:
-        mid, mem_type, topic, content, files_json, confidence, mem_session = row
+        (mid, mem_type, topic, content, files_json, confidence,
+         mem_session, mem_project, updated_at) = row
         if current_session_id and mem_session == current_session_id:
             continue
         try:
@@ -99,19 +118,28 @@ def find_memories_for_file(
         except (json.JSONDecodeError, TypeError):
             continue
 
+        quality = 0
         for f in files:
-            if f == file_path or os.path.basename(f) == basename:
-                matches.append({
-                    "id": mid,
-                    "type": mem_type,
-                    "topic": topic,
-                    "content": content,
-                    "confidence": confidence or 0.7,
-                })
+            if f == file_path:
+                quality = 2
                 break
+            if (not generic and project and mem_project == project
+                    and os.path.basename(f) == basename):
+                quality = max(quality, 1)
+        if not quality:
+            continue
+        matches.append({
+            "id": mid,
+            "type": mem_type,
+            "topic": topic,
+            "content": content,
+            "confidence": confidence or 0.7,
+            "_quality": quality,
+            "_updated_at": updated_at or "",
+        })
 
+    matches.sort(key=lambda m: (m["_quality"], m["_updated_at"]), reverse=True)
     return matches
-
 
 # --- Bash file-access recovery -------------------------------------------------
 # In environments where Read/Edit/Write are blocked and routed through Bash
@@ -180,38 +208,64 @@ def extract_bash_file_paths(command: str, max_files: int = 3) -> list[str]:
     return out
 
 
-def sections_for_file(file_path: str, session_id: str, seen: set, graph_cfg) -> list[str]:
+def sections_for_file(file_path: str, session_id: str, seen: set, graph_cfg,
+                      served: set, project: Optional[str] = None,
+                      dampened: Optional[set] = None) -> tuple[list[str], list[int]]:
     """Build the gotcha / context / graph injection sections for one file.
 
     seen is the shared graph_files_seen set (mutated in place when a graph block
     is served). graph_cfg is (enabled, max_symbols, risk_threshold) or None.
+
+    served is the session-wide ledger of memory IDs already injected by ANY
+    layer (prompt, stop/L3, per-file), mutated in place. A memory is injected
+    at most once per session: each file's top-N is computed first, THEN
+    already-served IDs are dropped — so a re-touched file injects nothing
+    rather than backfilling with weaker matches. Returns (sections, new_ids).
     """
     basename = os.path.basename(file_path)
     sections: list[str] = []
+    new_ids: list[int] = []
+    dampened = dampened or set()
 
-    # Path 1: corrections (gotcha warnings) — highest priority
-    corrections = find_memories_for_file(file_path, corrections_only=True, current_session_id=session_id)
+    # Path 1: corrections (gotcha warnings) — highest priority.
+    # Dampened (over-delivered) entries are retired BEFORE the top-N cut so
+    # newer memories can take their slots; served entries are dropped AFTER
+    # it so a re-touched file delivers nothing rather than backfilling.
+    corrections = find_memories_for_file(file_path, corrections_only=True,
+                                         current_session_id=session_id, project=project)
+    corrections = [c for c in corrections if c["id"] not in dampened]
+    corrections = [c for c in corrections[:MAX_GOTCHA_INJECTIONS] if c["id"] not in served]
     if corrections:
-        warnings = [f"- [{c['topic']}] {c['content']}" for c in corrections[:MAX_GOTCHA_INJECTIONS]]
-        ids = [str(c["id"]) for c in corrections[:MAX_GOTCHA_INJECTIONS]]
+        warnings = [f"- [{c['topic']}] {c['content']}" for c in corrections]
+        ids = [c["id"] for c in corrections]
         sections.append(
-            f"CAIRN GOTCHA for {basename}:\n" + "\n".join(warnings) + f"\nSources: {', '.join(ids)}"
+            f"CAIRN GOTCHA for {basename}:\n" + "\n".join(warnings)
+            + f"\nSources: {', '.join(str(i) for i in ids)}"
         )
+        served.update(ids)
+        new_ids.extend(ids)
         log(f"Gotcha injection: {len(corrections)} corrections for {basename}")
         record_metric(session_id, "gotcha_injected", basename, len(corrections))
 
-    # Path 2: all other memory types (decisions, facts, skills, etc.)
-    context_memories = find_memories_for_file(file_path, corrections_only=False, current_session_id=session_id)
+    # Path 2: all other memory types (decisions, facts, skills, etc.).
+    # Pre-ranked by match quality then recency in find_memories_for_file —
+    # confidence ordering is gone (it froze the same stale set everywhere).
+    context_memories = find_memories_for_file(file_path, corrections_only=False,
+                                              current_session_id=session_id, project=project)
     if context_memories:
-        context_memories.sort(key=lambda m: m["confidence"], reverse=True)
-        top = context_memories[:MAX_CONTEXT_INJECTIONS]
-        lines = [f"- [{m['type']}/{m['topic']}] {m['content']}" for m in top]
-        ids = [str(m["id"]) for m in top]
-        sections.append(
-            f"CAIRN CONTEXT for {basename}:\n" + "\n".join(lines) + f"\nSources: {', '.join(ids)}"
-        )
-        log(f"File context injection: {len(top)} memories for {basename}")
-        record_metric(session_id, "file_context_injected", basename, len(top))
+        context_memories = [m for m in context_memories if m["id"] not in dampened]
+        top = [m for m in context_memories[:MAX_CONTEXT_INJECTIONS] if m["id"] not in served]
+        if top:
+            lines = [f"- [{m['type']}/{m['topic']}] {m['content']}" for m in top]
+            ids = [m["id"] for m in top]
+            sections.append(
+                f"CAIRN CONTEXT for {basename}:\n" + "\n".join(lines)
+                + f"\nSources: {', '.join(str(i) for i in ids)}"
+            )
+            served.update(ids)
+            new_ids.extend(ids)
+            log(f"File context injection: {len(top)} memories for {basename}")
+            record_metric(session_id, "file_context_injected", basename, len(top))
 
     # Path 3: code-graph structural context — deterministic, no LLM. Once-per-file
     # via the shared seen cache. Fails open.
@@ -231,7 +285,7 @@ def sections_for_file(file_path: str, session_id: str, seen: set, graph_cfg) -> 
         except Exception as _e:
             log(f"graph file-context failed open: {type(_e).__name__}: {_e}")
 
-    return sections
+    return sections, new_ids
 
 
 def main() -> None:
@@ -271,12 +325,43 @@ def main() -> None:
     seen = set(seen_raw.split("\n")) if seen_raw else set()
     seen_before = len(seen)
 
+    # Session-wide served-memory ledger — same retrieved_ids key the prompt and
+    # stop layers use, so a memory injected by ANY layer is never injected again
+    # this session, by any layer.
+    served = load_injected_ids(session_id) if session_id else set()
+    new_served: list[int] = []
+
+    # Resolve once per invocation: session project (scopes basename matching)
+    # and lifetime-overdelivered entries (retired from the per-file path).
+    project = None
+    dampened: set = set()
+    if file_paths:
+        try:
+            from cairn.config import FILE_INJECTION_DAMPEN_THRESHOLD
+            dampened = overdelivered_ids(FILE_INJECTION_DAMPEN_THRESHOLD)
+        except Exception:
+            dampened = set()
+        if session_id:
+            try:
+                _pconn = get_conn()
+                project = get_session_project(_pconn, session_id)
+                _pconn.close()
+            except Exception:
+                project = None
+
     sections: list[str] = []
     for fp in file_paths:
-        sections.extend(sections_for_file(fp, session_id, seen, graph_cfg))
+        fp_sections, fp_new_ids = sections_for_file(fp, session_id, seen, graph_cfg,
+                                                    served, project=project,
+                                                    dampened=dampened)
+        sections.extend(fp_sections)
+        new_served.extend(fp_new_ids)
 
     if len(seen) != seen_before:
         save_hook_state(session_id, "graph_files_seen", "\n".join(seen))
+    if new_served and session_id:
+        save_injected_ids(session_id, new_served)
+        record_layer_delivery(session_id, "per-file", new_served)
 
     # Grep hint: when the model searches for a code symbol, remind it about cairn-graph
     # (once per session, only when a graph is present for this repo).

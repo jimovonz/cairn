@@ -180,8 +180,10 @@ def test_extract_associated_files_behavioural(tmp_path):
 
     result = storage.extract_associated_files(str(tmp_path / "t.jsonl"))
 
+    # Edited-files preference: the Read of /hooks/storage.py is dropped because
+    # Edit/Write/MultiEdit targets exist in the window — edits mark what the
+    # memory is actually about.
     assert result == [
-        "/hooks/storage.py",
         "/hooks/pretool_hook.py",
         "/cairn/query.py",
         "/tests/test_storage.py",
