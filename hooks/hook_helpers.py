@@ -469,9 +469,49 @@ def reliability_label(score: float) -> str:
 
 
 def record_layer_delivery(session_id: str, layer: str, ids: list[int]) -> None:
-    """Record which memory IDs were delivered via which layer."""
-    if ids:
-        record_metric(session_id, "layer_delivery", json.dumps({"layer": layer, "ids": ids}))
+    """Record which memory IDs were delivered via which layer.
+
+    Also bumps per-memory lifetime counters in delivery_counts (ephemeral DB)
+    — the signal the per-file injection path uses to retire evergreen entries.
+    """
+    if not ids:
+        return
+    record_metric(session_id, "layer_delivery", json.dumps({"layer": layer, "ids": ids}))
+    try:
+        conn = get_ephemeral_conn()
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS delivery_counts ("
+            "memory_id INTEGER PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0, "
+            "last_delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+        conn.executemany(
+            "INSERT INTO delivery_counts (memory_id, count) VALUES (?, 1) "
+            "ON CONFLICT(memory_id) DO UPDATE SET count = count + 1, "
+            "last_delivered_at = CURRENT_TIMESTAMP",
+            [(i,) for i in ids]
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        _log_db_error("record_layer_delivery(counts)", exc)
+
+
+def overdelivered_ids(threshold: int) -> set[int]:
+    """Memory IDs delivered at least `threshold` times across all sessions.
+
+    Used by the per-file injection path to retire evergreen entries — a memory
+    that has been served this often has had its chance; semantic retrieval
+    layers (relevance-driven) are deliberately unaffected.
+    """
+    try:
+        conn = get_ephemeral_conn()
+        rows = conn.execute(
+            "SELECT memory_id FROM delivery_counts WHERE count >= ?", (threshold,)
+        ).fetchall()
+        conn.close()
+        return {r[0] for r in rows}
+    except Exception:
+        return set()
 
 
 def strip_memory_block(text: str) -> str:

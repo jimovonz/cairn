@@ -473,3 +473,47 @@ if __name__ == "__main__":
             print(f"  FAIL: {test.__name__}: {type(e).__name__}: {e}")
     print(f"\n{passed}/{passed+failed} passed")
     cleanup()
+
+
+# ============================================================
+# Format-spec gating (v0.14 token trim)
+# ============================================================
+
+#TAG: [FS01] 2026-06-12
+# Verifies: first prompt of a Claude Code session (transcript under
+# ~/.claude/projects/) does NOT receive the ~600-token MEMORY_FORMAT_SPEC —
+# the rules file in the system prompt already carries it
+def test_main_behavioural_format_spec_gated_for_claude_code():
+    db_path, conn = fresh_env()
+    conn.close()
+    result = run_prompt_hook(db_path, {
+        "session_id": "fs-cc-1",
+        "prompt": "tell me about the architecture of this project",
+        "transcript_path": "/home/user/.claude/projects/-home-user-proj/abc.jsonl",
+    })
+    if result is not None:
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert ctx.count("MEMORY BLOCK (REQUIRED)") == 0
+    # The session must still be marked instructed for stop-hook enforcement
+    check = sqlite3.connect(db_path)
+    flag = check.execute(
+        "SELECT value FROM hook_state WHERE session_id = 'fs-cc-1' AND key = 'format_spec_injected'"
+    ).fetchone()
+    check.close()
+    assert flag == ("1",)
+
+
+#TAG: [FS02] 2026-06-12
+# Verifies: a non-Claude-Code session (Copilot-shaped transcript path) still
+# receives the format spec — it has no rules file to learn the format from
+def test_main_behavioural_format_spec_kept_for_copilot():
+    db_path, conn = fresh_env()
+    conn.close()
+    result = run_prompt_hook(db_path, {
+        "session_id": "fs-cp-1",
+        "prompt": "tell me about the architecture of this project",
+        "transcript_path": "/home/user/.vscode/copilot/chat/session.jsonl",
+    })
+    assert result is not None
+    ctx = result["hookSpecificOutput"]["additionalContext"]
+    assert ctx.count("MEMORY BLOCK (REQUIRED)") == 1

@@ -42,6 +42,18 @@ def _v4_ready(conn) -> bool:
     return ok
 
 
+def _is_junk_path(fp: str) -> bool:
+    """True for paths that are session noise, not project signal — venvs,
+    caches, logs, DBs, temp output. These were the main source of
+    associated_files bloat (avg 25.9 files/memory before hygiene)."""
+    from cairn.config import ASSOC_JUNK_SEGMENTS, ASSOC_JUNK_SUFFIXES, ASSOC_JUNK_PREFIXES
+    if fp.startswith(ASSOC_JUNK_PREFIXES):
+        return True
+    if fp.endswith(ASSOC_JUNK_SUFFIXES):
+        return True
+    return any(part in ASSOC_JUNK_SEGMENTS for part in fp.split("/"))
+
+
 def extract_associated_files(transcript_path: str, lookback: int = 30,
                               center_turn: int = -1) -> list[str]:
     """Extract file paths from recent tool calls in the transcript.
@@ -49,9 +61,15 @@ def extract_associated_files(transcript_path: str, lookback: int = 30,
     Scans entries around `center_turn` (±lookback/2) for Read, Edit, Write,
     and MultiEdit tool uses. When center_turn is -1, scans the last `lookback`
     entries (session-level default).
+
+    Hygiene (write-time S/N): junk paths are dropped; when any files were
+    EDITED in the window, only those are returned (a session reads far more
+    than it changes — edits mark what the memory is actually about); the
+    result is capped at ASSOC_FILES_MAX.
     """
     if not transcript_path:
         return []
+    from cairn.config import ASSOC_FILES_MAX
     from hooks.transcript_adapter import iter_normalized_entries
     try:
         entries = list(iter_normalized_entries(transcript_path))
@@ -63,22 +81,32 @@ def extract_associated_files(transcript_path: str, lookback: int = 30,
         else:
             recent = entries if lookback == 0 else (entries[-lookback:] if len(entries) > lookback else entries)
 
-        files: list[str] = []
+        read_files: list[str] = []
+        edited_files: list[str] = []
         seen: set[str] = set()
 
-        def _record_file(fp: str) -> None:
-            if fp and fp not in seen:
-                files.append(fp)
-                seen.add(fp)
+        def _record_file(fp: str, edited: bool = False) -> None:
+            if not fp or _is_junk_path(fp):
+                return
+            if edited:
+                if fp not in edited_files:
+                    edited_files.append(fp)
+            elif fp not in seen:
+                read_files.append(fp)
+            seen.add(fp)
 
         def _scan_tool_use(tool_name: str, params: dict) -> None:
+            edited = tool_name in ("Edit", "Write", "MultiEdit")
             if tool_name in ("Read", "Edit", "Write", "MultiEdit"):
-                _record_file(params.get("file_path") or params.get("filePath") or "")
+                _record_file(params.get("file_path") or params.get("filePath") or "", edited)
                 for edit in params.get("edits") or []:
                     if isinstance(edit, dict):
-                        _record_file(edit.get("file_path") or edit.get("filePath") or "")
+                        _record_file(edit.get("file_path") or edit.get("filePath") or "", edited)
             if tool_name == "Bash":
                 cmd = params.get("command", "") if isinstance(params, dict) else ""
+                # Bash-routed edit helpers mark their target as edited
+                for match in re.findall(r'cch-(?:edit|write)\.py\s+(?:--\S+\s+)*([^\s;|&>]+)', str(cmd)):
+                    _record_file(match, edited=True)
                 for match in re.findall(r'(?:^|\s)(/[^\s;|&>]+\.[a-zA-Z0-9]+)', str(cmd)):
                     _record_file(match)
 
@@ -100,7 +128,8 @@ def extract_associated_files(transcript_path: str, lookback: int = 30,
                         if isinstance(block_input, dict):
                             _scan_tool_use(block.get("name", ""), block_input)
 
-        return files
+        files = edited_files if edited_files else read_files
+        return files[:ASSOC_FILES_MAX]
     except (FileNotFoundError, PermissionError, OSError):
         return []
 
@@ -178,6 +207,7 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
         return 0
     conn = get_conn()
     applied = 0
+    corroborated_ids: list[int] = []
     sync_on = _v4_ready(conn)
     node_id = ensure_node_id() if sync_on else ""
     user_id = get_user_id() if sync_on else ""
@@ -229,6 +259,7 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
                 log(f"Corroborated: memory {memory_id} {current:.2f} → {new:.2f}")
             else:
                 log(f"Corroborated: memory {memory_id} via confidence_log entry {log_uuid_str[:8]}")
+            corroborated_ids.append(memory_id)
             applied += 1
         else:
             log(f"Irrelevant: memory {memory_id} — no confidence change")
@@ -260,6 +291,25 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
             pass
     conn.commit()
     conn.close()
+
+    # Corroboration earns a fresh delivery lease: reset lifetime delivery
+    # counters so over-delivery dampening (per-file path) does not retire a
+    # memory the LLM just confirmed is still useful. Done AFTER the main
+    # commit — opening the ephemeral connection mid-transaction would deadlock
+    # when both point at the same file (test DBs).
+    if corroborated_ids:
+        try:
+            from hooks.hook_helpers import get_ephemeral_conn
+            _ec = get_ephemeral_conn()
+            _ec.executemany(
+                "UPDATE delivery_counts SET count = 0 WHERE memory_id = ?",
+                [(i,) for i in corroborated_ids]
+            )
+            _ec.commit()
+            _ec.close()
+        except Exception:
+            pass
+
     return applied
 
 
@@ -535,6 +585,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
 
     conn.commit()
 
+    _maybe_optimize_fts(conn)
+
     # Inline backfill: fill up to BACKFILL_INLINE_MAX missing embeddings synchronously
     # via the daemon socket. Previously this spawned a detached subprocess that held
     # a write lock after the parent stop_hook exited — a classic concurrent-writer
@@ -546,6 +598,25 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     conn.close()
 
     return inserted
+
+
+def _maybe_optimize_fts(conn) -> None:
+    """Merge FTS5 segments when fragmentation crosses the threshold.
+
+    Self-maintaining: steady per-turn inserts fragment memories_fts (automerge
+    alone left 1566 segments; broad OR queries degraded ~3x). Checking the
+    segment count is ~0ms; optimize itself runs only when needed and costs
+    ~85ms at current corpus size. Fails open."""
+    try:
+        from cairn.config import FTS_OPTIMIZE_SEGMENT_THRESHOLD
+        n = conn.execute("SELECT COUNT(*) FROM memories_fts_data").fetchone()[0]
+        if n >= FTS_OPTIMIZE_SEGMENT_THRESHOLD:
+            conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('optimize')")
+            conn.commit()
+            log(f"FTS optimize: merged index at {n} segments")
+            hook_helpers.record_metric(None, "fts_optimized", None, n)
+    except Exception as e:
+        log(f"FTS optimize skipped: {type(e).__name__}: {e}")
 
 
 def inline_backfill(conn) -> None:
