@@ -91,8 +91,21 @@ def location(symbol, repo_root=None):
     return "\n".join(lines)
 
 
+def _target_forms(qn):
+    """Match forms for a call target: exact qualified, bare name, Class.name.
+
+    Cross-file calls are stored with unresolved bare/dotted targets in several
+    languages (e.g. Kotlin), so qualified-only matching loses real callers.
+    """
+    bare = qn.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
+    return (
+        "(target_qualified = ? OR target_qualified = ? OR target_qualified LIKE ?)",
+        (qn, bare, f"%.{bare}"),
+    )
+
+
 def callers(symbol, repo_root=None):
-    """Get edges where target_qualified matches the symbol."""
+    """Get edges where target_qualified matches the symbol (any match form)."""
     db_path = _find_graph_db(repo_root)
     conn = sqlite3.connect(str(db_path)); conn.execute("PRAGMA busy_timeout=3000")
     matches = _resolve_symbol(conn, symbol)
@@ -101,12 +114,17 @@ def callers(symbol, repo_root=None):
         return f"Symbol not found: {symbol}"
     qnames = [m[0] for m in matches]
     results = []
+    seen = set()
     for qn in qnames:
+        clause, params = _target_forms(qn)
         rows = conn.execute(
-            "SELECT file_path, line, source_qualified, kind FROM edges WHERE target_qualified = ?",
-            (qn,)
+            f"SELECT file_path, line, source_qualified, kind FROM edges WHERE {clause}",
+            params
         ).fetchall()
         for fp, line, src, kind in rows:
+            if (fp, line, src) in seen:
+                continue
+            seen.add((fp, line, src))
             results.append(f"{fp}:{line}  {src}")
     conn.close()
     if not results:
@@ -334,9 +352,10 @@ def context_pack(symbol, repo_root=None):
             parts.append("")
 
     # Callers (compact)
+    _clause, _params = _target_forms(qn)
     caller_rows = conn.execute(
-        "SELECT source_qualified FROM edges WHERE target_qualified = ? AND kind = 'CALLS'",
-        (qn,)
+        f"SELECT DISTINCT source_qualified FROM edges WHERE {_clause} AND kind = 'CALLS'",
+        _params
     ).fetchall()
     if caller_rows:
         parts.append(f"Callers ({len(caller_rows)}):")
@@ -386,9 +405,10 @@ def impact(symbol, repo_root=None):
     caller_count = 0
     test_count = 0
     for qn in qnames:
+        _clause, _params = _target_forms(qn)
         crows = conn.execute(
-            "SELECT file_path FROM edges WHERE target_qualified = ? AND kind = 'CALLS'",
-            (qn,)
+            f"SELECT file_path FROM edges WHERE {_clause} AND kind = 'CALLS'",
+            _params
         ).fetchall()
         caller_count += len(crows)
         caller_files.update(r[0] for r in crows)
@@ -426,6 +446,26 @@ def orientation_block(repo_root=None):
     conn = sqlite3.connect(str(db_path)); conn.execute("PRAGMA busy_timeout=3000")
     try:
         parts = []
+
+        # Header stamp: coverage + freshness so the model can assess trust at
+        # a glance — a stale or vendor-polluted graph gets rationally skipped,
+        # a fresh covering one gets used (cairn 2336462281793).
+        try:
+            n_nodes = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+            n_files = conn.execute(
+                "SELECT COUNT(DISTINCT file_path) FROM nodes").fetchone()[0]
+            age_s = max(0.0, time.time() - os.path.getmtime(str(db_path)))
+            if age_s < 3600:
+                age = f"{int(age_s // 60)}m"
+            elif age_s < 86400:
+                age = f"{age_s / 3600:.1f}h"
+            else:
+                age = f"{age_s / 86400:.1f}d"
+            parts.append(
+                f"Graph: {n_nodes} nodes · {n_files} files · refreshed {age} ago")
+            parts.append("")
+        except (sqlite3.OperationalError, OSError):
+            pass
 
         # Modules — architectural communities. Drop the test-dominated ones.
         try:

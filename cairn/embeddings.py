@@ -108,6 +108,91 @@ def _daemon_embed(text: str) -> Optional[np.ndarray]:
     return None
 
 
+def _daemon_embed_batch(texts: list[str]) -> Optional[list[np.ndarray]]:
+    """Embed many texts in one daemon round-trip. Returns vectors or None."""
+    try:
+        from cairn.daemon import send_request
+        resp = send_request({"action": "embed_batch", "texts": texts})
+        if resp and resp.get("vectors") is not None:
+            return [np.frombuffer(bytes.fromhex(h), dtype=np.float32)
+                    for h in resp["vectors"]]
+    except (ConnectionError, TimeoutError, OSError, ValueError) as e:
+        _log_embed(f"daemon embed_batch unavailable: {type(e).__name__}: {e}", "warning")
+    except Exception as e:
+        _log_embed(f"daemon embed_batch unexpected error: {type(e).__name__}: {e}", "error")
+    return None
+
+
+def embed_batch(texts: list[str], allow_slow: bool = True) -> Optional[list[np.ndarray]]:
+    """Embed a list of texts, preferring one batched daemon call.
+
+    Falls back to per-text embed() when the running daemon predates the
+    embed_batch action or is down. Returns None if any text fails to embed.
+
+    Test seam: the suite patches embed() (patch.object(emb, "embed", ...));
+    when that global has been replaced, route per-text through it instead of
+    the daemon so mocked vectors are honored.
+    """
+    if not texts:
+        return []
+    if embed is not _EMBED_ORIGINAL:
+        out_mocked: list[np.ndarray] = []
+        for t in texts:
+            v = embed(t, allow_slow=allow_slow)
+            if v is None:
+                return None
+            out_mocked.append(v)
+        return out_mocked
+    import time as _time
+    t0 = _time.perf_counter()
+    vecs = _daemon_embed_batch(texts)
+    if vecs is not None and len(vecs) == len(texts):
+        _record_embed_metric("embed_batch_ms", (_time.perf_counter() - t0) * 1000)
+        return vecs
+    out: list[np.ndarray] = []
+    for t in texts:
+        v = embed(t, allow_slow=allow_slow)
+        if v is None:
+            return None
+        out.append(v)
+    return out
+
+
+def _conn_is_main_db(conn) -> bool:
+    """True when conn points at the production cairn.db — the only DB the
+    daemon-resident matrices mirror. Callers passing any other connection
+    (tests, alternate DBs) must take the local scoring path."""
+    try:
+        main_db = os.path.realpath(os.path.join(os.path.dirname(__file__), "cairn.db"))
+        for _, name, file in conn.execute("PRAGMA database_list").fetchall():
+            if name == "main":
+                return bool(file) and os.path.realpath(file) == main_db
+    except Exception:
+        pass
+    return False
+
+
+def _daemon_vector_search(texts: list[str], n_base: int, min_sim: float,
+                          top_k: int = 300) -> Optional[list[dict]]:
+    """Score query variants against the daemon-resident memory matrices.
+
+    Returns scored candidate rows (metadata + similarity) or None when the
+    daemon is down or predates the vector_search action — callers fall back
+    to the local fetch-and-score path.
+    """
+    try:
+        from cairn.daemon import send_request
+        resp = send_request({"action": "vector_search", "texts": texts,
+                             "n_base": n_base, "min_sim": min_sim, "top_k": top_k})
+        if resp and resp.get("rows") is not None:
+            return resp["rows"]
+    except (ConnectionError, TimeoutError, OSError, ValueError) as e:
+        _log_embed(f"daemon vector_search unavailable: {type(e).__name__}: {e}", "warning")
+    except Exception as e:
+        _log_embed(f"daemon vector_search unexpected error: {type(e).__name__}: {e}", "error")
+    return None
+
+
 def _daemon_rerank(query: str, candidates: list[str]) -> Optional[list[float]]:
     """Re-rank candidates via the daemon's cross-encoder. Returns scores or None."""
     try:
@@ -222,6 +307,11 @@ def embed(text: str, allow_slow: bool = True) -> Optional[np.ndarray]:
     vec = model.encode(text, normalize_embeddings=True)
     _record_embed_metric("embed_local_ms", (_time.perf_counter() - t0) * 1000)
     return vec
+
+
+# Original reference for the embed_batch test seam — embed_batch compares the
+# module global against this to detect a monkeypatched embed().
+_EMBED_ORIGINAL = embed
 
 
 def to_blob(vector: np.ndarray) -> bytes:
@@ -492,6 +582,7 @@ def find_similar(
     threshold: Optional[float] = None,
     limit: Optional[int] = None,
     current_project: Optional[str] = None,
+    rerank: bool = True,
 ) -> list[dict[str, Any]]:
     """Find memories similar to the given text with full quality filtering.
 
@@ -508,12 +599,22 @@ def find_similar(
     multi-dimensional questions ("user's job AND brother") where a single
     embedding would blur multiple distinct concepts.
 
-    Uses sqlite-vec index if available, falls back to brute-force."""
+    Single-pass design: all query variants (base, unprefixed, type-prefix
+    fan-out) are embedded in ONE daemon round-trip and scored against ONE
+    fetch of the memory table via vectorized matrix products. The unprefixed
+    variant is part of the fan-out set, so callers never need a second
+    unprefixed pass. Archived rows ride the same fetch and surface as
+    negative knowledge ("we tried X and abandoned it") — by design they are
+    delivered, not suppressed.
+
+    rerank=False skips the cross-encoder pass — used by latency-critical
+    every-prompt callers (L1.5); quality-critical callers (L1/L3) keep it."""
     from cairn.config import (SOFT_SIM_OVERRIDE, SOFT_CONF_FLOOR, RELATIVE_FILTER_RATIO,
                         MIN_INJECTION_SIMILARITY, MAX_INJECTED_ENTRIES, DOMINANCE_EPSILON,
                         BORDERLINE_SIM_CEILING, BORDERLINE_SCORE_FLOOR)
 
     import time as _time
+    import numpy as _np
 
     if threshold is None:
         threshold = 0.15  # Permissive floor — quality gates handle the rest
@@ -527,7 +628,8 @@ def find_similar(
             merged: dict[int, dict[str, Any]] = {}
             for sq in subqueries:
                 sub_results = find_similar(conn, sq, threshold=threshold,
-                                           limit=limit, current_project=current_project)
+                                           limit=limit, current_project=current_project,
+                                           rerank=rerank)
                 for r in sub_results:
                     existing = merged.get(r["id"])
                     if not existing or r["score"] > existing["score"]:
@@ -540,100 +642,178 @@ def find_similar(
     # Extract query terms once for keyword overlap scoring across all candidates
     qt = extract_query_terms(text)
 
-    # Prefix query with project to match how stored embeddings are augmented
-    query_text = f"{current_project} {text}" if current_project else text
-    query_vec = embed(query_text)
-    k = limit * 5  # Over-fetch for post-filtering
-
-    t_search = _time.perf_counter()
-    candidates: list[dict[str, Any]] = []
-    search_method = "brute"
-    if _load_vec(conn):
-        try:
-            candidates = _vec_candidates(conn, query_vec, k, current_project, qt)
-            search_method = "vec"
-        except Exception as e:
-            _log_embed(f"vec search failed, falling back to brute-force: {type(e).__name__}: {e}", "warning")
-
-    if not candidates:
-        candidates = _brute_force_candidates(conn, query_vec, k, current_project, qt)
-        search_method = "brute"
-    _record_embed_metric(f"search_{search_method}_ms", (_time.perf_counter() - t_search) * 1000)
-
-    # Dual-embedding supplement (schema v8): vec-index only scans `embedding`,
-    # missing rows whose topic matches strongly even when content is weak.
-    # Brute-force path already handles dual lookup internally; vec path needs
-    # this supplemental topic scan. Merge by id, keeping max similarity per row.
-    if search_method == "vec":
-        t_topic = _time.perf_counter()
-        topic_candidates = _topic_candidates_brute(
-            conn, query_vec, k, current_project, qt, min_sim=max(threshold, 0.30)
-        )
-        _record_embed_metric("search_topic_supplement_ms", (_time.perf_counter() - t_topic) * 1000)
-        by_id = {c["id"]: c for c in candidates}
-        for t in topic_candidates:
-            existing = by_id.get(t["id"])
-            if existing is None:
-                by_id[t["id"]] = t
-            elif t["similarity"] > existing["similarity"]:
-                existing["similarity"] = t["similarity"]
-                existing["score"] = t["score"]
-        candidates = list(by_id.values())
-        candidates.sort(key=lambda x: x["score"], reverse=True)
-        candidates = candidates[:k * 2]
-
-    # Type-prefix fan-out: search with each memory type prefix, keep max similarity per memory.
-    # Memories are embedded as "{project} {type} {topic} {content}" — a bare query misses the
-    # type prefix. Fan-out closes this gap with ~7x more dot products (no model inference).
-    if QUERY_EXPANSION_FANOUT and candidates:
-        t_fanout = _time.perf_counter()
-        _FANOUT_TYPES = ["fact", "decision", "correction", "skill", "preference", "project", "workflow"]
-        fanout_vecs = []
+    # --- Query variants, embedded in ONE daemon round-trip ---
+    # Memories are embedded as "{project} {type} {topic} {content}". The
+    # variant set covers: project-prefixed base, bare base (replaces the old
+    # second unprefixed find_similar pass in hybrid_search), and type-prefix
+    # fan-out in both forms. Max-over-variants with per-variant z-score
+    # normalization picks the best alignment per memory.
+    _FANOUT_TYPES = ["fact", "decision", "correction", "skill", "preference", "project", "workflow"]
+    variant_texts: list[str] = []
+    if current_project:
+        variant_texts.append(f"{current_project} {text}")
+        variant_texts.append(text)
+    else:
+        variant_texts.append(text)
+    if QUERY_EXPANSION_FANOUT:
         for mtype in _FANOUT_TYPES:
-            ft = f"{current_project} {mtype} {text}" if current_project else f"{mtype} {text}"
-            fanout_vecs.append(embed(ft))
+            if current_project:
+                variant_texts.append(f"{current_project} {mtype} {text}")
+            variant_texts.append(f"{mtype} {text}")
+    # Topic embeddings live in a prompt-shaped region — they are scored against
+    # the base variants only (prefixed + bare), not the type fan-out.
+    n_base = 2 if current_project else 1
 
-        # Fetch all embeddings once for fan-out scoring
-        all_rows = conn.execute(
-            "SELECT id, embedding, confidence, updated_at, project FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
+    # --- Candidate generation: daemon-resident search first ---
+    # The long-lived daemon caches the normalized embedding matrices, so one
+    # socket round-trip replaces the per-process blob fetch + matrix rebuild.
+    # Skipped when embed() is monkeypatched (test seam) so mocked vectors are
+    # honored; falls back to the local path when the daemon is down or stale.
+    t_fanout = _time.perf_counter()
+    k = limit * 5  # Over-fetch for post-filtering
+    candidates: list[dict[str, Any]] = []
+    archived_pool: list[dict[str, Any]] = []
+    daemon_rows = None
+    if embed is _EMBED_ORIGINAL and _conn_is_main_db(conn):
+        floor = min(threshold, MIN_INJECTION_SIMILARITY)
+        daemon_rows = _daemon_vector_search(variant_texts, n_base, floor, top_k=k * 6)
+
+    if daemon_rows is not None:
+        _record_embed_metric("search_daemon_ms", (_time.perf_counter() - t_fanout) * 1000)
+        for r in daemon_rows:
+            sim = r["similarity"]
+            is_archived = bool(r.get("archived_reason"))
+            confidence = r["confidence"] if r["confidence"] is not None else 0.7
+            if is_archived:
+                if sim < MIN_INJECTION_SIMILARITY:
+                    continue
+                archived_pool.append({
+                    "id": r["id"], "type": r["type"], "topic": r["topic"], "content": r["content"],
+                    "similarity": sim, "updated_at": r["updated_at"], "project": r["project"],
+                    "confidence": confidence, "depth": r["depth"],
+                    "score": 0.0,
+                    "archived": True, "archived_reason": r["archived_reason"],
+                })
+                continue
+            if sim < threshold:
+                continue
+            kw_ov = keyword_overlap(qt, r.get("keywords"))
+            candidates.append({
+                "id": r["id"], "type": r["type"], "topic": r["topic"], "content": r["content"],
+                "similarity": sim, "updated_at": r["updated_at"], "project": r["project"],
+                "confidence": confidence, "session_id": r["session_id"], "depth": r["depth"],
+                "archived_reason": r["archived_reason"], "keywords": r.get("keywords"),
+                "score": composite_score(sim, confidence, r["updated_at"], r["project"],
+                                         current_project, r["type"], kw_ov),
+            })
+    else:
+        vecs = embed_batch(variant_texts)
+        if vecs is None:
+            return []
+        V = _np.stack(vecs).astype(_np.float32)
+        v_norms = _np.linalg.norm(V, axis=1, keepdims=True)
+        v_norms[v_norms == 0] = 1.0
+        V = V / v_norms
+
+        # --- Single fetch of the memory table (active + archived together) ---
+        t_search = _time.perf_counter()
+        rows = conn.execute(
+            "SELECT id, type, topic, content, embedding, updated_at, project, confidence, "
+            "depth, archived_reason, session_id, keywords, topic_embedding "
+            "FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
         ).fetchall()
-        # Compute per-prefix similarity distributions for z-score normalization.
-        # Without this, prefixes that produce higher raw cosine scores dominate.
-        import numpy as _np
-        n_prefixes = len(fanout_vecs) + 1  # +1 for base query vec
-        all_vecs = [query_vec] + fanout_vecs
-        prefix_sims: list[list[float]] = [[] for _ in range(n_prefixes)]
-        mem_raw_sims: dict[int, list[float]] = {}
+        if not rows:
+            return []
 
-        for row in all_rows:
-            mem_vec = from_blob(row[1])
-            sims = [float(cosine_similarity(v, mem_vec)) for v in all_vecs]
-            for i, s in enumerate(sims):
-                prefix_sims[i].append(s)
-            mem_raw_sims[row[0]] = sims
+        dim = V.shape[1]
+        mem_vecs: list[_np.ndarray] = []
+        valid_rows: list[Any] = []
+        for row in rows:
+            try:
+                v = _np.frombuffer(row[4], dtype=_np.float32)
+            except (ValueError, TypeError):
+                continue
+            if v.shape[0] != dim:
+                continue
+            mem_vecs.append(v)
+            valid_rows.append(row)
+        if not valid_rows:
+            return []
 
-        # Z-score normalize within each prefix, then take max across prefixes
-        prefix_means = [_np.mean(ps) if ps else 0.0 for ps in prefix_sims]
-        prefix_stds = [_np.std(ps) if ps else 1.0 for ps in prefix_sims]
-        prefix_stds = [max(s, 1e-6) for s in prefix_stds]
+        M = _np.stack(mem_vecs)
+        m_norms = _np.linalg.norm(M, axis=1, keepdims=True)
+        m_norms[m_norms == 0] = 1.0
+        M = M / m_norms
 
-        fanout_best: dict[int, float] = {}
-        for mid, raw_sims in mem_raw_sims.items():
-            z_scores = [(raw_sims[i] - prefix_means[i]) / prefix_stds[i] for i in range(n_prefixes)]
-            best_idx = int(_np.argmax(z_scores))
-            fanout_best[mid] = raw_sims[best_idx]
+        # All-variant similarity in one matrix product: [N, n_variants]
+        S = M @ V.T
+        if S.shape[1] > 1:
+            # Z-score normalize within each variant column, then take each row's
+            # best raw similarity at its best-aligned variant. Without this,
+            # variants producing systematically higher raw cosines would dominate.
+            mu = S.mean(axis=0)
+            sd = _np.maximum(S.std(axis=0), 1e-6)
+            Z = (S - mu) / sd
+            best_idx = Z.argmax(axis=1)
+            best_sim = S[_np.arange(S.shape[0]), best_idx].astype(_np.float64)
+        else:
+            best_sim = S[:, 0].astype(_np.float64)
 
-        # Update candidates with fan-out similarities where they improved
-        for c in candidates:
-            mid = c["id"]
-            if mid in fanout_best and fanout_best[mid] > c["similarity"]:
-                c["similarity"] = fanout_best[mid]
-                kw_ov = keyword_overlap(qt, c.get("keywords"))
-                c["score"] = composite_score(
-                    fanout_best[mid], c["confidence"],
-                    c.get("updated_at"), c.get("project"), current_project, c.get("type"), kw_ov
-                )
-        _record_embed_metric("fanout_ms", (_time.perf_counter() - t_fanout) * 1000)
+        # Dual-embedding supplement (schema v8): max in topic-embedding similarity
+        # against the base variants for rows that have one.
+        t_idx = [i for i, r in enumerate(valid_rows) if r[12] is not None]
+        if t_idx:
+            t_vecs: list[_np.ndarray] = []
+            t_keep: list[int] = []
+            for i in t_idx:
+                try:
+                    tv = _np.frombuffer(valid_rows[i][12], dtype=_np.float32)
+                except (ValueError, TypeError):
+                    continue
+                if tv.shape[0] != dim:
+                    continue
+                t_vecs.append(tv)
+                t_keep.append(i)
+            if t_keep:
+                T = _np.stack(t_vecs)
+                t_norms = _np.linalg.norm(T, axis=1, keepdims=True)
+                t_norms[t_norms == 0] = 1.0
+                TS = (T / t_norms) @ V[:n_base].T
+                t_best = TS.max(axis=1)
+                keep_arr = _np.array(t_keep)
+                best_sim[keep_arr] = _np.maximum(best_sim[keep_arr], t_best)
+
+        _record_embed_metric("search_matrix_ms", (_time.perf_counter() - t_search) * 1000)
+
+        for i, row in enumerate(valid_rows):
+            sim = float(best_sim[i])
+            is_archived = bool(row[9])
+            if is_archived:
+                if sim < MIN_INJECTION_SIMILARITY:
+                    continue
+            elif sim < threshold:
+                continue
+            confidence = row[7] if row[7] is not None else 0.7
+            if is_archived:
+                archived_pool.append({
+                    "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
+                    "similarity": sim, "updated_at": row[5], "project": row[6],
+                    "confidence": confidence, "depth": row[8],
+                    "score": 0.0,
+                    "archived": True, "archived_reason": row[9],
+                })
+                continue
+            kw_ov = keyword_overlap(qt, row[11])
+            candidates.append({
+                "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
+                "similarity": sim, "updated_at": row[5], "project": row[6],
+                "confidence": confidence, "session_id": row[10], "depth": row[8],
+                "archived_reason": row[9], "keywords": row[11],
+                "score": composite_score(sim, confidence, row[5], row[6], current_project, row[1], kw_ov),
+            })
+    _record_embed_metric("fanout_ms", (_time.perf_counter() - t_fanout) * 1000)
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    candidates = candidates[:k * 2]
 
     # Filter by similarity threshold only — confidence no longer gates retrieval
     filtered = [r for r in candidates if r["similarity"] >= threshold]
@@ -685,68 +865,63 @@ def find_similar(
         if not is_dup:
             diverse.append(r)
 
-    # Cross-encoder re-ranking: score (query, memory) pairs jointly
-    from cairn.config import CROSS_ENCODER_ENABLED, CROSS_ENCODER_MIN_CANDIDATES, CROSS_ENCODER_WEIGHT, CROSS_ENCODER_SCORE_FLOOR
-    if CROSS_ENCODER_ENABLED and len(diverse) >= CROSS_ENCODER_MIN_CANDIDATES:
+    # Archived candidates (negative knowledge) gated relative to the best
+    # active match — same rules as before, sourced from the single fetch.
+    best_active_sim = diverse[0]["similarity"] if diverse else 0.0
+    active_ids = {r["id"] for r in diverse}
+    archived_candidates = [
+        r for r in archived_pool
+        if r["id"] not in active_ids
+        and r["similarity"] >= RELATIVE_FILTER_RATIO * best_active_sim
+    ]
+    archived_candidates.sort(key=lambda x: x["similarity"], reverse=True)
+
+    # Cross-encoder re-ranking: ONE combined daemon call scores active and
+    # archived candidates jointly — half the round-trips of the previous
+    # two-call design at the same quality. Caps keep CE latency bounded
+    # (cost is linear in pair count).
+    from cairn.config import (CROSS_ENCODER_ENABLED, CROSS_ENCODER_MIN_CANDIDATES,
+                              CROSS_ENCODER_WEIGHT, CROSS_ENCODER_SCORE_FLOOR,
+                              CROSS_ENCODER_MAX_CANDIDATES, CROSS_ENCODER_MAX_ARCHIVED)
+    ce_active = CROSS_ENCODER_ENABLED and rerank and len(diverse) >= CROSS_ENCODER_MIN_CANDIDATES
+    ce_archived = CROSS_ENCODER_ENABLED and rerank and bool(archived_candidates)
+    if ce_active or ce_archived:
         t_rerank = _time.perf_counter()
-        candidate_texts = [f"{r.get('type', '')} {r.get('topic', '')}: {r.get('content', '')}" for r in diverse]
+        if ce_active:
+            diverse = diverse[:CROSS_ENCODER_MAX_CANDIDATES]
+        archived_candidates = archived_candidates[:CROSS_ENCODER_MAX_ARCHIVED]
+        active_for_ce = diverse if ce_active else []
+        ce_pool = active_for_ce + (archived_candidates if ce_archived else [])
+        candidate_texts = [f"{r.get('type', '')} {r.get('topic', '')}: {r.get('content', '')}" for r in ce_pool]
         ce_scores = _daemon_rerank(text, candidate_texts)
-        if ce_scores and len(ce_scores) == len(diverse):
-            for i, r in enumerate(diverse):
+        if ce_scores and len(ce_scores) == len(ce_pool):
+            for i, r in enumerate(ce_pool):
                 r["ce_score"] = ce_scores[i]
-            pre_filter = len(diverse)
-            above_floor = [r for r in diverse if r["ce_score"] >= CROSS_ENCODER_SCORE_FLOOR]
-            diverse = above_floor if above_floor else diverse[:1]
-            ce_min = min(r["ce_score"] for r in diverse) if diverse else 0
-            ce_max = max(r["ce_score"] for r in diverse) if diverse else 1
-            ce_range = ce_max - ce_min if ce_max > ce_min else 1.0
-            for r in diverse:
-                ce_norm = (r["ce_score"] - ce_min) / ce_range
-                r["score"] = (1 - CROSS_ENCODER_WEIGHT) * r["score"] + CROSS_ENCODER_WEIGHT * ce_norm
-            diverse.sort(key=lambda x: x["score"], reverse=True)
-            _record_embed_metric("rerank_filtered", pre_filter - len(diverse))
+            if ce_active:
+                pre_filter = len(diverse)
+                above_floor = [r for r in diverse if r["ce_score"] >= CROSS_ENCODER_SCORE_FLOOR]
+                diverse = above_floor if above_floor else diverse[:1]
+                ce_min = min(r["ce_score"] for r in diverse) if diverse else 0
+                ce_max = max(r["ce_score"] for r in diverse) if diverse else 1
+                ce_range = ce_max - ce_min if ce_max > ce_min else 1.0
+                for r in diverse:
+                    ce_norm = (r["ce_score"] - ce_min) / ce_range
+                    r["score"] = (1 - CROSS_ENCODER_WEIGHT) * r["score"] + CROSS_ENCODER_WEIGHT * ce_norm
+                diverse.sort(key=lambda x: x["score"], reverse=True)
+                _record_embed_metric("rerank_filtered", pre_filter - len(diverse))
+            if ce_archived:
+                archived_candidates = [r for r in archived_candidates
+                                       if r["ce_score"] >= CROSS_ENCODER_SCORE_FLOOR]
         _record_embed_metric("rerank_ms", (_time.perf_counter() - t_rerank) * 1000)
 
     results = diverse[:limit]
 
-    # Archived memory enrichment: find related archived memories for learning trail
-    if results:
-        active_ids = {r["id"] for r in results}
-        best_active_sim = results[0]["similarity"] if results else 0
-        archived_candidates: list[dict[str, Any]] = []
-        try:
-            archived = conn.execute(
-                "SELECT id, type, topic, content, embedding, updated_at, project, confidence, "
-                "depth, archived_reason "
-                "FROM memories WHERE archived_reason IS NOT NULL AND embedding IS NOT NULL AND deleted_at IS NULL"
-            ).fetchall()
-            for row in archived:
-                if row[0] in active_ids:
-                    continue
-                row_vec = from_blob(row[4])
-                sim = cosine_similarity(query_vec, row_vec)
-                if sim >= RELATIVE_FILTER_RATIO * best_active_sim and sim >= MIN_INJECTION_SIMILARITY:
-                    archived_candidates.append({
-                        "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
-                        "similarity": sim, "updated_at": row[5], "project": row[6],
-                        "confidence": row[7], "depth": row[8],
-                        "score": 0.0,
-                        "archived": True, "archived_reason": row[9]
-                    })
-        except sqlite3.OperationalError:
-            pass  # archived_reason column not yet added
-        archived_candidates.sort(key=lambda x: x["similarity"], reverse=True)
-        if CROSS_ENCODER_ENABLED and archived_candidates:
-            arch_texts = [f"{r.get('type', '')} {r.get('topic', '')}: {r.get('content', '')}" for r in archived_candidates]
-            arch_ce = _daemon_rerank(text, arch_texts)
-            if arch_ce and len(arch_ce) == len(archived_candidates):
-                for i, r in enumerate(archived_candidates):
-                    r["ce_score"] = arch_ce[i]
-                archived_candidates = [r for r in archived_candidates if r["ce_score"] >= CROSS_ENCODER_SCORE_FLOOR]
+    # Archived memory enrichment: related negative knowledge rides along for
+    # the learning trail — deliberately delivered, never suppressed.
+    if results and archived_candidates:
         results.extend(archived_candidates[:limit])
 
     return results
-
 
 def find_nearest(conn: sqlite3.Connection, text: str, limit: int = 1) -> list[dict[str, Any]]:
     """Find the single nearest memory by raw similarity. Used for deduplication.
@@ -762,6 +937,19 @@ def find_nearest(conn: sqlite3.Connection, text: str, limit: int = 1) -> list[di
     scan so topic-only matches surface as candidates. No confidence or
     threshold filtering.
     """
+    # Daemon-resident fast path (same matrices as find_similar) — one socket
+    # round-trip replaces the per-process scan. ~118ms -> ~10ms per entry,
+    # which the stop hook pays once per stored memory.
+    if embed is _EMBED_ORIGINAL and _conn_is_main_db(conn):
+        rows = _daemon_vector_search([text], 1, 0.0, top_k=max(limit * 5, 25))
+        if rows is not None:
+            return [{
+                "id": r["id"], "type": r["type"], "topic": r["topic"],
+                "content": r["content"], "similarity": r["similarity"],
+                "updated_at": r["updated_at"], "project": r["project"],
+                "confidence": r["confidence"] if r["confidence"] is not None else 0.7,
+            } for r in rows[:limit]]
+
     query_vec = embed(text)
 
     vec_candidates: list[dict[str, Any]] = []

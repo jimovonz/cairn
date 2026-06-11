@@ -84,6 +84,134 @@ def _get_cross_encoder() -> Any:
         return None
 
 
+# --- Daemon-resident vector search -----------------------------------------
+# The daemon is long-lived; hook processes are not. Caching the normalized
+# embedding matrices here means each retrieval costs one socket round-trip
+# instead of a per-process 35MB blob fetch + matrix rebuild (~150-400ms).
+# Invalidation: a cheap stamp query (count, max id, max updated_at) per
+# request — any memory write changes the stamp and triggers a reload.
+
+_search_cache: dict = {"stamp": None, "meta": [], "M": None, "T": None, "t_pos": None}
+
+
+def _db_conn():
+    try:
+        import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+    except ImportError:
+        import sqlite3  # type: ignore[no-redef]
+    c = sqlite3.connect(os.path.join(CAIRN_DIR, "cairn.db"))
+    c.execute("PRAGMA busy_timeout=5000")
+    return c
+
+
+def _ensure_search_cache() -> dict:
+    """Load (or revalidate) the in-memory search matrices."""
+    import numpy as np
+    conn = _db_conn()
+    stamp = tuple(conn.execute(
+        "SELECT COUNT(*), COALESCE(MAX(id),0), COALESCE(MAX(updated_at),'') "
+        "FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
+    ).fetchone())
+    if _search_cache["stamp"] == stamp:
+        conn.close()
+        return _search_cache
+
+    rows = conn.execute(
+        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, "
+        "depth, archived_reason, session_id, keywords, topic_embedding "
+        "FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
+    ).fetchall()
+    conn.close()
+
+    metas: list = []
+    vecs: list = []
+    t_pos: list = []
+    t_vecs: list = []
+    dim = None
+    for row in rows:
+        try:
+            v = np.frombuffer(row[4], dtype=np.float32)
+        except (ValueError, TypeError):
+            continue
+        if dim is None:
+            dim = v.shape[0]
+        if v.shape[0] != dim:
+            continue
+        idx = len(vecs)
+        vecs.append(v)
+        metas.append({
+            "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
+            "updated_at": row[5], "project": row[6], "confidence": row[7],
+            "depth": row[8], "archived_reason": row[9], "session_id": row[10],
+            "keywords": row[11],
+        })
+        if row[12] is not None:
+            try:
+                tv = np.frombuffer(row[12], dtype=np.float32)
+            except (ValueError, TypeError):
+                continue
+            if tv.shape[0] == dim:
+                t_pos.append(idx)
+                t_vecs.append(tv)
+
+    M = T = tp = None
+    if vecs:
+        M = np.stack(vecs)
+        n = np.linalg.norm(M, axis=1, keepdims=True)
+        n[n == 0] = 1.0
+        M = M / n
+        if t_vecs:
+            T = np.stack(t_vecs)
+            tn = np.linalg.norm(T, axis=1, keepdims=True)
+            tn[tn == 0] = 1.0
+            T = T / tn
+            tp = np.array(t_pos)
+    _search_cache.update({"stamp": stamp, "meta": metas, "M": M, "T": T, "t_pos": tp})
+    return _search_cache
+
+
+def _vector_search(emb, texts, n_base, min_sim, top_k):
+    """Score all memories against the query variants; return top rows.
+
+    Mirrors find_similar's candidate scoring: per-variant z-score
+    normalization with max-over-variants raw similarity, plus the
+    dual-embedding topic supplement against the base variants only.
+    """
+    import numpy as np
+    cache = _ensure_search_cache()
+    if cache["M"] is None:
+        return []
+    model = emb.get_model()
+    V = np.asarray(model.encode(texts, normalize_embeddings=True), dtype=np.float32)
+    if V.ndim == 1:
+        V = V[None, :]
+    S = cache["M"] @ V.T
+    if S.shape[1] > 1:
+        mu = S.mean(axis=0)
+        sd = np.maximum(S.std(axis=0), 1e-6)
+        Z = (S - mu) / sd
+        best_idx = Z.argmax(axis=1)
+        best = S[np.arange(S.shape[0]), best_idx].astype(np.float64)
+    else:
+        best = S[:, 0].astype(np.float64)
+    if cache["T"] is not None:
+        TS = cache["T"] @ V[:max(1, n_base)].T
+        t_best = TS.max(axis=1)
+        tp = cache["t_pos"]
+        best[tp] = np.maximum(best[tp], t_best)
+
+    order = np.argsort(-best)
+    out = []
+    for i in order[:top_k]:
+        s = float(best[i])
+        if s < min_sim:
+            break
+        m = dict(cache["meta"][i])
+        m["similarity"] = s
+        out.append(m)
+    return out
+
+
 def handle_client(conn, emb):
     """Handle a single client request."""
     try:
@@ -103,6 +231,22 @@ def handle_client(conn, emb):
             model = emb.get_model()
             vec = model.encode(text, normalize_embeddings=True)
             response = {"vector": emb.to_blob(vec).hex()}
+
+        elif action == "embed_batch":
+            texts = request["texts"]
+            model = emb.get_model()
+            vecs = model.encode(texts, normalize_embeddings=True)
+            response = {"vectors": [emb.to_blob(v).hex() for v in vecs]}
+
+        elif action == "vector_search":
+            rows = _vector_search(
+                emb,
+                request["texts"],
+                int(request.get("n_base", 1)),
+                float(request.get("min_sim", 0.15)),
+                int(request.get("top_k", 300)),
+            )
+            response = {"rows": rows}
 
         elif action == "rerank":
             query = request["query"]

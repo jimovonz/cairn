@@ -160,6 +160,37 @@ GRAPH_FILE_CONTEXT_ENABLED = True      # Tier 2 — per-file structural context 
 GRAPH_FILE_CONTEXT_MAX_SYMBOLS = 12    # Cap symbols listed per file (token discipline)
 GRAPH_RISK_TAIL_THRESHOLD = 0.55       # risk_score above which a symbol is flagged high-risk
 
+# === Per-file injection scoping (pretool hook) ===
+# Generic basenames are weak retrieval keys — hundreds of unrelated memories
+# match "README.md" by name across projects. Exact-path matches still serve;
+# basename matching is skipped for these and restricted to same-project rows.
+GENERIC_BASENAMES = frozenset({
+    "README.md", "CLAUDE.md", "ARCHITECTURE.md", "CHANGELOG.md", "LICENSE",
+    "__init__.py", "main.py", "setup.py", "conftest.py",
+    "index.js", "index.ts", "main.c", "main.cpp",
+    "Makefile", "CMakeLists.txt", "Dockerfile",
+    "package.json", "pyproject.toml", "requirements.txt",
+    "settings.json", "config.json", ".gitignore", ".env",
+})
+FILE_INJECTION_DAMPEN_THRESHOLD = 10   # Per-file path stops serving a memory after this many total deliveries (any layer); semantic layers unaffected
+
+# === Associated-files write hygiene ===
+ASSOC_FILES_MAX = 8                    # Cap files stored per memory — beyond this, association is session noise not signal
+ASSOC_JUNK_SEGMENTS = frozenset({      # Path segments that mark a file as non-project noise
+    ".venv", "venv", "node_modules", ".git", "__pycache__", ".cache",
+    ".staged_context", "site-packages", ".code-review-graph",
+})
+ASSOC_JUNK_SUFFIXES = (".log", ".db", ".db-wal", ".db-shm", ".pid", ".lock",
+                       ".pyc", ".sqlite", ".sqlite3", ".bak", ".jsonl")
+ASSOC_JUNK_PREFIXES = ("/tmp/", "/var/", "/proc/", "/sys/", "/dev/")
+
+# === FTS5 index maintenance ===
+# Segment count in memories_fts_data is the fragmentation signal — automerge
+# leaves the index fragmented under steady per-turn inserts (observed 1566
+# segments, broad MATCH queries degraded 3x). Above the threshold the write
+# path runs FTS optimize (~85ms at 10k memories) to merge segments.
+FTS_OPTIMIZE_SEGMENT_THRESHOLD = 1000
+
 # === Correction trigger matching ===
 # Stop hook compares response against stored correction triggers (embedded phrases
 # describing what the bad response looks like). Blocks on match so the LLM can self-correct.
@@ -205,6 +236,8 @@ CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 CROSS_ENCODER_WEIGHT = 0.6         # Blend: (1-w)*composite + w*cross_encoder
 CROSS_ENCODER_MIN_CANDIDATES = 1   # Apply CE floor even on small candidate sets
 CROSS_ENCODER_SCORE_FLOOR = -3.0   # Drop candidates below this raw ms-marco logit (negative = irrelevant)
+CROSS_ENCODER_MAX_CANDIDATES = 12  # Cap active pairs per CE call — CE latency is linear in pair count
+CROSS_ENCODER_MAX_ARCHIVED = 6     # Cap archived (negative-knowledge) pairs in the combined CE call
 
 # === NLI (Natural Language Inference) for consolidation ===
 # Used by the consolidation pipeline to detect entailment between memory pairs.

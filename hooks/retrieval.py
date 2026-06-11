@@ -36,6 +36,7 @@ def hybrid_search(
     use_adaptive: bool = True,
     exclude_project: bool = False,
     exclude_ids: Optional[set[int]] = None,
+    rerank: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float]:
     """Hybrid semantic + FTS5 search with RRF fusion.
 
@@ -58,17 +59,12 @@ def hybrid_search(
     # --- Semantic search ---
     if emb:
         try:
+            # Single pass: find_similar embeds the unprefixed query as a
+            # fan-out variant internally, so the old second unprefixed call
+            # (which doubled the whole pipeline incl. the cross-encoder) is gone.
             all_results = emb.find_similar(conn, query, threshold=threshold,
-                                           limit=limit * 2, current_project=project)
-            if project and not exclude_project:
-                unprefixed = emb.find_similar(conn, query, threshold=threshold,
-                                              limit=limit * 2, current_project=None)
-                by_id = {r["id"]: r for r in all_results}
-                for r in unprefixed:
-                    if r["id"] not in by_id or r["score"] > by_id[r["id"]]["score"]:
-                        by_id[r["id"]] = r
-                all_results = sorted(by_id.values(), key=lambda x: x["score"], reverse=True)
-
+                                           limit=limit * 2, current_project=project,
+                                           rerank=rerank)
             rank = 0
             for r in all_results:
                 if session_id and r.get("session_id") == session_id:
@@ -102,15 +98,19 @@ def hybrid_search(
         if not meaningful:
             meaningful = words
         fts_query = " OR ".join(f'"{w}"' for w in meaningful) if meaningful else query
+        # Rank inside the FTS subquery BEFORE joining: ORDER BY rank on the
+        # joined shape forces bm25 + row join for every matching row (435ms on
+        # broad OR queries); limiting first costs ~1ms. Inner limit over-fetches
+        # to survive the deleted_at filter.
         rows = conn.execute("""
             SELECT m.id, m.type, m.topic, m.content, m.updated_at, m.project,
-                   m.session_id, m.confidence, m.depth, m.archived_reason, rank, m.keywords
-            FROM memories_fts f
+                   m.session_id, m.confidence, m.depth, m.archived_reason, f.rank, m.keywords
+            FROM (SELECT rowid, rank FROM memories_fts
+                  WHERE memories_fts MATCH ? ORDER BY rank LIMIT ?) f
             JOIN memories m ON f.rowid = m.id
-            WHERE memories_fts MATCH ?
-              AND m.deleted_at IS NULL
-            ORDER BY rank LIMIT ?
-        """, (fts_query, limit * 3)).fetchall()
+            WHERE m.deleted_at IS NULL
+            ORDER BY f.rank LIMIT ?
+        """, (fts_query, limit * 9, limit * 3)).fetchall()
         rank = 0
         for r in rows:
             if session_id and r[6] == session_id:
