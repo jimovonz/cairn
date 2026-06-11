@@ -52,6 +52,7 @@ def test_garbage_gate_rejects_weak_results():
         source_ref TEXT,
         deleted_at TIMESTAMP,
         synced_at TIMESTAMP,
+        facts TEXT,
         topic_embedding BLOB)""")
     # Insert a memory with a known embedding
     vec = np.random.RandomState(42).randn(384).astype(np.float32)
@@ -97,6 +98,7 @@ def test_diversity_filter_drops_same_type_topic():
         source_ref TEXT,
         deleted_at TIMESTAMP,
         synced_at TIMESTAMP,
+        facts TEXT,
         topic_embedding BLOB)""")
     # Two memories with same type+topic but slightly different embeddings
     base = np.random.RandomState(42).randn(384).astype(np.float32)

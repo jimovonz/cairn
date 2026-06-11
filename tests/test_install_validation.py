@@ -231,6 +231,7 @@ init_db.init()
             source_ref TEXT,
             deleted_at TIMESTAMP,
             synced_at TIMESTAMP,
+        facts TEXT,
         topic_embedding BLOB)""")
         conn.commit()
         conn.close()

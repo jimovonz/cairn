@@ -48,6 +48,7 @@ def setup_test_db():
             source_ref TEXT,
             deleted_at TIMESTAMP,
             synced_at TIMESTAMP,
+        facts TEXT,
         topic_embedding BLOB)
     """)
     conn.execute("""
