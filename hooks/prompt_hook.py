@@ -334,10 +334,10 @@ def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> O
     record_layer_delivery(session_id, "bootstrap", result_ids)
     log(f"Project bootstrap: injected {len(rows)} standing-context entries for {project_name}")
 
-    instruction = ("These are standing-context memories for this project — "
-                   "decisions, preferences, and facts that apply regardless of the current task.")
+    # No <instruction> chrome (v0.14 §9) — layer="project-bootstrap" plus the
+    # rules-file layer legend carries the same meaning at zero per-session cost.
     return build_context_xml("project standing context", project_name, "project-bootstrap",
-                             results, [], instruction=instruction)
+                             results, [])
 
 
 def correction_bootstrap(session_id: str) -> Optional[str]:
@@ -387,10 +387,9 @@ def correction_bootstrap(session_id: str) -> Optional[str]:
     record_layer_delivery(session_id, "correction-bootstrap", result_ids)
     log(f"Correction bootstrap: injected {len(rows)} corrections")
 
-    instruction = ("These are behavioural corrections from past sessions — mistakes made and lessons learned. "
-                   "Apply these to avoid repeating the same errors.")
+    # No <instruction> chrome (v0.14 §9) — layer legend lives in the rules file.
     return build_context_xml("behavioural corrections", None, "correction-bootstrap",
-                             [], results, instruction=instruction)
+                             [], results)
 
 
 def layer1_search(user_message: str, session_id: str) -> Optional[str]:
@@ -517,13 +516,18 @@ def main() -> None:
             context_parts.append(l1_context)
             log(f"Layer 1: injected context for: {user_message[:50]}...")
         if not is_subagent:
-            # Memory block format spec on first prompt. Critical for Copilot
-            # sessions which do not read ~/.claude/rules/memory-system.md and
-            # otherwise hit the stop-hook fail-open path (uninstructed_session_skip)
-            # forever. Claude Code sessions get this redundantly but it's harmless.
-            context_parts.append(MEMORY_FORMAT_SPEC)
-            # Mark the session as instructed so stop_hook can enforce immediately
-            # instead of fail-opening on the first missing-block turn.
+            # Memory block format spec on first prompt — but ONLY for sessions
+            # that do not load ~/.claude/rules/memory-system.md (Copilot etc.),
+            # which otherwise hit the stop-hook fail-open path
+            # (uninstructed_session_skip) forever. Claude Code sessions load the
+            # rules file into the system prompt, so the ~600-token spec here was
+            # pure redundancy for them. Detection: Claude Code transcripts live
+            # under ~/.claude/projects/. Unknown harness → inject (fail-safe).
+            if "/.claude/projects/" not in (transcript_path or ""):
+                context_parts.append(MEMORY_FORMAT_SPEC)
+            # Mark the session as instructed either way (rules file or spec) so
+            # stop_hook can enforce immediately instead of fail-opening on the
+            # first missing-block turn.
             save_hook_state(session_id, "format_spec_injected", "1")
 
     elif not is_subagent:

@@ -158,6 +158,41 @@ def embed_batch(texts: list[str], allow_slow: bool = True) -> Optional[list[np.n
     return out
 
 
+def _conn_is_main_db(conn) -> bool:
+    """True when conn points at the production cairn.db — the only DB the
+    daemon-resident matrices mirror. Callers passing any other connection
+    (tests, alternate DBs) must take the local scoring path."""
+    try:
+        main_db = os.path.realpath(os.path.join(os.path.dirname(__file__), "cairn.db"))
+        for _, name, file in conn.execute("PRAGMA database_list").fetchall():
+            if name == "main":
+                return bool(file) and os.path.realpath(file) == main_db
+    except Exception:
+        pass
+    return False
+
+
+def _daemon_vector_search(texts: list[str], n_base: int, min_sim: float,
+                          top_k: int = 300) -> Optional[list[dict]]:
+    """Score query variants against the daemon-resident memory matrices.
+
+    Returns scored candidate rows (metadata + similarity) or None when the
+    daemon is down or predates the vector_search action — callers fall back
+    to the local fetch-and-score path.
+    """
+    try:
+        from cairn.daemon import send_request
+        resp = send_request({"action": "vector_search", "texts": texts,
+                             "n_base": n_base, "min_sim": min_sim, "top_k": top_k})
+        if resp and resp.get("rows") is not None:
+            return resp["rows"]
+    except (ConnectionError, TimeoutError, OSError, ValueError) as e:
+        _log_embed(f"daemon vector_search unavailable: {type(e).__name__}: {e}", "warning")
+    except Exception as e:
+        _log_embed(f"daemon vector_search unexpected error: {type(e).__name__}: {e}", "error")
+    return None
+
+
 def _daemon_rerank(query: str, candidates: list[str]) -> Optional[list[float]]:
     """Re-rank candidates via the daemon's cross-encoder. Returns scores or None."""
     try:
@@ -625,123 +660,158 @@ def find_similar(
             if current_project:
                 variant_texts.append(f"{current_project} {mtype} {text}")
             variant_texts.append(f"{mtype} {text}")
-
-    t_fanout = _time.perf_counter()
-    vecs = embed_batch(variant_texts)
-    if vecs is None:
-        return []
-    query_vec = vecs[0]
-    V = _np.stack(vecs).astype(_np.float32)
-    v_norms = _np.linalg.norm(V, axis=1, keepdims=True)
-    v_norms[v_norms == 0] = 1.0
-    V = V / v_norms
-    # Topic embeddings live in a prompt-shaped region — score them against the
-    # base variants only (prefixed + bare), matching the previous dual-embedding
-    # behaviour.
+    # Topic embeddings live in a prompt-shaped region — they are scored against
+    # the base variants only (prefixed + bare), not the type fan-out.
     n_base = 2 if current_project else 1
 
-    # --- Single fetch of the memory table (active + archived together) ---
-    t_search = _time.perf_counter()
-    rows = conn.execute(
-        "SELECT id, type, topic, content, embedding, updated_at, project, confidence, "
-        "depth, archived_reason, session_id, keywords, topic_embedding "
-        "FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
-    ).fetchall()
-    if not rows:
-        return []
-
-    dim = V.shape[1]
-    mem_vecs: list[_np.ndarray] = []
-    valid_rows: list[Any] = []
-    for row in rows:
-        try:
-            v = _np.frombuffer(row[4], dtype=_np.float32)
-        except (ValueError, TypeError):
-            continue
-        if v.shape[0] != dim:
-            continue
-        mem_vecs.append(v)
-        valid_rows.append(row)
-    if not valid_rows:
-        return []
-
-    M = _np.stack(mem_vecs)
-    m_norms = _np.linalg.norm(M, axis=1, keepdims=True)
-    m_norms[m_norms == 0] = 1.0
-    M = M / m_norms
-
-    # All-variant similarity in one matrix product: [N, n_variants]
-    S = M @ V.T
-    if S.shape[1] > 1:
-        # Z-score normalize within each variant column, then take each row's
-        # best raw similarity at its best-aligned variant. Without this,
-        # variants producing systematically higher raw cosines would dominate.
-        mu = S.mean(axis=0)
-        sd = _np.maximum(S.std(axis=0), 1e-6)
-        Z = (S - mu) / sd
-        best_idx = Z.argmax(axis=1)
-        best_sim = S[_np.arange(S.shape[0]), best_idx].astype(_np.float64)
-    else:
-        best_sim = S[:, 0].astype(_np.float64)
-
-    # Dual-embedding supplement (schema v8): max in topic-embedding similarity
-    # against the base variants for rows that have one.
-    t_idx = [i for i, r in enumerate(valid_rows) if r[12] is not None]
-    if t_idx:
-        t_vecs: list[_np.ndarray] = []
-        t_keep: list[int] = []
-        for i in t_idx:
-            try:
-                tv = _np.frombuffer(valid_rows[i][12], dtype=_np.float32)
-            except (ValueError, TypeError):
-                continue
-            if tv.shape[0] != dim:
-                continue
-            t_vecs.append(tv)
-            t_keep.append(i)
-        if t_keep:
-            T = _np.stack(t_vecs)
-            t_norms = _np.linalg.norm(T, axis=1, keepdims=True)
-            t_norms[t_norms == 0] = 1.0
-            TS = (T / t_norms) @ V[:n_base].T
-            t_best = TS.max(axis=1)
-            keep_arr = _np.array(t_keep)
-            best_sim[keep_arr] = _np.maximum(best_sim[keep_arr], t_best)
-
-    _record_embed_metric("search_matrix_ms", (_time.perf_counter() - t_search) * 1000)
-    _record_embed_metric("fanout_ms", (_time.perf_counter() - t_fanout) * 1000)
-
-    # --- Build candidates; partition active vs archived (negative knowledge) ---
+    # --- Candidate generation: daemon-resident search first ---
+    # The long-lived daemon caches the normalized embedding matrices, so one
+    # socket round-trip replaces the per-process blob fetch + matrix rebuild.
+    # Skipped when embed() is monkeypatched (test seam) so mocked vectors are
+    # honored; falls back to the local path when the daemon is down or stale.
+    t_fanout = _time.perf_counter()
     k = limit * 5  # Over-fetch for post-filtering
     candidates: list[dict[str, Any]] = []
     archived_pool: list[dict[str, Any]] = []
-    for i, row in enumerate(valid_rows):
-        sim = float(best_sim[i])
-        is_archived = bool(row[9])
-        if is_archived:
-            if sim < MIN_INJECTION_SIMILARITY:
+    daemon_rows = None
+    if embed is _EMBED_ORIGINAL and _conn_is_main_db(conn):
+        floor = min(threshold, MIN_INJECTION_SIMILARITY)
+        daemon_rows = _daemon_vector_search(variant_texts, n_base, floor, top_k=k * 6)
+
+    if daemon_rows is not None:
+        _record_embed_metric("search_daemon_ms", (_time.perf_counter() - t_fanout) * 1000)
+        for r in daemon_rows:
+            sim = r["similarity"]
+            is_archived = bool(r.get("archived_reason"))
+            confidence = r["confidence"] if r["confidence"] is not None else 0.7
+            if is_archived:
+                if sim < MIN_INJECTION_SIMILARITY:
+                    continue
+                archived_pool.append({
+                    "id": r["id"], "type": r["type"], "topic": r["topic"], "content": r["content"],
+                    "similarity": sim, "updated_at": r["updated_at"], "project": r["project"],
+                    "confidence": confidence, "depth": r["depth"],
+                    "score": 0.0,
+                    "archived": True, "archived_reason": r["archived_reason"],
+                })
                 continue
-        elif sim < threshold:
-            continue
-        confidence = row[7] if row[7] is not None else 0.7
-        if is_archived:
-            archived_pool.append({
+            if sim < threshold:
+                continue
+            kw_ov = keyword_overlap(qt, r.get("keywords"))
+            candidates.append({
+                "id": r["id"], "type": r["type"], "topic": r["topic"], "content": r["content"],
+                "similarity": sim, "updated_at": r["updated_at"], "project": r["project"],
+                "confidence": confidence, "session_id": r["session_id"], "depth": r["depth"],
+                "archived_reason": r["archived_reason"], "keywords": r.get("keywords"),
+                "score": composite_score(sim, confidence, r["updated_at"], r["project"],
+                                         current_project, r["type"], kw_ov),
+            })
+    else:
+        vecs = embed_batch(variant_texts)
+        if vecs is None:
+            return []
+        V = _np.stack(vecs).astype(_np.float32)
+        v_norms = _np.linalg.norm(V, axis=1, keepdims=True)
+        v_norms[v_norms == 0] = 1.0
+        V = V / v_norms
+
+        # --- Single fetch of the memory table (active + archived together) ---
+        t_search = _time.perf_counter()
+        rows = conn.execute(
+            "SELECT id, type, topic, content, embedding, updated_at, project, confidence, "
+            "depth, archived_reason, session_id, keywords, topic_embedding "
+            "FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
+        ).fetchall()
+        if not rows:
+            return []
+
+        dim = V.shape[1]
+        mem_vecs: list[_np.ndarray] = []
+        valid_rows: list[Any] = []
+        for row in rows:
+            try:
+                v = _np.frombuffer(row[4], dtype=_np.float32)
+            except (ValueError, TypeError):
+                continue
+            if v.shape[0] != dim:
+                continue
+            mem_vecs.append(v)
+            valid_rows.append(row)
+        if not valid_rows:
+            return []
+
+        M = _np.stack(mem_vecs)
+        m_norms = _np.linalg.norm(M, axis=1, keepdims=True)
+        m_norms[m_norms == 0] = 1.0
+        M = M / m_norms
+
+        # All-variant similarity in one matrix product: [N, n_variants]
+        S = M @ V.T
+        if S.shape[1] > 1:
+            # Z-score normalize within each variant column, then take each row's
+            # best raw similarity at its best-aligned variant. Without this,
+            # variants producing systematically higher raw cosines would dominate.
+            mu = S.mean(axis=0)
+            sd = _np.maximum(S.std(axis=0), 1e-6)
+            Z = (S - mu) / sd
+            best_idx = Z.argmax(axis=1)
+            best_sim = S[_np.arange(S.shape[0]), best_idx].astype(_np.float64)
+        else:
+            best_sim = S[:, 0].astype(_np.float64)
+
+        # Dual-embedding supplement (schema v8): max in topic-embedding similarity
+        # against the base variants for rows that have one.
+        t_idx = [i for i, r in enumerate(valid_rows) if r[12] is not None]
+        if t_idx:
+            t_vecs: list[_np.ndarray] = []
+            t_keep: list[int] = []
+            for i in t_idx:
+                try:
+                    tv = _np.frombuffer(valid_rows[i][12], dtype=_np.float32)
+                except (ValueError, TypeError):
+                    continue
+                if tv.shape[0] != dim:
+                    continue
+                t_vecs.append(tv)
+                t_keep.append(i)
+            if t_keep:
+                T = _np.stack(t_vecs)
+                t_norms = _np.linalg.norm(T, axis=1, keepdims=True)
+                t_norms[t_norms == 0] = 1.0
+                TS = (T / t_norms) @ V[:n_base].T
+                t_best = TS.max(axis=1)
+                keep_arr = _np.array(t_keep)
+                best_sim[keep_arr] = _np.maximum(best_sim[keep_arr], t_best)
+
+        _record_embed_metric("search_matrix_ms", (_time.perf_counter() - t_search) * 1000)
+
+        for i, row in enumerate(valid_rows):
+            sim = float(best_sim[i])
+            is_archived = bool(row[9])
+            if is_archived:
+                if sim < MIN_INJECTION_SIMILARITY:
+                    continue
+            elif sim < threshold:
+                continue
+            confidence = row[7] if row[7] is not None else 0.7
+            if is_archived:
+                archived_pool.append({
+                    "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
+                    "similarity": sim, "updated_at": row[5], "project": row[6],
+                    "confidence": confidence, "depth": row[8],
+                    "score": 0.0,
+                    "archived": True, "archived_reason": row[9],
+                })
+                continue
+            kw_ov = keyword_overlap(qt, row[11])
+            candidates.append({
                 "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
                 "similarity": sim, "updated_at": row[5], "project": row[6],
-                "confidence": confidence, "depth": row[8],
-                "score": 0.0,
-                "archived": True, "archived_reason": row[9],
+                "confidence": confidence, "session_id": row[10], "depth": row[8],
+                "archived_reason": row[9], "keywords": row[11],
+                "score": composite_score(sim, confidence, row[5], row[6], current_project, row[1], kw_ov),
             })
-            continue
-        kw_ov = keyword_overlap(qt, row[11])
-        candidates.append({
-            "id": row[0], "type": row[1], "topic": row[2], "content": row[3],
-            "similarity": sim, "updated_at": row[5], "project": row[6],
-            "confidence": confidence, "session_id": row[10], "depth": row[8],
-            "archived_reason": row[9], "keywords": row[11],
-            "score": composite_score(sim, confidence, row[5], row[6], current_project, row[1], kw_ov),
-        })
-
+    _record_embed_metric("fanout_ms", (_time.perf_counter() - t_fanout) * 1000)
     candidates.sort(key=lambda x: x["score"], reverse=True)
     candidates = candidates[:k * 2]
 
@@ -867,6 +937,19 @@ def find_nearest(conn: sqlite3.Connection, text: str, limit: int = 1) -> list[di
     scan so topic-only matches surface as candidates. No confidence or
     threshold filtering.
     """
+    # Daemon-resident fast path (same matrices as find_similar) — one socket
+    # round-trip replaces the per-process scan. ~118ms -> ~10ms per entry,
+    # which the stop hook pays once per stored memory.
+    if embed is _EMBED_ORIGINAL and _conn_is_main_db(conn):
+        rows = _daemon_vector_search([text], 1, 0.0, top_k=max(limit * 5, 25))
+        if rows is not None:
+            return [{
+                "id": r["id"], "type": r["type"], "topic": r["topic"],
+                "content": r["content"], "similarity": r["similarity"],
+                "updated_at": r["updated_at"], "project": r["project"],
+                "confidence": r["confidence"] if r["confidence"] is not None else 0.7,
+            } for r in rows[:limit]]
+
     query_vec = embed(text)
 
     vec_candidates: list[dict[str, Any]] = []
