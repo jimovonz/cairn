@@ -178,6 +178,13 @@ ASSOC_JUNK_SUFFIXES = (".log", ".db", ".db-wal", ".db-shm", ".pid", ".lock",
                        ".pyc", ".sqlite", ".sqlite3", ".bak", ".jsonl")
 ASSOC_JUNK_PREFIXES = ("/tmp/", "/var/", "/proc/", "/sys/", "/dev/")
 
+# === FTS5 index maintenance ===
+# Segment count in memories_fts_data is the fragmentation signal — automerge
+# leaves the index fragmented under steady per-turn inserts (observed 1566
+# segments, broad MATCH queries degraded 3x). Above the threshold the write
+# path runs FTS optimize (~85ms at 10k memories) to merge segments.
+FTS_OPTIMIZE_SEGMENT_THRESHOLD = 1000
+
 # === Correction trigger matching ===
 # Stop hook compares response against stored correction triggers (embedded phrases
 # describing what the bad response looks like). Blocks on match so the LLM can self-correct.

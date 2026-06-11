@@ -562,6 +562,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
 
     conn.commit()
 
+    _maybe_optimize_fts(conn)
+
     # Inline backfill: fill up to BACKFILL_INLINE_MAX missing embeddings synchronously
     # via the daemon socket. Previously this spawned a detached subprocess that held
     # a write lock after the parent stop_hook exited — a classic concurrent-writer
@@ -573,6 +575,25 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     conn.close()
 
     return inserted
+
+
+def _maybe_optimize_fts(conn) -> None:
+    """Merge FTS5 segments when fragmentation crosses the threshold.
+
+    Self-maintaining: steady per-turn inserts fragment memories_fts (automerge
+    alone left 1566 segments; broad OR queries degraded ~3x). Checking the
+    segment count is ~0ms; optimize itself runs only when needed and costs
+    ~85ms at current corpus size. Fails open."""
+    try:
+        from cairn.config import FTS_OPTIMIZE_SEGMENT_THRESHOLD
+        n = conn.execute("SELECT COUNT(*) FROM memories_fts_data").fetchone()[0]
+        if n >= FTS_OPTIMIZE_SEGMENT_THRESHOLD:
+            conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('optimize')")
+            conn.commit()
+            log(f"FTS optimize: merged index at {n} segments")
+            hook_helpers.record_metric(None, "fts_optimized", None, n)
+    except Exception as e:
+        log(f"FTS optimize skipped: {type(e).__name__}: {e}")
 
 
 def inline_backfill(conn) -> None:

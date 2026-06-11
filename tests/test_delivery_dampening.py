@@ -173,3 +173,34 @@ def test_extract_associated_files_behavioural_bash_helpers(tmp_path):
     result = storage.extract_associated_files(str(tmp_path / "t.jsonl"), lookback=0)
 
     assert result == ["/repo/src/target.py"]
+
+
+#TAG: [DC06] 2026-06-12
+# Verifies: _maybe_optimize_fts merges FTS segments above the threshold and
+# no-ops below it (write-path self-maintenance for MATCH query latency)
+@pytest.mark.behavioural
+def test_maybe_optimize_fts_behavioural(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "fts.db"))
+    conn.execute("CREATE VIRTUAL TABLE memories_fts USING fts5(topic, content)")
+    # One commit per insert fragments the index into many segments
+    for i in range(40):
+        conn.execute("INSERT INTO memories_fts (topic, content) VALUES (?, ?)",
+                     (f"topic-{i}", f"content body number {i}"))
+        conn.commit()
+    before = conn.execute("SELECT COUNT(*) FROM memories_fts_data").fetchone()[0]
+    assert before > 10
+
+    with patch("hooks.storage.log"), \
+         patch.object(hook_helpers, "record_metric"):
+        # Below threshold: no-op
+        with patch("cairn.config.FTS_OPTIMIZE_SEGMENT_THRESHOLD", before + 1):
+            storage._maybe_optimize_fts(conn)
+        unchanged = conn.execute("SELECT COUNT(*) FROM memories_fts_data").fetchone()[0]
+        assert unchanged == before
+
+        # At/above threshold: segments merge
+        with patch("cairn.config.FTS_OPTIMIZE_SEGMENT_THRESHOLD", 10):
+            storage._maybe_optimize_fts(conn)
+        merged = conn.execute("SELECT COUNT(*) FROM memories_fts_data").fetchone()[0]
+        assert merged < before
+    conn.close()
