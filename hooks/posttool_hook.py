@@ -112,6 +112,8 @@ def _is_high_signal_edit(tool_input: dict, tool_output: dict) -> tuple[bool, str
 
 
 def main() -> None:
+    if os.environ.get("CAIRN_ENABLED", "1") == "0":
+        sys.exit(0)
     if not CHECKPOINT_ENABLED:
         sys.exit(0)
 

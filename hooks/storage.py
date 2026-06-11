@@ -295,60 +295,60 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
         return bump_lamport(conn) if sync_on else 0
 
     def _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob,
-                       session_id, project, depth, keywords_csv) -> None:
+                       session_id, project, depth, keywords_csv, facts_csv=None) -> None:
         """Single insertion path — branches on whether sync columns exist.
         Always stores topic_embedding (schema v8 dual-embedding)."""
         if sync_on:
             lam = _next_lamport()
             conn.execute(
-                "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, "
+                "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, facts, "
                 "origin_id, created_by_node, updated_by_node, user_id, updated_by, lamport, "
                 "visibility, embedding_model_version) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv,
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, facts_csv,
                  str(uuid.uuid4()), node_id, node_id, user_id, user_id, lam, 'team', model_version)
             )
         else:
             conn.execute(
-                "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, origin_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv,
+                "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, facts, origin_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, facts_csv,
                  str(uuid.uuid4()))
             )
 
     def _update_memory_full(mem_id, content, embedding_blob, session_id, project, keywords_csv,
-                            confidence=None) -> None:
+                            confidence=None, facts_csv=None) -> None:
         """Full-content update — branches on sync columns."""
         if sync_on:
             lam = _next_lamport()
             if confidence is not None:
                 conn.execute(
                     "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, "
-                    "confidence = ?, keywords = ?, updated_at = CURRENT_TIMESTAMP, "
+                    "confidence = ?, keywords = ?, facts = ?, updated_at = CURRENT_TIMESTAMP, "
                     "updated_by_node = ?, updated_by = ?, lamport = ?, embedding_model_version = ? WHERE id = ?",
-                    (content, embedding_blob, session_id, project, confidence, keywords_csv,
+                    (content, embedding_blob, session_id, project, confidence, keywords_csv, facts_csv,
                      node_id, user_id, lam, model_version, mem_id)
                 )
             else:
                 conn.execute(
                     "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, "
-                    "keywords = ?, updated_at = CURRENT_TIMESTAMP, "
+                    "keywords = ?, facts = ?, updated_at = CURRENT_TIMESTAMP, "
                     "updated_by_node = ?, updated_by = ?, lamport = ?, embedding_model_version = ? WHERE id = ?",
-                    (content, embedding_blob, session_id, project, keywords_csv,
+                    (content, embedding_blob, session_id, project, keywords_csv, facts_csv,
                      node_id, user_id, lam, model_version, mem_id)
                 )
         else:
             if confidence is not None:
                 conn.execute(
                     "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, "
-                    "confidence = ?, keywords = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (content, embedding_blob, session_id, project, confidence, keywords_csv, mem_id)
+                    "confidence = ?, keywords = ?, facts = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (content, embedding_blob, session_id, project, confidence, keywords_csv, facts_csv, mem_id)
                 )
             else:
                 conn.execute(
                     "UPDATE memories SET content = ?, embedding = ?, session_id = ?, project = ?, "
-                    "keywords = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (content, embedding_blob, session_id, project, keywords_csv, mem_id)
+                    "keywords = ?, facts = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (content, embedding_blob, session_id, project, keywords_csv, facts_csv, mem_id)
                 )
 
     def _annotate_archived(mem_id, reason) -> None:
@@ -376,6 +376,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
         mem_type: str = entry.get("type", "fact")
         topic: str = entry.get("topic", "unknown")
         content: str = entry.get("content", "")
+        facts: Optional[list] = entry.get("facts")
+        facts_csv: Optional[str] = "\n".join(str(f) for f in facts) if facts else None
         depth: Optional[int] = entry.get("depth")
         entry_keywords: Optional[list[str]] = entry.get("keywords")
         keywords_csv: Optional[str] = ",".join(entry_keywords) if entry_keywords else None
@@ -439,7 +441,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     )
                     record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
                 log(f"Distinct variant: type={mem_type} topic={topic} (sim={old_sim:.2f}) — inserting as new")
-                _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv)
+                _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, facts_csv)
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
@@ -454,7 +456,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     log(f"Skip identical-content update: type={mem_type} topic={topic}")
                 else:
                     _update_memory_full(same_topic[0], content, embedding_blob, session_id, project,
-                                        keywords_csv, confidence=CONFIDENCE_DEFAULT)
+                                        keywords_csv, confidence=CONFIDENCE_DEFAULT, facts_csv=facts_csv)
                 if embedding_blob and emb:
                     emb.upsert_vec_index(conn, same_topic[0], embedding_blob)
         else:
@@ -471,7 +473,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                         if match.get("content") == content:
                             log(f"Skip identical-content semantic dedup: topic={topic}")
                         else:
-                            _update_memory_full(match["id"], content, embedding_blob, session_id, project, keywords_csv)
+                            _update_memory_full(match["id"], content, embedding_blob, session_id, project, keywords_csv, facts_csv=facts_csv)
                             emb.upsert_vec_index(conn, match["id"], embedding_blob)
                         deduped = True
                     elif nearest and nearest[0]["similarity"] >= NEGATION_SIM_FLOOR:
@@ -484,7 +486,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     pass  # Embedding issues don't block insertion
 
             if not deduped:
-                _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv)
+                _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, facts_csv)
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     emb.upsert_vec_index(conn, new_id, embedding_blob)

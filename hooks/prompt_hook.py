@@ -281,7 +281,7 @@ def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> O
     Queries directly by project name + type filter — no semantic search needed.
     Gives Claude project awareness from CWD alone, independent of prompt content.
     """
-    from cairn.config import PROJECT_BOOTSTRAP_ENABLED, PROJECT_BOOTSTRAP_MAX, PROJECT_BOOTSTRAP_TYPES
+    from cairn.config import PROJECT_BOOTSTRAP_ENABLED, PROJECT_BOOTSTRAP_MAX
     from hooks.hook_helpers import recency_days, reliability_label
 
     if not PROJECT_BOOTSTRAP_ENABLED or not cwd:
@@ -292,21 +292,36 @@ def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> O
     if not project_name or project_name in (".", "/", "home", "tmp", "temp"):
         return None
 
-    types = [t.strip() for t in PROJECT_BOOTSTRAP_TYPES.split(",")]
-    placeholders = ",".join("?" * len(types))
-
     try:
         conn = get_conn()
-        rows = conn.execute(f"""
+        # Unlimited standing context: session-handoffs + all facts + all decisions
+        # These are permanent architectural knowledge — must always be present, same as a compaction summary
+        unlimited_rows = conn.execute("""
             SELECT id, type, topic, content, updated_at, project, confidence, archived_reason
             FROM memories
-            WHERE project = ? AND type IN ({placeholders})
+            WHERE project = ?
+            AND (
+                (type = 'project' AND topic = 'session handoff')
+                OR type IN ('fact', 'decision')
+            )
+            AND (archived_reason IS NULL OR archived_reason = '')
+            AND deleted_at IS NULL
+            ORDER BY updated_at DESC
+        """, (project_name,)).fetchall()
+        unlimited_ids = {r[0] for r in unlimited_rows}
+        # Capped: project (non-handoff) + preference — status entries that may be numerous
+        capped_rows = conn.execute("""
+            SELECT id, type, topic, content, updated_at, project, confidence, archived_reason
+            FROM memories
+            WHERE project = ? AND type IN ('project', 'preference')
             AND (archived_reason IS NULL OR archived_reason = '')
             AND deleted_at IS NULL
             ORDER BY updated_at DESC
             LIMIT ?
-        """, (project_name, *types, PROJECT_BOOTSTRAP_MAX)).fetchall()
+        """, (project_name, PROJECT_BOOTSTRAP_MAX)).fetchall()
         conn.close()
+        merged = list(unlimited_rows) + [r for r in capped_rows if r[0] not in unlimited_ids]
+        rows = sorted(merged, key=lambda r: r[4], reverse=True)  # r[4] = updated_at
     except Exception as e:
         log(f"Project bootstrap error: {e}")
         return None
@@ -423,6 +438,8 @@ def layer1_search(user_message: str, session_id: str) -> Optional[str]:
 
 
 def main() -> None:
+    if os.environ.get("CAIRN_ENABLED", "1") == "0":
+        sys.exit(0)
     raw = sys.stdin.read()
     hook_input = json.loads(raw)
     session_id = hook_input.get("session_id", "") or hook_input.get("sessionId", "")
@@ -594,6 +611,12 @@ def main() -> None:
                         "  Decisions: key decisions made this session with rejected alternatives\n"
                         "  Blockers: unresolved questions or dependencies\n"
                         "  Next: the single clearest next action\n"
+                        "Also include an \"f\" array of exact technical values touched this session "
+                        "that would otherwise be lost to compaction: register names, file paths, "
+                        "config keys, version strings, CLI flags, part numbers. One short string per item. "
+                        "Each fact must be self-qualifying — include a prefix so it reads without the summary: "
+                        "\"VDMA:c_num_fstores=3\" not \"c_num_fstores=3\", \"file:hooks/remap_ip.v\" not a bare path. "
+                        "These are stored in a dedicated FTS5 column and are keyword-searchable in future sessions.\n"
                         "This entry is injected at the start of your next session via project_bootstrap."
                         + _prior_handoff_snippet
                     )

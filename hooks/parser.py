@@ -106,6 +106,12 @@ def _parse_linkdef(text: str) -> Optional[ParseResult]:
             kw = _g(e, "kw", "keywords")
             if kw is not None:
                 entry["keywords"] = kw if isinstance(kw, list) else [k.strip() for k in str(kw).split(",")]
+            facts = _g(e, "f", "facts")
+            if facts is not None:
+                if isinstance(facts, list):
+                    entry["facts"] = [str(f).strip() for f in facts if str(f).strip()]
+                elif isinstance(facts, str) and facts.strip():
+                    entry["facts"] = [facts.strip()]
             trigger = _g(e, "tr", "trigger")
             if trigger:
                 entry["trigger"] = str(trigger)

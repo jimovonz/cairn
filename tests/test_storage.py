@@ -45,6 +45,7 @@ def _init_db(path):
             source_ref TEXT,
             deleted_at TIMESTAMP,
             synced_at TIMESTAMP,
+            facts TEXT,
         topic_embedding BLOB)
     """)
     conn.execute("""

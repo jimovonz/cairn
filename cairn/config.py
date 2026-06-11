@@ -142,12 +142,12 @@ SESSION_HANDOFF_INTERVAL = 10
 BOOTSTRAP_MAX_PER_SCOPE = 3        # Cap bootstrap retrieval results per scope (project/global)
 
 # === Project bootstrap (CWD-based) ===
-# On first prompt, inject top-N memories for the matched project, filtered to
-# "standing context" types (project state, decisions, preferences, facts).
+# On first prompt, inject standing-context memories for the matched project.
+# fact + decision + session-handoff: unlimited (permanent architectural knowledge).
+# project (non-handoff) + preference: capped at PROJECT_BOOTSTRAP_MAX.
 # Independent of prompt content — gives Claude project awareness from CWD alone.
 PROJECT_BOOTSTRAP_ENABLED = True
-PROJECT_BOOTSTRAP_MAX = 5           # Max memories to inject from project bootstrap
-PROJECT_BOOTSTRAP_TYPES = "project,preference,fact"  # Comma-separated standing-context types
+PROJECT_BOOTSTRAP_MAX = 5           # Cap for project(non-handoff) + preference entries
 CORRECTION_BOOTSTRAP_MAX = 5        # Max behavioural corrections to inject per session
 
 # === Code-graph injection (code-review-graph / .code-review-graph/graph.db) ===
