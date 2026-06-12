@@ -1070,6 +1070,11 @@ document.getElementById('mem-search').addEventListener('keypress', e => {
 });
 
 // ─── Memory Detail Modal ───────────────────────────────────────────────────
+function expandCtxMsg(ti) {
+  const el = document.getElementById('ctxmsg-' + ti);
+  if (el && window._ctxTexts && window._ctxTexts[ti] != null) el.textContent = window._ctxTexts[ti];
+  return false;
+}
 async function showMemory(id) {
   const modal = document.getElementById('memory-modal');
   const content = document.getElementById('modal-content');
@@ -1120,16 +1125,20 @@ async function showMemory(id) {
   if (context.messages && context.messages.length > 0) {
     html += `<div class="card" style="margin-top:12px"><h3>Conversation Context</h3>`;
     html += `<div class="transcript">`;
+    window._ctxTexts = [];
     context.messages.forEach(msg => {
       const isAnchor = msg.is_anchor ? ' msg-anchor' : '';
       const roleClass = msg.role === 'user' ? 'msg-user' : 'msg-assistant';
       const time = msg.ts ? new Date(msg.ts).toLocaleTimeString() : '';
-      let text = msg.text_before_memory || msg.text;
-      // Truncate very long messages
-      if (text.length > 2000) text = text.slice(0, 2000) + '\n... (truncated)';
+      const fullText = msg.text_before_memory || msg.text;
+      const _ti = window._ctxTexts.push(fullText) - 1;
+      // Truncate very long messages — expandable via the (truncated) link
+      const _isTrunc = fullText.length > 2000;
+      const _shown = _isTrunc ? fullText.slice(0, 2000) : fullText;
+      const _truncLink = _isTrunc ? ` <a href="#" onclick="return expandCtxMsg(${_ti})">… (truncated — show full)</a>` : '';
       html += `<div class="msg ${roleClass}${isAnchor}">
         <span class="msg-role">${msg.role}</span><span class="msg-time">${time}</span>
-        <div>${escapeHtml(text)}</div>
+        <div id="ctxmsg-${_ti}">${escapeHtml(_shown)}${_truncLink}</div>
         ${msg.memory_block ? `<div class="memory-block">&lt;memory&gt;\n${escapeHtml(msg.memory_block)}\n&lt;/memory&gt;</div>` : ''}
       </div>`;
     });
