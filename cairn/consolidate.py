@@ -644,9 +644,13 @@ def assess_contradictions_haiku(contradictions: list[dict]) -> list[dict]:
     response_text = re.sub(r"<memory>.*?</memory>", "", response_text, flags=re.DOTALL).strip()
     response_text = re.sub(r"\[cm\]:.*$", "", response_text, flags=re.MULTILINE).strip()
 
+    if not response_text:
+        print("  ERROR: empty response from claude — check that the claude binary and a modern node are on PATH")
+        return []
+
     superseded = []
     for line in response_text.split("\n"):
-        match = re.match(r"PAIR\s+(\d+)\s*:\s*(SUPERSEDED|EXECUTED|COMPLEMENTARY|SEQUENTIAL)\s*:?\s*(.*)", line.strip())
+        match = re.match(r"PAIR\s+(\d+)\s*:\s*(?:VERDICT\s*:\s*)?(SUPERSEDED|EXECUTED|COMPLEMENTARY|SEQUENTIAL)\b\s*[.:]?\s*(.*)", line.strip())
         if not match:
             continue
         pair_idx = int(match.group(1)) - 1
@@ -683,6 +687,7 @@ def assess_contradictions_haiku(contradictions: list[dict]) -> list[dict]:
     missing = [i + 1 for i in range(len(contradictions)) if i + 1 not in parsed]
     if missing:
         print(f"  Warning: {len(missing)} pairs not parsed: {missing[:10]}")
+        print(f"  Response preview: {response_text[:300]!r}")
 
     return superseded
 
@@ -774,8 +779,9 @@ def run_contradiction_detection(execute: bool = False, scope_ids: Optional[set[i
         print(f"  Batch {i + 1}/{len(batches)}: {len(batch)} pairs")
         superseded = assess_contradictions_haiku(batch)
         all_superseded.extend(superseded)
-        # Record all verdicts from this batch (not just superseded)
-        _record_assessments(conn, batch, "contradiction")
+        # Record only pairs that got a verdict — unassessed pairs (empty/unparseable
+        # response) stay out of the cache so they are retried on the next run.
+        _record_assessments(conn, [p for p in batch if p.get("verdict")], "contradiction")
 
     superseded = all_superseded
     print(f"  {len(superseded)} pairs classified as SUPERSEDED")
