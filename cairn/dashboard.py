@@ -132,7 +132,7 @@ def api_memories(params):
         fts_order = "rank" if sort == "updated_at" and order == "desc" else f"m.{sort} {order_dir}"
         rows = conn.execute(f"""
             SELECT m.id, m.type, m.topic, m.content, m.confidence, m.project,
-                   m.session_id, m.updated_at, m.created_at, m.archived_reason, m.keywords
+                   m.session_id, m.updated_at, m.created_at, m.archived_reason, m.keywords, m.facts
             FROM memories_fts f JOIN memories m ON f.rowid = m.id
             WHERE memories_fts MATCH ? ORDER BY {fts_order} LIMIT ? OFFSET ?
         """, (q, limit, offset)).fetchall()
@@ -169,7 +169,7 @@ def api_memories(params):
                 placeholders = ",".join("?" * len(page_ids))
                 rows = conn.execute(f"""
                     SELECT id, type, topic, content, confidence, project,
-                           session_id, updated_at, created_at, archived_reason, keywords
+                           session_id, updated_at, created_at, archived_reason, keywords, facts
                     FROM memories WHERE id IN ({placeholders})
                 """, page_ids).fetchall()
                 # Preserve sort order from page_ids
@@ -178,7 +178,7 @@ def api_memories(params):
         else:
             rows = conn.execute(f"""
                 SELECT id, type, topic, content, confidence, project,
-                       session_id, updated_at, created_at, archived_reason, keywords
+                       session_id, updated_at, created_at, archived_reason, keywords, facts
                 FROM memories{where_clause} ORDER BY {sort} {order_dir} LIMIT ? OFFSET ?
             """, sql_params + [limit, offset]).fetchall()
 
@@ -186,7 +186,7 @@ def api_memories(params):
         "id": r["id"], "type": r["type"], "topic": r["topic"], "content": r["content"],
         "confidence": r["confidence"], "project": r["project"], "session_id": r["session_id"],
         "updated_at": r["updated_at"], "created_at": r["created_at"], "archived_reason": r["archived_reason"],
-        "keywords": r["keywords"],
+        "keywords": r["keywords"], "facts": r["facts"],
     } for r in rows]
     conn.close()
     # Enrich with served counts — how many times each memory has been
@@ -234,7 +234,7 @@ def api_memory_detail(params, memory_id):
     conn = get_conn()
     row = conn.execute("""
         SELECT id, type, topic, content, confidence, project, session_id,
-               updated_at, created_at, archived_reason, depth, associated_files, keywords
+               updated_at, created_at, archived_reason, depth, associated_files, keywords, facts
         FROM memories WHERE id = ?
     """, (memory_id,)).fetchone()
     if not row:
@@ -326,6 +326,7 @@ def api_sessions(params):
     for s in sessions:
         d = dict(s)
         d["cwd"] = _extract_cwd(s["transcript_path"])
+        d["session_dir"] = _extract_session_dir(s["transcript_path"], cwd=d["cwd"])
         d["session_type"] = "agent" if s["parent_session_id"] else ("parent" if s["child_count"] > 0 else "session")
         d["interaction_count"] = 0
         result.append(d)
@@ -441,8 +442,10 @@ def api_session_detail(params, session_id):
                 source_info = json.loads(first_src) if isinstance(first_src, str) else first_src
         except Exception:
             pass
+    session_dict = row_to_dict(session)
+    session_dict["session_dir"] = _extract_session_dir(session_dict.get("transcript_path"))
     return {
-        "session": row_to_dict(session), "memories": memories, "consumed": consumed,
+        "session": session_dict, "memories": memories, "consumed": consumed,
         "layer_detail": layer_detail, "chain": chain, "tokens": tokens,
         "is_ingestion": is_ingestion, "source_info": source_info,
     }, 200
@@ -972,6 +975,35 @@ def _estimate_tokens(transcript_path):
         elif role == "assistant":
             assistant_chars += chars
     return {"user_tokens": user_chars // 4, "assistant_tokens": assistant_chars // 4}
+
+
+def _extract_session_dir(transcript_path, cwd=None):
+    """Return the human-readable project dir name.
+    Prefers basename of already-decoded cwd; falls back to encoded dir parsing."""
+    if cwd:
+        return os.path.basename(cwd.rstrip('/')) or None
+    if not transcript_path:
+        return None
+    # Decode the ~/.claude/projects/<encoded> directory name
+    m = re.search(r'/\.claude/projects/([^/]+)/', transcript_path)
+    if not m:
+        return None
+    encoded = m.group(1)  # e.g. -home-jameo-Projects-cairn or -home-x-Projects-tezuka-fw
+    # Strip common path prefixes to recover project name (preserves hyphens in name)
+    parts = [p for p in encoded.split('-') if p]
+    # Drop known prefix segments: home/mnt + username + common dirs (Projects, work, src)
+    skip = {'home', 'mnt', 'root', 'var', 'usr', 'opt', 'srv', 'projects', 'project',
+            'work', 'src', 'dev', 'repos', 'code', 'git'}
+    # Keep stripping: path components, then username, then common dirs
+    while len(parts) > 1:
+        p = parts[0].lower()
+        if p in skip:
+            parts = parts[1:]
+        elif p.isalpha() and len(p) <= 12 and parts[1].lower() in skip | {'projects'}:
+            parts = parts[1:]  # skip username
+        else:
+            break
+    return '-'.join(parts) if parts else encoded
 
 
 def _extract_cwd(transcript_path):

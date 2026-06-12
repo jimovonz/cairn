@@ -66,6 +66,7 @@ cairn-session-extract = "cairn.session_extract:main"
 cairn-calibration-analyser = "cairn.analyser:main"
 cairn-calibration-selfmod = "cairn.calibration_selfmod:main"
 cairn-calibration-import-claude-md = "cairn.calibration_import_claude_md:main"
+cairn-bench-report = "cairn.bench_report:main"
 
 [tool.setuptools.packages.find]
 include = ["cairn*", "hooks*"]

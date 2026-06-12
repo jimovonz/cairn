@@ -302,6 +302,8 @@ def auto_label_project(session_id: str, cwd: str, transcript_path: str = "") -> 
 
 
 def main() -> None:
+    if os.environ.get("CAIRN_ENABLED", "1") == "0":
+        sys.exit(0)
     raw: str = sys.stdin.read()
     log(f"--- Hook fired ---")
     hook_input: dict = json.loads(raw)

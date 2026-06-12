@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# cairn-bench-b — launch a baseline (B-arm) Claude Code session for A/B testing.
+#
+# Temporarily stashes ~/.claude/CLAUDE.md, RTK.md, and rules/ so the session
+# receives no Cairn/CCH/RTK instructions. Cairn hooks are also disabled via
+# CAIRN_ENABLED=0. Normal OAuth auth is preserved.
+#
+# Usage:
+#   cairn-bench-b [claude args...]
+#
+# Requirements:
+#   - No other Claude Code sessions running (shared CLAUDE.md stash)
+#   - Run from the B-arm repo directory (fresh clone of your target repo)
+#
+# After the session, compare with the A-arm:
+#   cairn-bench-report <arm-a.jsonl> <arm-b.jsonl>
+
+set -euo pipefail
+
+CLAUDE_DIR="$HOME/.claude"
+STASH="$CLAUDE_DIR/.bench-stash-$$"
+
+# Abort if another bench session appears to be running
+if ls "$CLAUDE_DIR"/.bench-stash-* 2>/dev/null | grep -q .; then
+    echo "ERROR: another cairn-bench-b session appears to be running (stash dir exists)." >&2
+    echo "If this is stale, remove: $CLAUDE_DIR/.bench-stash-*" >&2
+    exit 1
+fi
+
+mkdir -p "$STASH"
+
+PROJECT_CLAUDE_DIR="$PWD/.claude"
+
+restore() {
+    [[ -f "$STASH/CLAUDE.md" ]]          && mv "$STASH/CLAUDE.md"     "$CLAUDE_DIR/CLAUDE.md"
+    [[ -f "$STASH/RTK.md" ]]             && mv "$STASH/RTK.md"        "$CLAUDE_DIR/RTK.md"
+    [[ -d "$STASH/global-rules" ]]       && mv "$STASH/global-rules"  "$CLAUDE_DIR/rules"
+    [[ -d "$STASH/project-rules" ]]      && mv "$STASH/project-rules" "$PROJECT_CLAUDE_DIR/rules"
+    rm -rf "$STASH"
+    echo "[cairn-bench-b] restored ~/.claude and project .claude config" >&2
+}
+trap restore EXIT
+
+# Stash global Cairn/CCH/RTK config
+[[ -f "$CLAUDE_DIR/CLAUDE.md" ]] && mv "$CLAUDE_DIR/CLAUDE.md" "$STASH/CLAUDE.md"
+[[ -f "$CLAUDE_DIR/RTK.md" ]]    && mv "$CLAUDE_DIR/RTK.md"    "$STASH/RTK.md"
+[[ -d "$CLAUDE_DIR/rules" ]]     && mv "$CLAUDE_DIR/rules"      "$STASH/global-rules"
+
+# Stash project-level .claude/rules/ (code-graph-navigation.md, memory-system.md)
+[[ -d "$PROJECT_CLAUDE_DIR/rules" ]] && mv "$PROJECT_CLAUDE_DIR/rules" "$STASH/project-rules"
+
+echo "[cairn-bench-b] stashed ~/.claude/CLAUDE.md, RTK.md, rules/ + project .claude/rules/" >&2
+echo "[cairn-bench-b] OAuth auth preserved; hooks disabled via CAIRN_ENABLED=0" >&2
+
+CAIRN_ENABLED=0 claude "$@"

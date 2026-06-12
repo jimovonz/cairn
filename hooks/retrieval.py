@@ -195,8 +195,11 @@ def hybrid_search(
         sim = r.get("similarity", 0)
         is_exempt = r.get("type") in SCOPE_BIAS_EXEMPT_TYPES
         eff_t = effective_threshold if is_exempt else global_threshold
-        above_hard_floor = sim >= GLOBAL_HARD_FLOOR
-        if above_hard_floor or sim >= eff_t or (r.get("_source") == "fts" and r["score"] >= WEAK_ENTRY_SCORE_FLOOR):
+        # Hard floor only applies when project has no results (avoids globals swamping project context)
+        above_hard_floor = sim >= GLOBAL_HARD_FLOOR and not project_results
+        is_project_entry = project and r.get("project") == project
+        fts_bypass = r.get("_source") == "fts" and r["score"] >= WEAK_ENTRY_SCORE_FLOOR and is_project_entry
+        if above_hard_floor or sim >= eff_t or fts_bypass:
             global_results.append(r)
             seen_ids.add(mid)
 
@@ -428,11 +431,10 @@ def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str]
 
     try:
         rows = conn.execute(f"""
-            SELECT id, type, topic, content, updated_at, project, confidence, keywords
+            SELECT id, type, topic, content, updated_at, project, confidence, keywords, archived_reason
             FROM memories
             WHERE keywords IS NOT NULL
             AND ({where_kw})
-            AND (archived_reason IS NULL OR archived_reason = '')
             AND deleted_at IS NULL
             {project_filter}
             ORDER BY updated_at DESC
@@ -443,22 +445,26 @@ def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str]
         return []
 
     # Score by keyword overlap count
-    from cairn.config import L2_KEYWORD_MIN_OVERLAP
+    from cairn.config import L2_KEYWORD_MIN_OVERLAP, L2_KEYWORD_MIN_OVERLAP_RATIO
     kw_set = {k.strip().lower() for k in keywords_list if k.strip()}
     results = []
     for r in rows:
-        mem_id, mem_type, topic, content, updated_at, mem_project, confidence, mem_keywords = r
+        mem_id, mem_type, topic, content, updated_at, mem_project, confidence, mem_keywords, archived_reason = r
         mem_kw_set = {k.strip().lower() for k in (mem_keywords or "").split(",") if k.strip()}
         overlap = len(kw_set & mem_kw_set)
         if overlap < L2_KEYWORD_MIN_OVERLAP:
-            continue  # Filter single-keyword cross-project collisions (incidental shared terms like "install", "config")
+            continue  # Filter single-keyword cross-project collisions
+        overlap_ratio = overlap / max(len(kw_set), 1)
+        if overlap_ratio < L2_KEYWORD_MIN_OVERLAP_RATIO:
+            continue  # Filter weak matches on long queries (e.g. 2/12 keywords)
         results.append({
             "id": mem_id, "type": mem_type, "topic": topic, "content": content,
             "updated_at": updated_at, "project": mem_project,
             "confidence": confidence if confidence is not None else 0.7,
             "similarity": 0.0,  # Not semantic
-            "score": overlap / max(len(kw_set), 1),  # Overlap ratio
+            "score": overlap_ratio,
             "keyword_overlap": overlap,
+            "archived_reason": archived_reason or "",
         })
 
     results.sort(key=lambda x: (-x["keyword_overlap"], x["updated_at"] or ""), reverse=False)
