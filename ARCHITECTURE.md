@@ -765,6 +765,8 @@ The LLM can include `keywords: authentication, JWT, session tokens` in its memor
 
 This surfaces cross-project knowledge the LLM doesn't know to ask for. It only fires for cross-project results (the current project's memories are already in the LLM's context via Layer 1 or 3).
 
+A parallel exact-keyword match path complements the semantic search, catching cross-project connections embedding similarity misses (different domains, same concept). A match requires at least `L2_KEYWORD_MIN_OVERLAP` (2) shared keywords **and** overlap covering ≥ `L2_KEYWORD_MIN_OVERLAP_RATIO` (25%) of the query's keywords — the ratio gate filters weak matches on long keyword lists (e.g. 2 of 12). Archived entries are deliberately **not** excluded from this path: they surface flagged `superseded="true"` with their archive reason, acting as trap warnings ("we tried X and abandoned it because Y").
+
 ### Layer 3: Pull-based
 
 The LLM explicitly requests context by declaring `context: insufficient` with a `context_need`. The Stop hook searches the cairn, applies all quality gates, and re-prompts the LLM with results. This is the most precise retrieval layer because the query is a deliberate, targeted description rather than raw user text or extracted keywords.
@@ -811,6 +813,10 @@ LLMs tend to skip `context: insufficient` declarations despite instructions, def
 - **Hybrid blocking**: if the stripped response is under 200 chars (short/empty), the hook blocks immediately and forces a `context: insufficient` declaration. If the response is substantive (≥200 chars), the reminder is deferred — staged to a file and injected by the prompt hook on the next turn. This prevents bootstrap from eating user-facing responses while maintaining strong enforcement on low-value turns.
 - A `context_requested` metric is recorded immediately to prevent re-triggering on the continuation
 - The goal is habit formation through demonstrated value — each forced retrieval shows the LLM that Layer 3 returns useful, targeted results
+
+### Session handoff digest
+
+Every `SESSION_HANDOFF_INTERVAL` turns (default: 10), the prompt hook injects a directive asking the LLM to emit a structured session summary as a `type=project, topic=session handoff` memory in its `[cm]` block — covering branch, work in progress, decisions (with rejected alternatives), blockers, and the single clearest next action. The most recent prior handoff for the project is included in the directive so the LLM writes a delta rather than starting from scratch. The next session surfaces the handoff automatically via project bootstrap, so a fresh session resumes with working state instead of rediscovering it. Guarded by per-session `hook_state` (`last_handoff_turn`) against duplicate fires; fails open; `0` disables.
 
 ### Inline retrieval instructions
 
@@ -914,6 +920,11 @@ All thresholds are configurable in `cairn/config.py`.
 |----------|------------------|-----------------|-----------|
 | Session has a project label | 0.25 | 0.50 | Include broad project matches, strict filter on global noise |
 | Session has no project label | N/A | 0.25 | No project to prioritise, relax global threshold |
+
+Two additional gates govern global (cross-project) results:
+
+- **Hard floor** (`GLOBAL_HARD_FLOOR`, 0.60) — a very strong global match can bypass the scope penalty, but **only when the project scope returned no results**. When project results exist they own the context window; globals must pass the normal scope-adaptive threshold.
+- **FTS bypass is project-only** — an FTS keyword hit with score ≥ `WEAK_ENTRY_SCORE_FLOOR` can bypass the semantic threshold only if the entry belongs to the current project. Global FTS hits must clear the semantic threshold like any other global result.
 
 ## Project and Session Organisation
 
@@ -1101,7 +1112,9 @@ All tunable parameters are centralised in `cairn/config.py`:
 | `CONFIDENCE_BOOST` / `PENALTY` | 0.1 / 0.2 | Base rates for saturating adjustments (actual: `base × (1-conf)` / `base × (1+conf)`) |
 | `SCORE_W_*` | 0.50/0.00/0.15/0.00/0.05 | Composite scoring weights (similarity/confidence/keywords/recency/scope) |
 | `RECENCY_HALF_LIFE_DAYS` | 30 | Recency decay rate (weight is 0 — decay computed but unused) |
-| `GLOBAL_HARD_FLOOR` | 0.50 | Cross-project memories above this similarity always surface regardless of project penalty |
+| `GLOBAL_HARD_FLOOR` | 0.60 | Cross-project memories above this similarity surface — only when the project scope returned no results |
+| `L2_KEYWORD_MIN_OVERLAP_RATIO` | 0.25 | Keyword-match overlap must cover ≥25% of query keywords (filters weak 2-of-12 matches) |
+| `SESSION_HANDOFF_INTERVAL` | 10 | Turns between session-handoff digest requests (0 disables) |
 | `EPHEMERAL_DB_PATH` | `cairn-ephemeral.db` | Path to ephemeral database (metrics, hook_state, pair_assessments) |
 | `MIN_INJECTION_SIMILARITY` | 0.35 | Garbage gate — reject all if best < this |
 | `BORDERLINE_SIM_CEILING` | 0.45 | Borderline gate similarity ceiling |
@@ -1213,23 +1226,30 @@ Phase 4: Execute (if --execute)
 
 ### Contradiction detection
 
-Finds unflagged contradictions — memories that say opposite things but weren't caught at write time (different type/topic, or below negation heuristic threshold).
+Finds unflagged contradictions — memories that say opposite things but weren't caught at write time (different type/topic, or below negation heuristic threshold). The same pipeline also detects **plan→implementation pairs**: an older memory phrased as intent ("plan", "candidate", "next step", "should", …) that a newer memory confirms was built.
 
 ```
 Phase 1: Bi-encoder candidate pairs
   Find pairs of active memories with cosine similarity ≥ 0.70
   Skip pairs already assessed (pair_assessments cache)
+  Split: pairs whose older memory reads as a plan/intent (keyword heuristic)
+  bypass NLI — a plan and the fact implementing it never scores as a contradiction
       │
 Phase 2: NLI contradiction scoring (via daemon)
-  Score pairs for contradiction signal using NLI model
+  Score non-plan pairs for contradiction signal using NLI model
   Keep pairs above NLI_CONTRADICTION_THRESHOLD
       │
 Phase 3: Haiku assessment (batched)
-  Haiku judges each NLI-flagged pair: COEXIST, SUPERSEDED, or AMBIGUOUS
-  For SUPERSEDED, identifies which memory is newer/more accurate
+  NLI-confirmed pairs + plan candidates judged by Haiku, one verdict per pair:
+    SUPERSEDED    — older would actively mislead if acted upon
+    EXECUTED      — older was a plan/intent the newer confirms was implemented
+    COMPLEMENTARY — different aspects of the same topic, both valid
+    SEQUENTIAL    — older captures valid historical state
+  Batches capped at 10 pairs AND ~6000 prompt chars — oversized batches
+  overwhelm Haiku's output budget and produce zero parsed verdicts
       │
 Phase 4: Archive (if --execute)
-  Archive the superseded memory with reason from Haiku
+  Archive SUPERSEDED and EXECUTED older memories with reason from Haiku
   Record pair assessments for incremental future runs
 ```
 

@@ -34,7 +34,7 @@ def init():
         )
     """)
     # Migration: add columns to existing DB
-    for col, coltype in [("embedding", "BLOB"), ("session_id", "TEXT"), ("project", "TEXT"), ("confidence", "REAL DEFAULT 0.7"), ("source_start", "INTEGER"), ("source_end", "INTEGER"), ("archived_reason", "TEXT"), ("anchor_line", "INTEGER"), ("depth", "INTEGER"), ("associated_files", "TEXT"), ("keywords", "TEXT"), ("origin_id", "TEXT"), ("user_id", "TEXT"), ("updated_by", "TEXT"), ("team_id", "TEXT"), ("source_ref", "TEXT"), ("deleted_at", "TIMESTAMP"), ("synced_at", "TIMESTAMP")]:
+    for col, coltype in [("embedding", "BLOB"), ("session_id", "TEXT"), ("project", "TEXT"), ("confidence", "REAL DEFAULT 0.7"), ("source_start", "INTEGER"), ("source_end", "INTEGER"), ("archived_reason", "TEXT"), ("anchor_line", "INTEGER"), ("depth", "INTEGER"), ("associated_files", "TEXT"), ("keywords", "TEXT"), ("facts", "TEXT"), ("origin_id", "TEXT"), ("user_id", "TEXT"), ("updated_by", "TEXT"), ("team_id", "TEXT"), ("source_ref", "TEXT"), ("deleted_at", "TIMESTAMP"), ("synced_at", "TIMESTAMP")]:
         try:
             conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {coltype}")
         except sqlite3.OperationalError:
@@ -134,6 +134,11 @@ def init():
     except sqlite3.OperationalError:
         # Column missing or table doesn't exist — rebuild
         _fts_needs_rebuild = True
+    if not _fts_needs_rebuild:
+        try:
+            conn.execute("SELECT facts FROM memories_fts LIMIT 0")
+        except sqlite3.OperationalError:
+            _fts_needs_rebuild = True
 
     if _fts_needs_rebuild:
         # Drop old FTS table and triggers, recreate with keywords
@@ -144,31 +149,31 @@ def init():
 
     conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-            topic, content, keywords, content=memories, content_rowid=id
+            topic, content, keywords, facts, content=memories, content_rowid=id
         )
     """)
     # Triggers to keep FTS in sync
     conn.execute("DROP TRIGGER IF EXISTS memories_ai")
     conn.execute("""
         CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
-            INSERT INTO memories_fts(rowid, topic, content, keywords)
-            VALUES (new.id, new.topic, new.content, new.keywords);
+            INSERT INTO memories_fts(rowid, topic, content, keywords, facts)
+            VALUES (new.id, new.topic, new.content, new.keywords, new.facts);
         END
     """)
     conn.execute("DROP TRIGGER IF EXISTS memories_ad")
     conn.execute("""
         CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
-            INSERT INTO memories_fts(memories_fts, rowid, topic, content, keywords)
-            VALUES ('delete', old.id, old.topic, old.content, old.keywords);
+            INSERT INTO memories_fts(memories_fts, rowid, topic, content, keywords, facts)
+            VALUES ('delete', old.id, old.topic, old.content, old.keywords, old.facts);
         END
     """)
     conn.execute("DROP TRIGGER IF EXISTS memories_au")
     conn.execute("""
         CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
-            INSERT INTO memories_fts(memories_fts, rowid, topic, content, keywords)
-            VALUES ('delete', old.id, old.topic, old.content, old.keywords);
-            INSERT INTO memories_fts(rowid, topic, content, keywords)
-            VALUES (new.id, new.topic, new.content, new.keywords);
+            INSERT INTO memories_fts(memories_fts, rowid, topic, content, keywords, facts)
+            VALUES ('delete', old.id, old.topic, old.content, old.keywords, old.facts);
+            INSERT INTO memories_fts(rowid, topic, content, keywords, facts)
+            VALUES (new.id, new.topic, new.content, new.keywords, new.facts);
         END
     """)
     # pair_assessments lives in cairn-ephemeral.db (see init_ephemeral)

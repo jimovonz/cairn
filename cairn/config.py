@@ -24,7 +24,7 @@ L3_PROJECT_SIM_THRESHOLD = 0.25     # Minimum similarity for project-scoped resu
 L3_GLOBAL_SIM_WITH_PROJECT = 0.50   # Global threshold when project results exist
 L3_GLOBAL_SIM_WITHOUT_PROJECT = 0.25  # Global threshold when no project results
 L3_PROJECT_QUALITY_FLOOR = 0.45       # Project results below this don't raise the global threshold
-GLOBAL_HARD_FLOOR = 0.50              # Global results above this always surface, even when project has results
+GLOBAL_HARD_FLOOR = 0.60              # Global results above this always surface, even when project has results
 L3_MAX_PROJECT_RESULTS = 7
 L3_MAX_GLOBAL_RESULTS = 7
 
@@ -75,6 +75,7 @@ MAX_INJECTED_ENTRIES = 5            # Hard cap on entries injected per retrieval
 
 # === Cross-project keyword match (Layer 2) ===
 L2_KEYWORD_MIN_OVERLAP = 2         # Minimum shared keywords for a cross-project keyword match (filters single-keyword noise)
+L2_KEYWORD_MIN_OVERLAP_RATIO = 0.25  # Overlap must be ≥25% of query keywords (prevents weak 2/12 matches)
 
 # === Soft confidence inclusion (DISABLED) ===
 # Confidence no longer gates retrieval. All memories are retrievable regardless of confidence.
@@ -133,15 +134,22 @@ STAGED_CONTEXT_RETENTION_DAYS = 7   # Days to keep staged cross-project context 
 # This builds the habit through demonstrated value rather than rules alone.
 CONTEXT_BOOTSTRAP_INTERVAL = 20    # Turns without a layer 3 request before forcing one
 CONTEXT_BOOTSTRAP_FIRST_INTERVAL = 10  # First bootstrap fires earlier to seed context sooner
+
+# === Session handoff digest ===
+# Every N turns, prompt the LLM to emit a session-summary project memory (topic="session handoff")
+# in its [cm] block so the next session can resume efficiently via project_bootstrap.
+SESSION_HANDOFF_INTERVAL = 10
 BOOTSTRAP_MAX_PER_SCOPE = 3        # Cap bootstrap retrieval results per scope (project/global)
 
 # === Project bootstrap (CWD-based) ===
-# On first prompt, inject top-N memories for the matched project, filtered to
-# "standing context" types (project state, decisions, preferences, facts).
+# On first prompt, inject standing-context memories for the matched project.
+# fact + decision + session-handoff: unlimited (permanent architectural knowledge).
+# project (non-handoff) + preference: capped at PROJECT_BOOTSTRAP_MAX.
 # Independent of prompt content — gives Claude project awareness from CWD alone.
 PROJECT_BOOTSTRAP_ENABLED = True
-PROJECT_BOOTSTRAP_MAX = 5           # Max memories to inject from project bootstrap
-PROJECT_BOOTSTRAP_TYPES = "project,preference,fact"  # Comma-separated standing-context types
+PROJECT_BOOTSTRAP_MAX = 5           # Cap for project(non-handoff) + preference entries
+PROJECT_BOOTSTRAP_KNOWLEDGE_MAX = 80  # Cap for facts+decisions (confidence-filtered)
+PROJECT_BOOTSTRAP_CONFIDENCE_FLOOR = 0.7  # Min confidence for facts+decisions in bootstrap
 CORRECTION_BOOTSTRAP_MAX = 5        # Max behavioural corrections to inject per session
 
 # === Code-graph injection (code-review-graph / .code-review-graph/graph.db) ===

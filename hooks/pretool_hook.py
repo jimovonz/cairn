@@ -289,6 +289,8 @@ def sections_for_file(file_path: str, session_id: str, seen: set, graph_cfg,
 
 
 def main() -> None:
+    if os.environ.get("CAIRN_ENABLED", "1") == "0":
+        sys.exit(0)
     raw = sys.stdin.read()
     hook_input = json.loads(raw)
 

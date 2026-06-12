@@ -140,6 +140,8 @@ def _drain_loop(fd: int) -> None:
 
 
 def main() -> int:
+    if os.environ.get("CAIRN_ENABLED", "1") == "0":
+        return 0
     fd = _acquire_lock()
     if fd is None:
         # Another drainer is running; it will pick up our rows.

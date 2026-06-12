@@ -341,6 +341,20 @@ if [ -x "$CAIRN_GRAPH_BIN" ]; then
     echo "Symlinked cairn-graph to ~/.local/bin/cairn-graph."
 fi
 
+# --- cairn-bench tools on PATH ---
+BENCH_B_BIN="$CAIRN_HOME/bin/cairn-bench-b"
+if [ -x "$BENCH_B_BIN" ]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$BENCH_B_BIN" "$HOME/.local/bin/cairn-bench-b"
+    echo "Symlinked cairn-bench-b to ~/.local/bin/cairn-bench-b."
+fi
+BENCH_REPORT_BIN="$VENV_PATH/bin/cairn-bench-report"
+if [ -x "$BENCH_REPORT_BIN" ]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$BENCH_REPORT_BIN" "$HOME/.local/bin/cairn-bench-report"
+    echo "Symlinked cairn-bench-report to ~/.local/bin/cairn-bench-report."
+fi
+
 # --- Health check ---
 echo ""
 if ! "$VENV_PYTHON" "$CAIRN_HOME/cairn/query.py" --check; then
