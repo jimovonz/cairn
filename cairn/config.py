@@ -148,6 +148,8 @@ BOOTSTRAP_MAX_PER_SCOPE = 3        # Cap bootstrap retrieval results per scope (
 # Independent of prompt content — gives Claude project awareness from CWD alone.
 PROJECT_BOOTSTRAP_ENABLED = True
 PROJECT_BOOTSTRAP_MAX = 5           # Cap for project(non-handoff) + preference entries
+PROJECT_BOOTSTRAP_KNOWLEDGE_MAX = 80  # Cap for facts+decisions (confidence-filtered)
+PROJECT_BOOTSTRAP_CONFIDENCE_FLOOR = 0.7  # Min confidence for facts+decisions in bootstrap
 CORRECTION_BOOTSTRAP_MAX = 5        # Max behavioural corrections to inject per session
 
 # === Code-graph injection (code-review-graph / .code-review-graph/graph.db) ===

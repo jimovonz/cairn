@@ -92,7 +92,7 @@ def test_project_bootstrap_behavioural():
                         content="Uses SQLite for storage", confidence=0.8,
                         updated_at="2026-04-01 12:00:00")
     id2 = insert_memory(conn, "myproject", mem_type="fact", topic="env",
-                        content="Python 3.11 required", confidence=0.6,
+                        content="Python 3.11 required", confidence=0.8,
                         updated_at="2026-04-01 11:00:00")
     insert_memory(conn, "myproject", mem_type="preference", topic="style",
                   content="Prefers short functions", confidence=0.9,
@@ -239,7 +239,7 @@ def test_project_bootstrap_adversarial():
     # Memory with malformed updated_at
     conn.execute(
         """INSERT INTO memories (type, topic, content, project, confidence, updated_at)
-           VALUES ('fact', 'bad-date', 'bad timestamp value', 'weirdproject', 0.5, 'not-a-date')"""
+           VALUES ('fact', 'bad-date', 'bad timestamp value', 'weirdproject', 0.8, 'not-a-date')"""
     )
     # Memory with empty string archived_reason (should still be included — only non-empty excludes)
     conn.execute(
