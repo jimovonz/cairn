@@ -284,7 +284,7 @@ def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> O
     Queries directly by project name + type filter — no semantic search needed.
     Gives Claude project awareness from CWD alone, independent of prompt content.
     """
-    from cairn.config import PROJECT_BOOTSTRAP_ENABLED, PROJECT_BOOTSTRAP_MAX
+    from cairn.config import PROJECT_BOOTSTRAP_ENABLED, PROJECT_BOOTSTRAP_MAX, PROJECT_BOOTSTRAP_KNOWLEDGE_MAX, PROJECT_BOOTSTRAP_CONFIDENCE_FLOOR
     from hooks.hook_helpers import recency_days, reliability_label
 
     if not PROJECT_BOOTSTRAP_ENABLED or not cwd:
@@ -297,20 +297,29 @@ def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> O
 
     try:
         conn = get_conn()
-        # Unlimited standing context: session-handoffs + all facts + all decisions
-        # These are permanent architectural knowledge — must always be present, same as a compaction summary
-        unlimited_rows = conn.execute("""
+        # Session handoffs: always unconditional (one active at a time, highest value)
+        handoff_rows = conn.execute("""
             SELECT id, type, topic, content, updated_at, project, confidence, archived_reason
             FROM memories
-            WHERE project = ?
-            AND (
-                (type = 'project' AND topic = 'session handoff')
-                OR type IN ('fact', 'decision')
-            )
+            WHERE project = ? AND type = 'project' AND topic = 'session handoff'
             AND (archived_reason IS NULL OR archived_reason = '')
             AND deleted_at IS NULL
             ORDER BY updated_at DESC
+            LIMIT 1
         """, (project_name,)).fetchall()
+        # Facts + decisions: confidence-floored, recency-sorted, count-capped.
+        # confidence IS NULL passes — old entries without a score are included.
+        knowledge_rows = conn.execute("""
+            SELECT id, type, topic, content, updated_at, project, confidence, archived_reason
+            FROM memories
+            WHERE project = ? AND type IN ('fact', 'decision')
+            AND (confidence IS NULL OR confidence >= ?)
+            AND (archived_reason IS NULL OR archived_reason = '')
+            AND deleted_at IS NULL
+            ORDER BY updated_at DESC
+            LIMIT ?
+        """, (project_name, PROJECT_BOOTSTRAP_CONFIDENCE_FLOOR, PROJECT_BOOTSTRAP_KNOWLEDGE_MAX)).fetchall()
+        unlimited_rows = handoff_rows + [r for r in knowledge_rows if r[0] not in {h[0] for h in handoff_rows}]
         unlimited_ids = {r[0] for r in unlimited_rows}
         # Capped: project (non-handoff) + preference — status entries that may be numerous
         capped_rows = conn.execute("""
