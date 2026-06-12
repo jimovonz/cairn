@@ -29,3 +29,6 @@ cairn/cairn-ephemeral.db
 cairn/cairn-ephemeral.db-shm
 cairn/cairn-ephemeral.db-wal
 cairn/cairn.db.pre-v4-backup
+cairn/hook.log*
+cairn/.drain.lock
+cairn/.thinking_block_seen.json
