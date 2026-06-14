@@ -238,6 +238,26 @@ def test_write_session_memories_uses_source_ref():
     assert types == {"project", "decision"}
 
 
+def test_write_session_memories_populates_topic_embedding():
+    """Regression: analyser write path must populate topic_embedding (schema v8
+    dual embedding), mirroring hooks/storage.py. Without it, analyser rows are
+    invisible to symmetric topic retrieval and the coverage gap re-accumulates
+    until the next install-time backfill."""
+    durable, eph, td = _fresh_dbs()
+    parsed = analyser.enforce_caps(json.loads(SAMPLE_LLM_OUTPUT))
+    with patch.object(analyser, "DB_PATH", durable):
+        ids = analyser.write_session_memories(
+            parsed, session_id="sess-te", project="cairn", db_path=durable)
+    assert ids
+    conn = sqlite3.connect(durable)
+    rows = conn.execute(
+        "SELECT topic_embedding FROM memories WHERE source_ref = ?",
+        (analyser.ANALYSER_SOURCE_REF,)).fetchall()
+    conn.close()
+    assert rows
+    assert all(r[0] is not None for r in rows), "analyser rows must carry topic_embedding"
+
+
 def test_write_skips_empty_content():
     durable, eph, td = _fresh_dbs()
     parsed = analyser.enforce_caps({
