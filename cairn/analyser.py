@@ -636,12 +636,18 @@ def write_session_memories(parsed: dict, *, session_id: Optional[str],
                 if _memory_is_duplicate(conn, embedding_text) is not None:
                     continue
                 emb_blob, _ = _embed_text(embedding_text)
+                # Dual embedding (schema v8): embed the bare topic separately so
+                # symmetric topic retrieval cos(prompt, topic_embedding) can match
+                # these rows — mirrors hooks/storage.py:_insert_memory. Without this
+                # the analyser path leaves topic_embedding NULL and the gap only
+                # clears on the next install-time backfill. Fail-open (None blob).
+                topic_emb_blob, _ = _embed_text(topic)
                 origin = str(uuid.uuid4())
                 conn.execute(
-                    "INSERT INTO memories (type, topic, content, embedding, "
+                    "INSERT INTO memories (type, topic, content, embedding, topic_embedding, "
                     "session_id, project, origin_id, keywords, source_ref, "
-                    "confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mem_type, topic, content, emb_blob, session_id, project,
+                    "confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (mem_type, topic, content, emb_blob, topic_emb_blob, session_id, project,
                      origin, kw_csv, ANALYSER_SOURCE_REF, 0.6),
                 )
                 new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
