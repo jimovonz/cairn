@@ -531,3 +531,29 @@ class TestContradictionDetection:
         final_count = conn.execute("SELECT count(*) FROM memories WHERE archived_reason IS NULL").fetchone()[0]
         assert final_count == initial_count
         conn.close()
+
+    def test_nli_prefilter_disabled_bypasses_nli(self):
+        """With NLI_CONTRADICTION_PREFILTER_ENABLED False (default), candidates skip NLI
+        scoring and pass straight to Haiku. Guards the empirical finding that the NLI
+        contra-logit is non-discriminative for supersession and net-harmful as a gate."""
+        db_path, conn = fresh_db()
+        emb1 = make_embedding(42)
+        emb2 = make_similar_embedding(42, noise=0.02)
+        conn.execute("INSERT INTO memories (type, topic, content, embedding) VALUES (?, ?, ?, ?)",
+                      ("fact", "db", "DB is broken", emb1))
+        conn.execute("INSERT INTO memories (type, topic, content, embedding) VALUES (?, ?, ?, ?)",
+                      ("fact", "db", "DB is fixed", emb2))
+        conn.commit()
+
+        from cairn.consolidate import run_contradiction_detection
+        with patch("cairn.consolidate.DB_PATH", db_path):
+            with patch("cairn.config.NLI_CONTRADICTION_PREFILTER_ENABLED", False):
+                with patch("cairn.consolidate.score_contradictions_nli") as mock_nli:
+                    with patch("cairn.consolidate.assess_contradictions_haiku", return_value=[]) as mock_haiku:
+                        run_contradiction_detection(execute=False)
+
+        mock_nli.assert_not_called()          # NLI scorer bypassed when pre-filter off
+        assert mock_haiku.called               # candidates still reach Haiku
+        pairs_to_haiku = mock_haiku.call_args[0][0]
+        assert len(pairs_to_haiku) >= 1
+        conn.close()

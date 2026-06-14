@@ -739,9 +739,16 @@ def run_contradiction_detection(execute: bool = False, scope_ids: Optional[set[i
     nli_candidates = [p for p in pairs if not _is_plan_candidate(p)]
     print(f"  {len(plan_candidates)} plan candidates (bypass NLI), {len(nli_candidates)} for NLI")
 
-    print(f"\nPhase 2: NLI contradiction scoring ({len(nli_candidates)} pairs)...")
-    contradictions = score_contradictions_nli(nli_candidates)
-    print(f"  {len(contradictions)} pairs confirmed as contradictions by NLI")
+    from cairn.config import NLI_CONTRADICTION_PREFILTER_ENABLED
+    if NLI_CONTRADICTION_PREFILTER_ENABLED:
+        print(f"\nPhase 2: NLI contradiction scoring ({len(nli_candidates)} pairs)...")
+        contradictions = score_contradictions_nli(nli_candidates)
+        print(f"  {len(contradictions)} pairs confirmed as contradictions by NLI")
+    else:
+        # NLI contra-logit is non-discriminative for supersession (AUC~0.5) and net-harmful as
+        # a gate; bi-encoder candidates go straight to Haiku. See config flag rationale.
+        print(f"\nPhase 2: NLI contradiction pre-filter DISABLED — {len(nli_candidates)} candidates pass straight to Haiku")
+        contradictions = nli_candidates
 
     # Merge: NLI-confirmed contradictions + plan candidates
     all_for_haiku = contradictions + plan_candidates
