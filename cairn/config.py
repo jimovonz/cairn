@@ -248,6 +248,12 @@ NLI_ENABLED = True
 NLI_MODEL = "cross-encoder/nli-MiniLM2-L6-H768"
 NLI_ENTAILMENT_THRESHOLD = 0.7     # Score above this = entailment (memories say the same thing)
 NLI_CONTRADICTION_THRESHOLD = 0.0  # Raw logit above this = possible contradiction (pre-filter for Haiku)
+# NLI contradiction pre-filter is OFF by default: empirically the contra-logit has ~zero
+# discriminative power for supersession (AUC~0.5 vs Haiku verdicts on 1854 pairs), and at
+# threshold 0.0 it silently dropped ~21% of real supersessions to remove only ~20% of chaff.
+# Supersession is topical refinement, not the logical contradiction NLI was trained on.
+# The bi-encoder cosine stage does the real candidate narrowing; Haiku does the real judgment.
+NLI_CONTRADICTION_PREFILTER_ENABLED = False
 
 # === Memory consolidation ===
 CONSOLIDATION_SIMILARITY_THRESHOLD = 0.85  # Bi-encoder cosine threshold for candidate clustering
