@@ -1101,3 +1101,53 @@ def test_linkdef_mixed_short_long_keys():
     assert result.entries[0]["type"] == "fact"
     assert result.entries[0]["topic"] == "mixed"
     assert result.context == "sufficient"
+
+
+# === Salvage: recover [cm] blocks the model breaks in long handoffs ===
+# Root cause (confirmed from hook.log): unescaped inner double-quotes and stray
+# backslashes inside content strings. The salvage pass repairs them so the
+# memory lands instead of triggering a re-prompt churn.
+
+def test_linkdef_salvages_unescaped_inner_quotes():
+    """A handoff content string that quotes the user with literal " parses via salvage."""
+    line = ('[cm]: # ' + "'" +
+            '{"e":[{"t":"project","to":"session handoff","c":"BNZ bot says "contact the merchant" '
+            'but James spotted the "catch-22"; surplus is "tight""}],"ok":true,"ctx":"s","kw":["budget"]}'
+            + "'")
+    result = parse_memory_block("Prose about the work.\n\n" + line)
+    assert result.entries is not None and len(result.entries) == 1
+    c = result.entries[0]["content"]
+    assert '"contact the merchant"' in c and '"catch-22"' in c
+    assert result.complete is True and result.context == "sufficient"
+
+
+def test_linkdef_salvages_stray_backslash():
+    r"""A content string with an unescaped backslash (path/regex) parses via salvage."""
+    line = ('[cm]: # ' + "'" +
+            r'{"e":[{"t":"fact","to":"path","c":"see C:\Users\x and regex \d+ token"}],"ok":true,"ctx":"s","kw":["p"]}'
+            + "'")
+    result = parse_memory_block(line)
+    assert result.entries is not None and len(result.entries) == 1
+    assert "regex" in result.entries[0]["content"]
+
+
+def test_linkdef_valid_block_is_untouched_by_salvage():
+    """A well-formed block must parse identically — salvage only runs on failure."""
+    line = ('[cm]: # ' + "'" +
+            '{"e":[{"t":"fact","to":"clean","c":"no special chars here"}],"ok":true,"ctx":"s","kw":["k"]}'
+            + "'")
+    result = parse_memory_block(line)
+    assert len(result.entries) == 1
+    assert result.entries[0]["content"] == "no special chars here"
+
+
+def test_linkdef_error_locus_points_at_break():
+    """Unsalvageable block yields a column + window pointer for a targeted re-prompt."""
+    from hooks.parser import linkdef_error_locus
+    bad = '[cm]: # ' + "'" + '{"e":[{bad json here}],"ok":true}' + "'"
+    locus = linkdef_error_locus(bad)
+    assert locus is not None
+    assert "column" in locus and ">>>" in locus
+    # A genuinely valid block returns None (nothing to point at)
+    good = '[cm]: # ' + "'" + '{"ok":true,"ctx":"s","kw":["x"]}' + "'"
+    assert linkdef_error_locus(good) is None

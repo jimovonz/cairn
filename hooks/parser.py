@@ -52,6 +52,75 @@ def _g(d: dict, *keys, default=None):
 _CTX_EXPAND = {"s": "sufficient", "i": "insufficient"}
 
 
+def _salvage_json(raw: str, max_fixes: int = 400):
+    """Best-effort repair of the two failure modes the model reliably produces
+    in long single-line [cm] blocks (confirmed from hook.log): unescaped inner
+    double-quotes inside content strings (JSONDecodeError "Expecting ...
+    delimiter") and stray single backslashes ("Invalid \\escape"). A handoff
+    narrative that quotes the user — c":"the bot says "contact the merchant"" —
+    closes the JSON string early and breaks the whole block, forcing a
+    re-prompt churn.
+
+    Decoder-driven and convergent: each pass escapes exactly the character
+    json.loads choked on, then retries, bounded by max_fixes. Returns the
+    parsed dict or None.
+
+    SAFETY: only ever invoked AFTER a strict json.loads has already failed, so
+    it can never change the result of a block that already parses. Worst case
+    it fails to converge and returns None — identical to the pre-salvage
+    behaviour. It does not relax JSON rules, only repairs the offending char."""
+    s = raw
+    for _ in range(max_fixes):
+        try:
+            return _json.loads(s)
+        except (_json.JSONDecodeError, ValueError) as e:
+            pos = getattr(e, "pos", None)
+            msg = getattr(e, "msg", "") or str(e)
+            if pos is None:
+                return None
+            if "Invalid \\escape" in msg:
+                # stray single backslash at pos — double it to \\
+                if 0 <= pos < len(s) and s[pos] == "\\":
+                    s = s[:pos] + "\\" + s[pos:]
+                    continue
+                return None
+            if "delimiter" in msg:
+                # an unescaped inner quote prematurely closed a string just
+                # before pos — escape the nearest preceding quote and retry
+                q = s.rfind('"', 0, pos)
+                if q > 0:
+                    s = s[:q] + "\\" + s[q:]
+                    continue
+                return None
+            # other errors (missing property name, unterminated string at EOF,
+            # bare control char) are not safely repairable here
+            return None
+    return None
+
+
+def linkdef_error_locus(text: str) -> Optional[str]:
+    """For a [cm] block that fails to parse even after salvage, return a short
+    human-readable pointer to the exact break so the re-prompt can be targeted
+    rather than asking for a blind full rewrite. Returns None if no block is
+    present or it actually parses."""
+    matches = re.findall(r"^\[(?:cairn-memory|cm)\]:\s*#\s*'(.+)'\s*$", text, re.MULTILINE)
+    if not matches:
+        return None
+    raw = matches[-1]
+    try:
+        _json.loads(raw)
+        return None
+    except (_json.JSONDecodeError, ValueError) as e:
+        pos = getattr(e, "pos", None)
+        if pos is None:
+            return f"JSON error: {e}."
+        lo, hi = max(0, pos - 25), min(len(raw), pos + 25)
+        window = raw[lo:pos] + ">>>" + raw[pos:hi]
+        return (f"JSON broke at column {pos} (near: ...{window}...). "
+                f"Almost always an unescaped \" or \\ inside a content string — "
+                f"escape them as \\\" and \\\\, or shorten that value.")
+
+
 def _parse_linkdef(text: str) -> Optional[ParseResult]:
     """Try to parse a link-definition JSON memory block from text.
 
@@ -80,8 +149,14 @@ def _parse_linkdef(text: str) -> Optional[ParseResult]:
     try:
         data = _json.loads(raw_json)
     except (_json.JSONDecodeError, ValueError) as e:
-        log(f"Link-def JSON parse error: {e} — raw: {raw_json[:120]}")
-        return None
+        # Long handoff blocks routinely break on an unescaped inner quote or
+        # stray backslash. Attempt a decoder-driven repair before giving up so
+        # the memory still lands instead of triggering a re-prompt churn.
+        data = _salvage_json(raw_json)
+        if data is None:
+            log(f"Link-def JSON parse error: {e} — raw: {raw_json[:120]}")
+            return None
+        log(f"Link-def JSON salvaged after parse error ({e})")
 
     if not isinstance(data, dict):
         log(f"Link-def JSON is not a dict: {type(data)}")
