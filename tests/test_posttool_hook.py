@@ -98,7 +98,8 @@ class TestBashSignalDetection:
 
     def test_large_output_triggers(self):
         from hooks.posttool_hook import _is_high_signal_bash
-        big_output = "\n".join(f"line {i}" for i in range(50))
+        from cairn.config import CHECKPOINT_MIN_OUTPUT_LINES
+        big_output = "\n".join(f"line {i}" for i in range(CHECKPOINT_MIN_OUTPUT_LINES + 10))
         high, reason = _is_high_signal_bash({}, {"exitCode": 0, "stdout": big_output})
         assert high is True
         assert "large output" in reason
@@ -168,7 +169,8 @@ class TestCooldownGating:
         run_hook(db_path, payload)
 
         # Burn through cooldown with non-signal calls (exit 0, small output)
-        for _ in range(3):
+        from cairn.config import CHECKPOINT_COOLDOWN
+        for _ in range(CHECKPOINT_COOLDOWN):
             boring = {
                 "tool_name": "Bash",
                 "session_id": session_id,
@@ -181,6 +183,28 @@ class TestCooldownGating:
         result, _ = run_hook(db_path, payload)
         assert result is not None
         assert "MEMORY CHECKPOINT" in result["hookSpecificOutput"]["additionalContext"]
+
+    def test_nudge_stops_at_note_budget(self):
+        """Once nudges reach the per-session note cap, further high-signal calls
+        must NOT nudge — the notes would be dropped at the cap anyway, so the
+        nudge is pure token waste (hook.log showed 190 such post-cap nudges)."""
+        import hooks.posttool_hook as posttool_hook
+        db_path, conn = fresh_db()
+        payload = {
+            "tool_name": "Bash",
+            "session_id": "sess-cap",
+            "tool_input": {},
+            "tool_output": {"exitCode": 1, "stdout": "error"},
+        }
+        fired = 0
+        # cooldown 0 so every high-signal call is eligible; tiny cap to reach fast
+        with patch.object(posttool_hook, "CHECKPOINT_COOLDOWN", 0), \
+             patch.object(posttool_hook, "CHECKPOINT_MAX_NOTES_PER_SESSION", 3):
+            for _ in range(10):
+                result, _ = run_hook(db_path, payload)
+                if result is not None:
+                    fired += 1
+        assert fired == 3, f"expected exactly 3 nudges before the cap, got {fired}"
 
     def test_non_whitelisted_tool_ignored(self):
         db_path, _ = fresh_db()
