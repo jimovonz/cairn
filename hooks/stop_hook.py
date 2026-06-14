@@ -23,7 +23,7 @@ import os
 from typing import Optional
 
 from hooks.hook_helpers import log, get_conn, get_ephemeral_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery
-from hooks.parser import parse_memory_block, parse_memory_notes
+from hooks.parser import parse_memory_block, parse_memory_notes, linkdef_error_locus
 from hooks.hash_verify import compute_response_hash
 from hooks.storage import apply_confidence_updates, inline_backfill, insert_memories
 
@@ -432,6 +432,12 @@ def main() -> None:
         if has_legacy_tag or has_linkdef:
             record_metric(session_id, "malformed_memory_block")
             hint: str = "Your memory block could not be parsed. "
+            # Point the retry at the exact break instead of letting it rewrite
+            # the whole block blind (the usual cause of multi-retry churn): the
+            # dominant failure is an unescaped " or \ inside a content string.
+            locus = linkdef_error_locus(text)
+            if locus:
+                hint += locus + " "
             hint += 'Use this format:\n[cm]: # \'{"e":[{"t":"fact","to":"short key","c":"one line"}],"ok":true,"ctx":"s","kw":["relevant","words"]}\''
             result: dict = {"decision": "block", "reason": hint + AMEND_ONLY_SUFFIX}
         else:
