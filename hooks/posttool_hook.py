@@ -29,6 +29,7 @@ from cairn.config import (
     CHECKPOINT_TOOLS,
     CHECKPOINT_ERROR_PATTERNS,
     CHECKPOINT_MIN_OUTPUT_LINES,
+    CHECKPOINT_MAX_NOTES_PER_SESSION,
 )
 
 TOOL_WHITELIST: set[str] = {t.strip() for t in CHECKPOINT_TOOLS.split(",") if t.strip()}
@@ -159,8 +160,18 @@ def main() -> None:
     if not high_signal:
         sys.exit(0)
 
+    # Respect the per-session note budget. The stop hook stores at most
+    # CHECKPOINT_MAX_NOTES_PER_SESSION notes; once we have nudged that many
+    # times, every further nudge is pure waste — the note gets dropped at the
+    # cap while still costing prompt + output tokens every turn. (hook.log
+    # showed 190 post-cap nudges fired into a full bucket.) Stop nagging.
+    nudge_total = int(load_hook_state(session_id, "checkpoint_nudge_total") or 0)
+    if nudge_total >= CHECKPOINT_MAX_NOTES_PER_SESSION:
+        sys.exit(0)
+
     # Fire the nudge
     _set_last_nudge_count(session_id, current_count)
+    save_hook_state(session_id, "checkpoint_nudge_total", str(nudge_total + 1))
     log(f"Checkpoint nudge: {tool_name} — {reason} (tool #{current_count})")
     record_metric(session_id, "checkpoint_nudge", f"{tool_name}: {reason}", current_count)
 

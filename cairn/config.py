@@ -223,10 +223,10 @@ RRF_K = 60                         # Standard RRF constant — prevents single h
 # The stop hook collects and stores these notes. No extra LLM calls — the agent is already
 # generating its next response; the note is just an inline tag.
 CHECKPOINT_ENABLED = True
-CHECKPOINT_COOLDOWN = 3            # Skip nudge if one fired within this many tool calls
+CHECKPOINT_COOLDOWN = 6            # Skip nudge if one fired within this many tool calls
 CHECKPOINT_TOOLS = "Bash,Edit,Write"  # Tool types that can trigger a checkpoint nudge
 CHECKPOINT_ERROR_PATTERNS = "error,failed,traceback,denied,not found,exception,fatal,panic"
-CHECKPOINT_MIN_OUTPUT_LINES = 30   # Bash output above this line count triggers a nudge (even without errors)
+CHECKPOINT_MIN_OUTPUT_LINES = 60   # Bash output above this line count triggers a nudge (even without errors)
 CHECKPOINT_MAX_NOTES_PER_SESSION = 20  # Hard cap on memory_notes stored per session
 
 # === Cross-encoder re-ranking ===
