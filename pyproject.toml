@@ -32,6 +32,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+proxy = [
+    "aiohttp>=3.9",
+]
 ast = [
     "tree-sitter>=0.24",
     "tree-sitter-python>=0.23",
@@ -66,6 +69,7 @@ cairn-session-extract = "cairn.session_extract:main"
 cairn-calibration-analyser = "cairn.analyser:main"
 cairn-calibration-selfmod = "cairn.calibration_selfmod:main"
 cairn-calibration-import-claude-md = "cairn.calibration_import_claude_md:main"
+cairn-proxy = "cairn.proxy.server:main"
 cairn-bench-report = "cairn.bench_report:main"
 
 [tool.setuptools.packages.find]

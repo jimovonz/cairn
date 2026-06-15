@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Optional
 
-from hooks.hook_helpers import log, record_metric, flush_metrics, load_hook_state, save_hook_state
+from hooks.hook_helpers import log, record_metric, flush_metrics, load_hook_state, save_hook_state, deliver_additional_context
 from cairn.config import (
     CHECKPOINT_ENABLED,
     CHECKPOINT_COOLDOWN,
@@ -175,13 +175,7 @@ def main() -> None:
     log(f"Checkpoint nudge: {tool_name} — {reason} (tool #{current_count})")
     record_metric(session_id, "checkpoint_nudge", f"{tool_name}: {reason}", current_count)
 
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
-            "additionalContext": NUDGE_TEXT,
-        }
-    }
-    print(json.dumps(output))
+    deliver_additional_context(session_id, "PostToolUse", NUDGE_TEXT)
     sys.exit(0)
 
 

@@ -320,3 +320,16 @@ for _name in list(vars(_this)):
             setattr(_this, _name, int(_val))
         elif isinstance(_current, str):
             setattr(_this, _name, _val)
+
+# === API proxy (cairn-proxy) ===
+# Opt-in reverse proxy between Claude Code and the Anthropic API. When enabled,
+# it strips every Cairn artifact from the response stream and injects Cairn
+# context into the request, keeping the conversation clean and the prompt cache
+# byte-exact. Activated only when CAIRN_PROXY_ENABLED is set (install.sh then
+# wires ANTHROPIC_BASE_URL). Fail-open: any proxy error degrades to passthrough.
+import os as _os_proxy
+PROXY_ENABLED = _os_proxy.environ.get("CAIRN_PROXY_ENABLED", "").lower() in ("1", "true", "yes")
+PROXY_HOST = _os_proxy.environ.get("CAIRN_PROXY_HOST", "127.0.0.1")
+PROXY_PORT = int(_os_proxy.environ.get("CAIRN_PROXY_PORT", "8789"))  # 8787 is sync server default
+PROXY_UPSTREAM = _os_proxy.environ.get("CAIRN_PROXY_UPSTREAM", "https://api.anthropic.com")
+PROXY_REWRITE = _os_proxy.environ.get("CAIRN_PROXY_REWRITE", "1").lower() in ("1", "true", "yes")

@@ -29,7 +29,7 @@ from typing import Any, Optional
 from hooks.hook_helpers import (
     log, get_conn, record_metric, flush_metrics, load_hook_state, save_hook_state,
     load_injected_ids, save_injected_ids, record_layer_delivery,
-    get_session_project, overdelivered_ids,
+    get_session_project, overdelivered_ids, deliver_additional_context,
 )
 
 # Max entries to inject per file access (avoid flooding context)
@@ -388,13 +388,7 @@ def main() -> None:
     if not sections:
         sys.exit(0)
 
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": "\n\n".join(sections)
-        }
-    }
-    print(json.dumps(output))
+    deliver_additional_context(session_id, "PreToolUse", "\n\n".join(sections))
     sys.exit(0)
 
 

@@ -262,6 +262,46 @@ echo "Restarting embedding daemon..."
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" stop >/dev/null 2>&1 || true
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" start
 
+# --- API proxy (opt-in: CAIRN_PROXY_ENABLED=1) ---
+# Routes Claude Code <-> Anthropic through a local proxy that hides all Cairn
+# artifacts and injects context under the hood. OFF by default. Activation is
+# scoped to a `c` shell launcher (NOT global): `c` ensures the daemon is up,
+# health-gates ANTHROPIC_BASE_URL onto it, and falls back to a direct connection
+# if the proxy is unreachable; plain `claude` always bypasses the proxy. So a
+# down daemon never blocks traffic. Fully reversed by uninstall.sh.
+PROXY_PORT="${CAIRN_PROXY_PORT:-8789}"
+SHELL_RC="${CAIRN_SHELL_RC:-$HOME/.bashrc}"
+if [ "${CAIRN_PROXY_ENABLED:-}" = "1" ]; then
+    echo "Enabling cairn API proxy (opt-in) on 127.0.0.1:$PROXY_PORT..."
+    "$VENV_PATH/bin/pip" install --progress-bar off -e "$CAIRN_HOME[proxy]" >/dev/null 2>&1 \
+        || { echo "ERROR: aiohttp (proxy extra) install failed."; exit 1; }
+    # Install/refresh the `c` launcher in the shell rc (marked block, idempotent).
+    # Overrides any existing `c` alias; preserves --dangerously-skip-permissions.
+    LAUNCHER_TMP="$(mktemp)"
+    sed "s|{{VENV_PYTHON}}|$VENV_PYTHON|g; s|{{PROXY_PORT}}|$PROXY_PORT|g" \
+        "$CAIRN_HOME/templates/cairn-launcher.sh" > "$LAUNCHER_TMP"
+    touch "$SHELL_RC"
+    "$VENV_PYTHON" - "$SHELL_RC" "$LAUNCHER_TMP" <<'PYEOF'
+import re, sys
+rc, lf = sys.argv[1], sys.argv[2]
+block = open(lf).read()
+with open(rc) as f: txt = f.read()
+txt = re.sub(r"\n?# >>> cairn proxy launcher >>>.*?# <<< cairn proxy launcher <<<\n?",
+             "\n", txt, flags=re.DOTALL)
+if not txt.endswith("\n"): txt += "\n"
+txt += block
+if not txt.endswith("\n"): txt += "\n"
+with open(rc, "w") as f: f.write(txt)
+print(f"  installed 'c' launcher in {rc} (run: source {rc})")
+PYEOF
+    rm -f "$LAUNCHER_TMP"
+    CAIRN_PROXY_ENABLED=1 CAIRN_PROXY_PORT="$PROXY_PORT" "$VENV_PYTHON" -m cairn.proxy.server restart --port "$PROXY_PORT" || true
+    echo "  cairn-proxy started. Use 'c' to launch through it; 'claude' stays direct."
+else
+    # Not opting in this run — make sure no stale daemon keeps intercepting traffic.
+    "$VENV_PYTHON" -m cairn.proxy.server stop >/dev/null 2>&1 || true
+fi
+
 # --- Cron jobs (memory consolidation + contradiction detection) ---
 echo "Configuring cron jobs..."
 CRON_MARKER="# cairn-maintenance"
@@ -286,9 +326,15 @@ CRON_SELFMOD="30 0 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON -m cairn.calibration_se
 # graph-ready quickly without waiting for a session. The daemon keeps existing repos
 # current in real time between sweeps. Only runs if code-review-graph is installed.
 CRON_GRAPH_FLEET="17 * * * * $VENV_PYTHON -m cairn.graph_fleet >> $CAIRN_HOME/logs/graph-fleet.log 2>&1 $CRON_MARKER"
+# Proxy keep-alive — `start` is idempotent (no-op if running); critical because
+# ANTHROPIC_BASE_URL points Claude Code at the proxy. Empty unless opted in.
+CRON_PROXY=""
+if [ "${CAIRN_PROXY_ENABLED:-}" = "1" ]; then
+    CRON_PROXY="*/5 * * * * CAIRN_PROXY_ENABLED=1 CAIRN_PROXY_PORT=$PROXY_PORT $VENV_PYTHON -m cairn.proxy.server start --port $PROXY_PORT >/dev/null 2>&1 $CRON_MARKER"
+fi
 
 # Remove any existing cairn cron entries (including legacy contradiction_scan.py and calibration variants)
-EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.analyser\|cairn.calibration_selfmod\|cairn.graph_fleet" || true)
+EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.analyser\|cairn.calibration_selfmod\|cairn.graph_fleet\|cairn.proxy.server" || true)
 
 # Install fresh entries
 echo "$EXISTING_CRON
@@ -296,7 +342,8 @@ $CRON_CONSOLIDATION
 $CRON_CONTRADICTION
 $CRON_ANALYSER
 $CRON_SELFMOD
-$CRON_GRAPH_FLEET" | sed '/^$/d' | crontab -
+$CRON_GRAPH_FLEET
+$CRON_PROXY" | sed '/^$/d' | crontab -
 echo "Installed cron: consolidation (3:00 AM), contradiction scan (3:30 AM), calibration analyser (00:00), calibration selfmod (00:30), graph fleet sweep (hourly :17)."
 
 # --- Code-graph fleet bootstrap ---

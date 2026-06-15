@@ -949,3 +949,50 @@ def test_main_density_short_content_blocks():
     ).fetchone()[0]
     assert density_metric == 1
     conn.close()
+
+
+#TAG: [PXY1] 2026-06-16
+# Verifies: proxy-stripped [cm] is restored from the capture sidecar so the
+# memory is stored exactly as if the block had been inline (restore_stripped_cm).
+@pytest.mark.behavioural
+def test_main_restores_proxy_stripped_cm_from_sidecar():
+    import hashlib
+    from cairn.proxy import sidecar
+    db_path, conn = fresh_db()
+    session_id = "proxy-restore-sess"
+    body = "Here is the analysis with no visible memory block."
+    cm = ("\n\n[cm]: # '{\"e\":[{\"t\":\"fact\",\"to\":\"proxy-restore\","
+          "\"c\":\"Restored from the proxy capture sidecar\"}],"
+          "\"ok\":true,\"ctx\":\"s\",\"kw\":[\"proxy\"]}'")
+    # clean + stage capture as the proxy would have written it
+    for suf in ("_cm_capture.jsonl", "_inject_prompt.txt", "_inject_bootstrap.txt"):
+        try:
+            os.unlink(sidecar._path(session_id, suf))
+        except FileNotFoundError:
+            pass
+    sidecar.append_capture(session_id, {
+        "emitted_sha": hashlib.sha256(body.encode()).hexdigest(), "cm": cm, "notes": []})
+    try:
+        payload = make_payload(session_id=session_id, message=body)  # stripped: no [cm]
+        result, code = run_hook(db_path, payload)
+        row = conn.execute(
+            "SELECT type, content FROM memories WHERE topic = 'proxy-restore'").fetchone()
+        assert row is not None
+        assert row[0] == "fact"
+        assert row[1] == "Restored from the proxy capture sidecar"
+    finally:
+        for suf in ("_cm_capture.jsonl",):
+            try:
+                os.unlink(sidecar._path(session_id, suf))
+            except FileNotFoundError:
+                pass
+        conn.close()
+
+
+#TAG: [PXY2] 2026-06-16
+# Verifies: restore_stripped_cm is a no-op when the response already carries [cm].
+@pytest.mark.edge
+def test_restore_stripped_cm_noop_when_present():
+    from hooks.hook_helpers import restore_stripped_cm
+    text = "Answer.\n[cm]: # '{\"ok\":true}'"
+    assert restore_stripped_cm("any-sess", text) == text
