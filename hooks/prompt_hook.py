@@ -22,6 +22,7 @@ from hooks.hook_helpers import (
     DB_PATH, LOG_PATH, strip_seen_entries, save_injected_ids,
     format_entry, split_by_scope, build_context_xml,
     record_layer_delivery, load_hook_state, save_hook_state, delete_hook_state,
+    deliver_additional_context,
     log as _base_log,
 )
 
@@ -656,6 +657,23 @@ def main() -> None:
         except Exception as e:
             log(f"Staged context cleanup failed: {e}")
 
+        # Sweep stale proxy sidecar files (capture + inject) past retention.
+        try:
+            import time as _time
+            from cairn.config import STAGED_CONTEXT_RETENTION_DAYS as _ret
+            _cutoff = _time.time() - _ret * 86400
+            _sweep_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+            for _fn in os.listdir(_sweep_dir):
+                if _fn.endswith(("_cm_capture.jsonl", "_inject_prompt.txt", "_inject_bootstrap.txt")):
+                    _fp = os.path.join(_sweep_dir, _fn)
+                    try:
+                        if os.path.getmtime(_fp) < _cutoff:
+                            os.remove(_fp)
+                    except OSError:
+                        pass
+        except Exception as e:
+            log(f"Proxy sidecar cleanup failed: {e}")
+
         # Deferred graph orientation — retry if first prompt raced with postprocess.
         _pending_cwd = load_hook_state(session_id, "graph_orientation_pending")
         if _pending_cwd:
@@ -779,13 +797,10 @@ def main() -> None:
     record_metric(session_id, "retrieval_query", user_message[:200])
     record_metric(session_id, "retrieval_tokens_est", None, len(combined) // 4)
 
-    output: dict[str, Any] = {
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": f"CAIRN CONTEXT (proactive retrieval — interpret per .claude/rules/memory-system.md):\n\n{combined}"
-        }
-    }
-    print(json.dumps(output))
+    deliver_additional_context(
+        session_id, "UserPromptSubmit",
+        f"CAIRN CONTEXT (proactive retrieval — interpret per .claude/rules/memory-system.md):\n\n{combined}",
+    )
     sys.exit(0)
 
 

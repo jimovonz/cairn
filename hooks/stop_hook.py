@@ -22,7 +22,7 @@ import sys
 import os
 from typing import Optional
 
-from hooks.hook_helpers import log, get_conn, get_ephemeral_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery
+from hooks.hook_helpers import log, get_conn, get_ephemeral_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery, restore_stripped_cm
 from hooks.parser import parse_memory_block, parse_memory_notes, linkdef_error_locus
 from hooks.hash_verify import compute_response_hash
 from hooks.storage import apply_confidence_updates, inline_backfill, insert_memories
@@ -115,7 +115,8 @@ from cairn.config import MAX_CONTINUATIONS, WEAK_ENTRY_SCORE_FLOOR, CONTEXT_BOOT
 
 
 def collect_memory_notes(transcript_path: str, session_id: str,
-                         final_entries: Optional[list[dict[str, str]]]) -> int:
+                         final_entries: Optional[list[dict[str, str]]],
+                         extra_note_texts: Optional[list[str]] = None) -> int:
     """Scan transcript for <memory_note> tags in assistant messages and store them.
 
     Memory notes are lightweight inline observations emitted mid-response after
@@ -151,6 +152,15 @@ def collect_memory_notes(transcript_path: str, session_id: str,
     except (OSError, PermissionError) as e:
         log(f"Memory note collection error: {e}")
         return 0
+
+    # Proxy-captured notes: the proxy strips <memory_note>/[cairn-note] from the
+    # visible stream so they never reach the transcript. Parse the verbatim
+    # captures here so they are still stored (deduped below like any other note).
+    if extra_note_texts:
+        for raw in extra_note_texts:
+            for note in parse_memory_notes(raw):
+                note["_source_turn"] = -1
+                all_notes.append(note)
 
     if not all_notes:
         return 0
@@ -351,6 +361,12 @@ def main() -> None:
                     continue
                 if t.strip():
                     text = t
+
+    # If the cairn proxy stripped the trailing [cm] block from this response,
+    # append the captured verbatim block back so the parse/enforcement path
+    # below sees it exactly as if it had been inline (no-op otherwise).
+    if text:
+        text = restore_stripped_cm(session_id, text)
 
     if not text:
         log(f"No text found in hook input or transcript. Keys: {list(hook_input.keys())}")
@@ -561,7 +577,7 @@ def main() -> None:
 
         # Snapshot source excerpts for --context recovery after JSONL purge
         try:
-            _snapshot_excerpts(session_id, transcript_path, assistant_message)
+            _snapshot_excerpts(session_id, transcript_path, text)
         except Exception as exc:
             log(f"Excerpt capture failed (non-fatal): {exc}")
 
@@ -962,7 +978,13 @@ def main() -> None:
             sys.exit(0)
 
     # Collect mid-response memory notes from the transcript
-    collect_memory_notes(transcript_path, session_id, entries)
+    _captured_notes = []
+    try:
+        from cairn.proxy import sidecar as _sc
+        _captured_notes = _sc.load_all_notes(session_id)
+    except Exception:
+        pass
+    collect_memory_notes(transcript_path, session_id, entries, extra_note_texts=_captured_notes)
 
     # All good — reset continuation counter and allow stop
     reset_continuation(session_id)

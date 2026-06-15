@@ -16,6 +16,26 @@ if [ -f "$VENV_PYTHON" ] && [ -f "$CAIRN_HOME/cairn/daemon.py" ]; then
     "$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" stop 2>/dev/null && echo "Stopped embedding daemon." || true
 fi
 
+# --- Stop API proxy + remove ANTHROPIC_BASE_URL (if it was opted in) ---
+if [ -f "$VENV_PYTHON" ]; then
+    "$VENV_PYTHON" -m cairn.proxy.server stop 2>/dev/null && echo "Stopped cairn-proxy." || true
+fi
+# Remove the `c` launcher block from the shell rc (restores the original alias
+# behaviour on next shell start; the unalias inside the block stops applying).
+for SHELL_RC in "${CAIRN_SHELL_RC:-$HOME/.bashrc}" "$HOME/.zshrc"; do
+    [ -f "$SHELL_RC" ] || continue
+    if grep -q "cairn proxy launcher" "$SHELL_RC" 2>/dev/null; then
+        python3 - "$SHELL_RC" <<'PYEOF' && echo "Removed 'c' launcher from $SHELL_RC."
+import re, sys
+rc = sys.argv[1]
+with open(rc) as f: txt = f.read()
+txt = re.sub(r"\n?# >>> cairn proxy launcher >>>.*?# <<< cairn proxy launcher <<<\n?",
+             "\n", txt, flags=re.DOTALL)
+with open(rc, "w") as f: f.write(txt)
+PYEOF
+    fi
+done
+
 # --- Remove rules file ---
 if [ -f "$CLAUDE_DIR/rules/memory-system.md" ]; then
     rm "$CLAUDE_DIR/rules/memory-system.md"
@@ -70,8 +90,8 @@ sys.exit(0 if changed else 1)
 fi
 
 # --- Remove cron jobs ---
-if crontab -l 2>/dev/null | grep -q "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan"; then
-    crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan" | crontab -
+if crontab -l 2>/dev/null | grep -q "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.proxy.server"; then
+    crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.proxy.server" | crontab -
     echo "Removed cairn cron jobs."
 else
     echo "No cairn cron jobs found."

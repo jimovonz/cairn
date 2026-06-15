@@ -615,3 +615,46 @@ def strip_seen_entries(xml: str, session_id: str) -> Optional[str]:
 
     stripped = filtered.strip()
     return stripped if stripped else None
+
+
+# --- proxy-aware delivery ----------------------------------------------------
+def deliver_additional_context(session_id: str, hook_event_name: str, text: str) -> None:
+    """Deliver injected context to the session.
+
+    When the cairn proxy is active (CAIRN_PROXY_ENABLED), stage the payload to a
+    sidecar so the proxy injects it into the request under the hood — the user
+    never sees it. Otherwise emit the normal visible additionalContext JSON.
+    Fail-open: any staging error falls back to visible delivery.
+    """
+    if not text:
+        return
+    try:
+        from cairn import config
+        if getattr(config, "PROXY_ENABLED", False):
+            from cairn.proxy import sidecar
+            sidecar.append_prompt_context(session_id, text)
+            return
+    except Exception as exc:  # fail-open to visible delivery
+        log(f"deliver_additional_context staging failed, visible fallback: {exc}")
+    print(json.dumps({
+        "hookSpecificOutput": {"hookEventName": hook_event_name, "additionalContext": text}
+    }))
+
+
+def restore_stripped_cm(session_id: str, text: str) -> str:
+    """If the proxy stripped the trailing [cm] block from this response, append
+    the captured verbatim block back so the Stop hook's parse/enforcement path
+    sees it exactly as if it had been inline. No-op if [cm] is already present
+    or no matching capture exists. Fail-open."""
+    if re.search(r'^\[(?:cm|cairn-memory)\]:', text, re.MULTILINE):
+        return text
+    try:
+        import hashlib
+        from cairn.proxy import sidecar
+        rec = sidecar.lookup_capture_by_sha(
+            session_id, hashlib.sha256(text.encode("utf-8")).hexdigest())
+        if rec and rec.get("cm"):
+            return text + rec["cm"]
+    except Exception as exc:
+        log(f"restore_stripped_cm failed open: {exc}")
+    return text
