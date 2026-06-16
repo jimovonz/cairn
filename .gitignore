@@ -35,4 +35,4 @@ cairn/.thinking_block_seen.json
 
 # cairn proxy runtime artifacts
 cairn/proxy.log
-cairn/.proxy.pid
+cairn/.proxy-*.pid
