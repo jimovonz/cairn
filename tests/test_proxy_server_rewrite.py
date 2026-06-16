@@ -23,6 +23,7 @@ def test_rewrite_injects_all_three(tmp_session="pytest-sess-1"):
 
     body = json.dumps({
         "system": [{"type": "text", "text": "Sys", "cache_control": {"type": "ephemeral"}}],
+        "tools": [{"name": "Bash", "description": "run"}],
         "messages": [
             {"role": "assistant", "content": stripped},
             {"role": "user", "content": "new question"},
@@ -55,3 +56,31 @@ def test_rewrite_skips_non_message_bodies():
 def test_rewrite_noop_without_session():
     body = json.dumps({"messages": []}).encode()
     assert server._rewrite_request(body, "") == body
+
+
+def test_auxiliary_request_without_tools_does_not_consume(tmp_session="pytest-aux-1"):
+    _clean(tmp_session)
+    sidecar.write_bootstrap(tmp_session, "BOOT-X")
+    sidecar.append_prompt_context(tmp_session, "PROMPT-CTX-X")
+    # an auxiliary CC call: no tools, tiny single user message (title/topic gen)
+    aux = json.dumps({"model": "claude-haiku", "max_tokens": 32,
+                      "messages": [{"role": "user", "content": "summarize this"}]}).encode()
+    out = server._rewrite_request(aux, tmp_session)
+    data = json.loads(out)
+    # nothing injected, and crucially the per-prompt sidecar is NOT consumed
+    assert "PROMPT-CTX-X" not in json.dumps(data)
+    assert "BOOT-X" not in json.dumps(data)
+    assert sidecar.consume_prompt_context(tmp_session) == "PROMPT-CTX-X"  # still there
+    _clean(tmp_session)
+
+
+def test_agentic_request_with_tools_consumes(tmp_session="pytest-aux-2"):
+    _clean(tmp_session)
+    sidecar.append_prompt_context(tmp_session, "PROMPT-CTX-Y")
+    main = json.dumps({"model": "claude-opus", "max_tokens": 4096,
+                       "tools": [{"name": "Bash"}],
+                       "messages": [{"role": "user", "content": "do the thing"}]}).encode()
+    out = server._rewrite_request(main, tmp_session)
+    assert "PROMPT-CTX-Y" in json.dumps(json.loads(out))
+    assert sidecar.consume_prompt_context(tmp_session) == ""  # consumed
+    _clean(tmp_session)

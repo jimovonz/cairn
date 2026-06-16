@@ -29,8 +29,13 @@ from cairn.proxy import sidecar
 
 UPSTREAM = config.PROXY_UPSTREAM
 _PROXY_DIR = os.path.dirname(os.path.abspath(__file__))
-PID_FILE = os.path.join(os.path.dirname(_PROXY_DIR), ".proxy.pid")     # cairn/.proxy.pid
 LOG_FILE = os.path.join(os.path.dirname(_PROXY_DIR), "proxy.log")       # cairn/proxy.log
+
+
+def _pid_file(port: int) -> str:
+    # Port-specific so daemons on different ports (e.g. test serve instances)
+    # never clobber each other's PID tracking. cairn/.proxy-<port>.pid
+    return os.path.join(os.path.dirname(_PROXY_DIR), f".proxy-{port}.pid")
 
 logger = logging.getLogger("cairn-proxy")
 
@@ -102,9 +107,17 @@ def _rewrite_request(body: bytes, session_id: str) -> bytes:
     if not isinstance(data, dict) or "messages" not in data:
         return body
     try:
+        # Re-injecting verbatim [cm] into assistant turns is harmless on any
+        # request (it only matches turns this session generated).
         reinject_cm(data, sidecar.load_cm_map(session_id))
-        inject_bootstrap(data, sidecar.read_bootstrap(session_id))
-        inject_prompt_context(data, sidecar.consume_prompt_context(session_id))
+        # Cairn context must land on the REAL agentic turn, not on Claude Code's
+        # auxiliary calls (title/topic generation), which also hit /v1/messages
+        # but carry no tool set. Gating on `tools` stops an auxiliary request
+        # from consuming the staged context meant for the user turn. Only consume
+        # the one-shot per-prompt sidecar when we are actually going to inject it.
+        if data.get("tools"):
+            inject_bootstrap(data, sidecar.read_bootstrap(session_id))
+            inject_prompt_context(data, sidecar.consume_prompt_context(session_id))
         return json.dumps(data).encode("utf-8")
     except Exception as exc:  # fail-open
         logger.warning("request rewrite failed, passing through: %s", exc)
@@ -215,51 +228,51 @@ def run_proxy(port: int, debug: bool) -> None:
 
 
 # --- daemon management -------------------------------------------------------
-def _read_pid():
+def _read_pid(port: int):
     try:
-        return int(open(PID_FILE).read().strip())
+        return int(open(_pid_file(port)).read().strip())
     except (FileNotFoundError, ValueError):
         return None
 
 
-def _write_pid():
-    with open(PID_FILE, "w") as fh:
+def _write_pid(port: int):
+    with open(_pid_file(port), "w") as fh:
         fh.write(str(os.getpid()))
 
 
-def _remove_pid():
+def _remove_pid(port: int):
     try:
-        os.unlink(PID_FILE)
+        os.unlink(_pid_file(port))
     except FileNotFoundError:
         pass
 
 
-def is_running() -> bool:
-    pid = _read_pid()
+def is_running(port: int) -> bool:
+    pid = _read_pid(port)
     if pid is None:
         return False
     try:
         os.kill(pid, 0)
         return True
     except OSError:
-        _remove_pid()
+        _remove_pid(port)
         return False
 
 
 def cmd_serve(args):
     setup_logging(args.debug)
-    _write_pid()
-    signal.signal(signal.SIGINT, lambda *_: (_remove_pid(), sys.exit(0)))
-    signal.signal(signal.SIGTERM, lambda *_: (_remove_pid(), sys.exit(0)))
+    _write_pid(args.port)
+    signal.signal(signal.SIGINT, lambda *_: (_remove_pid(args.port), sys.exit(0)))
+    signal.signal(signal.SIGTERM, lambda *_: (_remove_pid(args.port), sys.exit(0)))
     try:
         run_proxy(args.port, args.debug)
     finally:
-        _remove_pid()
+        _remove_pid(args.port)
 
 
 def cmd_start(args):
-    if is_running():
-        print(f"cairn-proxy already running (PID {_read_pid()})")
+    if is_running(args.port):
+        print(f"cairn-proxy already running (PID {_read_pid(args.port)})")
         return
     try:
         import aiohttp  # noqa: F401
@@ -277,16 +290,16 @@ def cmd_start(args):
     sys.stdout = out
     sys.stderr = out
     setup_logging(args.debug)
-    _write_pid()
-    signal.signal(signal.SIGTERM, lambda *_: (_remove_pid(), sys.exit(0)))
+    _write_pid(args.port)
+    signal.signal(signal.SIGTERM, lambda *_: (_remove_pid(args.port), sys.exit(0)))
     try:
         run_proxy(args.port, args.debug)
     finally:
-        _remove_pid()
+        _remove_pid(args.port)
 
 
 def cmd_stop(args):
-    pid = _read_pid()
+    pid = _read_pid(args.port)
     if pid is None:
         print("cairn-proxy not running")
         return
@@ -295,12 +308,12 @@ def cmd_stop(args):
         print(f"Stopped cairn-proxy (PID {pid})")
     except OSError as exc:
         print(f"Error stopping: {exc}")
-    _remove_pid()
+    _remove_pid(args.port)
 
 
 def cmd_status(args):
-    if is_running():
-        print(f"cairn-proxy running (PID {_read_pid()}) on {config.PROXY_HOST}:{config.PROXY_PORT}")
+    if is_running(args.port):
+        print(f"cairn-proxy running (PID {_read_pid(args.port)}) on {config.PROXY_HOST}:{args.port}")
         print(f"  log: {LOG_FILE}")
     else:
         print("cairn-proxy not running")
@@ -308,7 +321,7 @@ def cmd_status(args):
 
 
 def cmd_restart(args):
-    if is_running():
+    if is_running(args.port):
         cmd_stop(args)
         import time
         time.sleep(1)
@@ -325,6 +338,7 @@ def main():
         sp.set_defaults(func=fn)
     for name, fn in (("stop", cmd_stop), ("status", cmd_status)):
         sp = sub.add_parser(name)
+        sp.add_argument("--port", type=int, default=config.PROXY_PORT)
         sp.set_defaults(func=fn)
     args = p.parse_args()
     if not args.command:
