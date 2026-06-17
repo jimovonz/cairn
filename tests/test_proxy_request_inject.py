@@ -90,3 +90,27 @@ def test_prompt_context_idempotent():
     inject_prompt_context(data, "CTX")
     inject_prompt_context(data, "CTX")
     assert data["messages"][0]["content"].count("CTX") == 1
+
+
+def test_bootstrap_no_move_breakpoint_pins_cc_off_bootstrap():
+    # Unstable-bootstrap degrade path: cache_control stays on the upstream block,
+    # bootstrap is appended uncached so it can't invalidate the cached prefix.
+    data = {"system": [
+        {"type": "text", "text": "Prefix.", "cache_control": {"type": "ephemeral"}},
+    ]}
+    inject_bootstrap(data, "VOLATILE BOOT", move_breakpoint=False)
+    sysblocks = data["system"]
+    assert sysblocks[0]["cache_control"] == {"type": "ephemeral"}
+    assert sysblocks[-1]["text"].startswith("<!--cairn-bootstrap-->")
+    assert "cache_control" not in sysblocks[-1]
+
+
+def test_bootstrap_move_breakpoint_true_is_default_behaviour():
+    data = {"system": [
+        {"type": "text", "text": "Prefix.", "cache_control": {"type": "ephemeral"}},
+    ]}
+    inject_bootstrap(data, "STABLE BOOT")  # default move_breakpoint=True
+    sysblocks = data["system"]
+    assert "cache_control" not in sysblocks[0]
+    assert sysblocks[-1]["cache_control"] == {"type": "ephemeral"}
+    assert sysblocks[-1]["text"].startswith("<!--cairn-bootstrap-->")

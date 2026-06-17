@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 try:
     import pysqlite3 as sqlite3  # type: ignore[import-untyped]
@@ -361,14 +362,16 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
         days = _recency_days(r.get("updated_at", ""))
         sim = r.get("similarity", 0)
         reason = r.get("archived_reason")
+        content = html.escape(str(r.get("content", "")), quote=True)
         if r.get("archived") or reason:
+            reason = html.escape(str(reason or "unknown"), quote=True)
             return (
                 f'  <entry id="{r["id"]}" superseded="true" reason="{reason}" days="{days}">'
-                f'{r["content"]}</entry>'
+                f'{content}</entry>'
             )
         return (
             f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}">'
-            f'{r["content"]}</entry>'
+            f'{content}</entry>'
         )
 
     lines: list[str] = ['<cairn_context query="{}" current_project="{}" layer="L3">'.format(

@@ -737,7 +737,7 @@ def main() -> None:
                 log(f"Context bootstrap: {turns_since} turns without layer 3 — blocking (response {len(response_stripped)} chars)")
                 increment_continuation(session_id)
                 print(json.dumps({"decision": "block", "reason": bootstrap_reminder}))
-                sys.exit(2)
+                sys.exit(0)
             else:
                 # Substantive response — defer to next turn to avoid eating it
                 log(f"Context bootstrap: {turns_since} turns without layer 3 — deferring (response {len(response_stripped)} chars)")

@@ -220,12 +220,17 @@ Report: reviewed, confirmed, enriched, archived, gaps filled (with details of wh
     print(f"Transcript: {len(transcript)} chars")
     print()
 
-    # Launch claude -p
+    # Launch claude -p. Prompt via stdin (avoids ARG_MAX on large transcripts);
+    # CAIRN_MODE=read-only so the agent's own turns don't recursively trigger the
+    # Stop-hook capture path. Bash stays granted — this is a human-invoked maintenance
+    # tool whose job is to enrich/archive memories via query.py.
     result = subprocess.run(
-        ["claude", "-p", prompt, "--allowedTools", "Bash"],
+        ["claude", "-p", "--allowedTools", "Bash"],
+        input=prompt,
         capture_output=True,
         text=True,
-        timeout=120
+        timeout=120,
+        env={**os.environ, "CAIRN_MODE": "read-only"},
     )
 
     if result.stdout:

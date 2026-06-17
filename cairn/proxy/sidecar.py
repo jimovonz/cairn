@@ -12,10 +12,17 @@ Files (all keyed by Claude Code session id):
   <session>_cm_capture.jsonl      — one JSON record per assistant turn:
                                     {"emitted_sha","cm","notes"} (proxy appends,
                                     Stop hook reads)
+
+Concurrency: the proxy (writer) and the Stop/prompt hooks (readers/consumers)
+touch these files from separate processes. All access is serialized with
+``fcntl.flock`` (LOCK_EX for append/consume, LOCK_SH for reads) so a reader
+never observes a torn append and ``consume_prompt_context`` can't drop an
+append racing between its read and clear.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from typing import Optional
@@ -54,6 +61,7 @@ def append_capture(session_id: str, record: dict) -> None:
     if not record.get("cm") and not record.get("notes"):
         return
     with open(capture_path(session_id), "a", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         fh.write(json.dumps(record) + "\n")
 
 
@@ -63,6 +71,7 @@ def load_cm_map(session_id: str) -> dict:
     path = capture_path(session_id)
     try:
         with open(path, encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -84,6 +93,7 @@ def load_all_notes(session_id: str) -> list:
     path = capture_path(session_id)
     try:
         with open(path, encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -103,6 +113,7 @@ def lookup_capture_by_sha(session_id: str, emitted_sha: str) -> Optional[dict]:
     path = capture_path(session_id)
     try:
         with open(path, encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
             lines = [l.strip() for l in fh if l.strip()]
     except FileNotFoundError:
         return None
@@ -121,12 +132,14 @@ def write_bootstrap(session_id: str, text: str) -> None:
     if not text:
         return
     with open(bootstrap_path(session_id), "w", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         fh.write(text)
 
 
 def read_bootstrap(session_id: str) -> str:
     try:
         with open(bootstrap_path(session_id), encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
             return fh.read()
     except FileNotFoundError:
         return ""
@@ -136,19 +149,50 @@ def append_prompt_context(session_id: str, text: str) -> None:
     if not text:
         return
     with open(prompt_inject_path(session_id), "a", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         fh.write(text.rstrip("\n") + "\n")
 
 
 def consume_prompt_context(session_id: str) -> str:
-    """Read and clear the pending per-prompt context (atomic-ish: read+unlink)."""
+    """Read and clear the pending per-prompt context atomically.
+
+    Opens r+ under an exclusive lock, reads, then truncates in place — so an
+    ``append_prompt_context`` (also LOCK_EX) cannot interleave between the read
+    and the clear and have its write silently discarded.
+    """
     path = prompt_inject_path(session_id)
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, "r+", encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
             data = fh.read()
+            fh.seek(0)
+            fh.truncate()
     except FileNotFoundError:
         return ""
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass
     return data.strip()
+
+
+# -- proxy-internal: per-session cache-prefix integrity state ------------------
+def prefix_state_path(session_id: str) -> str:
+    return _path(session_id, "_prefix_state.json")
+
+
+def read_prefix_state(session_id: str) -> tuple:
+    """Return (bootstrap_sha, unstable) recorded for the session, else (None, False).
+
+    Used by the proxy to detect when the cached system prefix (the injected
+    bootstrap) changes mid-session — a silent prompt-cache re-bill.
+    """
+    try:
+        with open(prefix_state_path(session_id), encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+            d = json.load(fh)
+        return d.get("sha"), bool(d.get("unstable"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None, False
+
+
+def write_prefix_state(session_id: str, sha: str, unstable: bool) -> None:
+    with open(prefix_state_path(session_id), "w", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        json.dump({"sha": sha, "unstable": unstable}, fh)
