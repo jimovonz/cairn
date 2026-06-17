@@ -14,6 +14,7 @@ Commands: serve | start | stop | status | restart
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -116,7 +117,26 @@ def _rewrite_request(body: bytes, session_id: str) -> bytes:
         # from consuming the staged context meant for the user turn. Only consume
         # the one-shot per-prompt sidecar when we are actually going to inject it.
         if data.get("tools"):
-            inject_bootstrap(data, sidecar.read_bootstrap(session_id))
+            bootstrap_text = sidecar.read_bootstrap(session_id)
+            if bootstrap_text:
+                # Prompt-cache integrity guard: the bootstrap sits inside the
+                # cached system prefix. If it changes mid-session, every prior
+                # turn's cache_write of system+bootstrap is invalidated — a
+                # SILENT re-bill. Detect it (warn) and, once seen, pin the
+                # breakpoint off the bootstrap so a volatile bootstrap can no
+                # longer churn the cached prefix.
+                cur_sha = hashlib.sha256(bootstrap_text.encode("utf-8")).hexdigest()
+                prev_sha, unstable = sidecar.read_prefix_state(session_id)
+                prev_unstable = unstable
+                if prev_sha is not None and cur_sha != prev_sha and not unstable:
+                    unstable = True
+                    logger.warning(
+                        "cairn-proxy: bootstrap system prefix changed mid-session "
+                        "(prompt-cache rebill); pinning breakpoint off bootstrap. session=%s",
+                        session_id[:8])
+                inject_bootstrap(data, bootstrap_text, move_breakpoint=not unstable)
+                if cur_sha != prev_sha or unstable != prev_unstable:
+                    sidecar.write_prefix_state(session_id, cur_sha, unstable)
             inject_prompt_context(data, sidecar.consume_prompt_context(session_id))
         return json.dumps(data).encode("utf-8")
     except Exception as exc:  # fail-open
@@ -183,6 +203,13 @@ def run_proxy(port: int, debug: bool) -> None:
                             try:
                                 out = filt.process_chunk(chunk)
                             except Exception as exc:  # fail-open mid-stream
+                                # NOTE: event-lossy fail-open. Earlier events were
+                                # already rewritten/suppressed; switching to raw
+                                # passthrough here can leave the SSE event sequence
+                                # desynced for this one stream (not a leak, not a
+                                # crash). A true clean passthrough would require
+                                # buffering to an event boundary before committing
+                                # — deferred until this warning is seen in proxy.log.
                                 logger.warning("response filter error, passthrough rest: %s", exc)
                                 filt = None
                                 await response.write(chunk)

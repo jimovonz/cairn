@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import logging.handlers
@@ -526,15 +527,16 @@ def format_entry(r: dict[str, Any]) -> str:
     sim = r.get("similarity", 0)
     days = recency_days(r.get("updated_at", ""))
     reason = r.get("archived_reason")
+    content = html.escape(str(r.get("content", "")), quote=True)
     if r.get("archived") or reason:
-        reason = reason or "unknown"
+        reason = html.escape(str(reason or "unknown"), quote=True)
         return (
             f'  <entry id="{r["id"]}" superseded="true" reason="{reason}" days="{days}">'
-            f'{r["content"]}</entry>'
+            f'{content}</entry>'
         )
     return (
         f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}">'
-        f'{r["content"]}</entry>'
+        f'{content}</entry>'
     )
 
 

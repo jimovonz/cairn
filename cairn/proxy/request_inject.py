@@ -73,8 +73,16 @@ def reinject_cm(data: dict, sha_to_cm: dict) -> dict:
 _BOOTSTRAP_SENTINEL = "<!--cairn-bootstrap-->"
 
 
-def inject_bootstrap(data: dict, bootstrap_text: str) -> dict:
-    """Add bootstrap as a system block, moving the trailing cache breakpoint onto it."""
+def inject_bootstrap(data: dict, bootstrap_text: str, move_breakpoint: bool = True) -> dict:
+    """Add bootstrap as a system block, moving the trailing cache breakpoint onto it.
+
+    ``move_breakpoint`` (default True) relocates the last ``cache_control`` onto
+    the bootstrap so the cached prefix grows to include it — correct only while
+    the bootstrap is byte-stable across turns. When the caller has detected the
+    bootstrap changed mid-session, it passes ``move_breakpoint=False`` so the
+    bootstrap is appended *after* the existing breakpoint: uncached (re-billed
+    each turn) but it can no longer invalidate the stable upstream prefix.
+    """
     if not bootstrap_text:
         return data
     blocks = _as_block_list(data.get("system", []))
@@ -82,16 +90,14 @@ def inject_bootstrap(data: dict, bootstrap_text: str) -> dict:
     if any(isinstance(b, dict) and b.get("text", "").startswith(_BOOTSTRAP_SENTINEL)
            for b in blocks):
         return data  # already injected this turn
-    # Relocate the last cache_control breakpoint (the prefix boundary) onto the
-    # new block so the cached prefix grows to include the stable bootstrap.
-    moved_cc = None
-    for b in reversed(blocks):
-        if isinstance(b, dict) and "cache_control" in b:
-            moved_cc = b.pop("cache_control")
-            break
     new_block = {"type": "text", "text": payload}
-    if moved_cc is not None:
-        new_block["cache_control"] = moved_cc
+    if move_breakpoint:
+        # Relocate the last cache_control breakpoint (the prefix boundary) onto
+        # the new block so the cached prefix grows to include the stable bootstrap.
+        for b in reversed(blocks):
+            if isinstance(b, dict) and "cache_control" in b:
+                new_block["cache_control"] = b.pop("cache_control")
+                break
     blocks.append(new_block)
     data["system"] = blocks
     return data
