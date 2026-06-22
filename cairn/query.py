@@ -187,6 +187,29 @@ def show_context(memory_id, margin=5):
     except Exception:
         pass
 
+    # Synced memory with no local excerpt: fetch the raw session on demand from
+    # the peer that authored it (they must have opted into session sharing).
+    try:
+        from cairn.sync.identity import node_id_for_conn
+        from cairn.sync.client import fetch_session
+        orow = conn.execute(
+            "SELECT origin_id, created_by_node FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        if orow and orow[0] and orow[1] and orow[1] != node_id_for_conn(conn):
+            res = fetch_session(conn, orow[0])
+            if res.get("ok") and res.get("excerpt"):
+                print("  [fetched from authoring peer]")
+                print()
+                if res.get("context_before"):
+                    print(res["context_before"])
+                print(res["excerpt"])
+                if res.get("context_after"):
+                    print(res["context_after"])
+                conn.close()
+                return
+    except Exception:
+        pass
+
     if not session_id:
         print("  No session ID — cannot locate transcript.")
         conn.close()

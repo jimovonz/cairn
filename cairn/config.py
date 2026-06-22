@@ -118,6 +118,9 @@ CAIRN_SYNC_DISCOVERY_PORT = int(_os.environ.get("CAIRN_SYNC_DISCOVERY_PORT", "47
 CAIRN_SYNC_ADVERTISE_INTERVAL = int(_os.environ.get("CAIRN_SYNC_ADVERTISE_INTERVAL", "15"))
 CAIRN_SYNC_PULL_INTERVAL = int(_os.environ.get("CAIRN_SYNC_PULL_INTERVAL", "120"))
 CAIRN_SYNC_ONLINE_WINDOW = int(_os.environ.get("CAIRN_SYNC_ONLINE_WINDOW", "90"))
+# Raw session transcripts are sensitive and are NOT synced. A node opts in to
+# serving the raw session behind its own memories to approved peers on demand.
+CAIRN_SYNC_SHARE_SESSIONS = _os.environ.get("CAIRN_SYNC_SHARE_SESSIONS", "").lower() in ("1", "true", "yes")
 del _os
 # When enabled, the container injector also docker cp's the shim and hook
 # config into every new dev container, so cairn works with zero per-project

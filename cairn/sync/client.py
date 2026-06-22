@@ -342,6 +342,74 @@ def refresh_outbound(conn) -> list[dict]:
     return out
 
 
+def fetch_session(conn, origin_id: str, *, timeout: float = 15.0, cache: bool = True) -> dict:
+    """Retrieve the raw session excerpt behind a (synced) memory from the peer
+    that authored it. Excerpts aren't bulk-synced, so this is on-demand and
+    requires being connected to (approved by) the authoring peer, which must have
+    opted into session sharing. Caches the result locally for offline re-view."""
+    row = conn.execute(
+        "SELECT id, created_by_node FROM memories WHERE origin_id = ?", (origin_id,)
+    ).fetchone()
+    if not row:
+        return {"ok": False, "error": "unknown memory"}
+    mem_id, src_node = row
+    local = conn.execute(
+        "SELECT excerpt FROM memory_source_excerpt WHERE memory_id = ?", (mem_id,)
+    ).fetchone()
+    if local:
+        return {"ok": True, "cached": True, "excerpt": local[0]}
+    # created_by_node is the author's provenance UUID; the reachable peer is keyed
+    # by its auth fingerprint. sync_state links them (peer fingerprint -> source
+    # UUID, recorded on pull). Map UUID -> fingerprint, then fall back to trying
+    # the UUID directly (defensive).
+    candidates = [r[0] for r in conn.execute(
+        "SELECT DISTINCT peer_node_id FROM sync_state WHERE source_node_id = ?", (src_node,)
+    ).fetchall()]
+    candidates.append(src_node)
+    peer = None
+    for fp in candidates:
+        peer = conn.execute(
+            "SELECT url, peer_cert_fingerprint FROM sync_peers WHERE peer_node_id = ? "
+            "AND (status IS NULL OR status = 'approved')", (fp,)
+        ).fetchone()
+        if peer:
+            break
+    if not peer:
+        return {"ok": False, "error": f"not connected to the peer that authored {(src_node or '?')[:12]}…"}
+    url, pinned = peer
+    raw = json.dumps({"origin_id": origin_id}, sort_keys=True, separators=(",", ":")).encode()
+    ts = str(time.time())
+    nonce = secrets.token_hex(16)
+    headers = {
+        "X-Cairn-Node": get_node_fingerprint(),
+        "X-Cairn-Timestamp": ts,
+        "X-Cairn-Nonce": nonce,
+        "X-Cairn-Signature": sign_request("POST", "/session", raw, ts, nonce),
+        "X-Cairn-Schema-Version": str(SCHEMA_VERSION),
+        "Content-Type": "application/json",
+    }
+    try:
+        status, data, _ = _https_post(url, "/session", raw, headers, pinned_fp=pinned, timeout=timeout)
+    except (OSError, TimeoutError, CertPinError) as e:
+        return {"ok": False, "error": str(e)}
+    try:
+        payload = json.loads(data.decode("utf-8")) if data else {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = {}
+    if status != 200:
+        return {"ok": False, "status": status, "error": payload.get("error", f"HTTP {status}")}
+    if cache and payload.get("excerpt"):
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_source_excerpt "
+            "(memory_id, session_id, transcript_path, excerpt, context_before, context_after) "
+            "VALUES (?, ?, '', ?, ?, ?)",
+            (mem_id, payload.get("session_id"), payload["excerpt"],
+             payload.get("context_before"), payload.get("context_after")),
+        )
+        conn.commit()
+    return {"ok": True, "cached": False, **payload}
+
+
 # ---- Peer registry CLI helpers ----
 
 def add_peer(conn, *, peer_node_id: str, url: str, bearer_token: str,
