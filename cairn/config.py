@@ -105,6 +105,19 @@ del _os
 # required.
 CAIRN_TCP_LISTENER_ENABLED = True
 CAIRN_TCP_PORT = 47390
+
+# === Multi-node sync (v2) ===
+# Opt-in always-on peer-to-peer sync. When enabled the daemon runs the HTTPS sync
+# server, broadcasts a LAN discovery beacon, and listens for peers (populating
+# discovered_peers for the dashboard Sync tab). See docs/multi-node-sync.md v2.
+import os as _os
+CAIRN_SYNC_ENABLED = _os.environ.get("CAIRN_SYNC_ENABLED", "").lower() in ("1", "true", "yes")
+CAIRN_SYNC_PORT = int(_os.environ.get("CAIRN_SYNC_PORT", "8787"))
+CAIRN_SYNC_BIND = _os.environ.get("CAIRN_SYNC_BIND", "0.0.0.0")
+CAIRN_SYNC_DISCOVERY_PORT = int(_os.environ.get("CAIRN_SYNC_DISCOVERY_PORT", "47391"))
+CAIRN_SYNC_ADVERTISE_INTERVAL = int(_os.environ.get("CAIRN_SYNC_ADVERTISE_INTERVAL", "15"))
+CAIRN_SYNC_ONLINE_WINDOW = int(_os.environ.get("CAIRN_SYNC_ONLINE_WINDOW", "90"))
+del _os
 # When enabled, the container injector also docker cp's the shim and hook
 # config into every new dev container, so cairn works with zero per-project
 # devcontainer.json edits.

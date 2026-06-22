@@ -731,26 +731,32 @@ a:hover { text-decoration: underline; }
     <div class="card">
       <h2>This node</h2>
       <div id="sync-identity" style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">…</div>
-      <p style="color:var(--text-dim);font-size:12px;margin-top:8px">Read your fingerprint aloud to a peer so they can verify it before approving. Sharing memories requires <b>mutual</b> approval — you each authorize the other.</p>
+      <p style="color:var(--text-dim);font-size:12px;margin-top:8px">Traffic is encrypted (HTTPS, self-signed cert pinned at pairing). Read your fingerprint to a peer so they can verify it before approving — sharing is <b>mutual</b>: you each authorize the other.</p>
     </div>
 
     <div class="card">
-      <h2>Pending pairing requests</h2>
-      <p style="color:var(--text-dim);font-size:12px;margin-bottom:8px">Every interconnection is authorized explicitly. Verify the fingerprint matches what the peer told you before approving.</p>
-      <div id="sync-requests">…</div>
-    </div>
-
-    <div class="card">
-      <h2>Discovered on the network</h2>
-      <div id="sync-discovered">…</div>
+      <h2>Online now <span id="sync-online-count" style="color:var(--text-dim);font-size:13px;font-weight:normal"></span></h2>
+      <p style="color:var(--text-dim);font-size:12px;margin-bottom:8px">Other cairn nodes broadcasting on your network. Click <b>Request access</b> to ask to sync; they approve from their dashboard.</p>
+      <div id="sync-online">…</div>
       <div style="margin-top:10px;display:flex;gap:6px">
-        <input id="sync-pair-url" placeholder="http://host:8787" style="flex:1;padding:6px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text)">
-        <button onclick="syncPairUrl()">Request pairing</button>
+        <input id="sync-pair-url" placeholder="https://host:8787 (add a peer manually)" style="flex:1;padding:6px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+        <button onclick="syncPairUrl()">Request access</button>
       </div>
     </div>
 
     <div class="card">
-      <h2>Paired peers</h2>
+      <h2>Incoming requests</h2>
+      <p style="color:var(--text-dim);font-size:12px;margin-bottom:8px">People asking to sync with you. Verify the fingerprint matches what they told you, then approve.</p>
+      <div id="sync-incoming">…</div>
+    </div>
+
+    <div class="card">
+      <h2>My requests <button onclick="syncRefresh()" style="margin-left:8px;font-size:12px;background:none;border:1px solid var(--border);color:var(--text-dim);padding:2px 8px;border-radius:5px;cursor:pointer">Check approvals</button></h2>
+      <div id="sync-outbound">…</div>
+    </div>
+
+    <div class="card">
+      <h2>Connected peers</h2>
       <div id="sync-peers">…</div>
     </div>
   </div>
@@ -2304,38 +2310,58 @@ async function loadSync() {
   } catch (e) {
     document.getElementById('sync-identity').textContent = 'sync unavailable: ' + e;
   }
-  loadSyncRequests(); loadSyncDiscovered(); loadSyncPeers();
+  loadSyncOnline(); loadSyncRequests(); loadSyncPeers();
 }
 
 async function loadSyncRequests() {
-  const el = document.getElementById('sync-requests');
   const data = await api('/api/sync/pairing-requests');
-  const pending = (data.requests || []).filter(r => r.status === 'pending');
-  if (!pending.length) { el.innerHTML = '<p style="color:var(--text-dim);font-size:13px">No pending requests.</p>'; return; }
-  el.innerHTML = '<table><thead><tr><th>User</th><th>Fingerprint</th><th>URL</th><th>From</th><th></th></tr></thead><tbody>' +
-    pending.map(r => `<tr>
+  const reqs = data.requests || [];
+  const inbound = reqs.filter(r => r.direction === 'inbound' && r.status === 'pending');
+  const outbound = reqs.filter(r => r.direction === 'outbound');
+  const inc = document.getElementById('sync-incoming');
+  if (!inbound.length) inc.innerHTML = '<p style="color:var(--text-dim);font-size:13px">No incoming requests.</p>';
+  else inc.innerHTML = '<table><thead><tr><th>User</th><th>Fingerprint</th><th>From</th><th></th></tr></thead><tbody>' +
+    inbound.map(r => `<tr>
       <td>${escapeHtml(r.user_id || '?')}</td>
       <td style="font-family:var(--font-mono);font-size:11px" title="${escapeHtml(r.peer_node_id)}">${escapeHtml(r.peer_node_id.slice(0, 20))}…</td>
-      <td style="font-size:12px">${escapeHtml(r.url || '')}</td>
-      <td style="font-size:12px">${escapeHtml(r.source_ip || '')}</td>
+      <td style="font-size:12px">${escapeHtml(r.source_ip || r.url || '')}</td>
       <td style="white-space:nowrap">
         <button onclick="syncApprove(${r.id})">Approve</button>
         <button onclick="syncDeny(${r.id})" style="background:none;border:1px solid var(--border);color:var(--text-dim)">Deny</button>
       </td></tr>`).join('') + '</tbody></table>';
+  const out = document.getElementById('sync-outbound');
+  if (!outbound.length) out.innerHTML = '<p style="color:var(--text-dim);font-size:13px">You haven’t requested access to anyone yet.</p>';
+  else out.innerHTML = '<table><thead><tr><th>To</th><th>URL</th><th>Status</th></tr></thead><tbody>' +
+    outbound.map(r => {
+      const approved = r.status === 'approved';
+      return `<tr>
+        <td>${escapeHtml(r.user_id || r.peer_node_id.slice(0, 12))}</td>
+        <td style="font-size:12px">${escapeHtml(r.url || '')}</td>
+        <td><span style="color:${approved ? 'var(--accent)' : 'var(--text-dim)'}">${approved ? 'approved ✓' : 'waiting for approval…'}</span></td>
+      </tr>`;
+    }).join('') + '</tbody></table>';
 }
 
-async function loadSyncDiscovered() {
-  const el = document.getElementById('sync-discovered');
-  const data = await api('/api/sync/discovered');
-  const d = data.discovered || [];
-  if (!d.length) { el.innerHTML = '<p style="color:var(--text-dim);font-size:13px">No peers discovered. Run <code>cairn-sync discover --watch</code> to listen for LAN beacons.</p>'; return; }
-  el.innerHTML = '<table><thead><tr><th>User</th><th>URL</th><th>Last seen</th><th></th></tr></thead><tbody>' +
-    d.map(p => `<tr>
-      <td>${escapeHtml(p.user_id || '?')}</td>
-      <td style="font-size:12px">${escapeHtml(p.url || '')}</td>
-      <td style="font-size:12px">${escapeHtml(p.last_seen || '')}</td>
-      <td><button onclick="syncPair('${escapeHtml(p.url || '')}')">Request pairing</button></td>
-    </tr>`).join('') + '</tbody></table>';
+async function loadSyncOnline() {
+  const el = document.getElementById('sync-online');
+  const data = await api('/api/sync/online');
+  const d = data.online || [];
+  document.getElementById('sync-online-count').textContent = d.length ? `(${d.length})` : '';
+  if (!d.length) { el.innerHTML = '<p style="color:var(--text-dim);font-size:13px">No one online. Other nodes appear here automatically when cairn sync is running on your network.</p>'; return; }
+  const label = { connected: 'connected ✓', requested: 'requested…', incoming: 'wants to connect', revoked: 'revoked', available: '' };
+  el.innerHTML = '<table><thead><tr><th>User</th><th>URL</th><th>State</th><th></th></tr></thead><tbody>' +
+    d.map(p => {
+      const st = p.state || 'available';
+      const action = st === 'available'
+        ? `<button onclick="syncPair('${escapeHtml(p.url || '')}')">Request access</button>`
+        : `<span style="color:${st === 'connected' ? 'var(--accent)' : 'var(--text-dim)'};font-size:12px">${label[st] || st}</span>`;
+      return `<tr>
+        <td>${escapeHtml(p.user_id || '?')}</td>
+        <td style="font-size:12px">${escapeHtml(p.url || '')}</td>
+        <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#3fb950;margin-right:5px"></span>online</td>
+        <td>${action}</td>
+      </tr>`;
+    }).join('') + '</tbody></table>';
 }
 
 async function loadSyncPeers() {
@@ -2369,6 +2395,7 @@ async function syncPair(url) {
   alert(res.ok ? ('Pairing request sent to ' + url + ' — pending their approval.') : ('Failed: ' + (res.error || JSON.stringify(res.body))));
   loadSync();
 }
+async function syncRefresh() { await syncPost('/api/sync/refresh'); loadSync(); }
 function syncPairUrl() { const u = document.getElementById('sync-pair-url').value.trim(); if (u) syncPair(u); }
 
 // ─── Init ──────────────────────────────────────────────────────────────────

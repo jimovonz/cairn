@@ -427,3 +427,31 @@ resume.
   the optimization).
 - Key rotation: rotating a node's keypair changes its `node_id`/fingerprint, so it
   reads as a new peer and must be re-approved. Acceptable, but document it.
+
+---
+
+# v2.1 — as implemented
+
+The v2 design above is implemented with these concrete choices:
+
+- **Transport: HTTPS, always.** The sync server wraps its socket in TLS using a
+  self-signed EC P-256 cert (`~/.cairn/tls_cert.pem`). The client
+  (`http.client.HTTPSConnection`) pins the peer's cert SHA-256 — captured TOFU at
+  pairing, stored in `sync_peers.peer_cert_fingerprint`, verified on every pull.
+  No CA. Ed25519 request signatures still authenticate the *client* to the server;
+  TLS authenticates the *server* to the client and encrypts everything.
+- **Discovery: our own UDP broadcast, no mDNS.** Beacons (incl. cert fingerprint)
+  on udp/47391. The **daemon** runs advertiser + listener threads when
+  `CAIRN_SYNC_ENABLED=1`, so `discovered_peers` populates with zero user action.
+  "Online" = a beacon seen within `CAIRN_SYNC_ONLINE_WINDOW` (90s).
+- **Approval round-trip.** Requesters record an `outbound` row and poll the peer's
+  signed `/pair/status`; on approval the peer is auto-promoted into `sync_peers`
+  and pulling begins. The dashboard shows: online users (request access),
+  incoming requests (approve/deny), my requests (waiting/approved), connected peers.
+- **Schema v11** adds the cert-fingerprint columns. Wire `SCHEMA_VERSION = 11`.
+- **Config**: `CAIRN_SYNC_ENABLED` (opt-in), `CAIRN_SYNC_PORT` (8787),
+  `CAIRN_SYNC_BIND`, `CAIRN_SYNC_DISCOVERY_PORT` (47391),
+  `CAIRN_SYNC_ADVERTISE_INTERVAL` (15s), `CAIRN_SYNC_ONLINE_WINDOW` (90s).
+
+Deferred: mDNS/cross-subnet discovery; X25519 payload encryption (TLS covers the
+wire); key/cert rotation UX.

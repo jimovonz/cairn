@@ -80,7 +80,9 @@ def cmd_advertise(args) -> int:
     url = args.url or f"http://{_lan_ip()}:{args.sync_port}"
     beacon = discovery.build_beacon(
         identity.get_node_fingerprint(), identity.get_user_id(), url,
-        identity.get_public_key_b64(), __import__("cairn.sync", fromlist=["SCHEMA_VERSION"]).SCHEMA_VERSION)
+        identity.get_public_key_b64(),
+        __import__("cairn.sync", fromlist=["SCHEMA_VERSION"]).SCHEMA_VERSION,
+        identity.get_tls_cert_fingerprint())
     print(f"advertising {url} on udp/{args.port} every {args.interval}s (ctrl-c to stop)")
     try:
         while True:

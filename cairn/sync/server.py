@@ -153,6 +153,35 @@ def _handle_pair(body: dict, headers, source_ip: str, conn) -> tuple[int, dict]:
     return 202, {"status": "pending", "node_id": get_node_fingerprint()}
 
 
+def _handle_pair_status(headers, body: bytes, conn) -> tuple[int, dict]:
+    """A peer asks whether we have approved them. Verify their signature against
+    the pubkey we hold (approved peer or pending request), then report status."""
+    peer = headers.get("X-Cairn-Node", "").strip()
+    if not peer:
+        return 400, {"error": "missing node"}
+    pub, status = None, None
+    row = conn.execute(
+        "SELECT peer_public_key, status FROM sync_peers WHERE peer_node_id = ?", (peer,)
+    ).fetchone()
+    if row and row[0]:
+        pub, status = row[0], (row[1] or "approved")
+    if not pub:
+        rr = conn.execute(
+            "SELECT peer_public_key, status FROM pairing_requests "
+            "WHERE peer_node_id = ? AND direction = 'inbound'", (peer,)
+        ).fetchone()
+        if rr:
+            pub, status = rr[0], rr[1]
+    if not pub:
+        return 404, {"status": "none"}
+    ts = headers.get("X-Cairn-Timestamp", "")
+    nonce = headers.get("X-Cairn-Nonce", "")
+    if not verify_request(pub, "POST", "/pair/status", body, ts, nonce,
+                          headers.get("X-Cairn-Signature", "")):
+        return 401, {"error": "bad signature"}
+    return 200, {"status": status or "pending"}
+
+
 class SyncHandler(BaseHTTPRequestHandler):
     db_path: str = ""  # set by build_server
 
@@ -182,7 +211,7 @@ class SyncHandler(BaseHTTPRequestHandler):
         return True
 
     def do_POST(self) -> None:  # noqa: N802 — stdlib API
-        if self.path not in ("/sync", "/pair"):
+        if self.path not in ("/sync", "/pair", "/pair/status"):
             self._send_json(404, {"error": "not found"})
             return
         if not self._schema_ok():
@@ -201,6 +230,10 @@ class SyncHandler(BaseHTTPRequestHandler):
         try:
             if self.path == "/pair":
                 status, obj = _handle_pair(body, self.headers, source_ip, conn)
+                self._send_json(status, obj)
+                return
+            if self.path == "/pair/status":
+                status, obj = _handle_pair_status(self.headers, body_bytes, conn)
                 self._send_json(status, obj)
                 return
 
@@ -234,17 +267,32 @@ class SyncHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def _tls_context() -> "ssl.SSLContext":
+    """Server-side TLS using this node's self-signed cert. Peers authenticate it
+    by pinning the cert fingerprint at pairing, so no CA chain is involved."""
+    import ssl
+    from cairn.sync.identity import ensure_tls_cert
+    cert_p, key_p = ensure_tls_cert()
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(certfile=str(cert_p), keyfile=str(key_p))
+    return ctx
+
+
 def build_server(host: str = "127.0.0.1", port: int = 8787,
-                 db_path: Optional[str] = None) -> ThreadingHTTPServer:
+                 db_path: Optional[str] = None, *, tls: bool = True) -> ThreadingHTTPServer:
     handler_class = type("BoundSyncHandler", (SyncHandler,),
                           {"db_path": _resolve_db_path(db_path)})
-    return ThreadingHTTPServer((host, port), handler_class)
+    httpd = ThreadingHTTPServer((host, port), handler_class)
+    if tls:
+        httpd.socket = _tls_context().wrap_socket(httpd.socket, server_side=True)
+    return httpd
 
 
 def serve_in_thread(host: str = "127.0.0.1", port: int = 8787,
-                    db_path: Optional[str] = None) -> tuple[ThreadingHTTPServer, threading.Thread]:
+                    db_path: Optional[str] = None, *, tls: bool = True
+                    ) -> tuple[ThreadingHTTPServer, threading.Thread]:
     """Start the server in a daemon thread. For tests."""
-    httpd = build_server(host, port, db_path)
+    httpd = build_server(host, port, db_path, tls=tls)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
     return httpd, t

@@ -61,7 +61,7 @@ def test_three_node_full_mesh_convergence(make_node, fake_embedder):
                 if i == j:
                     continue
                 add_peer(src.conn(), peer_node_id=fps[j],
-                         url=f"http://127.0.0.1:{ports[j]}", bearer_token="")
+                         url=f"https://127.0.0.1:{ports[j]}", bearer_token="")
                 dconn = dst.conn()
                 dconn.execute(
                     "INSERT INTO sync_peers (peer_node_id, url, bearer_token, peer_public_key, status, approved_at) "

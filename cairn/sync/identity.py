@@ -242,3 +242,55 @@ def verify_request(public_key_b64: str, method: str, path: str, body: bytes,
         return True
     except Exception:
         return False
+
+
+# ---- TLS identity (self-signed cert, pinned by fingerprint at pairing) ----
+# The sync transport is HTTPS. Each node has a long-lived self-signed cert; peers
+# pin its SHA-256 fingerprint when they approve pairing (TOFU, Syncthing-style),
+# so the connection is encrypted and the server is authenticated without any CA.
+
+def ensure_tls_cert() -> tuple:
+    """Generate/load this node's self-signed TLS cert + key in ~/.cairn/
+    (tls_cert.pem, tls_key.pem). Returns (cert_path, key_path). Idempotent."""
+    import datetime
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    cert_p = _state_dir() / "tls_cert.pem"
+    key_p = _state_dir() / "tls_key.pem"
+    if cert_p.exists() and key_p.exists():
+        return cert_p, key_p
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "cairn-sync")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime(2020, 1, 1))
+        .not_valid_after(datetime.datetime(2099, 1, 1))
+        .sign(key, hashes.SHA256())
+    )
+    key_p.write_bytes(key.private_bytes(
+        _ser.Encoding.PEM, _ser.PrivateFormat.PKCS8, _ser.NoEncryption()))
+    try:
+        os.chmod(key_p, 0o600)
+    except OSError:
+        pass
+    cert_p.write_bytes(cert.public_bytes(_ser.Encoding.PEM))
+    return cert_p, key_p
+
+
+def get_tls_cert_fingerprint() -> str:
+    """SHA-256 hex of this node's TLS cert (DER) — the value peers pin."""
+    from cryptography import x509
+    cert_p, _ = ensure_tls_cert()
+    cert = x509.load_pem_x509_certificate(cert_p.read_bytes())
+    return _hashlib.sha256(cert.public_bytes(_ser.Encoding.DER)).hexdigest()
+
+
+def cert_fingerprint_from_der(der: bytes) -> str:
+    """SHA-256 hex of a DER-encoded cert (for pinning a presented peer cert)."""
+    return _hashlib.sha256(der).hexdigest()

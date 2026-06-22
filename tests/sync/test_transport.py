@@ -46,7 +46,7 @@ def test_pull_via_http_replicates(make_node, fake_embedder):
         add_peer(
             client_node.conn(),
             peer_node_id=server_node.node_id,
-            url=f"http://127.0.0.1:{port}",
+            url=f"https://127.0.0.1:{port}",
             bearer_token="",
         )
         # Server-side: pin the client's public key as an approved peer — the
@@ -83,7 +83,7 @@ def test_unauthorized_token_rejected(make_node):
         add_peer(
             client_node.conn(),
             peer_node_id=server_node.node_id,
-            url=f"http://127.0.0.1:{port}",
+            url=f"https://127.0.0.1:{port}",
             bearer_token="WRONG-TOKEN",
         )
         # Server registers the client peer with a DIFFERENT token
@@ -113,7 +113,7 @@ def test_schema_version_mismatch_returns_409(make_node, monkeypatch):
         add_peer(
             client_node.conn(),
             peer_node_id=server_node.node_id,
-            url=f"http://127.0.0.1:{port}",
+            url=f"https://127.0.0.1:{port}",
             bearer_token="t",
         )
         add_peer(

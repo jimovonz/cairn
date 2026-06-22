@@ -42,6 +42,41 @@ class PullResult:
         self.row_counts: dict[str, int] = {}
 
 
+class CertPinError(Exception):
+    """Raised when a peer's TLS cert fingerprint != the pinned value."""
+
+
+def _https_post(url: str, path: str, body_bytes: bytes, headers: dict,
+                *, pinned_fp: Optional[str] = None, timeout: float = 30.0):
+    """POST over HTTPS to a self-signed peer, pinning its cert fingerprint.
+
+    Returns (status, resp_bytes, peer_cert_fp). No CA chain is used; trust comes
+    from comparing the presented cert's SHA-256 to the fingerprint pinned at
+    pairing (TOFU on first contact). Bypasses system proxies (direct LAN dial)."""
+    import http.client
+    import ssl
+    from urllib.parse import urlparse
+    from cairn.sync.identity import cert_fingerprint_from_der
+    u = urlparse(url if "://" in url else "https://" + url)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(u.hostname, u.port or 8787,
+                                       timeout=timeout, context=ctx)
+    try:
+        conn.connect()
+        der = conn.sock.getpeercert(binary_form=True)
+        peer_fp = cert_fingerprint_from_der(der) if der else None
+        if pinned_fp and peer_fp != pinned_fp:
+            raise CertPinError(
+                f"cert fingerprint mismatch: pinned {pinned_fp[:12]}… got {(peer_fp or 'none')[:12]}…")
+        conn.request("POST", path, body=body_bytes, headers=headers)
+        resp = conn.getresponse()
+        return resp.status, resp.read(), peer_fp
+    finally:
+        conn.close()
+
+
 def _vector_clock_for_peer(conn, peer_node_id: str) -> dict[str, int]:
     """Build the since_lamport_by_node map for a given peer.
 
@@ -99,13 +134,14 @@ def pull_from_peer(
     """Pull from one peer. Updates sync_state high-water marks on success."""
     result = PullResult(peer_node_id)
     peer_row = conn.execute(
-        "SELECT url, bearer_token, include_excerpts FROM sync_peers WHERE peer_node_id = ?",
+        "SELECT url, bearer_token, include_excerpts, peer_cert_fingerprint "
+        "FROM sync_peers WHERE peer_node_id = ?",
         (peer_node_id,),
     ).fetchone()
     if not peer_row:
         result.error = f"unknown peer {peer_node_id}"
         return result
-    url, token, include_excerpts = peer_row
+    url, token, include_excerpts, pinned_fp = peer_row
 
     since = _vector_clock_for_peer(conn, peer_node_id)
     body = json.dumps({
@@ -126,33 +162,32 @@ def pull_from_peer(
     }
     if token:  # v1 bearer fallback for peers paired before v2
         headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(
-        url.rstrip("/") + "/sync",
-        data=body,
-        method="POST",
-        headers=headers,
-    )
-
-    # Build an opener that explicitly disables system proxies — cairn peer URLs
-    # are direct connections to known endpoints. Falling through to ALL_PROXY /
-    # HTTP_PROXY / HTTPS_PROXY env vars (e.g. corporate SOCKS5) would silently
-    # route sync traffic somewhere that doesn't speak the protocol.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with opener.open(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        try:
-            err_body = e.read().decode("utf-8")
-        except Exception:
-            err_body = ""
-        result.error = f"HTTP {e.code}: {err_body[:200]}"
+        status, data, peer_fp = _https_post(url, "/sync", body, headers,
+                                            pinned_fp=pinned_fp, timeout=timeout)
+    except CertPinError as e:
+        result.error = f"cert pin: {e}"
         _record_attempt(conn, peer_node_id, ok=False, error=result.error)
         return result
-    except (urllib.error.URLError, TimeoutError) as e:
+    except (OSError, TimeoutError) as e:
         result.error = f"network: {e}"
         _record_attempt(conn, peer_node_id, ok=False, error=result.error)
         return result
+    if status != 200:
+        result.error = f"HTTP {status}: {data[:200].decode('utf-8', 'replace')}"
+        _record_attempt(conn, peer_node_id, ok=False, error=result.error)
+        return result
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        result.error = f"bad response: {e}"
+        _record_attempt(conn, peer_node_id, ok=False, error=result.error)
+        return result
+    # TOFU: pin the peer's cert fingerprint on first successful contact.
+    if not pinned_fp and peer_fp:
+        conn.execute("UPDATE sync_peers SET peer_cert_fingerprint = ? WHERE peer_node_id = ?",
+                     (peer_fp, peer_node_id))
+        conn.commit()
 
     # Apply
     try:
@@ -197,49 +232,114 @@ def pull_all(conn, *, embedder=None) -> list[PullResult]:
 
 
 def send_pairing_request(url: str, *, user_id: Optional[str] = None,
-                         my_url: Optional[str] = None, timeout: float = 15.0) -> dict:
-    """Send a signed, self-certifying pairing request to a peer's /pair endpoint.
+                         my_url: Optional[str] = None, timeout: float = 15.0,
+                         conn=None) -> dict:
+    """Send a signed, self-certifying pairing request to a peer's /pair (HTTPS).
 
-    The peer queues it for manual approval (dashboard); we get no access until
-    they approve us AND we approve them (mutual). Returns the peer's response
-    dict: {ok, status, body|error}."""
-    pub = get_public_key_b64()
+    TOFU-captures the peer's TLS cert fingerprint. If `conn` is given, records an
+    outbound pairing request locally (direction='outbound') so the dashboard can
+    show "waiting for approval". Mutual approval is required before any sync."""
+    from cairn.sync.identity import get_tls_cert_fingerprint
     payload = {
         "node_id": get_node_fingerprint(),
-        "public_key": pub,
+        "public_key": get_public_key_b64(),
         "user_id": user_id or get_user_id(),
         "url": my_url or "",
+        "cert_fingerprint": get_tls_cert_fingerprint(),
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ts = str(time.time())
     nonce = secrets.token_hex(16)
-    sig = sign_request("POST", "/pair", raw, ts, nonce)
-    req = urllib.request.Request(
-        url.rstrip("/") + "/pair",
-        data=raw,
-        method="POST",
-        headers={
-            "X-Cairn-Node": get_node_fingerprint(),
-            "X-Cairn-Timestamp": ts,
-            "X-Cairn-Nonce": nonce,
-            "X-Cairn-Signature": sig,
-            "X-Cairn-Schema-Version": str(SCHEMA_VERSION),
-            "Content-Type": "application/json",
-        },
-    )
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    headers = {
+        "X-Cairn-Node": get_node_fingerprint(),
+        "X-Cairn-Timestamp": ts,
+        "X-Cairn-Nonce": nonce,
+        "X-Cairn-Signature": sign_request("POST", "/pair", raw, ts, nonce),
+        "X-Cairn-Schema-Version": str(SCHEMA_VERSION),
+        "Content-Type": "application/json",
+    }
     try:
-        with opener.open(req, timeout=timeout) as resp:
-            return {"ok": True, "status": resp.status,
-                    "body": json.loads(resp.read().decode("utf-8"))}
-    except urllib.error.HTTPError as e:
-        try:
-            return {"ok": False, "status": e.code,
-                    "body": json.loads(e.read().decode("utf-8"))}
-        except Exception:
-            return {"ok": False, "status": e.code, "body": None}
-    except (urllib.error.URLError, TimeoutError) as e:
+        status, data, peer_fp = _https_post(url, "/pair", raw, headers,
+                                            pinned_fp=None, timeout=timeout)
+    except (OSError, TimeoutError, CertPinError) as e:
         return {"ok": False, "status": None, "error": str(e)}
+    try:
+        body = json.loads(data.decode("utf-8")) if data else None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        body = None
+    ok = 200 <= status < 300
+    if conn is not None and ok and body and body.get("node_id"):
+        conn.execute(
+            "INSERT INTO pairing_requests (peer_node_id, peer_public_key, user_id, url, "
+            "direction, status, cert_fingerprint) VALUES (?, '', ?, ?, 'outbound', ?, ?) "
+            "ON CONFLICT(peer_node_id, direction) DO UPDATE SET url=excluded.url, "
+            "status=excluded.status, cert_fingerprint=excluded.cert_fingerprint, "
+            "requested_at=CURRENT_TIMESTAMP, decided_at=NULL",
+            (body["node_id"], user_id or get_user_id(), url,
+             "already_paired" if body.get("status") == "already_paired" else "pending",
+             peer_fp),
+        )
+        conn.commit()
+    return {"ok": ok, "status": status, "body": body, "peer_cert_fingerprint": peer_fp}
+
+
+def check_pair_status(url: str, *, timeout: float = 10.0) -> Optional[str]:
+    """Ask a peer whether they've approved us. Returns 'approved'/'pending'/
+    'denied'/'none', or None if unreachable."""
+    raw = b"{}"
+    ts = str(time.time())
+    nonce = secrets.token_hex(16)
+    headers = {
+        "X-Cairn-Node": get_node_fingerprint(),
+        "X-Cairn-Timestamp": ts,
+        "X-Cairn-Nonce": nonce,
+        "X-Cairn-Signature": sign_request("POST", "/pair/status", raw, ts, nonce),
+        "X-Cairn-Schema-Version": str(SCHEMA_VERSION),
+        "Content-Type": "application/json",
+    }
+    try:
+        status, data, _ = _https_post(url, "/pair/status", raw, headers,
+                                      pinned_fp=None, timeout=timeout)
+    except (OSError, TimeoutError, CertPinError):
+        return None
+    if status == 200:
+        try:
+            return json.loads(data.decode("utf-8")).get("status")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+    if status == 404:
+        return "none"
+    return None
+
+
+def refresh_outbound(conn) -> list[dict]:
+    """Poll each outbound-pending peer; when approved, promote it into sync_peers
+    so we can start pulling. Returns [{peer_node_id, status}]."""
+    rows = conn.execute(
+        "SELECT peer_node_id, url, cert_fingerprint FROM pairing_requests "
+        "WHERE direction = 'outbound' AND status IN ('pending', 'already_paired')"
+    ).fetchall()
+    out = []
+    for node_id, url, cert_fp in rows:
+        st = check_pair_status(url) if url else None
+        if st == "approved":
+            conn.execute(
+                "INSERT INTO sync_peers (peer_node_id, url, bearer_token, "
+                "peer_cert_fingerprint, status, approved_at) "
+                "VALUES (?, ?, '', ?, 'approved', CURRENT_TIMESTAMP) "
+                "ON CONFLICT(peer_node_id) DO UPDATE SET url = excluded.url, "
+                "peer_cert_fingerprint = COALESCE(excluded.peer_cert_fingerprint, sync_peers.peer_cert_fingerprint), "
+                "status = 'approved'",
+                (node_id, url or "", cert_fp),
+            )
+            conn.execute(
+                "UPDATE pairing_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP "
+                "WHERE peer_node_id = ? AND direction = 'outbound'",
+                (node_id,),
+            )
+            conn.commit()
+        out.append({"peer_node_id": node_id, "status": st or "unreachable"})
+    return out
 
 
 # ---- Peer registry CLI helpers ----

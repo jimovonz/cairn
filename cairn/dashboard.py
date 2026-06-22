@@ -1776,14 +1776,64 @@ def api_sync_revoke(params, node_id):
         conn.close()
 
 
-def api_sync_pair(body):
-    """Initiate an outbound pairing request to a peer URL (dashboard one-click)."""
+def api_sync_online(params):
+    """Discovered peers seen within the online window, annotated with my pairing
+    relationship (connected / requested / incoming / available / revoked)."""
+    from cairn.sync import discovery
+    from cairn import config
+    conn = get_conn()
+    try:
+        disc = discovery.list_discovered(conn, max_age_sec=config.CAIRN_SYNC_ONLINE_WINDOW)
+        peers = {r[0]: (r[1] or "approved")
+                 for r in conn.execute("SELECT peer_node_id, status FROM sync_peers")}
+        out_pending = {r[0] for r in conn.execute(
+            "SELECT peer_node_id FROM pairing_requests WHERE direction='outbound' "
+            "AND status IN ('pending','already_paired')")}
+        in_pending = {r[0] for r in conn.execute(
+            "SELECT peer_node_id FROM pairing_requests WHERE direction='inbound' AND status='pending'")}
+        for d in disc:
+            nid = d["node_id"]
+            if peers.get(nid) == "approved":
+                d["state"] = "connected"
+            elif peers.get(nid) == "revoked":
+                d["state"] = "revoked"
+            elif nid in out_pending:
+                d["state"] = "requested"
+            elif nid in in_pending:
+                d["state"] = "incoming"
+            else:
+                d["state"] = "available"
+        return {"online": disc}, 200
+    finally:
+        conn.close()
+
+
+def api_sync_refresh(params):
+    """Poll outbound-pending peers for approval and promote approved ones."""
     from cairn.sync import client
+    conn = get_conn()
+    try:
+        return {"refreshed": client.refresh_outbound(conn)}, 200
+    finally:
+        conn.close()
+
+
+def api_sync_pair(body):
+    """Initiate an outbound pairing request to a peer URL (dashboard one-click).
+    Records the request locally so it shows under 'my requests' until approved."""
+    from cairn.sync import client
+    from cairn.sync.service import lan_ip
+    from cairn import config
     url = (body or {}).get("url")
     if not url:
         return {"ok": False, "error": "url required"}, 400
-    resp = client.send_pairing_request(url, my_url=(body or {}).get("my_url"))
-    return resp, (200 if resp.get("ok") else 502)
+    my_url = (body or {}).get("my_url") or f"https://{lan_ip()}:{config.CAIRN_SYNC_PORT}"
+    conn = get_conn()
+    try:
+        resp = client.send_pairing_request(url, my_url=my_url, conn=conn)
+        return resp, (200 if resp.get("ok") else 502)
+    finally:
+        conn.close()
 
 
 # ─── HTTP Server ──────────────────────────────────────────────────────────────
@@ -1818,6 +1868,7 @@ _ROUTES: list[tuple[str, str, callable]] = [
     ("GET", "/api/sync/pairing-requests", lambda p, **kw: api_sync_pairing_requests(p)),
     ("GET", "/api/sync/peers", lambda p, **kw: api_sync_peers(p)),
     ("GET", "/api/sync/discovered", lambda p, **kw: api_sync_discovered(p)),
+    ("GET", "/api/sync/online", lambda p, **kw: api_sync_online(p)),
 ]
 
 # Compile route patterns to regex
@@ -1937,6 +1988,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     self._send_json({"error": str(e)}, 500)
                 return
+        if path == "/api/sync/refresh":
+            try:
+                data, status = api_sync_refresh(params)
+                self._send_json(data, status)
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+            return
         if path == "/api/sync/pair":
             content_length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(content_length)) if content_length else {}
