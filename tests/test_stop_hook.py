@@ -996,3 +996,70 @@ def test_restore_stripped_cm_noop_when_present():
     from hooks.hook_helpers import restore_stripped_cm
     text = "Answer.\n[cm]: # '{\"ok\":true}'"
     assert restore_stripped_cm("any-sess", text) == text
+# ============================================================
+# SubagentStop routing (subagent memory capture)
+# ============================================================
+
+def make_subagent_payload(session_id="sub-sess", message="", cwd="/tmp/testproj",
+                          agent_transcript_path="/tmp/agent.jsonl"):
+    """A SubagentStop payload: agent_id + hook_event_name + agent_transcript_path,
+    with transcript_path pointing at the (different) parent-session transcript."""
+    return {
+        "stop_hook_active": False,
+        "session_id": session_id,
+        "transcript_path": "/tmp/main-session.jsonl",
+        "agent_transcript_path": agent_transcript_path,
+        "cwd": cwd,
+        "hook_event_name": "SubagentStop",
+        "agent_id": "agent-abc123",
+        "agent_type": "general-purpose",
+        "last_assistant_message": message,
+    }
+
+
+# Verifies: a SubagentStop payload stores the subagent's volunteered memory and
+# exits 0 WITHOUT an enforcement block (opportunistic — never re-prompts a subagent).
+@pytest.mark.behavioural
+def test_main_subagent_stores_and_skips_enforcement():
+    db_path, conn = fresh_db()
+    msg = "Subagent analysis.\n" + valid_block(
+        "- type: correction\n- topic: subagent-store\n"
+        "- content: Verifying SubagentStop routes a volunteered subagent memory into storage"
+    )
+    result, code = run_hook(db_path, make_subagent_payload(message=msg))
+    assert code == 0
+    assert result is None  # opportunistic: no block / no re-prompt
+    row = conn.execute("SELECT type, content FROM memories WHERE topic = 'subagent-store'").fetchone()
+    assert row is not None
+    assert row[0] == "correction"
+    conn.close()
+
+
+# Verifies: detection also works when only hook_event_name=='SubagentStop' is
+# present (no agent_id) — the robustness fallback added alongside agent_id.
+@pytest.mark.behavioural
+def test_main_subagent_detected_by_event_name_only():
+    db_path, conn = fresh_db()
+    payload = make_subagent_payload(message="Subagent text.\n" + valid_block(
+        "- type: fact\n- topic: subagent-eventname\n"
+        "- content: Detected as a subagent purely via the SubagentStop hook_event_name signal"
+    ))
+    del payload["agent_id"]  # force reliance on hook_event_name
+    result, code = run_hook(db_path, payload)
+    assert code == 0
+    assert result is None
+    row = conn.execute("SELECT topic FROM memories WHERE topic = 'subagent-eventname'").fetchone()
+    assert row is not None
+    conn.close()
+
+
+# Verifies: a subagent message WITHOUT a memory block is a clean no-op — no
+# enforcement block raised.
+@pytest.mark.edge
+def test_main_subagent_no_block_no_enforcement():
+    db_path, conn = fresh_db()
+    result, code = run_hook(db_path, make_subagent_payload(
+        message="Just some analysis text from a subagent, with no memory block at all."))
+    assert code == 0
+    assert result is None
+    conn.close()

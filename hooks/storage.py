@@ -542,9 +542,15 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
         inserted += 1
 
-        # Associate file paths — use per-memory source_turn for notes, batch for others
+        # Associate file paths. Precedence: an explicit per-entry associated_files
+        # list (e.g. from the review write-back, keying a finding to the changed
+        # file so cairn-graph --knowledge surfaces it) wins over transcript-derived
+        # files; then per-memory source_turn; then the session-level batch.
         source_turn: int = entry.get("_source_turn", -1)
-        if source_turn >= 0 and transcript_path:
+        explicit_files = entry.get("associated_files")
+        if explicit_files:
+            entry_files = [f for f in explicit_files if isinstance(f, str) and f.strip()]
+        elif source_turn >= 0 and transcript_path:
             entry_files = extract_associated_files(transcript_path, center_turn=source_turn)
         else:
             entry_files = _associated_files or []

@@ -234,7 +234,8 @@ def api_memory_detail(params, memory_id):
     conn = get_conn()
     row = conn.execute("""
         SELECT id, type, topic, content, confidence, project, session_id,
-               updated_at, created_at, archived_reason, depth, associated_files, keywords, facts
+               updated_at, created_at, archived_reason, depth, associated_files, keywords, facts,
+               source_ref
         FROM memories WHERE id = ?
     """, (memory_id,)).fetchone()
     if not row:

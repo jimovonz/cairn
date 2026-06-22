@@ -65,6 +65,10 @@ THIN_RETRIEVAL_MAX_REMINDERS = 4        # Re-stage limit; abandons after this ma
 
 # === Injection quality gates ===
 MIN_INJECTION_SIMILARITY = 0.45    # Batch-level garbage gate: if max similarity < this, drop the whole injection
+# Reference-source entries (ingested docs, e.g. Confluence; type='reference') must clear a
+# HIGHER bar than organic globals to be injected — bulk-imported reference content is noisier
+# and was surfacing weak ~0.55 cross-project matches. Raise to suppress more aggressively.
+REFERENCE_MIN_SIMILARITY = 0.56
 # Per-entry gate (not superseded by MIN_INJECTION_SIMILARITY): once the batch passes the
 # garbage gate above, individual entries with sim < BORDERLINE_SIM_CEILING are still
 # dropped unless their composite score clears BORDERLINE_SCORE_FLOOR.
