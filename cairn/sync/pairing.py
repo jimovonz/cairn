@@ -33,22 +33,24 @@ def list_pairing_requests(conn, *, pending_only: bool = False) -> list[dict]:
 def approve_pairing(conn, request_id: int, *, label: Optional[str] = None) -> dict:
     """Approve a pending request: pin its public key into sync_peers."""
     row = conn.execute(
-        "SELECT peer_node_id, peer_public_key, user_id, url FROM pairing_requests WHERE id = ?",
+        "SELECT peer_node_id, peer_public_key, user_id, url, cert_fingerprint "
+        "FROM pairing_requests WHERE id = ?",
         (request_id,),
     ).fetchone()
     if not row:
         return {"ok": False, "error": "no such pairing request"}
-    node_id, pub, user_id, url = row
+    node_id, pub, user_id, url, cert_fp = row
     # bearer_token is legacy NOT NULL — store '' for pubkey-authed peers.
     conn.execute(
         "INSERT INTO sync_peers "
-        "(peer_node_id, url, bearer_token, label, peer_public_key, status, approved_at) "
-        "VALUES (?, ?, '', ?, ?, 'approved', CURRENT_TIMESTAMP) "
+        "(peer_node_id, url, bearer_token, label, peer_public_key, peer_cert_fingerprint, status, approved_at) "
+        "VALUES (?, ?, '', ?, ?, ?, 'approved', CURRENT_TIMESTAMP) "
         "ON CONFLICT(peer_node_id) DO UPDATE SET url = excluded.url, "
         "peer_public_key = excluded.peer_public_key, "
+        "peer_cert_fingerprint = COALESCE(excluded.peer_cert_fingerprint, sync_peers.peer_cert_fingerprint), "
         "label = COALESCE(excluded.label, sync_peers.label), "
         "status = 'approved', approved_at = CURRENT_TIMESTAMP",
-        (node_id, url or "", label or user_id, pub),
+        (node_id, url or "", label or user_id, pub, cert_fp),
     )
     conn.execute(
         "UPDATE pairing_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP WHERE id = ?",

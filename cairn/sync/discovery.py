@@ -20,7 +20,7 @@ BEACON_MAGIC = "cairn-sync-beacon/1"
 
 
 def build_beacon(node_id: str, user_id: str, url: str, public_key: str,
-                 schema_version: int) -> bytes:
+                 schema_version: int, cert_fingerprint: str = "") -> bytes:
     return json.dumps({
         "magic": BEACON_MAGIC,
         "node_id": node_id,
@@ -28,6 +28,7 @@ def build_beacon(node_id: str, user_id: str, url: str, public_key: str,
         "url": url,
         "public_key": public_key,
         "schema_version": schema_version,
+        "cert_fingerprint": cert_fingerprint,
     }).encode("utf-8")
 
 
@@ -60,13 +61,14 @@ def record_beacon(conn, beacon: dict, *, self_node_id: Optional[str] = None) -> 
         return False
     conn.execute(
         "INSERT INTO discovered_peers "
-        "(node_id, user_id, url, public_key, schema_version, last_seen) "
-        "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+        "(node_id, user_id, url, public_key, schema_version, cert_fingerprint, last_seen) "
+        "VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
         "ON CONFLICT(node_id) DO UPDATE SET user_id = excluded.user_id, "
         "url = excluded.url, public_key = excluded.public_key, "
-        "schema_version = excluded.schema_version, last_seen = CURRENT_TIMESTAMP",
-        (nid, beacon.get("user_id"), beacon.get("url"),
-         beacon.get("public_key"), beacon.get("schema_version")),
+        "schema_version = excluded.schema_version, "
+        "cert_fingerprint = excluded.cert_fingerprint, last_seen = CURRENT_TIMESTAMP",
+        (nid, beacon.get("user_id"), beacon.get("url"), beacon.get("public_key"),
+         beacon.get("schema_version"), beacon.get("cert_fingerprint")),
     )
     conn.commit()
     return True
@@ -107,7 +109,7 @@ def listen(duration: float = 5.0, *, port: int = DISCOVERY_PORT,
 
 def list_discovered(conn, *, max_age_sec: Optional[int] = None) -> list[dict]:
     cols = ["node_id", "user_id", "url", "public_key", "schema_version",
-            "first_seen", "last_seen"]
+            "cert_fingerprint", "first_seen", "last_seen"]
     q = f"SELECT {', '.join(cols)} FROM discovered_peers"
     if max_age_sec:
         q += f" WHERE last_seen >= datetime('now', '-{int(max_age_sec)} seconds')"

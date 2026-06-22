@@ -438,6 +438,14 @@ def run_server():
     except Exception as e:  # noqa: BLE001
         print(f"TCP listener not started: {e}")
 
+    # Optional: always-on peer-to-peer sync (HTTPS server + LAN discovery).
+    # Opt-in via CAIRN_SYNC_ENABLED; the dashboard Sync tab drives pairing.
+    try:
+        from cairn.sync.service import start_sync_services
+        start_sync_services()
+    except Exception as e:  # noqa: BLE001 — never let sync failure kill the daemon
+        print(f"Sync services not started: {e}")
+
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)
     server.listen(5)

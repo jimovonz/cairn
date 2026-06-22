@@ -555,6 +555,21 @@ def init():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (10, 'sync v2 pubkey pairing: sync_peers.peer_public_key/status/approved_at + pairing_requests + discovered_peers')"
         )
+    # v11 — HTTPS transport: pin each peer's self-signed TLS cert fingerprint
+    # (captured TOFU at pairing). Adds cert columns to the three sync tables.
+    for _tbl, _col in (
+        ("sync_peers", "peer_cert_fingerprint"),
+        ("pairing_requests", "cert_fingerprint"),
+        ("discovered_peers", "cert_fingerprint"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} TEXT")
+        except sqlite3.OperationalError:
+            pass
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 11").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (11, 'sync v2 HTTPS: peer TLS cert fingerprint pinning on sync_peers/pairing_requests/discovered_peers')"
+        )
     conn.commit()
     conn.close()
     print(f"Database initialized at {DB_PATH}")

@@ -154,7 +154,7 @@ def test_pair_approve_then_signed_pull(make_node, fake_embedder):
     httpd, _ = serve_in_thread(host="127.0.0.1", port=port, db_path=server_node.db_path)
     try:
         _wait_for_port(port)
-        url = f"http://127.0.0.1:{port}"
+        url = f"https://127.0.0.1:{port}"
 
         # 1. Client requests pairing (signed, self-certifying).
         client_node.activate()
@@ -191,7 +191,7 @@ def test_unapproved_peer_rejected(make_node):
     httpd, _ = serve_in_thread(host="127.0.0.1", port=port, db_path=server_node.db_path)
     try:
         _wait_for_port(port)
-        url = f"http://127.0.0.1:{port}"
+        url = f"https://127.0.0.1:{port}"
         client_node.activate()
         client_mod.add_peer(client_node.conn(), peer_node_id="server-peer", url=url, bearer_token="")
         # No pairing/approval done → server has no pinned key for us.
@@ -211,7 +211,7 @@ def test_revoked_peer_rejected(make_node, fake_embedder):
     httpd, _ = serve_in_thread(host="127.0.0.1", port=port, db_path=server_node.db_path)
     try:
         _wait_for_port(port)
-        url = f"http://127.0.0.1:{port}"
+        url = f"https://127.0.0.1:{port}"
         client_node.activate()
         client_mod.send_pairing_request(url)
         pending = pairing.list_pairing_requests(server_node.conn(), pending_only=True)
@@ -221,5 +221,67 @@ def test_revoked_peer_rejected(make_node, fake_embedder):
         client_node.activate()
         result = client_mod.pull_from_peer(client_node.conn(), "server-peer", embedder=fake_embedder)
         assert not result.ok and "401" in (result.error or "")
+    finally:
+        httpd.shutdown()
+
+
+# ───────────────── approval polling (/pair/status + refresh_outbound) ────────
+
+def test_pair_status_reflects_approval(make_node):
+    server_node = make_node("server")
+    client_node = make_node("client")
+    port = _free_port()
+    from cairn.sync.server import serve_in_thread
+    from cairn.sync import client as client_mod, pairing
+    httpd, _ = serve_in_thread(host="127.0.0.1", port=port, db_path=server_node.db_path)
+    try:
+        _wait_for_port(port)
+        url = f"https://127.0.0.1:{port}"
+        client_node.activate()
+        client_mod.send_pairing_request(url, conn=client_node.conn())
+        # Before approval: pending
+        client_node.activate()
+        assert client_mod.check_pair_status(url) == "pending"
+        # Approve on the server side
+        pend = pairing.list_pairing_requests(server_node.conn(), pending_only=True)
+        pairing.approve_pairing(server_node.conn(), pend[0]["id"])
+        # After approval: approved
+        client_node.activate()
+        assert client_mod.check_pair_status(url) == "approved"
+    finally:
+        httpd.shutdown()
+
+
+def test_refresh_outbound_promotes_and_pulls(make_node, fake_embedder):
+    server_node = make_node("server")
+    client_node = make_node("client")
+    server_node.insert_memory(type_="fact", topic="t", content="promoted", origin_id="promo-1")
+    port = _free_port()
+    from cairn.sync.server import serve_in_thread
+    from cairn.sync import client as client_mod, pairing
+    httpd, _ = serve_in_thread(host="127.0.0.1", port=port, db_path=server_node.db_path)
+    try:
+        _wait_for_port(port)
+        url = f"https://127.0.0.1:{port}"
+        # 1. Client requests (records outbound) and server approves.
+        client_node.activate()
+        client_mod.send_pairing_request(url, conn=client_node.conn())
+        pend = pairing.list_pairing_requests(server_node.conn(), pending_only=True)
+        pairing.approve_pairing(server_node.conn(), pend[0]["id"])
+        # 2. Client polls + promotes the approved outbound request to a peer.
+        client_node.activate()
+        refreshed = client_mod.refresh_outbound(client_node.conn())
+        assert any(r["status"] == "approved" for r in refreshed), refreshed
+        peer = client_node.conn().execute(
+            "SELECT peer_node_id FROM sync_peers WHERE status='approved' AND url=?", (url,)
+        ).fetchone()
+        assert peer is not None, "promotion did not create an approved peer"
+        # 3. Now the client can pull.
+        client_node.activate()
+        res = client_mod.pull_from_peer(client_node.conn(), peer[0], embedder=fake_embedder)
+        assert res.ok, res.error
+        got = client_node.conn().execute(
+            "SELECT content FROM memories WHERE origin_id='promo-1'").fetchone()
+        assert got[0] == "promoted"
     finally:
         httpd.shutdown()
