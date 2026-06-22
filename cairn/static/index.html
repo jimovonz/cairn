@@ -2365,13 +2365,14 @@ async function loadSyncOnline() {
   const d = data.online || [];
   document.getElementById('sync-online-count').textContent = d.length ? `(${d.length})` : '';
   if (!d.length) { el.innerHTML = '<p style="color:var(--text-dim);font-size:13px">No one online. Other nodes appear here automatically when cairn sync is running on your network.</p>'; return; }
-  const label = { connected: 'connected ✓', requested: 'requested…', incoming: 'wants to connect', revoked: 'revoked', available: '' };
+  const label = { connected: 'connected ✓', requested: 'requested…', incoming: 'wants to connect', revoked: 'revoked', incompatible: 'needs upgrade', available: '' };
   el.innerHTML = '<table class="sync-table"><thead><tr><th>User</th><th>URL</th><th>State</th><th></th></tr></thead><tbody>' +
     d.map(p => {
       const st = p.state || 'available';
+      const stTxt = st === 'incompatible' ? `needs upgrade (their v${p.schema_version ?? '?'} / your v${data.our_schema})` : (label[st] || st);
       const action = st === 'available'
         ? `<button onclick="syncPair('${escapeHtml(p.url || '')}')">Request access</button>`
-        : `<span style="color:${st === 'connected' ? 'var(--accent)' : 'var(--text-dim)'};font-size:12px">${label[st] || st}</span>`;
+        : `<span style="color:${st === 'connected' ? 'var(--accent)' : (st === 'incompatible' ? '#d29922' : 'var(--text-dim)')};font-size:12px">${stTxt}</span>`;
       return `<tr>
         <td>${escapeHtml(p.user_id || '?')}</td>
         <td style="font-size:12px">${escapeHtml(p.url || '')}</td>

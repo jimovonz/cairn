@@ -178,8 +178,26 @@ def test_schema_version_mismatch_rejected(make_node, fake_embedder):
     a.insert_memory(type_="fact", topic="t", content="c", origin_id="x")
     from cairn.sync.changeset import extract_changeset, apply_changeset
     payload = extract_changeset(a.conn(), {})
-    payload["schema_version"] = 99
+    payload["schema_version"] = 1  # below the compatibility floor
     b = make_node("B")
     import pytest
-    with pytest.raises(ValueError, match="schema_version mismatch"):
+    with pytest.raises(ValueError, match="schema_version too old"):
         apply_changeset(b.conn(), payload, embedder=fake_embedder)
+
+
+def test_newer_additive_payload_accepted(make_node, fake_embedder):
+    """Forward-compat adaptor behavior: a payload from a NEWER (additive) peer
+    still applies — version above the floor is accepted, unknown row fields and
+    unknown top-level sections are ignored."""
+    from cairn.sync import SCHEMA_VERSION
+    from cairn.sync.changeset import extract_changeset, apply_changeset
+    a = make_node("A")
+    b = make_node("B")
+    a.insert_memory(type_="fact", topic="t", content="future", origin_id="fwd-1")
+    payload = extract_changeset(a.conn(), {})
+    payload["schema_version"] = SCHEMA_VERSION + 1          # a newer peer
+    payload["memories"][0]["some_future_col"] = "ignore-me"  # unknown row field
+    payload["future_table"] = [{"x": 1}]                     # unknown section
+    apply_changeset(b.conn(), payload, embedder=fake_embedder)
+    got = b.conn().execute("SELECT content FROM memories WHERE origin_id='fwd-1'").fetchone()
+    assert got[0] == "future"

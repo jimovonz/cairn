@@ -28,7 +28,7 @@ try:
 except ImportError:
     import sqlite3  # type: ignore
 
-from cairn.sync import SCHEMA_VERSION
+from cairn.sync import SCHEMA_VERSION, MIN_COMPATIBLE_SCHEMA_VERSION
 from cairn.sync.changeset import extract_changeset
 from cairn.sync.identity import (
     ensure_node_id,
@@ -235,10 +235,15 @@ class SyncHandler(BaseHTTPRequestHandler):
         except ValueError:
             self._send_json(400, {"error": "missing X-Cairn-Schema-Version header"})
             return False
-        if client_schema_int != SCHEMA_VERSION:
+        # Accept any peer at or above our compatibility floor — apply tolerates
+        # additive drift (unknown fields ignored, missing default NULL). Only a
+        # peer older than the floor (a breaking-change boundary) is refused.
+        if client_schema_int < MIN_COMPATIBLE_SCHEMA_VERSION:
             self._send_json(409, {
                 "error": "schema_version_mismatch",
-                "server": SCHEMA_VERSION, "client": client_schema_int,
+                "server": SCHEMA_VERSION,
+                "min_compatible": MIN_COMPATIBLE_SCHEMA_VERSION,
+                "client": client_schema_int,
             })
             return False
         return True
