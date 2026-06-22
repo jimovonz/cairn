@@ -70,6 +70,19 @@ def record_beacon(conn, beacon: dict, *, self_node_id: Optional[str] = None) -> 
         (nid, beacon.get("user_id"), beacon.get("url"), beacon.get("public_key"),
          beacon.get("schema_version"), beacon.get("cert_fingerprint")),
     )
+    # Self-heal an already-approved peer's pull address when it reappears at a new
+    # IP. Discovery is always on and the beacon carries the live URL, so a paired
+    # peer that moves networks just works on the next pull. Only the URL follows
+    # the beacon — the pinned cert fingerprint is NOT touched, so a beacon that
+    # lies about a peer's location can't redirect us to a host that can't present
+    # the pinned cert (fails closed: wrong host -> cert mismatch -> no data).
+    url = beacon.get("url")
+    if url:
+        conn.execute(
+            "UPDATE sync_peers SET url = ? WHERE peer_node_id = ? "
+            "AND (status IS NULL OR status = 'approved')",
+            (url, nid),
+        )
     conn.commit()
     return True
 
