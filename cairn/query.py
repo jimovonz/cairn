@@ -1174,6 +1174,26 @@ def check():
     else:
         warn("Not running (will auto-start on first embed)")
 
+    # 4a. Multi-node sync — report status only. When enabled, the daemon should
+    # be listening on the sync port; when off, that's a valid state too.
+    print("\nSync:")
+    try:
+        from cairn import config as _scfg
+        if not _scfg.CAIRN_SYNC_ENABLED:
+            warn("disabled (enable: CAIRN_SYNC_ENABLED=1 in cairn/.env)")
+        else:
+            import socket as _sock
+            s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+            s.settimeout(0.5)
+            listening = s.connect_ex(("127.0.0.1", _scfg.CAIRN_SYNC_PORT)) == 0
+            s.close()
+            if listening:
+                ok(f"sync server up on :{_scfg.CAIRN_SYNC_PORT} (discovery udp :{_scfg.CAIRN_SYNC_DISCOVERY_PORT})")
+            else:
+                warn(f"enabled but not listening on :{_scfg.CAIRN_SYNC_PORT} (start the daemon)")
+    except Exception as exc:
+        warn(f"sync status unavailable: {exc}")
+
     # 4b. API proxy — report status only, never fail: the `c` launcher
     # health-gates ANTHROPIC_BASE_URL and the */5 keep-alive cron self-heals, so
     # a down proxy degrades to a direct connection rather than breaking traffic.

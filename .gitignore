@@ -48,3 +48,5 @@ cairn/.proxy-*.pid
 /cairn-ephemeral.db-shm
 /cairn-ephemeral.db-wal
 cairn/cairn.db.pre-*
+# Local machine config (written by install.sh + dashboard; loaded by cairn.config)
+cairn/.env
