@@ -261,3 +261,169 @@ Migration is **idempotent** — re-running `init()` is a no-op after v4.
 - Per-author confidence weighting (memory 581) — defer until we have multi-node data showing it matters.
 - Encryption at rest of the synced payload — the sync transport is HTTPS, but local DBs are plaintext.
 - Selective sync ("don't pull memories from project X") — possible via filter in the request body, deferred.
+
+---
+
+# v2 — Discovery, public-key pairing, and dashboard authorization
+
+Status: design v2. Supersedes two v1 decisions: the "no autodiscovery" non-goal,
+and bearer-token auth. The v1 sync *core* (changeset extract/apply, Lamport
+clock, `sync_state` vector clock, LWW, visibility, embedding regen) is unchanged —
+v2 only replaces **how peers find each other** and **how trust is established**.
+
+## Motivation
+
+v1 required hand-editing a peer registry and sharing a symmetric bearer token
+out-of-band per peer. That doesn't scale to ad-hoc sharing and a leaked token is
+a silent compromise. v2 makes any cairn node able to **advertise itself on the
+LAN**, lets another node **request to sync**, and requires the host to
+**explicitly authorize each interconnection from the dashboard** — the same trust
+model as Syncthing (device = keypair, local discovery, approve-this-device,
+then mutual-auth transport). There is still **no central server**: pairing is
+peer-to-peer and every node remains a complete offline-first local DB.
+
+## Identity becomes a keypair
+
+Each node generates an **Ed25519 keypair** on first run, stored alongside the
+existing identity files:
+
+- `~/.cairn/node_key`      — private key, `chmod 600`, never leaves the machine.
+- `~/.cairn/node_key.pub`  — public key.
+- `~/.cairn/node_id`       — **derived** as `base32(sha256(pubkey))[:52]` (a
+  Syncthing-style device fingerprint) instead of a bare UUIDv4. Stable, globally
+  unique, and *self-certifying*: the ID is a commitment to the public key, so a
+  peer can't impersonate a node_id without its private key.
+
+`user_id` is unchanged (`$USER@host` or override) — it is a human label, not an
+auth principal. The **public key is the auth principal**; `created_by_node` (the
+device fingerprint) becomes cryptographically attributable rather than
+self-declared.
+
+## Discovery (advertising)
+
+A node opts into discovery (`CAIRN_SYNC_ADVERTISE=1`). When on, it broadcasts a
+small beacon on the local segment — **mDNS/DNS-SD** service type
+`_cairn-sync._tcp` (fall back to UDP broadcast on `47391` where mDNS is blocked):
+
+```
+{ "node_id": "<device-fingerprint>", "user_id": "alice@thinkpad",
+  "url": "https://192.168.1.42:8787", "schema_version": 10, "proto": 2 }
+```
+
+Discovery only makes a node *visible and dialable*; it grants **no access**.
+Beacons are unauthenticated by design (they carry only public info). A node that
+doesn't advertise can still pair by dialing a known URL — discovery is
+convenience, not a security boundary.
+
+## Pairing handshake + dashboard authorization
+
+Trust is established once per peer pair, interactively:
+
+1. **Request.** Node B (the requester) dials A's `/pair` endpoint with a signed
+   request: `{node_id_B, pubkey_B, user_id_B, url_B, nonce, ts}` signed by B's
+   private key. A verifies the signature proves possession of `pubkey_B` and that
+   `node_id_B == fingerprint(pubkey_B)` (self-certifying check).
+2. **Queue.** A stores it in `pairing_requests` with `status='pending'`. No sync
+   access is granted yet. A returns `202 Accepted`.
+3. **Authorize.** A's **dashboard** shows a pending-pairing queue with B's
+   `user_id`, fingerprint (displayed for out-of-band verification, exactly like
+   reading a Syncthing device ID aloud), and source IP. The host clicks
+   **Approve** or **Deny**.
+4. **Pin.** On approve, B's pubkey is pinned into `sync_peers` (`peer_public_key`,
+   `status='approved'`). From then on, all `/sync` requests from B are
+   authenticated by signature against the pinned key.
+
+Bidirectional sync requires **mutual approval** — A approving B lets B pull from
+A; for A to pull from B, B must approve A symmetrically. The dashboard surfaces
+both directions.
+
+Trust is **TOFU** (trust-on-first-approve): the fingerprint shown at approval
+time is the commitment. To defend against a discovery-time MITM, the host can
+verify the displayed fingerprint against B over a side channel before approving —
+optional on a trusted LAN, recommended otherwise.
+
+## Auth on the sync path (replaces bearer token)
+
+`sync_peers.bearer_token` is **removed**; `peer_public_key` replaces it. Each
+`/sync` request carries:
+
+```
+X-Cairn-Node: <node_id>
+X-Cairn-Timestamp: <unix>
+X-Cairn-Nonce: <random>
+X-Cairn-Signature: ed25519( method | path | sha256(body) | ts | nonce )
+```
+
+The server (`cairn/sync/server.py::_authorized`) looks up `peer_public_key` by
+`X-Cairn-Node`, verifies the signature, rejects if `status != 'approved'`,
+rejects stale timestamps (±300s window) and replayed nonces (short-lived seen-set).
+This is transport-agnostic: it works over plain HTTP, and composes with TLS
+(self-signed certs pinned at pairing time) for confidentiality without a CA.
+
+## Schema delta (v10)
+
+```sql
+-- sync_peers: drop bearer_token, add the pinned key + approval state
+ALTER TABLE sync_peers ADD COLUMN peer_public_key TEXT;     -- pinned at approval
+ALTER TABLE sync_peers ADD COLUMN status TEXT DEFAULT 'approved'; -- approved|revoked
+ALTER TABLE sync_peers ADD COLUMN approved_at TEXT;
+-- (bearer_token retained as nullable for one migration cycle, then dropped)
+
+CREATE TABLE pairing_requests (
+    id              INTEGER PRIMARY KEY,
+    peer_node_id    TEXT NOT NULL,          -- = fingerprint(peer_public_key)
+    peer_public_key TEXT NOT NULL,
+    user_id         TEXT,
+    url             TEXT,
+    source_ip       TEXT,
+    direction       TEXT DEFAULT 'inbound', -- inbound (they asked) | outbound (we asked)
+    status          TEXT DEFAULT 'pending', -- pending|approved|denied
+    requested_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    decided_at      TEXT
+);
+```
+
+`node_state` gains nothing new — the keypair lives in `~/.cairn/` so it survives
+DB rebuild (same rationale as `node_id` in v1). Bump `SCHEMA_VERSION` to 10 in
+`cairn/sync/__init__.py`; the v1 handshake (`X-Cairn-Schema-Version`, 409 on
+mismatch) already gates cross-version sync, so v1 and v2 nodes simply refuse each
+other until upgraded — acceptable, no production peers exist.
+
+## Dashboard endpoints
+
+- `GET  /api/sync/pairing-requests`            — pending queue (+ recent decided).
+- `POST /api/sync/pairing-requests/<id>/approve` — pin pubkey → `sync_peers`.
+- `POST /api/sync/pairing-requests/<id>/deny`    — mark denied; no access granted.
+- `GET  /api/sync/peers`                        — approved peers, last sync, errors.
+- `POST /api/sync/peers/<node_id>/revoke`        — set `status='revoked'`.
+
+## Trust revocation
+
+Revoking sets `sync_peers.status='revoked'` — future `/sync` requests from that
+key are rejected. Memories already pulled are **retained with attribution**
+(deleting them would lose corroboration history and is unenforceable anyway, like
+the `team→private` case). A revoked peer must be re-approved (fresh pairing) to
+resume.
+
+## Threat model (v2, trusted-LAN scope)
+
+- **Impersonation** — prevented: `node_id` is a commitment to the pubkey;
+  signatures prove key possession.
+- **Unauthorized sync** — prevented: no pinned, approved key ⇒ 401.
+- **Discovery MITM** — mitigated by out-of-band fingerprint verification at
+  approval (TOFU); residual risk acceptable on a trusted LAN.
+- **Token leakage** — eliminated: there is no shared secret.
+- **Replay** — mitigated: timestamp window + nonce seen-set.
+- **At-rest confidentiality** — unchanged from v1: local DBs are plaintext
+  (still an open question); the keypair only protects the wire + identity.
+
+## Open questions (v2)
+
+- Outbound auto-pairing UX: when *we* discover a peer, do we one-click request, or
+  require typing/scanning their fingerprint first?
+- mDNS reliability across managed switches / VLANs — may need the UDP-broadcast
+  fallback or a manual URL path as the dependable default (mirrors the v1
+  graph-watch-daemon lesson: cron/manual is the dependable backbone, real-time is
+  the optimization).
+- Key rotation: rotating a node's keypair changes its `node_id`/fingerprint, so it
+  reads as a new peer and must be re-approved. Acceptable, but document it.
