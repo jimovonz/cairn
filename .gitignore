@@ -36,3 +36,15 @@ cairn/.thinking_block_seen.json
 # cairn proxy runtime artifacts
 cairn/proxy.log
 cairn/.proxy-*.pid
+
+# scratch / runtime artifacts (stdout/stderr captures, root-level ephemeral DB, db snapshots)
+/cerr.txt
+/cout.txt
+/err.txt
+/out.txt
+/fullerr.txt
+/fullout.txt
+/cairn-ephemeral.db
+/cairn-ephemeral.db-shm
+/cairn-ephemeral.db-wal
+cairn/cairn.db.pre-*
