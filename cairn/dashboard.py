@@ -1705,6 +1705,89 @@ def _generate_graph_viz(repo):
 
 # ─── HTTP Server ────────────────────────────────────────────────────────────
 
+# ─── Sync (v2 peer-to-peer) ───────────────────────────────────────────────────
+# Management surface for the Sync dashboard tab: identity, discovered peers,
+# pairing-request queue (approve/deny), paired peers (revoke), outbound pairing.
+
+def api_sync_identity(params):
+    from cairn.sync import identity, SCHEMA_VERSION
+    return {
+        "node_id": identity.get_node_fingerprint(),
+        "user_id": identity.get_user_id(),
+        "public_key": identity.get_public_key_b64(),
+        "schema_version": SCHEMA_VERSION,
+    }, 200
+
+
+def api_sync_pairing_requests(params):
+    from cairn.sync import pairing
+    conn = get_conn()
+    try:
+        return {"requests": pairing.list_pairing_requests(conn, pending_only=False)}, 200
+    finally:
+        conn.close()
+
+
+def api_sync_peers(params):
+    from cairn.sync import pairing
+    conn = get_conn()
+    try:
+        return {"peers": pairing.list_peers(conn)}, 200
+    finally:
+        conn.close()
+
+
+def api_sync_discovered(params):
+    from cairn.sync import discovery
+    conn = get_conn()
+    try:
+        return {"discovered": discovery.list_discovered(conn)}, 200
+    finally:
+        conn.close()
+
+
+def api_sync_approve(params, request_id):
+    from cairn.sync import pairing
+    conn = get_conn()
+    try:
+        res = pairing.approve_pairing(conn, int(request_id))
+        return res, (200 if res.get("ok") else 404)
+    finally:
+        conn.close()
+
+
+def api_sync_deny(params, request_id):
+    from cairn.sync import pairing
+    conn = get_conn()
+    try:
+        res = pairing.deny_pairing(conn, int(request_id))
+        return res, (200 if res.get("ok") else 404)
+    finally:
+        conn.close()
+
+
+def api_sync_revoke(params, node_id):
+    from cairn.sync import pairing
+    conn = get_conn()
+    try:
+        res = pairing.revoke_peer(conn, node_id)
+        return res, (200 if res.get("ok") else 404)
+    finally:
+        conn.close()
+
+
+def api_sync_pair(body):
+    """Initiate an outbound pairing request to a peer URL (dashboard one-click)."""
+    from cairn.sync import client
+    url = (body or {}).get("url")
+    if not url:
+        return {"ok": False, "error": "url required"}, 400
+    resp = client.send_pairing_request(url, my_url=(body or {}).get("my_url"))
+    return resp, (200 if resp.get("ok") else 502)
+
+
+# ─── HTTP Server ──────────────────────────────────────────────────────────────
+
 # Route table: (method, pattern) -> handler
 # Patterns use {name} for path params, converted to regex groups
 _ROUTES: list[tuple[str, str, callable]] = [
@@ -1731,6 +1814,10 @@ _ROUTES: list[tuple[str, str, callable]] = [
     ("GET", "/api/calibration/session/{session_id}", lambda p, **kw: api_calibration_session(p, kw["session_id"])),
     ("GET", "/api/graph-fleet", lambda p, **kw: api_graph_fleet(p)),
     ("GET", "/api/graph-explorer", lambda p, **kw: api_graph_explorer(p)),
+    ("GET", "/api/sync/identity", lambda p, **kw: api_sync_identity(p)),
+    ("GET", "/api/sync/pairing-requests", lambda p, **kw: api_sync_pairing_requests(p)),
+    ("GET", "/api/sync/peers", lambda p, **kw: api_sync_peers(p)),
+    ("GET", "/api/sync/discovered", lambda p, **kw: api_sync_discovered(p)),
 ]
 
 # Compile route patterns to regex
@@ -1830,6 +1917,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if m:
             try:
                 data, status = api_snapshot_session(params, m.group(1))
+                self._send_json(data, status)
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+            return
+
+        # Sync (v2) management POST routes
+        sync_post = [
+            (r"/api/sync/pairing-requests/(\d+)/approve$", api_sync_approve),
+            (r"/api/sync/pairing-requests/(\d+)/deny$", api_sync_deny),
+            (r"/api/sync/peers/([^/]+)/revoke$", api_sync_revoke),
+        ]
+        for pat, fn in sync_post:
+            mm = re.match(pat, path)
+            if mm:
+                try:
+                    data, status = fn(params, mm.group(1))
+                    self._send_json(data, status)
+                except Exception as e:
+                    self._send_json({"error": str(e)}, 500)
+                return
+        if path == "/api/sync/pair":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(content_length)) if content_length else {}
+            try:
+                data, status = api_sync_pair(body)
                 self._send_json(data, status)
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)

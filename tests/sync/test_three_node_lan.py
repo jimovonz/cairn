@@ -47,16 +47,29 @@ def test_three_node_full_mesh_convergence(make_node, fake_embedder):
             httpds.append(httpd)
             _wait_for_port(p)
 
-        # Full mesh: every node knows every other node, with a shared bearer token
-        token = "shared-mesh-token"
+        # v2 full mesh: collect each node's fingerprint + pubkey, then for every
+        # ordered pair register the URL (src learns how to reach dst) and pin the
+        # pubkey as an approved peer (dst trusts src) — the post-pairing state.
+        from cairn.sync import identity as _id
+        fps, pubs = {}, {}
+        for i, n in enumerate(nodes):
+            n.activate()
+            fps[i] = _id.get_node_fingerprint()
+            pubs[i] = _id.get_public_key_b64()
         for i, src in enumerate(nodes):
             for j, dst in enumerate(nodes):
                 if i == j:
                     continue
-                add_peer(src.conn(), peer_node_id=dst.node_id,
-                         url=f"http://127.0.0.1:{ports[j]}", bearer_token=token)
-                add_peer(dst.conn(), peer_node_id=src.node_id,
-                         url=f"http://127.0.0.1:{ports[i]}", bearer_token=token)
+                add_peer(src.conn(), peer_node_id=fps[j],
+                         url=f"http://127.0.0.1:{ports[j]}", bearer_token="")
+                dconn = dst.conn()
+                dconn.execute(
+                    "INSERT INTO sync_peers (peer_node_id, url, bearer_token, peer_public_key, status, approved_at) "
+                    "VALUES (?, '', '', ?, 'approved', CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(peer_node_id) DO UPDATE SET peer_public_key=excluded.peer_public_key, status='approved'",
+                    (fps[i], pubs[i]))
+                dconn.commit()
+                dconn.close()
 
         # Each node writes a unique memory
         for i, n in enumerate(nodes):
@@ -70,8 +83,9 @@ def test_three_node_full_mesh_convergence(make_node, fake_embedder):
                 for j, dst in enumerate(nodes):
                     if i == j:
                         continue
-                    res = pull_from_peer(src.conn(), dst.node_id, embedder=fake_embedder)
-                    assert res.ok, f"pull {src.node_id[:8]}<-{dst.node_id[:8]} failed: {res.error}"
+                    src.activate()
+                    res = pull_from_peer(src.conn(), fps[j], embedder=fake_embedder)
+                    assert res.ok, f"pull {fps[i][:8]}<-{fps[j][:8]} failed: {res.error}"
 
         # Verify convergence — every node has all 3 origin_ids
         for n in nodes:
@@ -89,7 +103,8 @@ def test_three_node_full_mesh_convergence(make_node, fake_embedder):
                 for j, dst in enumerate(nodes):
                     if i == j:
                         continue
-                    pull_from_peer(src.conn(), dst.node_id, embedder=fake_embedder)
+                    src.activate()
+                    pull_from_peer(src.conn(), fps[j], embedder=fake_embedder)
 
         confidences = []
         for n in nodes:

@@ -1,23 +1,25 @@
-"""Sync HTTP server — exposes /sync POST endpoint to listed peers.
+"""Sync HTTP server — exposes /sync (changeset pull) and /pair (pairing request).
 
-stdlib-only HTTP. Auth via per-peer bearer token recorded in sync_peers.
-For prod: terminate TLS in front (caddy/stunnel/nginx) — the server itself is plaintext.
+stdlib-only HTTP. v2 auth: each /sync request is signed with the peer's Ed25519
+key and verified against the public key pinned in sync_peers at pairing-approval
+time (status='approved'). A v1 bearer-token fallback remains for peers paired
+before v2. /pair accepts a self-certifying, signed pairing request and queues it
+in pairing_requests for the host to approve from the dashboard — no access is
+granted until approval. See docs/multi-node-sync.md v2.
 
 Usage:
     python -m cairn.sync.server --bind 0.0.0.0:8787
-
-Or programmatically:
-    httpd = build_server(host='127.0.0.1', port=8787, db_path=...)
-    httpd.serve_forever()
 """
 
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import logging
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
@@ -28,9 +30,20 @@ except ImportError:
 
 from cairn.sync import SCHEMA_VERSION
 from cairn.sync.changeset import extract_changeset
-from cairn.sync.identity import ensure_node_id, node_id_for_conn, peek_lamport
+from cairn.sync.identity import (
+    ensure_node_id,
+    get_node_fingerprint,
+    node_id_for_conn,
+    fingerprint,
+    verify_request,
+)
 
 log = logging.getLogger("cairn.sync.server")
+
+# Replay protection: timestamp tolerance + a short-lived seen-nonce set.
+_TS_TOLERANCE_SEC = 300
+_seen_nonces: dict[str, float] = {}
+_seen_lock = threading.Lock()
 
 
 def _resolve_db_path(override: Optional[str] = None) -> str:
@@ -42,25 +55,102 @@ def _resolve_db_path(override: Optional[str] = None) -> str:
     return init_db.DB_PATH
 
 
-def _authorized(headers, conn) -> tuple[bool, Optional[str]]:
-    """Validate Bearer token against sync_peers.bearer_token. Returns (ok, peer_node_id)."""
-    auth = headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return False, None
-    token = auth[len("Bearer "):].strip()
+def _fresh_timestamp(ts: str) -> bool:
+    try:
+        return abs(time.time() - float(ts)) <= _TS_TOLERANCE_SEC
+    except (TypeError, ValueError):
+        return False
+
+
+def _nonce_unseen(nonce: str) -> bool:
+    """True if nonce is fresh; records it. Prunes entries older than tolerance."""
+    if not nonce:
+        return False
+    now = time.time()
+    with _seen_lock:
+        for n, t in list(_seen_nonces.items()):
+            if now - t > _TS_TOLERANCE_SEC:
+                del _seen_nonces[n]
+        if nonce in _seen_nonces:
+            return False
+        _seen_nonces[nonce] = now
+        return True
+
+
+def _authorized(method: str, path: str, headers, body: bytes, conn) -> tuple[bool, Optional[str]]:
+    """Authorize a /sync request. v2: Ed25519 signature against the pinned,
+    approved peer_public_key. v1 fallback: bearer token. Returns (ok, peer_node)."""
     peer_node = headers.get("X-Cairn-Node", "").strip()
     if not peer_node:
         return False, None
     row = conn.execute(
-        "SELECT bearer_token FROM sync_peers WHERE peer_node_id = ?", (peer_node,)
+        "SELECT peer_public_key, bearer_token, status FROM sync_peers WHERE peer_node_id = ?",
+        (peer_node,),
     ).fetchone()
     if not row:
         return False, None
-    # Constant-time compare
-    import hmac
-    if not hmac.compare_digest(row[0] or "", token):
+    pub, token, status = row
+    if status is not None and status != "approved":
+        return False, None  # revoked / denied
+
+    # v2 signature path (preferred).
+    sig = headers.get("X-Cairn-Signature", "").strip()
+    if sig and pub:
+        ts = headers.get("X-Cairn-Timestamp", "")
+        nonce = headers.get("X-Cairn-Nonce", "")
+        if not _fresh_timestamp(ts) or not _nonce_unseen(nonce):
+            return False, None
+        if verify_request(pub, method, path, body, ts, nonce, sig):
+            return True, peer_node
         return False, None
-    return True, peer_node
+
+    # v1 bearer fallback (peers paired before v2).
+    auth = headers.get("Authorization", "")
+    if auth.startswith("Bearer ") and token:
+        if hmac.compare_digest(token, auth[len("Bearer "):].strip()):
+            return True, peer_node
+    return False, None
+
+
+def _handle_pair(body: dict, headers, source_ip: str, conn) -> tuple[int, dict]:
+    """Process a pairing request: verify it self-certifies and is signed by the
+    presented key, then queue it (status='pending'). Grants no access."""
+    pub = (body.get("public_key") or "").strip()
+    claimed = (body.get("node_id") or "").strip()
+    user_id = body.get("user_id")
+    url = body.get("url")
+    if not pub or not claimed:
+        return 400, {"error": "public_key and node_id required"}
+    # Self-certification: node_id must be the fingerprint of the presented key.
+    if fingerprint(pub) != claimed:
+        return 400, {"error": "node_id is not the fingerprint of public_key"}
+    # Proof of possession: the request is signed by the presented key.
+    sig = headers.get("X-Cairn-Signature", "")
+    ts = headers.get("X-Cairn-Timestamp", "")
+    nonce = headers.get("X-Cairn-Nonce", "")
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    if not verify_request(pub, "POST", "/pair", raw, ts, nonce, sig):
+        return 401, {"error": "signature does not verify against presented key"}
+
+    # Already an approved peer? Idempotent no-op.
+    existing = conn.execute(
+        "SELECT status FROM sync_peers WHERE peer_node_id = ?", (claimed,)
+    ).fetchone()
+    if existing and existing[0] == "approved":
+        return 200, {"status": "already_paired"}
+
+    conn.execute(
+        "INSERT INTO pairing_requests "
+        "(peer_node_id, peer_public_key, user_id, url, source_ip, direction, status) "
+        "VALUES (?, ?, ?, ?, ?, 'inbound', 'pending') "
+        "ON CONFLICT(peer_node_id, direction) DO UPDATE SET "
+        "peer_public_key=excluded.peer_public_key, user_id=excluded.user_id, "
+        "url=excluded.url, source_ip=excluded.source_ip, status='pending', "
+        "requested_at=CURRENT_TIMESTAMP, decided_at=NULL",
+        (claimed, pub, user_id, url, source_ip),
+    )
+    conn.commit()
+    return 202, {"status": "pending", "node_id": get_node_fingerprint()}
 
 
 class SyncHandler(BaseHTTPRequestHandler):
@@ -69,39 +159,53 @@ class SyncHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # quiet stderr unless debug
         log.debug("%s - %s", self.address_string(), fmt % args)
 
-    def do_POST(self) -> None:  # noqa: N802 — stdlib API
-        if self.path != "/sync":
-            self._send_json(404, {"error": "not found"})
-            return
+    def _read_body(self) -> Optional[bytes]:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length > 10_000_000:  # 10MB cap
+            self._send_json(413, {"error": "payload too large"})
+            return None
+        return self.rfile.read(length) if length else b""
 
-        # Schema version handshake
+    def _schema_ok(self) -> bool:
         client_schema = self.headers.get("X-Cairn-Schema-Version", "")
         try:
             client_schema_int = int(client_schema)
         except ValueError:
             self._send_json(400, {"error": "missing X-Cairn-Schema-Version header"})
-            return
+            return False
         if client_schema_int != SCHEMA_VERSION:
             self._send_json(409, {
                 "error": "schema_version_mismatch",
                 "server": SCHEMA_VERSION, "client": client_schema_int,
             })
-            return
+            return False
+        return True
 
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        if length > 10_000_000:  # 10MB request cap
-            self._send_json(413, {"error": "payload too large"})
+    def do_POST(self) -> None:  # noqa: N802 — stdlib API
+        if self.path not in ("/sync", "/pair"):
+            self._send_json(404, {"error": "not found"})
+            return
+        if not self._schema_ok():
+            return
+        body_bytes = self._read_body()
+        if body_bytes is None:
             return
         try:
-            body_raw = self.rfile.read(length).decode("utf-8") if length else "{}"
-            body = json.loads(body_raw)
+            body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             self._send_json(400, {"error": f"invalid JSON: {e}"})
             return
 
+        source_ip = self.client_address[0] if self.client_address else ""
         conn = sqlite3.connect(self.db_path)
         try:
-            ok, peer_node = _authorized(self.headers, conn)
+            if self.path == "/pair":
+                status, obj = _handle_pair(body, self.headers, source_ip, conn)
+                self._send_json(status, obj)
+                return
+
+            # /sync
+            ok, peer_node = _authorized("POST", "/sync", self.headers, body_bytes, conn)
             if not ok:
                 self._send_json(401, {"error": "unauthorized"})
                 return
@@ -154,8 +258,8 @@ def _main() -> None:
     host, port = args.bind.rsplit(":", 1)
     httpd = build_server(host, int(port), args.db)
     log.info("cairn sync server on %s db=%s node=%s",
-             args.bind, _resolve_db_path(args.db), ensure_node_id()[:8])
-    print(f"cairn sync server on {args.bind}", flush=True)
+             args.bind, _resolve_db_path(args.db), get_node_fingerprint()[:12])
+    print(f"cairn sync server on {args.bind} (node {get_node_fingerprint()[:12]})", flush=True)
     httpd.serve_forever()
 
 

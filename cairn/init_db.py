@@ -511,6 +511,50 @@ def init():
                 (str(uuid.uuid4()), mem_id)
             )
         print(f"Backfilled origin_id for {len(rows_without_origin)} existing memories")
+    # v10 — sync v2: public-key pairing + dashboard authorization.
+    #   sync_peers gains peer_public_key (pinned at approval), status, approved_at
+    #   (bearer_token kept nullable for one migration cycle — v1 peers still work).
+    #   New tables: pairing_requests (handshake queue), discovered_peers (LAN beacons).
+    for _col, _ctype in (
+        ("peer_public_key", "TEXT"),
+        ("status", "TEXT DEFAULT 'approved'"),
+        ("approved_at", "TEXT"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE sync_peers ADD COLUMN {_col} {_ctype}")
+        except sqlite3.OperationalError:
+            pass
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pairing_requests (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            peer_node_id    TEXT NOT NULL,
+            peer_public_key TEXT NOT NULL,
+            user_id         TEXT,
+            url             TEXT,
+            source_ip       TEXT,
+            direction       TEXT DEFAULT 'inbound',
+            status          TEXT DEFAULT 'pending',
+            requested_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+            decided_at      TEXT,
+            UNIQUE(peer_node_id, direction)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS discovered_peers (
+            node_id        TEXT PRIMARY KEY,
+            user_id        TEXT,
+            url            TEXT,
+            public_key     TEXT,
+            schema_version INTEGER,
+            first_seen     TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_seen      TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pairing_status ON pairing_requests(status)")
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 10").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (10, 'sync v2 pubkey pairing: sync_peers.peer_public_key/status/approved_at + pairing_requests + discovered_peers')"
+        )
     conn.commit()
     conn.close()
     print(f"Database initialized at {DB_PATH}")
