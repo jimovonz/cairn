@@ -12,3 +12,9 @@ See docs/multi-node-sync.md for the design. Public surface:
 """
 
 SCHEMA_VERSION = 11  # v11 = HTTPS + cert pinning; v10 = pubkey pairing/signatures; 9 = bearer
+# The oldest wire version this node still interoperates with. Sync is accepted
+# from any peer >= this floor (apply_changeset reads a fixed column set via
+# rec.get(), so additive schema changes are tolerated — newer fields ignored,
+# missing fields default to NULL). DISCIPLINE: bump this ONLY for a
+# non-additive/breaking change; additive columns/tables must NOT raise it.
+MIN_COMPATIBLE_SCHEMA_VERSION = 11

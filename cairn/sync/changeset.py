@@ -21,7 +21,7 @@ try:
 except ImportError:
     import sqlite3  # type: ignore
 
-from cairn.sync import SCHEMA_VERSION
+from cairn.sync import SCHEMA_VERSION, MIN_COMPATIBLE_SCHEMA_VERSION
 from cairn.sync.identity import bump_lamport, get_embedding_model_version, node_id_for_conn
 
 
@@ -255,9 +255,14 @@ def apply_changeset(
     Confidence is recomputed from the union of confidence_log entries.
     Embeddings are regenerated locally on insert/content-change unless disabled.
     """
-    if payload.get("schema_version") != SCHEMA_VERSION:
+    # Accept payloads from any peer >= our compatibility floor; apply reads a
+    # fixed column set so additive drift is tolerated. Only a below-floor
+    # (breaking) payload is rejected.
+    _pv = payload.get("schema_version") or 0
+    if _pv < MIN_COMPATIBLE_SCHEMA_VERSION:
         raise ValueError(
-            f"schema_version mismatch: payload={payload.get('schema_version')} local={SCHEMA_VERSION}"
+            f"schema_version too old: payload={payload.get('schema_version')} "
+            f"min_compatible={MIN_COMPATIBLE_SCHEMA_VERSION}"
         )
     result = ApplyResult()
 

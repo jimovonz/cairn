@@ -1779,7 +1779,7 @@ def api_sync_revoke(params, node_id):
 def api_sync_online(params):
     """Discovered peers seen within the online window, annotated with my pairing
     relationship (connected / requested / incoming / available / revoked)."""
-    from cairn.sync import discovery
+    from cairn.sync import discovery, SCHEMA_VERSION, MIN_COMPATIBLE_SCHEMA_VERSION
     from cairn import config
     conn = get_conn()
     try:
@@ -1793,7 +1793,13 @@ def api_sync_online(params):
             "SELECT peer_node_id FROM pairing_requests WHERE direction='inbound' AND status='pending'")}
         for d in disc:
             nid = d["node_id"]
-            if peers.get(nid) == "approved":
+            sv = d.get("schema_version")
+            # Incompatible if their advertised version is below our floor — we'd
+            # refuse them. (Newer-than-us is fine: apply tolerates additive drift.)
+            d["compatible"] = sv is not None and sv >= MIN_COMPATIBLE_SCHEMA_VERSION
+            if not d["compatible"]:
+                d["state"] = "incompatible"
+            elif peers.get(nid) == "approved":
                 d["state"] = "connected"
             elif peers.get(nid) == "revoked":
                 d["state"] = "revoked"
@@ -1803,7 +1809,8 @@ def api_sync_online(params):
                 d["state"] = "incoming"
             else:
                 d["state"] = "available"
-        return {"online": disc}, 200
+        return {"online": disc, "our_schema": SCHEMA_VERSION,
+                "min_compatible": MIN_COMPATIBLE_SCHEMA_VERSION}, 200
     finally:
         conn.close()
 

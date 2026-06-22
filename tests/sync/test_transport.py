@@ -122,8 +122,8 @@ def test_schema_version_mismatch_returns_409(make_node, monkeypatch):
             url="http://unused",
             bearer_token="t",
         )
-        # Client claims a wrong schema_version
-        monkeypatch.setattr(client_mod, "SCHEMA_VERSION", 99)
+        # Client claims a schema_version BELOW the server's compatibility floor
+        monkeypatch.setattr(client_mod, "SCHEMA_VERSION", 1)
         result = pull_from_peer(client_node.conn(), server_node.node_id)
         assert not result.ok
         assert "409" in (result.error or "") or "schema_version" in (result.error or "")
