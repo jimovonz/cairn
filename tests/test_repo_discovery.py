@@ -155,3 +155,101 @@ def test_resolve_crg_falls_back_to_path(monkeypatch, tmp_path):
     monkeypatch.delenv("CAIRN_HOME", raising=False)
     monkeypatch.setattr(repo_discovery.shutil, "which", lambda _n: "/usr/bin/code-review-graph")
     assert repo_discovery._resolve_crg() == "/usr/bin/code-review-graph"
+
+
+# ---------- HEAD-change freshness (branch switch / pull / rebase) ----------
+
+def test_head_signature_returns_sha_for_git_repo():
+    with tempfile.TemporaryDirectory() as td:
+        _init_git_repo(td, file_count=1)
+        sig = repo_discovery.head_signature(td)
+        assert sig is not None and len(sig) == 40
+
+
+def test_head_signature_none_for_non_git():
+    with tempfile.TemporaryDirectory() as td:
+        assert repo_discovery.head_signature(td) is None
+
+
+def test_head_signature_changes_on_new_commit():
+    with tempfile.TemporaryDirectory() as td:
+        _init_git_repo(td, file_count=1)
+        first = repo_discovery.head_signature(td)
+        open(os.path.join(td, "g.py"), "w").write("# new\n")
+        subprocess.run(["git", "-C", td, "add", "."], check=True, timeout=10)
+        subprocess.run(["git", "-C", td, "commit", "-q", "-m", "second"], check=True, timeout=10)
+        assert repo_discovery.head_signature(td) != first
+
+
+def test_head_signature_changes_on_branch_switch():
+    """Switching to a branch at a different commit changes the signature —
+    the exact gap this freshness path closes."""
+    with tempfile.TemporaryDirectory() as td:
+        _init_git_repo(td, file_count=1)
+        main_sig = repo_discovery.head_signature(td)
+        subprocess.run(["git", "-C", td, "checkout", "-q", "-b", "feature"], check=True, timeout=10)
+        open(os.path.join(td, "h.py"), "w").write("# feature\n")
+        subprocess.run(["git", "-C", td, "add", "."], check=True, timeout=10)
+        subprocess.run(["git", "-C", td, "commit", "-q", "-m", "feat"], check=True, timeout=10)
+        feature_sig = repo_discovery.head_signature(td)
+        assert feature_sig != main_sig
+        # switching back returns the original signature
+        subprocess.run(["git", "-C", td, "checkout", "-q", "-"], check=True, timeout=10)
+        assert repo_discovery.head_signature(td) == main_sig
+
+
+def test_kick_update_no_change_does_not_kick():
+    with tempfile.TemporaryDirectory() as td:
+        _init_git_repo(td, file_count=1)
+        head = repo_discovery.head_signature(td)
+        with patch.object(repo_discovery, "kick_graph_build") as mock_kick:
+            kicked, current = repo_discovery.kick_graph_update_if_head_changed(
+                td, head, env_override={"CAIRN_AUTO_GRAPH": "1"})
+        assert kicked is False
+        assert current == head
+        mock_kick.assert_not_called()
+
+
+def test_kick_update_on_head_change_kicks():
+    with tempfile.TemporaryDirectory() as td:
+        _init_git_repo(td, file_count=1)
+        head = repo_discovery.head_signature(td)
+        with patch.object(repo_discovery, "kick_graph_build", return_value=True) as mock_kick:
+            kicked, current = repo_discovery.kick_graph_update_if_head_changed(
+                td, "stale-old-sha", env_override={"CAIRN_AUTO_GRAPH": "1"})
+        assert kicked is True
+        assert current == head
+        mock_kick.assert_called_once()
+
+
+def test_kick_update_first_seen_none_kicks():
+    """No prior HEAD recorded (e.g. first observation) → treat as changed."""
+    with tempfile.TemporaryDirectory() as td:
+        _init_git_repo(td, file_count=1)
+        with patch.object(repo_discovery, "kick_graph_build", return_value=True) as mock_kick:
+            kicked, current = repo_discovery.kick_graph_update_if_head_changed(
+                td, None, env_override={"CAIRN_AUTO_GRAPH": "1"})
+        assert kicked is True
+        assert current == repo_discovery.head_signature(td)
+        mock_kick.assert_called_once()
+
+
+def test_kick_update_disabled_env_no_kick():
+    with tempfile.TemporaryDirectory() as td:
+        _init_git_repo(td, file_count=1)
+        with patch.object(repo_discovery, "kick_graph_build") as mock_kick:
+            kicked, current = repo_discovery.kick_graph_update_if_head_changed(
+                td, "stale", env_override={"CAIRN_AUTO_GRAPH": "0"})
+        assert kicked is False
+        assert current == "stale"
+        mock_kick.assert_not_called()
+
+
+def test_kick_update_non_git_returns_false():
+    with tempfile.TemporaryDirectory() as td:
+        with patch.object(repo_discovery, "kick_graph_build") as mock_kick:
+            kicked, current = repo_discovery.kick_graph_update_if_head_changed(
+                td, "stale", env_override={"CAIRN_AUTO_GRAPH": "1"})
+        assert kicked is False
+        assert current == "stale"
+        mock_kick.assert_not_called()
