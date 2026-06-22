@@ -49,48 +49,38 @@ def test_apply_is_idempotent(make_node, fake_embedder):
     assert res2.memories_skipped_lww == 1
 
 
-def test_lww_higher_lamport_wins(make_node, fake_embedder):
+def test_lww_author_edits_propagate_in_order(make_node, fake_embedder):
+    """Own-data-only: the author is the single authority for a row. Its later
+    (higher-lamport) edits propagate to pullers, and re-applying a stale earlier
+    changeset never downgrades the row (LWW by lamport)."""
     a = make_node("A")
     b = make_node("B")
-    a.insert_memory(type_="fact", topic="t", content="A-original", origin_id="contested")
+    a.insert_memory(type_="fact", topic="t", content="v1", origin_id="contested")
 
-    # B receives A's row
     from cairn.sync.changeset import extract_changeset, apply_changeset
-    apply_changeset(b.conn(), extract_changeset(a.conn(), {}), embedder=fake_embedder)
-
-    # Both nodes edit the same row independently (offline)
     from cairn.sync.identity import bump_lamport
-    a_conn = a.conn()
-    lam_a = bump_lamport(a_conn)
-    a_conn.execute(
-        "UPDATE memories SET content = ?, lamport = ?, updated_by_node = ? WHERE origin_id = ?",
-        ("A-edit", lam_a, a.node_id, "contested"),
+
+    stale = extract_changeset(a.conn(), {})  # snapshot at v1
+    apply_changeset(b.conn(), stale, embedder=fake_embedder)
+    assert b.conn().execute(
+        "SELECT content FROM memories WHERE origin_id='contested'").fetchone()[0] == "v1"
+
+    # Author edits its own row (higher lamport).
+    ac = a.conn()
+    lam = bump_lamport(ac)
+    ac.execute(
+        "UPDATE memories SET content=?, lamport=?, updated_by_node=? WHERE origin_id=?",
+        ("v2", lam, a.node_id, "contested"),
     )
-    a_conn.commit()
-
-    b_conn = b.conn()
-    lam_b = bump_lamport(b_conn)
-    # Force B's lamport to be higher to make the test deterministic
-    lam_b = max(lam_b, lam_a + 5)
-    b_conn.execute(
-        "UPDATE memories SET content = ?, lamport = ?, updated_by_node = ? WHERE origin_id = ?",
-        ("B-edit", lam_b, b.node_id, "contested"),
-    )
-    b_conn.commit()
-
-    # A pulls B's changes — B's edit wins (higher lamport)
-    apply_changeset(a.conn(), extract_changeset(b.conn(), {}), embedder=fake_embedder)
-    final_a = a.conn().execute(
-        "SELECT content, lamport FROM memories WHERE origin_id = 'contested'"
-    ).fetchone()
-    assert final_a[0] == "B-edit", f"LWW failed: A still has {final_a[0]!r}"
-
-    # B pulls A's changes — A's older edit must NOT clobber B
+    ac.commit()
     apply_changeset(b.conn(), extract_changeset(a.conn(), {}), embedder=fake_embedder)
-    final_b = b.conn().execute(
-        "SELECT content FROM memories WHERE origin_id = 'contested'"
-    ).fetchone()
-    assert final_b[0] == "B-edit"
+    assert b.conn().execute(
+        "SELECT content FROM memories WHERE origin_id='contested'").fetchone()[0] == "v2"
+
+    # Re-applying the stale v1 changeset must NOT downgrade (LWW).
+    apply_changeset(b.conn(), stale, embedder=fake_embedder)
+    assert b.conn().execute(
+        "SELECT content FROM memories WHERE origin_id='contested'").fetchone()[0] == "v2"
 
 
 def test_confidence_log_converges_across_nodes(make_node, fake_embedder):
@@ -159,24 +149,28 @@ def test_tombstone_propagates(make_node, fake_embedder):
     assert deleted is not None, "tombstone did not propagate"
 
 
-def test_three_node_gossip_converges(make_node, fake_embedder):
-    """A→B→C: rows originated at A reach C via B without A talking to C."""
+def test_own_data_only_no_transitive_relay(make_node, fake_embedder):
+    """Own-data-only: a node shares only what it authored. A's row does NOT reach
+    C via B (no relay); C gets it only by pairing with A directly."""
     a = make_node("A")
     b = make_node("B")
     c = make_node("C")
     a.insert_memory(type_="fact", topic="t", content="from-A", origin_id="a-row")
 
     from cairn.sync.changeset import extract_changeset, apply_changeset
-    # A → B
+    # A → B (B now holds A's row, attributed to A)
     apply_changeset(b.conn(), extract_changeset(a.conn(), {}), embedder=fake_embedder)
-    # B → C (gossip: C never talks to A)
+    # B → C : B must NOT relay A's row (it isn't B's own data)
     apply_changeset(c.conn(), extract_changeset(b.conn(), {}), embedder=fake_embedder)
+    assert c.conn().execute(
+        "SELECT 1 FROM memories WHERE origin_id='a-row'").fetchone() is None, \
+        "B relayed A's memory — own-data-only violated"
 
-    c_row = c.conn().execute(
-        "SELECT content, created_by_node FROM memories WHERE origin_id = 'a-row'"
-    ).fetchone()
-    assert c_row[0] == "from-A"
-    assert c_row[1] == a.node_id, "creator node must travel through gossip"
+    # Direct pairing delivers it.
+    apply_changeset(c.conn(), extract_changeset(a.conn(), {}), embedder=fake_embedder)
+    got = c.conn().execute(
+        "SELECT content, created_by_node FROM memories WHERE origin_id='a-row'").fetchone()
+    assert got[0] == "from-A" and got[1] == a.node_id
 
 
 def test_schema_version_mismatch_rejected(make_node, fake_embedder):

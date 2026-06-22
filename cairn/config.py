@@ -116,6 +116,7 @@ CAIRN_SYNC_PORT = int(_os.environ.get("CAIRN_SYNC_PORT", "8787"))
 CAIRN_SYNC_BIND = _os.environ.get("CAIRN_SYNC_BIND", "0.0.0.0")
 CAIRN_SYNC_DISCOVERY_PORT = int(_os.environ.get("CAIRN_SYNC_DISCOVERY_PORT", "47391"))
 CAIRN_SYNC_ADVERTISE_INTERVAL = int(_os.environ.get("CAIRN_SYNC_ADVERTISE_INTERVAL", "15"))
+CAIRN_SYNC_PULL_INTERVAL = int(_os.environ.get("CAIRN_SYNC_PULL_INTERVAL", "120"))
 CAIRN_SYNC_ONLINE_WINDOW = int(_os.environ.get("CAIRN_SYNC_ONLINE_WINDOW", "90"))
 del _os
 # When enabled, the container injector also docker cp's the shim and hook
