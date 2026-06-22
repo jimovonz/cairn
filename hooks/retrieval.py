@@ -21,7 +21,8 @@ import re
 from cairn.config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
                      L3_GLOBAL_SIM_WITHOUT_PROJECT, L3_PROJECT_QUALITY_FLOOR,
                      L3_MAX_PROJECT_RESULTS, L3_MAX_GLOBAL_RESULTS,
-                     WEAK_ENTRY_SCORE_FLOOR, RRF_K, GLOBAL_HARD_FLOOR)
+                     WEAK_ENTRY_SCORE_FLOOR, RRF_K, GLOBAL_HARD_FLOOR,
+                     REFERENCE_MIN_SIMILARITY)
 
 
 CONTEXT_CACHE_SIM_THRESHOLD: float = 0.9
@@ -200,7 +201,13 @@ def hybrid_search(
         above_hard_floor = sim >= GLOBAL_HARD_FLOOR and not project_results
         is_project_entry = project and r.get("project") == project
         fts_bypass = r.get("_source") == "fts" and r["score"] >= WEAK_ENTRY_SCORE_FLOOR and is_project_entry
-        if above_hard_floor or sim >= eff_t or fts_bypass:
+        passes = above_hard_floor or sim >= eff_t or fts_bypass
+        # Reference-source globals (ingested docs, e.g. Confluence) need a stronger match than
+        # organic globals — suppresses weak cross-project doc-chunk injections. Hard requirement:
+        # overrides hard-floor / fts bypass so a reference entry never surfaces below the bar.
+        if r.get("type") == "reference" and sim < REFERENCE_MIN_SIMILARITY:
+            passes = False
+        if passes:
             global_results.append(r)
             seen_ids.add(mid)
 

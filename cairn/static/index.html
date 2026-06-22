@@ -1090,11 +1090,20 @@ async function showMemory(id) {
   let html = `<h2>${badge(m.type)} ${escapeHtml(m.topic)}</h2>`;
   html += `<div style="color:var(--text);line-height:1.7;margin-bottom:16px">${escapeHtml(m.content)}</div>`;
 
+  // Source link — reference memories (e.g. Confluence docs) carry a click-through
+  // url in source_ref; surface it so the popup can jump straight to the live doc.
+  let srcUrl = null, srcTitle = null;
+  if (m.source_ref) {
+    try { const sr = JSON.parse(m.source_ref); srcUrl = sr.url || null; srcTitle = sr.title || null; } catch (e) {}
+  }
   // Metadata
   html += `<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:13px;margin-bottom:16px">`;
   html += `<span style="color:var(--text-dim)">ID</span><span style="font-family:var(--font-mono)">${m.id}</span>`;
   html += `<span style="color:var(--text-dim)">Confidence</span><span style="color:${confColor(m.confidence)}">${(m.confidence||0).toFixed(2)}</span>`;
   html += `<span style="color:var(--text-dim)">Project</span><span>${escapeHtml(m.project || 'global')}</span>`;
+  if (srcUrl) {
+    html += `<span style="color:var(--text-dim)">Source</span><span><a href="${encodeURI(srcUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--purple)">${escapeHtml(srcTitle || srcUrl)} ↗</a></span>`;
+  }
   html += `<span style="color:var(--text-dim)">Session</span><span style="font-family:var(--font-mono);font-size:12px">${m.session_id ? `<a href="#" onclick="closeModal();showSessionDetail('${m.session_id}');return false">${m.session_id.slice(0,12)}...</a>` : 'none'}</span>`;
   html += `<span style="color:var(--text-dim)">Created</span><span>${formatDate(m.created_at)}</span>`;
   html += `<span style="color:var(--text-dim)">Updated</span><span>${formatDate(m.updated_at)}</span>`;

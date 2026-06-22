@@ -24,6 +24,18 @@
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{VENV_PYTHON}} {{CAIRN_HOME}}/hooks/stop_hook.py",
+            "timeout": 60,
+            "statusMessage": "Capturing subagent memory..."
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Read|Edit|Write|MultiEdit",

@@ -365,3 +365,50 @@ def test_null_embedding_trigger_skips_when_embedding_also_set(tmp_path):
     assert row[0] == new_embedding
 
     conn.close()
+
+
+# ============================================================
+# explicit per-entry associated_files (review write-back keying)
+# ============================================================
+
+# Verifies: an entry-level associated_files list is stored verbatim and takes
+# precedence over transcript-derived files — the keying path the review
+# write-back relies on so cairn-graph --knowledge surfaces findings by file.
+@pytest.mark.behavioural
+def test_insert_memories_explicit_associated_files(db_path, tmp_path):
+    # A transcript that would otherwise yield a *different* edited file.
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(json.dumps({
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Edit", "input": {"file_path": "/some/other/edited.py"}}
+        ]}
+    }) + "\n")
+    entries = [{
+        "type": "correction", "topic": "explicit-files",
+        "content": "A finding keyed explicitly to a changed file via the associated_files override.",
+        "associated_files": ["/repo/hooks/storage.py", "hooks/storage.py"],
+    }]
+    count = storage.insert_memories(entries, session_id="s1", transcript_path=str(transcript))
+    assert count == 1
+    rows = _query(db_path, "SELECT associated_files FROM memories WHERE topic = 'explicit-files'")
+    assert len(rows) == 1
+    stored = json.loads(rows[0][0])
+    assert stored == ["/repo/hooks/storage.py", "hooks/storage.py"]
+    # The transcript-derived path must NOT override the explicit list.
+    assert "/some/other/edited.py" not in stored
+
+
+# Verifies: non-string / empty members in an explicit associated_files list are
+# filtered out (defensive against malformed write-back input).
+@pytest.mark.edge
+def test_insert_memories_explicit_associated_files_filtered(db_path):
+    entries = [{
+        "type": "fact", "topic": "filtered-files",
+        "content": "A fact whose explicit file list contains junk that must be dropped before storage.",
+        "associated_files": ["good/path.py", "", None, 123, "  "],
+    }]
+    storage.insert_memories(entries, session_id="s1")
+    rows = _query(db_path, "SELECT associated_files FROM memories WHERE topic = 'filtered-files'")
+    stored = json.loads(rows[0][0])
+    assert stored == ["good/path.py"]

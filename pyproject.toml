@@ -70,6 +70,7 @@ cairn-calibration-analyser = "cairn.analyser:main"
 cairn-calibration-selfmod = "cairn.calibration_selfmod:main"
 cairn-calibration-import-claude-md = "cairn.calibration_import_claude_md:main"
 cairn-proxy = "cairn.proxy.server:main"
+cairn-review-writeback = "cairn.review_writeback:main"
 cairn-bench-report = "cairn.bench_report:main"
 
 [tool.setuptools.packages.find]

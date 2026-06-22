@@ -322,7 +322,13 @@ def main() -> None:
     transcript_path: str = hook_input.get("transcript_path", "")
     session_id: str = hook_input.get("session_id", "") or hook_input.get("sessionId", "")
     cwd: str = hook_input.get("cwd", "")
-    is_subagent: bool = bool(hook_input.get("agent_id"))
+    # SubagentStop fires with agent_id + agent_transcript_path (the subagent's own
+    # transcript; transcript_path is the parent session). Detect via either signal.
+    is_subagent: bool = bool(hook_input.get("agent_id")) or hook_input.get("hook_event_name") == "SubagentStop"
+    agent_transcript_path: str = hook_input.get("agent_transcript_path", "")
+    # Transcript that actually holds this response: the subagent's own for SubagentStop,
+    # else the main session transcript. Used for text fallback, storage, and excerpts.
+    own_transcript: str = (agent_transcript_path or transcript_path) if is_subagent else transcript_path
 
     # Register session and track parent chain
     register_session(session_id, transcript_path)
@@ -344,9 +350,9 @@ def main() -> None:
     # reading the last assistant message from the transcript file via the adapter.
     text: str = hook_input.get("last_assistant_message", "")
 
-    if not text and transcript_path:
+    if not text and own_transcript:
         from hooks.transcript_adapter import iter_normalized_entries
-        for entry in iter_normalized_entries(transcript_path):
+        for entry in iter_normalized_entries(own_transcript):
             msg = entry.get("message", {})
             if isinstance(msg, dict) and msg.get("role") == "assistant":
                 content = msg.get("content", "")
@@ -401,9 +407,14 @@ def main() -> None:
         if retrieval_outcome:
             record_metric(session_id, f"retrieval_{retrieval_outcome}", context_need[:100] if context_need else None)
         if entries:
-            count = _enqueue_or_insert(entries, session_id=session_id, transcript_path=transcript_path)
+            count = _enqueue_or_insert(entries, session_id=session_id, transcript_path=own_transcript)
+            # Snapshot the subagent's final message so --context can recover its reasoning.
+            try:
+                _snapshot_excerpts(session_id, own_transcript, text)
+            except Exception as exc:
+                log(f"Subagent excerpt capture failed (non-fatal): {exc}")
             record_metric(session_id, "memories_stored", None, count)
-            log(f"Subagent: stored {count} memories opportunistically")
+            log(f"Subagent: stored {count} memories opportunistically (transcript={own_transcript or '?'})")
         record_metric(session_id, "hook_fired", f"subagent,entries={len(entries) if entries else 0}")
         sys.exit(0)
 
