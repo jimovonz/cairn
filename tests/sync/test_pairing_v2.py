@@ -285,3 +285,34 @@ def test_refresh_outbound_promotes_and_pulls(make_node, fake_embedder):
         assert got[0] == "promoted"
     finally:
         httpd.shutdown()
+
+
+def test_approved_peer_url_follows_beacon(node):
+    """Discovery self-heals a paired peer's pull address on IP change, without
+    disturbing the pinned cert fingerprint; revoked peers are not updated."""
+    from cairn.sync import discovery
+    conn = node.conn()
+    # An approved peer pinned at an old IP.
+    conn.execute(
+        "INSERT INTO sync_peers (peer_node_id, url, bearer_token, peer_public_key, "
+        "peer_cert_fingerprint, status, approved_at) "
+        "VALUES ('PEERFP', 'https://10.0.0.5:8787', '', 'PUB', 'CERTFP', 'approved', CURRENT_TIMESTAMP)")
+    # A revoked peer that must NOT be moved.
+    conn.execute(
+        "INSERT INTO sync_peers (peer_node_id, url, bearer_token, status) "
+        "VALUES ('REVFP', 'https://10.0.0.9:8787', '', 'revoked')")
+    conn.commit()
+
+    # Peer reappears at a new IP via a beacon.
+    b = discovery.build_beacon("PEERFP", "bob#1", "https://10.0.0.77:8787", "PUB", 11, "DIFFERENTCERT")
+    discovery.record_beacon(conn, discovery.parse_beacon(b), self_node_id="ME")
+    row = conn.execute(
+        "SELECT url, peer_cert_fingerprint FROM sync_peers WHERE peer_node_id='PEERFP'").fetchone()
+    assert row[0] == "https://10.0.0.77:8787", "approved peer url did not follow beacon"
+    assert row[1] == "CERTFP", "pinned cert fingerprint must NOT change from a beacon"
+
+    # Revoked peer's url is left alone.
+    rb = discovery.build_beacon("REVFP", "x", "https://10.0.0.200:8787", "P", 11, "C")
+    discovery.record_beacon(conn, discovery.parse_beacon(rb), self_node_id="ME")
+    assert conn.execute("SELECT url FROM sync_peers WHERE peer_node_id='REVFP'").fetchone()[0] \
+        == "https://10.0.0.9:8787", "revoked peer must not be moved"
