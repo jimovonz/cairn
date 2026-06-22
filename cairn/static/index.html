@@ -203,6 +203,23 @@ a:hover { text-decoration: underline; }
 .mem-table .date-cell { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
 .mem-table .conf-cell { font-family: var(--font-mono); font-size: 12px; }
 
+/* Sync tab tables */
+.sync-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+.sync-table th {
+  text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--border);
+  color: var(--text-dim); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap;
+}
+.sync-table td {
+  padding: 9px 12px; border-bottom: 1px solid var(--border);
+  font-size: 13px; vertical-align: middle;
+}
+.sync-table tr:last-child td { border-bottom: none; }
+.sync-table td:last-child { text-align: right; white-space: nowrap; }
+.sync-table .mono { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); }
+.sync-table .url { color: var(--text-dim); font-size: 12px; }
+.sync-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #3fb950; margin-right: 6px; vertical-align: middle; }
+
 /* Search bar */
 .search-bar {
   display: flex;
@@ -2320,7 +2337,7 @@ async function loadSyncRequests() {
   const outbound = reqs.filter(r => r.direction === 'outbound');
   const inc = document.getElementById('sync-incoming');
   if (!inbound.length) inc.innerHTML = '<p style="color:var(--text-dim);font-size:13px">No incoming requests.</p>';
-  else inc.innerHTML = '<table><thead><tr><th>User</th><th>Fingerprint</th><th>From</th><th></th></tr></thead><tbody>' +
+  else inc.innerHTML = '<table class="sync-table"><thead><tr><th>User</th><th>Fingerprint</th><th>From</th><th></th></tr></thead><tbody>' +
     inbound.map(r => `<tr>
       <td>${escapeHtml(r.user_id || '?')}</td>
       <td style="font-family:var(--font-mono);font-size:11px" title="${escapeHtml(r.peer_node_id)}">${escapeHtml(r.peer_node_id.slice(0, 20))}…</td>
@@ -2331,7 +2348,7 @@ async function loadSyncRequests() {
       </td></tr>`).join('') + '</tbody></table>';
   const out = document.getElementById('sync-outbound');
   if (!outbound.length) out.innerHTML = '<p style="color:var(--text-dim);font-size:13px">You haven’t requested access to anyone yet.</p>';
-  else out.innerHTML = '<table><thead><tr><th>To</th><th>URL</th><th>Status</th></tr></thead><tbody>' +
+  else out.innerHTML = '<table class="sync-table"><thead><tr><th>To</th><th>URL</th><th>Status</th></tr></thead><tbody>' +
     outbound.map(r => {
       const approved = r.status === 'approved';
       return `<tr>
@@ -2349,7 +2366,7 @@ async function loadSyncOnline() {
   document.getElementById('sync-online-count').textContent = d.length ? `(${d.length})` : '';
   if (!d.length) { el.innerHTML = '<p style="color:var(--text-dim);font-size:13px">No one online. Other nodes appear here automatically when cairn sync is running on your network.</p>'; return; }
   const label = { connected: 'connected ✓', requested: 'requested…', incoming: 'wants to connect', revoked: 'revoked', available: '' };
-  el.innerHTML = '<table><thead><tr><th>User</th><th>URL</th><th>State</th><th></th></tr></thead><tbody>' +
+  el.innerHTML = '<table class="sync-table"><thead><tr><th>User</th><th>URL</th><th>State</th><th></th></tr></thead><tbody>' +
     d.map(p => {
       const st = p.state || 'available';
       const action = st === 'available'
@@ -2369,7 +2386,7 @@ async function loadSyncPeers() {
   const data = await api('/api/sync/peers');
   const peers = data.peers || [];
   if (!peers.length) { el.innerHTML = '<p style="color:var(--text-dim);font-size:13px">No paired peers yet.</p>'; return; }
-  el.innerHTML = '<table><thead><tr><th>Label</th><th>Status</th><th>URL</th><th>Last sync</th><th></th></tr></thead><tbody>' +
+  el.innerHTML = '<table class="sync-table"><thead><tr><th>Label</th><th>Status</th><th>URL</th><th>Last sync</th><th></th></tr></thead><tbody>' +
     peers.map(p => `<tr>
       <td>${escapeHtml(p.label || p.peer_node_id.slice(0, 12))}</td>
       <td><span style="color:${(p.status === 'revoked') ? 'var(--text-dim)' : 'var(--accent)'}">${escapeHtml(p.status || 'approved')}</span></td>
