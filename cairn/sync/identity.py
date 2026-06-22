@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import socket
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -56,9 +55,13 @@ def ensure_node_id() -> str:
 
 
 def get_user_id() -> str:
-    """Return the user identity, defaulting to USER@hostname.
+    """Return the user identity: the OS username plus a short, stable per-node
+    suffix for disambiguation, e.g. 'alice#5f3a9c'. Two people sharing a username
+    on the LAN stay distinguishable, with zero setup. The suffix is the first 6
+    hex of this node's UUID (node_id) — unique per install, no extra state.
 
-    Override via ~/.cairn/user_id (e.g. set to LDAP/email handle for team rollout).
+    The cryptographic identity is still the public-key fingerprint; this is only a
+    human-readable label. Override via ~/.cairn/user_id (e.g. an LDAP/email handle).
     """
     p = _state_dir() / "user_id"
     if p.exists():
@@ -66,8 +69,8 @@ def get_user_id() -> str:
         if uid:
             return uid
     user = os.environ.get("USER") or os.environ.get("USERNAME") or "unknown"
-    host = socket.gethostname()
-    return f"{user}@{host}"
+    short = ensure_node_id().replace("-", "")[:6]
+    return f"{user}#{short}"
 
 
 # ---- Embedding model version ----
