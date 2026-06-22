@@ -580,6 +580,24 @@ class TestFileContextBlock:
         assert "foo" in block
         assert "callers:1" in block  # do_thing CALLS foo
 
+    def test_file_context_block_resolves_from_file_when_cwd_is_parent(self, graph_repo, monkeypatch):
+        # James's dominant shape: cwd is a PARENT dir with no graph (~/Projects),
+        # editing a file in a subrepo. With no repo_root, resolution must walk up
+        # from the FILE's location (not cwd) and find the subrepo's graph.
+        monkeypatch.chdir(graph_repo.parent)  # parent has no .code-review-graph
+        block = graph.file_context_block(str(graph_repo / "src" / "main.py"))
+        assert block is not None
+        assert "foo" in block
+        assert "src/main.py:10-25" in block
+
+    def test_file_context_block_resolves_relative_path_against_cwd(self, graph_repo, monkeypatch):
+        # A relative path with no repo_root resolves against cwd, then walks up
+        # from the file's directory to find the graph.
+        monkeypatch.chdir(graph_repo)
+        block = graph.file_context_block("src/main.py")
+        assert block is not None
+        assert "foo" in block
+
     def test_includes_file_line_range(self, graph_repo):
         # Each surfaced symbol must carry its file:line RANGE (start-end) so the
         # agent can Read exactly its span without over-selecting or a follow-up

@@ -68,7 +68,7 @@ Input is JSON on stdin (or `--file`): `{repo, project?, commit?, findings:[{file
 - `cairn-graph --summary` / `--orientation` — repo-level modules/flows/hubs
 - `cairn-graph --file-context FILE` — a file's symbols, signatures, fan-in/out, risk tail
 
-This data is also surfaced automatically into sessions: a repo orientation block at session start (Tier 1, prompt hook) and per-file structural context on Read/Edit (Tier 2, pretool hook, deduped once-per-file). The Tier 2 hook also recovers file paths from `Bash` commands (`cat`/`sed`/`head` + `cch-edit.py`/`cch-write.py`), so it still fires in environments where Read/Edit are routed through Bash helpers. Both are gated by `GRAPH_ORIENTATION_ENABLED` / `GRAPH_FILE_CONTEXT_ENABLED` and fail open if no graph is built.
+This data is also surfaced automatically into sessions: a repo orientation block at session start (Tier 1, prompt hook) and per-file structural context on Read/Edit (Tier 2, pretool hook, deduped once-per-file). Tier 2 resolves the graph from the **accessed file's own location** (not cwd), so it still surfaces when cwd is a parent dir (e.g. `~/Projects`) and the file lives in a subrepo. The Tier 2 hook also recovers file paths from `Bash` commands (`cat`/`sed`/`head` + `cch-edit.py`/`cch-write.py`), so it still fires in environments where Read/Edit are routed through Bash helpers. Both are gated by `GRAPH_ORIENTATION_ENABLED` / `GRAPH_FILE_CONTEXT_ENABLED` and fail open if no graph is built.
 
 ### Fleet — keeping every repo graph-ready
 
