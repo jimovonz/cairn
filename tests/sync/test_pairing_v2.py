@@ -316,3 +316,67 @@ def test_approved_peer_url_follows_beacon(node):
     discovery.record_beacon(conn, discovery.parse_beacon(rb), self_node_id="ME")
     assert conn.execute("SELECT url FROM sync_peers WHERE peer_node_id='REVFP'").fetchone()[0] \
         == "https://10.0.0.9:8787", "revoked peer must not be moved"
+
+
+def test_fetch_raw_session_from_authoring_peer(make_node, fake_embedder):
+    """Excerpts aren't synced; fetch_session retrieves the raw session on demand
+    from the authoring peer — refused when that peer hasn't opted in, delivered
+    and cached when it has."""
+    import cairn.config as cfg
+    a = make_node("server")   # author
+    b = make_node("client")   # puller
+    mid = a.insert_memory(type_="fact", topic="t", content="c", origin_id="sess-1")
+    ac = a.conn()
+    ac.execute("INSERT INTO memory_source_excerpt (memory_id, session_id, transcript_path, excerpt) "
+               "VALUES (?, 'sess-A', '', ?)", (mid, "RAW TRANSCRIPT: alice and bob discuss X"))
+    ac.commit()
+
+    port = _free_port()
+    from cairn.sync.server import serve_in_thread
+    from cairn.sync import client as client_mod, identity
+    a.activate()
+    httpd, _ = serve_in_thread(host="127.0.0.1", port=port, db_path=a.db_path)
+    try:
+        _wait_for_port(port)
+        url = f"https://127.0.0.1:{port}"
+        a.activate(); a_fp = identity.get_node_fingerprint()
+        b.activate(); b_fp = identity.get_node_fingerprint(); b_pub = identity.get_public_key_b64()
+        # A approves B (pins B's pubkey); B registers A as a reachable peer.
+        ac2 = a.conn()
+        ac2.execute(
+            "INSERT INTO sync_peers (peer_node_id,url,bearer_token,peer_public_key,status,approved_at) "
+            "VALUES (?, '', '', ?, 'approved', CURRENT_TIMESTAMP)", (b_fp, b_pub))
+        ac2.commit()
+        bc2 = b.conn()
+        bc2.execute(
+            "INSERT INTO sync_peers (peer_node_id,url,bearer_token,status) VALUES (?, ?, '', 'approved')",
+            (a_fp, url))
+        bc2.commit()
+        # B pulls A's memory (excerpt NOT included) + records sync_state mapping.
+        b.activate()
+        res = client_mod.pull_from_peer(b.conn(), a_fp, embedder=fake_embedder)
+        assert res.ok, res.error
+        assert b.conn().execute(
+            "SELECT 1 FROM memory_source_excerpt me JOIN memories m ON me.memory_id=m.id "
+            "WHERE m.origin_id='sess-1'").fetchone() is None, "excerpt must not bulk-sync"
+
+        # A has NOT opted into session sharing -> refused.
+        cfg.CAIRN_SYNC_SHARE_SESSIONS = False
+        b.activate()
+        r = client_mod.fetch_session(b.conn(), "sess-1")
+        assert not r["ok"] and "disabled" in (r.get("error") or ""), r
+
+        # A opts in -> B fetches the raw session on demand and it's cached.
+        cfg.CAIRN_SYNC_SHARE_SESSIONS = True
+        b.activate()
+        r = client_mod.fetch_session(b.conn(), "sess-1")
+        assert r["ok"] and "RAW TRANSCRIPT" in (r.get("excerpt") or ""), r
+        cached = b.conn().execute(
+            "SELECT excerpt FROM memory_source_excerpt me JOIN memories m ON me.memory_id=m.id "
+            "WHERE m.origin_id='sess-1'").fetchone()
+        assert cached and "RAW TRANSCRIPT" in cached[0]
+        # second call served from local cache
+        assert client_mod.fetch_session(b.conn(), "sess-1").get("cached") is True
+    finally:
+        httpd.shutdown()
+        cfg.CAIRN_SYNC_SHARE_SESSIONS = False

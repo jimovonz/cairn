@@ -182,6 +182,39 @@ def _handle_pair_status(headers, body: bytes, conn) -> tuple[int, dict]:
     return 200, {"status": status or "pending"}
 
 
+def _handle_session(headers, body: bytes, conn) -> tuple[int, dict]:
+    """Serve the raw session excerpt behind one of OUR memories to an approved
+    peer, on demand. Gated by CAIRN_SYNC_SHARE_SESSIONS (transcripts are sensitive
+    and never bulk-synced). Own-data-only + never for private memories."""
+    ok, _peer = _authorized("POST", "/session", headers, body, conn)
+    if not ok:
+        return 401, {"error": "unauthorized"}
+    from cairn import config
+    if not config.CAIRN_SYNC_SHARE_SESSIONS:
+        return 403, {"error": "session sharing disabled on this node"}
+    try:
+        req = json.loads(body.decode("utf-8")) if body else {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        req = {}
+    origin = (req.get("origin_id") or "").strip()
+    if not origin:
+        return 400, {"error": "origin_id required"}
+    self_node = node_id_for_conn(conn)
+    row = conn.execute(
+        "SELECT mse.excerpt, mse.context_before, mse.context_after, mse.session_id, mse.captured_at "
+        "FROM memories m JOIN memory_source_excerpt mse ON mse.memory_id = m.id "
+        "WHERE m.origin_id = ? AND m.created_by_node = ? "
+        "AND (m.visibility != 'private' OR m.visibility IS NULL)",
+        (origin, self_node),
+    ).fetchone()
+    if not row:
+        return 404, {"error": "no shareable session for that memory"}
+    return 200, {
+        "origin_id": origin, "excerpt": row[0], "context_before": row[1],
+        "context_after": row[2], "session_id": row[3], "captured_at": row[4],
+    }
+
+
 class SyncHandler(BaseHTTPRequestHandler):
     db_path: str = ""  # set by build_server
 
@@ -211,7 +244,7 @@ class SyncHandler(BaseHTTPRequestHandler):
         return True
 
     def do_POST(self) -> None:  # noqa: N802 — stdlib API
-        if self.path not in ("/sync", "/pair", "/pair/status"):
+        if self.path not in ("/sync", "/pair", "/pair/status", "/session"):
             self._send_json(404, {"error": "not found"})
             return
         if not self._schema_ok():
@@ -234,6 +267,10 @@ class SyncHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/pair/status":
                 status, obj = _handle_pair_status(self.headers, body_bytes, conn)
+                self._send_json(status, obj)
+                return
+            if self.path == "/session":
+                status, obj = _handle_session(self.headers, body_bytes, conn)
                 self._send_json(status, obj)
                 return
 

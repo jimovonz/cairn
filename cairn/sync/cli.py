@@ -162,6 +162,22 @@ def cmd_revoke(args) -> int:
     return 0 if res.get("ok") else 1
 
 
+def cmd_session(args) -> int:
+    from cairn.sync import client
+    res = client.fetch_session(_conn(), args.origin_id)
+    if not res.get("ok"):
+        print(json.dumps(res, indent=2))
+        return 1
+    src = "local cache" if res.get("cached") else "peer"
+    print(f"--- raw session for {args.origin_id} (from {src}) ---")
+    if res.get("context_before"):
+        print(res["context_before"])
+    print(res.get("excerpt", ""))
+    if res.get("context_after"):
+        print(res["context_after"])
+    return 0
+
+
 def cmd_pull(args) -> int:
     from cairn.sync import client
     try:
@@ -232,6 +248,10 @@ def main(argv=None) -> int:
     sp = sub.add_parser("pull", help="pull changesets from peers")
     sp.add_argument("--peer", default=None)
     sp.set_defaults(fn=cmd_pull)
+
+    sp = sub.add_parser("session", help="fetch the raw session behind a synced memory")
+    sp.add_argument("origin_id")
+    sp.set_defaults(fn=cmd_session)
 
     args = p.parse_args(argv)
     return args.fn(args)
