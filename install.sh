@@ -262,17 +262,19 @@ echo "Restarting embedding daemon..."
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" stop >/dev/null 2>&1 || true
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" start
 
-# --- API proxy (opt-in: CAIRN_PROXY_ENABLED=1) ---
+# --- API proxy (default ON; opt out: CAIRN_PROXY_ENABLED=0) ---
 # Routes Claude Code <-> Anthropic through a local proxy that hides all Cairn
-# artifacts and injects context under the hood. OFF by default. Activation is
+# artifacts and injects context under the hood. ON by default. Activation is
 # scoped to a `c` shell launcher (NOT global): `c` ensures the daemon is up,
 # health-gates ANTHROPIC_BASE_URL onto it, and falls back to a direct connection
 # if the proxy is unreachable; plain `claude` always bypasses the proxy. So a
 # down daemon never blocks traffic. Fully reversed by uninstall.sh.
 PROXY_PORT="${CAIRN_PROXY_PORT:-8789}"
 SHELL_RC="${CAIRN_SHELL_RC:-$HOME/.bashrc}"
+# Default ON: proxy is enabled unless explicitly opted out with CAIRN_PROXY_ENABLED=0.
+CAIRN_PROXY_ENABLED="${CAIRN_PROXY_ENABLED:-1}"
 if [ "${CAIRN_PROXY_ENABLED:-}" = "1" ]; then
-    echo "Enabling cairn API proxy (opt-in) on 127.0.0.1:$PROXY_PORT..."
+    echo "Enabling cairn API proxy on 127.0.0.1:$PROXY_PORT (opt out with CAIRN_PROXY_ENABLED=0)..."
     "$VENV_PATH/bin/pip" install --progress-bar off -e "$CAIRN_HOME[proxy]" >/dev/null 2>&1 \
         || { echo "ERROR: aiohttp (proxy extra) install failed."; exit 1; }
     # Install/refresh the `c` launcher in the shell rc (marked block, idempotent).
