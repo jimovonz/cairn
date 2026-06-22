@@ -22,7 +22,7 @@ except ImportError:
     import sqlite3  # type: ignore
 
 from cairn.sync import SCHEMA_VERSION
-from cairn.sync.identity import bump_lamport, get_embedding_model_version
+from cairn.sync.identity import bump_lamport, get_embedding_model_version, node_id_for_conn
 
 
 # ---- Synced columns on memories ----
@@ -89,10 +89,18 @@ def extract_changeset(
         "tombstones": [],
     }
 
+    # Own-data-only: a node shares ONLY rows it authored (created_by_node == self).
+    # Peers get a person's memories by pairing with them directly — no transitive
+    # relay of other nodes' data. The per-source lamport vector clock still applies
+    # (now effectively just this node's own watermark).
+    self_node = node_id_for_conn(conn)
+
     # --- memories ---
     cols_sql = ", ".join(_disk_col(c) for c in SYNCED_MEMORY_COLS)
     rows = conn.execute(
-        f"SELECT {cols_sql} FROM memories WHERE visibility != 'private' OR visibility IS NULL"
+        f"SELECT {cols_sql} FROM memories "
+        f"WHERE (visibility != 'private' OR visibility IS NULL) AND created_by_node = ?",
+        (self_node,),
     ).fetchall()
     count = 0
     for row in rows:
@@ -113,7 +121,8 @@ def extract_changeset(
     # --- confidence_log ---
     log_rows = conn.execute(
         "SELECT log_uuid, memory_origin, direction, reason, node_id, user_id, "
-        "session_id, lamport, created_at FROM confidence_log"
+        "session_id, lamport, created_at FROM confidence_log WHERE node_id = ?",
+        (self_node,),
     ).fetchall()
     for r in log_rows:
         log_uuid, mem_origin, direction, reason, node_id, user_id, sid, lam, created_at = r
@@ -130,7 +139,9 @@ def extract_changeset(
     # --- memory_history ---
     hist_rows = conn.execute(
         "SELECT history_uuid, memory_origin, content, session_id, changed_at, "
-        "changed_by_node, lamport FROM memory_history WHERE history_uuid IS NOT NULL"
+        "changed_by_node, lamport FROM memory_history "
+        "WHERE history_uuid IS NOT NULL AND changed_by_node = ?",
+        (self_node,),
     ).fetchall()
     for r in hist_rows:
         h_uuid, mem_origin, content, sid, changed_at, by_node, lam = r
@@ -148,7 +159,8 @@ def extract_changeset(
     ct_rows = conn.execute(
         "SELECT ct.id, m.origin_id, ct.trigger, ct.created_at "
         "FROM correction_triggers ct JOIN memories m ON ct.memory_id = m.id "
-        "WHERE m.visibility != 'private' OR m.visibility IS NULL"
+        "WHERE (m.visibility != 'private' OR m.visibility IS NULL) AND m.created_by_node = ?",
+        (self_node,),
     ).fetchall()
     for ct_id, mem_origin, trig, created_at in ct_rows:
         # No native UUID — synthesise a deterministic one
@@ -165,7 +177,9 @@ def extract_changeset(
         "JOIN memories ma ON pa.memory_id_a = ma.id "
         "JOIN memories mb ON pa.memory_id_b = mb.id "
         "WHERE (ma.visibility != 'private' OR ma.visibility IS NULL) "
-        "AND (mb.visibility != 'private' OR mb.visibility IS NULL)"
+        "AND (mb.visibility != 'private' OR mb.visibility IS NULL) "
+        "AND ma.created_by_node = ? AND mb.created_by_node = ?",
+        (self_node, self_node),
     ).fetchall()
     for oa, ob, mode, verdict, reason, at in pa_rows:
         payload["pair_assessments"].append({
@@ -176,7 +190,8 @@ def extract_changeset(
     # --- tombstones (deletions only) ---
     tomb_rows = conn.execute(
         "SELECT origin_id, deleted_at, updated_by_node, lamport "
-        "FROM memories WHERE deleted_at IS NOT NULL"
+        "FROM memories WHERE deleted_at IS NOT NULL AND updated_by_node = ?",
+        (self_node,),
     ).fetchall()
     for origin, deleted_at, by_node, lam in tomb_rows:
         threshold = since_lamport_by_node.get(by_node, 0)

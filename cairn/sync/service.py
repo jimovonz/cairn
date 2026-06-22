@@ -95,6 +95,25 @@ def start_sync_services():
                 pass
     threading.Thread(target=_listen, daemon=True).start()
 
+    # 4. Periodic pull — actually sync memories from every approved peer on an
+    # interval (this is what makes "periodically sync with approved peers" real;
+    # discovery/approval above only establish trust). Each peer serves only its
+    # own data (extract_changeset is own-data-only), so a full picture requires
+    # pairing with each source directly.
+    def _pull():
+        conn = sqlite3.connect(db)
+        try:
+            from cairn import embeddings as _emb
+        except Exception:
+            _emb = None
+        while True:
+            time.sleep(config.CAIRN_SYNC_PULL_INTERVAL)
+            try:
+                sync_client.pull_all(conn, embedder=_emb)
+            except Exception:
+                pass
+    threading.Thread(target=_pull, daemon=True).start()
+
     print(f"cairn-sync services up: server {my_url}, discovery udp/{config.CAIRN_SYNC_DISCOVERY_PORT}",
           flush=True)
     return httpd
