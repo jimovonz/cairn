@@ -150,3 +150,95 @@ def record_embedding_model(conn) -> None:
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
         (v,),
     )
+
+
+# ---- Ed25519 keypair identity (v2 sync: pairing + signature auth) ----
+# The public key is the auth principal. node_id (v1, UUID in node_state) stays the
+# data-provenance id on memories.created_by_node; the keypair fingerprint below is
+# the *auth* identity used for pairing and /sync signatures. Two namespaces, one
+# per concern — see docs/multi-node-sync.md v2.
+
+import base64 as _b64
+import hashlib as _hashlib
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+from cryptography.hazmat.primitives import serialization as _ser
+
+
+def _key_path() -> Path:
+    return _state_dir() / "node_key"
+
+
+def ensure_keypair() -> Ed25519PrivateKey:
+    """Return this node's Ed25519 private key, generating ~/.cairn/node_key (raw
+    32-byte seed, chmod 600) + node_key.pub (base64) on first call. Idempotent;
+    survives DB rebuild like node_id."""
+    p = _key_path()
+    if p.exists():
+        raw = p.read_bytes()
+        if len(raw) >= 32:
+            return Ed25519PrivateKey.from_private_bytes(raw[:32])
+    key = Ed25519PrivateKey.generate()
+    raw = key.private_bytes(
+        encoding=_ser.Encoding.Raw,
+        format=_ser.PrivateFormat.Raw,
+        encryption_algorithm=_ser.NoEncryption(),
+    )
+    p.write_bytes(raw)
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+    pub_raw = key.public_key().public_bytes(
+        encoding=_ser.Encoding.Raw, format=_ser.PublicFormat.Raw)
+    (p.parent / "node_key.pub").write_text(_b64.b64encode(pub_raw).decode() + "\n")
+    return key
+
+
+def get_public_key_b64() -> str:
+    """Base64 of our raw 32-byte Ed25519 public key."""
+    pub_raw = ensure_keypair().public_key().public_bytes(
+        encoding=_ser.Encoding.Raw, format=_ser.PublicFormat.Raw)
+    return _b64.b64encode(pub_raw).decode()
+
+
+def fingerprint(public_key_b64: str) -> str:
+    """Self-certifying device id: base32(sha256(raw_pubkey))[:52], no padding.
+    A node fingerprint is a commitment to its public key, so it cannot be forged
+    without the private key."""
+    raw = _b64.b64decode(public_key_b64)
+    digest = _hashlib.sha256(raw).digest()
+    return _b64.b32encode(digest).decode().rstrip("=")[:52]
+
+
+def get_node_fingerprint() -> str:
+    """This node's v2 sync auth identity = fingerprint of its public key."""
+    return fingerprint(get_public_key_b64())
+
+
+# ---- Request signing / verification (Ed25519 over a canonical message) ----
+
+def canonical_message(method: str, path: str, body: bytes, ts: str, nonce: str) -> bytes:
+    body_hash = _hashlib.sha256(body or b"").hexdigest()
+    return "\n".join([method.upper(), path, body_hash, str(ts), str(nonce)]).encode()
+
+
+def sign_request(method: str, path: str, body: bytes, ts: str, nonce: str) -> str:
+    """Sign a request with our private key; returns base64 signature."""
+    sig = ensure_keypair().sign(canonical_message(method, path, body, ts, nonce))
+    return _b64.b64encode(sig).decode()
+
+
+def verify_request(public_key_b64: str, method: str, path: str, body: bytes,
+                   ts: str, nonce: str, signature_b64: str) -> bool:
+    """Verify a request signature against a peer's public key. Never raises."""
+    try:
+        pub = Ed25519PublicKey.from_public_bytes(_b64.b64decode(public_key_b64))
+        pub.verify(_b64.b64decode(signature_b64),
+                   canonical_message(method, path, body, ts, nonce))
+        return True
+    except Exception:
+        return False

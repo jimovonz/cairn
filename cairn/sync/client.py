@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Optional
@@ -19,7 +21,14 @@ except ImportError:
 
 from cairn.sync import SCHEMA_VERSION
 from cairn.sync.changeset import apply_changeset
-from cairn.sync.identity import ensure_node_id, node_id_for_conn
+from cairn.sync.identity import (
+    ensure_node_id,
+    node_id_for_conn,
+    get_node_fingerprint,
+    get_public_key_b64,
+    get_user_id,
+    sign_request,
+)
 
 log = logging.getLogger("cairn.sync.client")
 
@@ -105,16 +114,23 @@ def pull_from_peer(
         "max_rows": max_rows,
     }).encode("utf-8")
 
+    ts = str(time.time())
+    nonce = secrets.token_hex(16)
+    headers = {
+        "X-Cairn-Node": get_node_fingerprint(),
+        "X-Cairn-Timestamp": ts,
+        "X-Cairn-Nonce": nonce,
+        "X-Cairn-Signature": sign_request("POST", "/sync", body, ts, nonce),
+        "X-Cairn-Schema-Version": str(SCHEMA_VERSION),
+        "Content-Type": "application/json",
+    }
+    if token:  # v1 bearer fallback for peers paired before v2
+        headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(
         url.rstrip("/") + "/sync",
         data=body,
         method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "X-Cairn-Node": node_id_for_conn(conn),
-            "X-Cairn-Schema-Version": str(SCHEMA_VERSION),
-            "Content-Type": "application/json",
-        },
+        headers=headers,
     )
 
     # Build an opener that explicitly disables system proxies — cairn peer URLs
@@ -173,9 +189,57 @@ def _record_attempt(conn, peer_node_id: str, *, ok: bool, error: Optional[str]) 
 
 
 def pull_all(conn, *, embedder=None) -> list[PullResult]:
-    """Pull from every registered peer."""
-    peers = conn.execute("SELECT peer_node_id FROM sync_peers").fetchall()
+    """Pull from every registered, approved peer."""
+    peers = conn.execute(
+        "SELECT peer_node_id FROM sync_peers WHERE status IS NULL OR status = 'approved'"
+    ).fetchall()
     return [pull_from_peer(conn, p[0], embedder=embedder) for p in peers]
+
+
+def send_pairing_request(url: str, *, user_id: Optional[str] = None,
+                         my_url: Optional[str] = None, timeout: float = 15.0) -> dict:
+    """Send a signed, self-certifying pairing request to a peer's /pair endpoint.
+
+    The peer queues it for manual approval (dashboard); we get no access until
+    they approve us AND we approve them (mutual). Returns the peer's response
+    dict: {ok, status, body|error}."""
+    pub = get_public_key_b64()
+    payload = {
+        "node_id": get_node_fingerprint(),
+        "public_key": pub,
+        "user_id": user_id or get_user_id(),
+        "url": my_url or "",
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ts = str(time.time())
+    nonce = secrets.token_hex(16)
+    sig = sign_request("POST", "/pair", raw, ts, nonce)
+    req = urllib.request.Request(
+        url.rstrip("/") + "/pair",
+        data=raw,
+        method="POST",
+        headers={
+            "X-Cairn-Node": get_node_fingerprint(),
+            "X-Cairn-Timestamp": ts,
+            "X-Cairn-Nonce": nonce,
+            "X-Cairn-Signature": sig,
+            "X-Cairn-Schema-Version": str(SCHEMA_VERSION),
+            "Content-Type": "application/json",
+        },
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return {"ok": True, "status": resp.status,
+                    "body": json.loads(resp.read().decode("utf-8"))}
+    except urllib.error.HTTPError as e:
+        try:
+            return {"ok": False, "status": e.code,
+                    "body": json.loads(e.read().decode("utf-8"))}
+        except Exception:
+            return {"ok": False, "status": e.code, "body": None}
+    except (urllib.error.URLError, TimeoutError) as e:
+        return {"ok": False, "status": None, "error": str(e)}
 
 
 # ---- Peer registry CLI helpers ----

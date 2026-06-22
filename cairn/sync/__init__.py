@@ -11,4 +11,4 @@ See docs/multi-node-sync.md for the design. Public surface:
     from cairn.sync.server import build_app
 """
 
-SCHEMA_VERSION = 9  # bumped 4→9 during consolidation merge — HEAD owned v4 for memory_relations
+SCHEMA_VERSION = 10  # v10 = pubkey pairing + signature auth (v2); 9 was bearer-token sync
