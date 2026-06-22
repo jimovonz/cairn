@@ -125,9 +125,16 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Excerpt snapshots** — stop hook auto-captures the assistant message as source context; `--context <id>` reads the excerpt first for instant recovery without transcript search
 - **Subagent mode** — automatic detection via `agent_id` in hook input; keeps bootstrap + L1 context injection, skips enforcement/L1.5/L2; stop hook opportunistically stores volunteered memories without blocking
 - **Embedding instrumentation** — per-call timing for daemon, local model, vector search, brute-force search, and fan-out expansion; surfaced in dashboard metrics panel
-- **Repo ingestion** — mechanistic extraction + Haiku distillation turns any git repo into portable knowledge entries; 19 extractors cover docs, deps, configs, schemas, HTTP routes, CLI args, exports, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI, plus tree-sitter AST parsing (8 languages) and dependency graph analysis
+- **Repo ingestion** — mechanistic extraction + Haiku distillation turns any git repo into portable knowledge entries; 24 extractors cover docs, deps, configs, schemas, HTTP routes, CLI args, exports, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI, plus tree-sitter AST parsing (8 languages) and dependency graph analysis
 - **Incremental re-ingestion** — section-level fingerprinting detects what changed since last ingestion; only changed sections are sent to Haiku, unchanged memories preserved; `--full` forces complete re-ingestion; extractor version tracking triggers re-processing when extractor logic changes
 - **Env var overrides** — any config value tunable via `CAIRN_<NAME>=value` without editing source
+- **API proxy (artifact-free, default on)** — an opt-out bidirectional proxy (`cairn/proxy/`) that injects context and strips every Cairn artifact (`<memory>`/`[cm]` blocks, `<cairn_context>`, system reminders) from the request/response stream, so the model receives memory but the prompt stays byte-exact for Anthropic prompt caching; runs on `127.0.0.1:8789`, fronted by a `c` launcher and a `*/5` keep-alive cron. Opt out with `CAIRN_PROXY_ENABLED=0`
+- **Code-graph navigation (`cairn-graph`)** — zero-cost, no-LLM query layer over a `code-review-graph` symbol graph: locate symbols, callers/callees, blast radius, tests, and context packs. Surfaced automatically into sessions as a session-start orientation block (Tier 1) and per-file structural context on Read/Edit (Tier 2)
+- **Graph fleet** — an hourly cron + first-contact prompt hook keep every git repo under the configured roots graph-ready, so structural context is available before first contact, independent of whether Cairn has been active there
+- **Review write-back (`cairn-review-writeback`)** — persists durable review rationale (the *why* that survives the fix) keyed to the target repo and changed file/symbol, surfaced later via `cairn-graph --knowledge`
+- **Subagent memory capture** — a `SubagentStop` hook routes a subagent's final `[cm]` block (invisible to the parent `Stop` hook) into storage, chained to the parent session, enforcement skipped
+- **Dev-container support** — the daemon exposes a TCP listener (port 47390) with `cairn_recall`/`cairn_remember` opcodes plus a container injector and extension auto-installer, so containerised sessions reach the host cairn
+- **Calibration system (Phases 1–7)** — a complementary track that captures *how to interact with this user* (level, style, preferences); a per-session analyser, agent-invoked CLI, self-modification passes, and a dashboard tab. See the Calibration section below
 
 ## Quick start
 
@@ -146,7 +153,9 @@ The installer:
 3. Deploys global hooks, instructions, and the `/cairn` slash command
 4. Downloads 3 models (~250MB total, one-time): embedding (`all-MiniLM-L6-v2`), cross-encoder (`ms-marco-MiniLM-L-6-v2`), NLI (`nli-MiniLM2-L6-H768`)
 5. Starts the embedding daemon
-6. Installs daily cron jobs for memory consolidation (3:00 AM) and contradiction detection (3:30 AM)
+6. Enables the artifact-free API proxy on `127.0.0.1:8789` (default on; opt out with `CAIRN_PROXY_ENABLED=0`) and installs the `c` launcher in your shell rc
+7. Bootstraps the code-graph fleet in the background (builds a symbol graph for every repo under the configured roots)
+8. Installs cron jobs: memory consolidation (3:00 AM), contradiction detection (3:30 AM), calibration analyser (00:00) + self-modification (00:30), graph-fleet sweep (hourly), and a `*/5` proxy keep-alive
 
 ## Usage
 
@@ -260,7 +269,7 @@ All thresholds configurable in `cairn/config.py`.
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical reference (600+ lines), including:
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical reference (1400+ lines), including:
 
 - Database schema (memories, sessions, history, metrics)
 - Composite scoring formula
@@ -287,25 +296,43 @@ cairn/
 │   ├── query.py            # CLI query tool (20+ commands)
 │   ├── dashboard.py        # Web dashboard (localhost:8420)
 │   ├── embeddings.py       # Embedding with daemon support + composite scoring
-│   ├── daemon.py           # Background server (embeddings, cross-encoder, NLI)
+│   ├── daemon.py           # Background server (embeddings, cross-encoder, NLI, TCP listener)
 │   ├── consolidate.py      # Memory consolidation + contradiction detection pipeline
 │   ├── contradiction_scan.py # Legacy contradiction scanner
-│   ├── benchmark_extract.py # Retrieval benchmark dataset extraction
+│   ├── ingest.py           # Repo ingestion (24 extractors + Haiku distillation)
+│   ├── graph.py            # cairn-graph CLI over the code-review-graph symbol graph
+│   ├── graph_fleet.py      # Keeps every repo's code graph fresh (sweep + status)
+│   ├── repo_discovery.py   # Graph orientation/build on session contact
+│   ├── review_writeback.py # cairn-review-writeback — durable review rationale
+│   ├── container_injector.py # Dev-container context injection
+│   ├── analyser.py         # Calibration analyser (per-session LLM pass)
+│   ├── calibration.py      # Calibration CLI (agent-invoked)
+│   ├── calibration_inject.py # UserPromptSubmit calibration injector
+│   ├── calibration_selfmod.py # Calibration self-modification passes
+│   ├── session_extract.py  # Clean a session JSONL to signal-only text
+│   ├── proxy/              # Artifact-free API proxy (default on, port 8789)
+│   │   ├── server.py       #   daemonized proxy + start/stop/restart
+│   │   ├── request_inject.py #   inject context into outbound requests
+│   │   ├── response_filter.py #   strip Cairn artifacts from responses
+│   │   ├── cm_filter.py    #   strip [cm]/<memory> blocks
+│   │   └── sidecar.py      #   capture stripped artifacts for the hooks
+│   ├── sync/              # Multi-node sync (experimental, not installed by default)
 │   └── static/
 │       └── index.html      # Dashboard single-page UI
-├── logs/                   # Cron job output (consolidation, contradiction)
+├── logs/                   # Cron job output (consolidation, contradiction, calibration, graph)
 ├── hooks/
-│   ├── stop_hook.py        # Orchestrator: session, parsing, routing
-│   ├── prompt_hook.py      # Layer 1 + Layer 1.5 + Layer 2 injection
+│   ├── stop_hook.py        # Orchestrator: session, parsing, routing (Stop + SubagentStop)
+│   ├── prompt_hook.py      # Project bootstrap + Layer 1/1.5/2 + graph orientation
+│   ├── pretool_hook.py     # PreToolUse hook — gotcha + graph file-context injection
+│   ├── posttool_hook.py    # PostToolUse hook
 │   ├── hook_helpers.py     # Shared DB access, logging, metrics
 │   ├── parser.py           # Memory block parsing (ParseResult NamedTuple)
 │   ├── storage.py          # Insert, dedup, confidence, quality gates
 │   ├── enforcement.py      # Trailing intent detection, continuation counting
 │   ├── retrieval.py        # Context retrieval with RRF fusion, Layer 2, context cache
-│   ├── query_expansion.py  # Type-prefix fan-out for broader recall
-│   ├── pretool_hook.py     # PreToolUse hook — gotcha injection on file access
+│   ├── health.py           # Systemic failure detection — sentinel, notifications
 │   └── hash_verify.py      # Response hash verification (log-only, non-blocking)
-└── templates/              # Installer templates for global config
+└── templates/              # Installer templates for global config (+ cairn-launcher.sh)
 ```
 
 ## Requirements
@@ -373,18 +400,19 @@ Things that can go wrong and how the system handles them:
 | Contradictory memories | Same type+topic overwrites with confidence suppression; NLI-based contradiction detection auto-archives superseded memories daily | Old content preserved in version history; daily cron catches cross-type contradictions |
 | Database grows large | sqlite-vec provides indexed vector search; brute-force fallback for small DBs | All quality gates reduce injected volume regardless of DB size |
 
-## Calibration (experimental, Phase 1 + 2 on `feature/calibration-system`)
+## Calibration (Phases 1–7)
 
-Cairn answers *what* is known; calibration shapes *how* responses are generated — level, style, preferences, approach. Phase 1 + Phase 2 cover the foundation and the analyser:
+Cairn answers *what* is known; calibration shapes *how* responses are generated — level, style, preferences, approach. The full pipeline is shipped:
 
-- `calibration_rows` table (durable DB) — populated by the analyser
-- `calibration_deliveries` table (ephemeral DB) — turn-indexed log used by the future injector and scored by the analyser's effectiveness pass
-- `cairn/session_extract.py` — strips tool blocks, thinking, `<cairn_context>`, `<system-reminder>`, and `[cm]` link-defs from a Claude Code session JSONL. Reduces a ~110K-token session to a signal-only view for the analyser.
-- `cairn-calibration-analyser analyse <jsonl>` — runs the analyser on a single session. 13 bounded dimensions, sectioned JSON output, dual write paths (`calibration_rows` for *how* signal, existing `memories` table with `source_ref="analyser-session-arc"` for *what* signal that requires the arc).
-- `cairn-calibration-analyser cron` — one pass over `~/.claude/projects/*/*.jsonl`, processes idle un-analysed sessions, per-session error isolation.
-- `cairn-calibration` CLI scaffolding (commands stubbed for Phase 4).
+- **Schema** — `calibration_rows` (durable DB) holds the profile; `calibration_deliveries` (ephemeral DB) is a turn-indexed log of which rows were injected, scored by the analyser's effectiveness pass; `calibration_qf_embeddings` (schema v7) stores per-qf vectors for symmetric retrieval.
+- **Analyser** — `cairn-calibration-analyser analyse <jsonl>` runs one LLM pass (default `claude-sonnet-4-6`) per session over a cleaned transcript, emitting 13 bounded dimensions as sectioned JSON across two write paths (`calibration_rows` for *how* signal, the `memories` table with `source_ref="analyser-session-arc"` for *what* signal that needs the arc). `cairn-calibration-analyser cron` walks `~/.claude/projects/*/*.jsonl`, picks idle un-analysed sessions, and processes them with per-session error isolation. Incremental: a session is re-analysed only once its turn count grows past a threshold.
+- **Injector** — a `UserPromptSubmit` layer injects the active profile and logs deliveries; retrieval scores each row by the max cosine over its per-qf embeddings.
+- **Agent-invoked CLI** — `cairn-calibration` is driven from natural-language intent, never user-typed (e.g. "treat me as an expert" → `mode --level expert`, "stop reminding me about X" → `mute`, "I prefer Y" → `add --source explicit`). `--show-profile` and `--review` surface state.
+- **Self-modification** — `cairn-calibration-selfmod` auto-archives low-follow rows, auto-promotes corroborated ones, and decays unused rows; borderline cases are surfaced into a review queue (nightly cron at 00:30).
+- **CLAUDE.md import** — `cairn-calibration-import-claude-md` seeds pinned `explicit` rows from first-person preference statements (idempotent via SHA tracking).
+- **Dashboard** — a calibration tab (`http://localhost:5174/`) with Profile, Effectiveness, Review Queue, and Summary panels.
 
-UserPromptSubmit injector, dashboard panels land in Phases 3–6. See `docs/spec-calibration-system.md` (Amendment 1 for analyser dimension list and dual-write rationale).
+The analyser (00:00) and self-modification (00:30) run nightly via cron. See `docs/spec-calibration-system.md` (Amendment 1 for the dimension list and dual-write rationale).
 
 ## Contributing
 
@@ -392,7 +420,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test 
 
 ## Testing
 
-572 tests across 33 test files. Most tests use mock vectors and patched DB paths — no embedding model required. Quality benchmarks (`test_retrieval_quality*.py`, `test_query_expansion.py`) use real embeddings for ground-truth validation and skip gracefully in CI.
+1141 tests across 67 test files. Most tests use mock vectors and patched DB paths — no embedding model required. Quality benchmarks (`test_retrieval_quality*.py`, `test_query_expansion.py`) use real embeddings for ground-truth validation and skip gracefully in CI. The table below is a representative selection covering the core retrieval/memory suite plus the proxy, calibration, code-graph, and review write-back subsystems; see `tests/` for the full set.
 
 ```bash
 cd ~/cairn
@@ -434,6 +462,27 @@ python3 -m pytest tests/
 | `test_retrieval_quality.py` | 13 | Retrieval quality (easy): ground-truth P/R/MRR across 5 clean clusters |
 | `test_retrieval_quality_hard.py` | 12 | Retrieval quality (hard): overlapping clusters, distractors, graded difficulty |
 | `test_query_expansion.py` | 9 | Query expansion: type-prefix fan-out, corpus PRF, neighbor blend, combined |
+| `test_analyser.py` | 51 | Calibration analyser: 13-dim sectioned output, dual-write, incremental, dedup, effectiveness scoring |
+| `test_calibration_cli.py` | 21 | Calibration CLI: profile, mute/unmute, mode, add, delete, session-scope |
+| `test_calibration_inject.py` | 24 | UserPromptSubmit calibration injection + per-qf retrieval + delivery logging |
+| `test_calibration_selfmod.py` | 13 | Self-modification: auto-archive, auto-promote, decay, review-queue surfacing |
+| `test_calibration_schema.py` | 8 | Calibration schema + qf-embedding sidecar migration |
+| `test_graph.py` | 49 | cairn-graph: location, callers/callees, impact, context-pack, tests, knowledge |
+| `test_graph_fleet.py` | 7 | Graph fleet: repo discovery, build/update sweep, status |
+| `test_repo_discovery.py` | 13 | Graph orientation + build-on-contact, root resolution |
+| `test_review_writeback.py` | 7 | Review write-back: file/symbol keying, associated_files override, idempotent dedup |
+| `test_proxy_request_inject.py` | 11 | Proxy: context injection into outbound requests |
+| `test_proxy_response_filter.py` | 5 | Proxy: artifact stripping from responses |
+| `test_proxy_cm_filter.py` | 5 | Proxy: `[cm]`/`<memory>` block stripping |
+| `test_proxy_server_rewrite.py` | 6 | Proxy: request/response rewrite + cache integrity |
+| `test_proxy_response_stripper.py` | 7 | Proxy: streaming response artifact removal |
+| `test_posttool_hook.py` | 25 | PostToolUse hook behaviour |
+| `test_pretool_bash_recovery.py` | 7 | Tier-2 graph file-context recovery from Bash-routed file access |
+| `test_consolidation.py` | — | Memory consolidation + contradiction detection pipeline |
+| `test_daemon_vector_search.py` | — | Daemon-resident vector search |
+| `test_dashboard_graph.py` | — | Dashboard graph/health endpoints |
+| `test_session_extract.py` | — | Session JSONL cleaning for the analyser |
+| `tests/sync/` | — | Multi-node sync (experimental): changeset merge, transport, schema migration, 3-node LAN |
 
 ## License
 
