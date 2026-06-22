@@ -312,8 +312,16 @@ def cmd_start(args):
     os.setsid()
     if os.fork() > 0:
         os._exit(0)
-    sys.stdin.close()
+    # Fully detach inherited stdio at the OS fd level (not just Python's sys.*
+    # attrs): dup2 /dev/null onto fd 0 and the log onto fds 1/2. Without this the
+    # daemon keeps the inherited stdout open, hanging any non-tty caller that
+    # waits for EOF on that pipe (e.g. `install.sh | grep`, CI, background boot).
+    _devnull = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(_devnull, 0)
+    os.close(_devnull)
     out = open(LOG_FILE, "a")
+    os.dup2(out.fileno(), 1)
+    os.dup2(out.fileno(), 2)
     sys.stdout = out
     sys.stderr = out
     setup_logging(args.debug)

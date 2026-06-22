@@ -1046,10 +1046,12 @@ def check():
                     # Keep only leading column names before the first `content=` option
                     before_opts = cols_text.split("content=")[0]
                     cols = [c.strip() for c in before_opts.split(",") if c.strip() and "=" not in c]
-                    if cols == ["topic", "content", "keywords"]:
+                    if cols == ["topic", "content", "keywords", "facts"]:
                         ok("FTS5 schema correct")
+                    elif cols == ["topic", "content", "keywords"]:
+                        warn("FTS5 schema missing facts column (run ./install.sh to migrate)")
                     else:
-                        fail(f"FTS5 schema drifted: cols={cols}, expected ['topic', 'content', 'keywords']")
+                        fail(f"FTS5 schema drifted: cols={cols}, expected ['topic', 'content', 'keywords', 'facts']")
                 else:
                     fail("FTS5 schema unparseable")
             else:
@@ -1074,36 +1076,45 @@ def check():
     # 2. Hooks
     print("\nHooks:")
     settings_path = os.path.join(claude_dir, "settings.json")
+    # (settings.json event, hook file, critical). Stop + UserPromptSubmit are
+    # core memory capture/retrieval — missing => fail. PreToolUse (graph file
+    # context) + PostToolUse (capture nudges / Bash path recovery) are
+    # degraded-but-functional enhancements — missing => warn. Keep this list in
+    # sync with templates/global-settings.json.
+    expected_hooks = [
+        ("Stop", "stop_hook.py", True),
+        ("UserPromptSubmit", "prompt_hook.py", True),
+        ("PreToolUse", "pretool_hook.py", False),
+        ("PostToolUse", "posttool_hook.py", False),
+    ]
     if os.path.exists(settings_path):
         try:
             import json as _json
             with open(settings_path, encoding="utf-8") as f:
                 settings = _json.load(f)
             hooks = settings.get("hooks", {})
-            stop_hooks = hooks.get("Stop", [])
-            prompt_hooks = hooks.get("UserPromptSubmit", [])
-            stop_found = any("stop_hook.py" in str(h) for h in stop_hooks)
-            prompt_found = any("prompt_hook.py" in str(h) for h in prompt_hooks)
-            if stop_found:
-                ok("Stop hook registered")
-            else:
-                fail("Stop hook not found in settings.json")
-            if prompt_found:
-                ok("UserPromptSubmit hook registered")
-            else:
-                fail("UserPromptSubmit hook not found in settings.json")
+            for event, hook_file, critical in expected_hooks:
+                found = any(hook_file in str(h) for h in hooks.get(event, []))
+                if found:
+                    ok(f"{event} hook registered")
+                elif critical:
+                    fail(f"{event} hook not found in settings.json")
+                else:
+                    warn(f"{event} hook not registered (degraded — {hook_file} feature off)")
         except Exception as e:
             fail(f"Settings parse error: {e}")
     else:
         fail("~/.claude/settings.json not found")
 
     # Check hook files exist
-    for hook_file in ["stop_hook.py", "prompt_hook.py"]:
+    for _event, hook_file, critical in expected_hooks:
         path = os.path.join(project_dir, "hooks", hook_file)
         if os.path.exists(path):
             ok(f"hooks/{hook_file} exists")
-        else:
+        elif critical:
             fail(f"hooks/{hook_file} missing")
+        else:
+            warn(f"hooks/{hook_file} missing")
 
     # 3. Rules
     print("\nRules:")
@@ -1139,6 +1150,21 @@ def check():
             warn("Corrupt PID file")
     else:
         warn("Not running (will auto-start on first embed)")
+
+    # 4b. API proxy — report status only, never fail: the `c` launcher
+    # health-gates ANTHROPIC_BASE_URL and the */5 keep-alive cron self-heals, so
+    # a down proxy degrades to a direct connection rather than breaking traffic.
+    print("\nProxy:")
+    try:
+        from cairn import config as _pcfg
+        from cairn.proxy import server as _pserver
+        _pport = _pcfg.PROXY_PORT
+        if _pserver.is_running(_pport):
+            ok(f"cairn-proxy running on {_pcfg.PROXY_HOST}:{_pport}")
+        else:
+            warn(f"cairn-proxy not running on :{_pport} (launch via `c`, or */5 cron will start it; plain claude stays direct)")
+    except Exception as exc:
+        warn(f"Proxy status unavailable: {exc}")
 
     # 5. Embeddings
     print("\nEmbeddings:")
