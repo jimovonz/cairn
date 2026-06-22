@@ -114,6 +114,56 @@ def kick_graph_build(cwd: str, *, env_override: Optional[dict] = None) -> bool:
         return False
 
 
+def head_signature(cwd: str) -> Optional[str]:
+    """Signature of the checked-out commit (HEAD SHA), or None on failure.
+
+    Branch switch / pull / merge / rebase / commit all move HEAD to a
+    different commit, so the SHA is a sufficient freshness key for the code
+    graph (two branches at the same commit yield an identical tree, so no
+    refresh is needed). Uncommitted working-tree edits are deliberately out
+    of scope here — the cron sweep and first-prompt build cover those.
+    """
+    if not _is_git_repo(cwd):
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+def kick_graph_update_if_head_changed(
+    cwd: str, last_head: Optional[str], *, env_override: Optional[dict] = None
+) -> tuple[bool, Optional[str]]:
+    """Tier 1 freshness on HEAD movement (branch switch, pull, rebase, commit).
+
+    Compares the repo's current HEAD against `last_head` (the value the caller
+    persisted on the previous prompt). If it changed, kicks a background
+    `crg update` (or `build` if no graph exists yet) via `kick_graph_build`.
+
+    Portable across git wrappers — this is driven by the cairn prompt hook, not
+    a native git hook (git-ai and other proxies own `.git/hooks` and don't
+    chain repo hooks, so a post-checkout hook would be unreliable).
+
+    Returns ``(kicked, current_head)``. The caller should persist
+    ``current_head`` whenever it differs from ``last_head``. Non-blocking and
+    fails open (returns ``(False, last_head)``) on any error.
+    """
+    env = env_override if env_override is not None else os.environ
+    if env.get("CAIRN_AUTO_GRAPH", "1") == "0":
+        return (False, last_head)
+    head = head_signature(cwd)
+    if head is None or head == last_head:
+        return (False, head if head is not None else last_head)
+    kicked = kick_graph_build(cwd, env_override=env)
+    return (kicked, head)
+
+
 def should_suggest_ingest(cwd: str, conn,
                           *, min_files: int = 50,
                           env_override: Optional[dict] = None) -> Optional[str]:

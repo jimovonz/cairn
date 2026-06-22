@@ -517,3 +517,57 @@ def test_main_behavioural_format_spec_kept_for_copilot():
     assert result is not None
     ctx = result["hookSpecificOutput"]["additionalContext"]
     assert ctx.count("MEMORY BLOCK (REQUIRED)") == 1
+
+
+# ---------- refresh_graph_on_head_change (branch-switch freshness) ----------
+
+def test_refresh_graph_on_head_change_behavioural():
+    """HEAD moved since last prompt → persist new HEAD and record metric."""
+    import hooks.prompt_hook as prompt_hook
+    import cairn.repo_discovery as repo_discovery
+    cwd = "/repo/x"
+    with patch.object(prompt_hook, "load_hook_state", return_value="old-sha"), \
+         patch.object(prompt_hook, "save_hook_state") as mock_save, \
+         patch.object(prompt_hook, "record_metric") as mock_metric, \
+         patch.object(repo_discovery, "kick_graph_update_if_head_changed",
+                      return_value=(True, "new-sha")):
+        prompt_hook.refresh_graph_on_head_change("sess1", cwd)
+    saved = mock_save.call_args[0]
+    assert saved[0] == prompt_hook._GRAPH_HEAD_STATE_SESSION
+    assert saved[1] == prompt_hook._graph_head_key(cwd)
+    assert saved[2] == "new-sha"
+    assert mock_metric.call_count == 1
+
+
+def test_refresh_graph_on_head_change_edge():
+    """HEAD unchanged → no persist, no metric (avoid redundant updates)."""
+    import hooks.prompt_hook as prompt_hook
+    import cairn.repo_discovery as repo_discovery
+    with patch.object(prompt_hook, "load_hook_state", return_value="same-sha"), \
+         patch.object(prompt_hook, "save_hook_state") as mock_save, \
+         patch.object(prompt_hook, "record_metric") as mock_metric, \
+         patch.object(repo_discovery, "kick_graph_update_if_head_changed",
+                      return_value=(False, "same-sha")):
+        prompt_hook.refresh_graph_on_head_change("sess1", "/repo/x")
+    assert mock_save.call_count == 0
+    assert mock_metric.call_count == 0
+
+
+def test_refresh_graph_on_head_change_edge_empty_cwd():
+    """Empty cwd is a no-op — never touches state."""
+    import hooks.prompt_hook as prompt_hook
+    with patch.object(prompt_hook, "load_hook_state") as mock_load, \
+         patch.object(prompt_hook, "save_hook_state") as mock_save:
+        prompt_hook.refresh_graph_on_head_change("sess1", "")
+    assert mock_load.call_count == 0
+    assert mock_save.call_count == 0
+
+
+def test_refresh_graph_on_head_change_error():
+    """Underlying failure must fail open — no exception escapes the hook."""
+    import hooks.prompt_hook as prompt_hook
+    import cairn.repo_discovery as repo_discovery
+    with patch.object(prompt_hook, "load_hook_state", side_effect=RuntimeError("boom")), \
+         patch.object(prompt_hook, "save_hook_state") as mock_save:
+        prompt_hook.refresh_graph_on_head_change("sess1", "/repo/x")  # must not raise
+    assert mock_save.call_count == 0
