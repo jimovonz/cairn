@@ -5,6 +5,25 @@ Adjust these values to control retrieval quality, deduplication sensitivity,
 confidence dynamics, and injection behaviour.
 """
 
+# Load persistent config from cairn/.env (written by install.sh and the dashboard
+# config editor) into the environment BEFORE the constants below read it — so every
+# process (daemon, hooks, CLI, dashboard) sees identical settings no matter how it
+# was launched. Real environment variables win (setdefault), so an explicit export
+# still overrides the file.
+import os as _os_env
+_ENV_FILE = _os_env.path.join(_os_env.path.dirname(__file__), ".env")
+try:
+    with open(_ENV_FILE, encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _, _v = _line.partition("=")
+            _os_env.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+except FileNotFoundError:
+    pass
+del _os_env
+
 # === Deduplication ===
 DEDUP_THRESHOLD = 0.95          # Cosine similarity above which entries are considered near-identical
 

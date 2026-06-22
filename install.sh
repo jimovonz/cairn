@@ -71,6 +71,10 @@ fi
     || { echo "ERROR: Post-install import check failed. Dependencies may be incomplete."; exit 1; }
 
 # --- Database ---
+# Stop any running daemon BEFORE touching the DB — a live daemon (esp. with sync
+# enabled: discovery + periodic-pull writes) holds the WAL and can lock init_db's
+# schema migrations. It is restarted further down once the DB is ready.
+"$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" stop >/dev/null 2>&1 || true
 echo "Initializing database..."
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/init_db.py"
 
@@ -258,6 +262,29 @@ fi
 # On upgrade installs the daemon may already be running with stale model_version
 # or schema knowledge — stop it first so the fresh `start` picks up current state.
 # `daemon.py stop` returns 0 if not running, so this is safe on fresh installs too.
+# --- Multi-node sync (default ON; opt out: CAIRN_SYNC_ENABLED=0) ---
+# Persisted to cairn/.env, which cairn.config loads on import — so the daemon
+# (however started: install, cron, or Stop-hook respawn), every hook, and the CLI
+# all see the same settings. Discovery + pairing require explicit per-peer
+# approval, so advertising presence is low-risk; raw-session sharing stays OFF
+# by default (opt in per node via CAIRN_SYNC_SHARE_SESSIONS=1).
+ENV_FILE="$CAIRN_HOME/cairn/.env"
+set_env_kv() {  # idempotent KEY=VALUE upsert into cairn/.env
+    touch "$ENV_FILE"
+    grep -v "^$1=" "$ENV_FILE" 2>/dev/null > "$ENV_FILE.tmp" || true
+    echo "$1=$2" >> "$ENV_FILE.tmp"
+    mv "$ENV_FILE.tmp" "$ENV_FILE"
+}
+SYNC_ENABLED="${CAIRN_SYNC_ENABLED:-1}"
+set_env_kv CAIRN_SYNC_ENABLED "$SYNC_ENABLED"
+set_env_kv CAIRN_SYNC_SHARE_SESSIONS "${CAIRN_SYNC_SHARE_SESSIONS:-0}"
+if [ "$SYNC_ENABLED" = "1" ]; then
+    echo "Multi-node sync ON (opt out: CAIRN_SYNC_ENABLED=0 ./install.sh) — server :${CAIRN_SYNC_PORT:-8787}, discovery udp :${CAIRN_SYNC_DISCOVERY_PORT:-47391}."
+    echo "  (LAN peers need TCP ${CAIRN_SYNC_PORT:-8787} + UDP ${CAIRN_SYNC_DISCOVERY_PORT:-47391} reachable through any host firewall.)"
+else
+    echo "Multi-node sync OFF (enable: CAIRN_SYNC_ENABLED=1 ./install.sh)."
+fi
+
 echo "Restarting embedding daemon..."
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" stop >/dev/null 2>&1 || true
 "$VENV_PYTHON" "$CAIRN_HOME/cairn/daemon.py" start
@@ -388,6 +415,14 @@ if [ -x "$CAIRN_GRAPH_BIN" ]; then
     mkdir -p "$HOME/.local/bin"
     ln -sf "$CAIRN_GRAPH_BIN" "$HOME/.local/bin/cairn-graph"
     echo "Symlinked cairn-graph to ~/.local/bin/cairn-graph."
+fi
+
+# --- cairn-sync on PATH (multi-node sync CLI) ---
+CAIRN_SYNC_BIN="$VENV_PATH/bin/cairn-sync"
+if [ -f "$CAIRN_SYNC_BIN" ]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$CAIRN_SYNC_BIN" "$HOME/.local/bin/cairn-sync"
+    echo "Symlinked cairn-sync to ~/.local/bin/cairn-sync."
 fi
 
 # --- cairn-bench tools on PATH ---
