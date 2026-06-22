@@ -305,13 +305,32 @@ cairn/
 │   ├── daemon.py                      # Background server (embeddings, cross-encoder, NLI via Unix socket)
 │   ├── consolidate.py                 # Memory consolidation + contradiction detection pipeline
 │   ├── contradiction_scan.py          # Legacy contradiction scanner
+│   ├── ingest.py                      # Repo ingestion — 24 extractors + Haiku distillation
+│   ├── graph.py                       # cairn-graph CLI over the code-review-graph symbol graph
+│   ├── graph_fleet.py                 # Keeps every repo's code graph fresh (sweep + status)
+│   ├── repo_discovery.py              # Graph orientation/build on session contact
+│   ├── review_writeback.py            # cairn-review-writeback — durable review rationale
+│   ├── container_injector.py          # Dev-container context injection
+│   ├── analyser.py                    # Calibration analyser — per-session LLM pass (13 dims)
+│   ├── calibration.py                 # Calibration CLI (agent-invoked)
+│   ├── calibration_inject.py          # UserPromptSubmit calibration injector
+│   ├── calibration_selfmod.py         # Calibration self-modification passes
+│   ├── session_extract.py             # Clean a session JSONL to signal-only text
+│   ├── proxy/                         # Artifact-free API proxy (default on, port 8789)
+│   │   ├── server.py                  #   daemonized proxy + start/stop/restart
+│   │   ├── request_inject.py          #   inject context into outbound requests
+│   │   ├── response_filter.py         #   strip Cairn artifacts from responses
+│   │   ├── cm_filter.py               #   strip [cm]/<memory> blocks
+│   │   └── sidecar.py                 #   capture stripped artifacts for the hooks
+│   ├── sync/                          # Multi-node sync (experimental — see Multi-User Architecture)
 │   ├── dashboard.py                   # Flask web dashboard (monitoring, memory browser, config editor)
 │   ├── static/index.html              # Dashboard frontend (vanilla JS, light/dark theme)
 │   └── hook.log                       # Debug log
 ├── hooks/
-│   ├── stop_hook.py                   # Main hook — capture, enforce, retrieve, veracity
-│   ├── prompt_hook.py                 # Project bootstrap + Layer 1/1.5/2 injection
-│   ├── pretool_hook.py                # PreToolUse hook — gotcha injection on file access
+│   ├── stop_hook.py                   # Main hook — capture, enforce, retrieve, veracity (Stop + SubagentStop)
+│   ├── prompt_hook.py                 # Project bootstrap + Layer 1/1.5/2 + graph orientation
+│   ├── pretool_hook.py                # PreToolUse hook — gotcha + graph file-context injection
+│   ├── posttool_hook.py               # PostToolUse hook — post-tool bookkeeping
 │   ├── hook_helpers.py                # Shared DB, logging, metrics, XML formatting, dedup gate
 │   ├── parser.py                      # Memory block parsing (verbose + compact formats)
 │   ├── storage.py                     # Insert, dedup, confidence, quality gates, file association
@@ -319,6 +338,7 @@ cairn/
 │   ├── retrieval.py                   # Context retrieval with RRF fusion, Layer 2, context cache
 │   ├── health.py                      # Systemic failure detection — sentinel file, desktop notifications
 │   └── hash_verify.py                 # Response hash verification (log-only, non-blocking)
+├── templates/                         # Installer templates (global settings, cairn-launcher.sh)
 └── .venv/                             # Python venv with sentence-transformers
 ```
 
@@ -977,15 +997,19 @@ The LLM is instructed to use `--context <id>` when:
   "hooks": {
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "...prompt_hook.py", "timeout": 30 }] }],
     "Stop":            [{ "hooks": [{ "type": "command", "command": "...stop_hook.py",   "timeout": 60 }] }],
+    "SubagentStop":    [{ "hooks": [{ "type": "command", "command": "...stop_hook.py",   "timeout": 60 }] }],
     "PreToolUse": [
       {
         "matcher": "Read|Edit|Write|MultiEdit",
         "hooks": [{ "type": "command", "command": "...pretool_hook.py", "timeout": 5 }]
       }
-    ]
+    ],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "...posttool_hook.py", "timeout": 5 }] }]
   }
 }
 ```
+
+Five hook events are registered. `Stop` and `SubagentStop` share `stop_hook.py` — the subagent path is detected via `hook_event_name=="SubagentStop"` (or `agent_id`) and runs in the lightweight Subagent Mode described below. `PreToolUse` injects gotchas and graph file-context before file access; `PostToolUse` handles post-tool bookkeeping.
 
 The hooks are registered **globally** in `~/.claude/settings.json` so they fire in every Claude Code session regardless of working directory. This is essential for cross-project memory — every session in every directory captures and retrieves from the same cairn. The project-local `.claude/settings.json` can add project-specific hook configuration if needed. Changes require a session restart — hooks are cached at session start.
 
@@ -1141,7 +1165,7 @@ All tunable parameters are centralised in `cairn/config.py`:
 
 ## Testing
 
-572 tests across 30 files. Most tests use deterministic mock vectors and patched DB paths — no embedding model required. Quality benchmarks use real embeddings for ground-truth validation.
+1141 tests across 67 files. Most tests use deterministic mock vectors and patched DB paths — no embedding model required. Quality benchmarks use real embeddings for ground-truth validation. The table below covers the core retrieval/memory suite; the proxy, calibration, code-graph, review write-back, and sync subsystems add the remaining files (see the README test table and `tests/`).
 
 ```bash
 python3 -m pytest tests/
@@ -1188,7 +1212,7 @@ Token estimates are derived from transcript text (~4 chars/token). Excludes syst
 
 ## Subagent Mode
 
-When hooks detect `agent_id` in the hook input (present for Claude Code Agent tool subagents), they switch to a lightweight mode:
+Subagents run in a lightweight mode, entered when `stop_hook.py` is invoked via the `SubagentStop` hook event (or when `agent_id` is present in the hook input). A subagent emits `[cm]` memory blocks into its *own* transcript, which the main-session `Stop` hook never sees; the `SubagentStop` registration routes that final message into `stop_hook.py`, which reads the subagent's own transcript (`agent_transcript_path`) for storage and `--context` excerpts while keeping `session_id`/`transcript_path` pointed at the parent so memories chain to it. The behavioural switch:
 
 | Hook | Interactive mode | Subagent mode |
 |------|-----------------|---------------|
@@ -1273,6 +1297,50 @@ python3 cairn/consolidate.py --execute                    # execute consolidatio
 python3 cairn/consolidate.py --contradictions              # dry-run contradiction scan
 python3 cairn/consolidate.py --contradictions --execute    # execute contradiction scan
 ```
+
+## API Proxy (artifact-free injection)
+
+`cairn/proxy/` is an opt-out bidirectional HTTP proxy that sits between Claude Code and the Anthropic API. It does two things on the wire so that neither the user nor the model's *displayed* output ever shows a Cairn artifact:
+
+- **Outbound (request injection)** — `request_inject.py` injects retrieved context into the request body without altering the cacheable prefix, so the Anthropic prompt cache stays byte-exact (the integrity guard verifies the cached prefix is untouched). Context is injected only on agentic requests.
+- **Inbound (response filtering)** — `response_filter.py` / `cm_filter.py` strip `<memory>`/`[cm]` blocks, `<cairn_context>`, and system reminders from the streamed response; `sidecar.py` captures the stripped artifacts and hands them to the hook pipeline for storage. `response_stripper` handles the streaming SSE case.
+
+`server.py` runs as a detached daemon (`start`/`stop`/`restart`, port-specific PID file) on `127.0.0.1:8789`. It `dup2`s `/dev/null`→fd0 and the log→fd1/fd2 so the daemonized process never holds an inherited stdout pipe open (which previously hung non-tty callers). `install.sh` enables it by default (opt out with `CAIRN_PROXY_ENABLED=0`), installs a `c` shell launcher (a marked, idempotent rc block that routes `claude` through the proxy while bare `claude` stays direct), and a `*/5` keep-alive cron (`start` is idempotent — a no-op if already running).
+
+The proxy is the artifact-hiding alternative to tag-stripping: with it on, memory capture and injection work even if Claude Code's tag-stripping behaviour changes, because the proxy — not the renderer — removes the artifacts.
+
+## Code-Graph Navigation & Fleet
+
+`cairn/graph.py` (`cairn-graph`) is a zero-cost, no-LLM query layer over a `code-review-graph` symbol graph (`.code-review-graph/graph.db`). It answers structural questions faster and more precisely than grep: `--location`, `--callers`/`--callees`, `--impact` (blast radius), `--context-pack` (body + callers + tests + related memories), `--tests`, `--summary`/`--orientation`, `--file-context`, and `--knowledge` (review write-back rationale keyed to a symbol).
+
+This data is surfaced automatically into sessions in two tiers (both fail open if no graph is built, gated by `GRAPH_ORIENTATION_ENABLED` / `GRAPH_FILE_CONTEXT_ENABLED`):
+
+- **Tier 1 (orientation)** — the prompt hook injects a repo orientation block at session start.
+- **Tier 2 (file context)** — the PreToolUse hook injects per-file structural context on Read/Edit, deduped once per file. It also recovers file paths from `Bash` commands (`cat`/`sed`/`head` + the `cch-edit.py`/`cch-write.py` helpers), so it still fires when file access is routed through Bash.
+
+**Fleet.** `cairn/graph_fleet.py` keeps every git repo under the configured roots (`CAIRN_GRAPH_ROOTS`) graph-ready: it builds missing graphs and incrementally `update`s existing ones. Freshness is driven by an **hourly cron sweep** (the dependable backbone — git hooks are unreliable because git proxies own the native hook path) plus a per-session fast path in the prompt hook (`repo_discovery.kick_graph_build`) that builds/updates the current repo on first contact. `install.sh` kicks an initial background bootstrap that builds all repos. `code-review-graph` is installed inside cairn's venv and resolved via `.venv/bin/`, never PATH.
+
+## Review Write-Back
+
+`cairn/review_writeback.py` (`cairn-review-writeback`) persists **durable review rationale** — the *why* that survives the fix (intentional couplings, accepted trade-offs, decisions captured at merge) — **not** transient bug findings (a "PR has bug X" claim self-invalidates once fixed, so the default entry `type` is `decision`). Each finding is keyed to the *target repo* and *changed file/symbol*: it sets an explicit per-entry `associated_files=[abs, rel]` override (added to `storage.insert_memories`) and carries the symbol in `content`/`keywords`/`facts`, so `cairn-graph --knowledge SYMBOL` later surfaces it via a join on `associated_files LIKE '%path%'` plus an FTS `MATCH`. It registers a synthetic `review-<project>-<commit>` session tagged to the target project, batches under `MAX_MEMORIES_PER_RESPONSE`, and dedups at cosine 0.85 (re-running a review is idempotent). Input is JSON on stdin (or `--file`); flags `--dry-run`, `--json`.
+
+## Calibration System
+
+Calibration captures *how to interact with this user* (level, style, preferences), complementing Cairn knowledge which captures *what is known*. The full pipeline (Phases 1–7) is shipped:
+
+- **Schema** — `calibration_rows` (durable DB: content, kw, qf, source, confidence, pinned, layer, session_scope, supersession, effectiveness counters, embedding), `calibration_deliveries` (ephemeral DB: turn-indexed injection log with outcome fields), and `calibration_qf_embeddings` (schema v7 sidecar: per-qf vectors, PK row_id+qf_index, FK CASCADE).
+- **Analyser** (`cairn/analyser.py`) — one `claude -p` pass per session (default `claude-sonnet-4-6`, `CAIRN_ANALYSER_MODEL` override) over a transcript cleaned by `session_extract.py`, producing sectioned JSON across 13 bounded dimensions: 8 to `calibration_rows`, 5 to `memories` with `source_ref="analyser-session-arc"`. It runs with `CAIRN_MODE=read-only` so the pass doesn't trigger the Stop-hook capture path. A subagent/length filter skips trivial sessions; incremental re-analysis re-runs only after a session grows past a turn threshold; both write paths dedup at cosine 0.85.
+- **Injector** (`calibration_inject.py`) — a `UserPromptSubmit` layer injects the active profile and logs deliveries. Per-qf symmetric retrieval scores each row as `max_i cos(prompt, qf_i)`; rows without sidecar vectors fall back to the legacy single-vector cosine.
+- **CLI** (`calibration.py`) — agent-invoked from natural-language intent, never user-typed (`mode --level`, `mute`, `delete`, `add --source explicit`, `--show-profile`, `--review`, `--session-only`).
+- **Self-modification** (`calibration_selfmod.py`) — Tier 1 autonomous (auto-archive low-follow, auto-promote corroborated, decay unused); Tier 2 surfaces borderline cases into a review queue; Tier 3 stays manual.
+- **Import** (`calibration_import_claude_md.py`) — one-shot scanner seeding pinned `explicit` rows from first-person preference statements (idempotent via SHA tracking).
+- **Dashboard** — a calibration tab at `http://localhost:5174/` (Profile, Effectiveness, Review Queue, Summary).
+
+Crons: analyser at 00:00, self-modification at 00:30. See `docs/spec-calibration-system.md` for the dimension list and design rationale.
+
+## Dev-Container Support
+
+For sessions running inside dev-containers, the daemon exposes a **TCP listener on port 47390** alongside its Unix socket, and `cairn_recall` / `cairn_remember` opcodes let a container shim dial the host daemon. `cairn/container_injector.py` injects context inside the container, with an extension auto-installer and VSIX staging so a containerised Claude Code / Copilot session reaches the same host cairn as the native session.
 
 ## Limitations and Future Work
 
@@ -1382,6 +1450,8 @@ The commit SHA enables:
 ### Multi-User Architecture
 
 Cairn is designed for extension to multi-user teams with shared knowledge. The architecture uses a hybrid local/global model with bidirectional sync.
+
+> **Status:** an experimental implementation of node-to-node sync lives in `cairn/sync/` (changeset replication, transport, identity, schema migration; covered by `tests/sync/`). It is **not** wired into `install.sh` and is off by default — the design below is the target architecture; `cairn/sync/` is the first increment toward it.
 
 #### Architecture overview
 

@@ -81,7 +81,19 @@ This data is also surfaced automatically into sessions: a repo orientation block
 
 So every repo is graph-ready before first contact, independent of whether cairn has been active in it.
 
-## Calibration system (Phase 1 + 2)
+## API proxy (artifact-free injection)
+
+`cairn/proxy/` is an opt-out bidirectional HTTP proxy between Claude Code and the Anthropic API. It injects retrieved context into outbound requests **without disturbing the cacheable prefix** (Anthropic prompt cache stays byte-exact — a prompt-cache integrity guard verifies this) and strips every Cairn artifact (`<memory>`/`[cm]` blocks, `<cairn_context>`, system reminders) from inbound responses, capturing the stripped artifacts via `sidecar.py` for the hook pipeline. It is the artifact-hiding alternative to tag-stripping: capture/injection keep working even if Claude Code changes its tag rendering.
+
+- `server.py` runs a detached daemon (`start`/`stop`/`restart`, port-specific PID file) on `127.0.0.1:8789` (`CAIRN_PROXY_PORT`). It `dup2`s fd0←/dev/null and fd1/fd2←log so it never holds an inherited stdout pipe open.
+- `install.sh` enables it **by default** (opt out with `CAIRN_PROXY_ENABLED=0`), installs a `c` shell launcher (marked, idempotent rc block — `c` routes through the proxy, bare `claude` stays direct), and a `*/5` keep-alive cron (`start` is idempotent).
+- Context is injected only on agentic requests.
+
+## Dev-container support
+
+The daemon exposes a **TCP listener on port 47390** alongside its Unix socket so container shims can dial the host daemon via `cairn_recall` / `cairn_remember` opcodes. `cairn/container_injector.py` injects context inside the container, with an extension auto-installer and VSIX staging, so a containerised session reaches the same host cairn as the native session.
+
+## Calibration system (Phases 1–7)
 
 Phase 1 shipped scaffolding (schema, extractor, stubbed CLI). Phase 2 ships the analyser: a single LLM pass per session over a cleaned transcript produces sectioned JSON across 13 bounded dimensions, writing 8 dimensions to `calibration_rows` and 5 to the existing `memories` table with `source_ref="analyser-session-arc"`. A post-pass scores effectiveness on prior `calibration_deliveries`. See `docs/spec-calibration-system.md` (especially Amendment 1) for the dimension list and design rationale.
 
