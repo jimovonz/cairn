@@ -78,6 +78,7 @@ def start_sync_services():
     # 3. Listener + periodic outbound-approval promotion
     def _listen():
         conn = sqlite3.connect(db)
+        conn.execute("PRAGMA busy_timeout=5000")
         def _store(beacon, addr):
             try:
                 discovery.record_beacon(conn, beacon, self_node_id=self_fp)
@@ -102,6 +103,7 @@ def start_sync_services():
     # pairing with each source directly.
     def _pull():
         conn = sqlite3.connect(db)
+        conn.execute("PRAGMA busy_timeout=5000")
         try:
             from cairn import embeddings as _emb
         except Exception:
