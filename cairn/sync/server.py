@@ -265,6 +265,7 @@ class SyncHandler(BaseHTTPRequestHandler):
 
         source_ip = self.client_address[0] if self.client_address else ""
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA busy_timeout=5000")
         try:
             if self.path == "/pair":
                 status, obj = _handle_pair(body, self.headers, source_ip, conn)

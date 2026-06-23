@@ -38,7 +38,9 @@ def _db_path() -> str:
 
 
 def _conn():
-    return sqlite3.connect(_db_path())
+    c = sqlite3.connect(_db_path())
+    c.execute("PRAGMA busy_timeout=5000")
+    return c
 
 
 def _lan_ip() -> str:

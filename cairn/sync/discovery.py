@@ -17,6 +17,10 @@ from typing import Callable, Optional
 
 DISCOVERY_PORT = 47391
 BEACON_MAGIC = "cairn-sync-beacon/1"
+# Keep beacon churn off the durable DB: only rewrite a discovered_peers row when
+# something changed or its last_seen is older than this. Beacons arrive sub-second
+# from multiple radios; writing every one starves the memory-capture drain.
+DISCOVERY_WRITE_THROTTLE_SEC = 20
 
 
 def build_beacon(node_id: str, user_id: str, url: str, public_key: str,
@@ -59,6 +63,18 @@ def record_beacon(conn, beacon: dict, *, self_node_id: Optional[str] = None) -> 
     nid = beacon.get("node_id")
     if not nid or nid == self_node_id:
         return False
+    url = beacon.get("url")
+    # Throttle: skip the write entirely if we already hold a fresh, identical row
+    # (beacons are sub-second; this caps discovered_peers writes to ~1/throttle
+    # per peer or on-change, keeping the durable DB's write lock free for capture).
+    fresh = conn.execute(
+        "SELECT 1 FROM discovered_peers WHERE node_id = ? "
+        f"AND last_seen > datetime('now', '-{DISCOVERY_WRITE_THROTTLE_SEC} seconds') "
+        "AND url IS ? AND user_id IS ? AND cert_fingerprint IS ?",
+        (nid, url, beacon.get("user_id"), beacon.get("cert_fingerprint")),
+    ).fetchone()
+    if fresh:
+        return True
     conn.execute(
         "INSERT INTO discovered_peers "
         "(node_id, user_id, url, public_key, schema_version, cert_fingerprint, last_seen) "
@@ -67,22 +83,19 @@ def record_beacon(conn, beacon: dict, *, self_node_id: Optional[str] = None) -> 
         "url = excluded.url, public_key = excluded.public_key, "
         "schema_version = excluded.schema_version, "
         "cert_fingerprint = excluded.cert_fingerprint, last_seen = CURRENT_TIMESTAMP",
-        (nid, beacon.get("user_id"), beacon.get("url"), beacon.get("public_key"),
+        (nid, beacon.get("user_id"), url, beacon.get("public_key"),
          beacon.get("schema_version"), beacon.get("cert_fingerprint")),
     )
-    # Self-heal an already-approved peer's pull address when it reappears at a new
-    # IP. Discovery is always on and the beacon carries the live URL, so a paired
-    # peer that moves networks just works on the next pull. Only the URL follows
-    # the beacon — the pinned cert fingerprint is NOT touched, so a beacon that
-    # lies about a peer's location can't redirect us to a host that can't present
-    # the pinned cert (fails closed: wrong host -> cert mismatch -> no data).
-    url = beacon.get("url")
+    # Self-heal an approved peer's pull address on IP change — but ONLY write when
+    # the URL actually changed (not every beacon). Pinned cert is never touched, so
+    # a lying beacon can't redirect us to a host that can't present the pinned cert.
     if url:
-        conn.execute(
-            "UPDATE sync_peers SET url = ? WHERE peer_node_id = ? "
-            "AND (status IS NULL OR status = 'approved')",
-            (url, nid),
-        )
+        cur = conn.execute(
+            "SELECT url FROM sync_peers WHERE peer_node_id = ? "
+            "AND (status IS NULL OR status = 'approved')", (nid,)
+        ).fetchone()
+        if cur and cur[0] != url:
+            conn.execute("UPDATE sync_peers SET url = ? WHERE peer_node_id = ?", (url, nid))
     conn.commit()
     return True
 
