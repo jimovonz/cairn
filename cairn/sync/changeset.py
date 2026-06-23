@@ -269,6 +269,12 @@ def apply_changeset(
     max_observed_lamport = 0
 
     # --- memories ---
+    # Commit per row so the write lock is released between rows: embedding
+    # regeneration (the slow part, inside _apply_memory_row) then happens with NO
+    # write lock held, and the memory-capture drain can interleave. Holding one
+    # big transaction across every row's embed previously starved capture
+    # ("database is locked"). Safe to commit incrementally — sync is idempotent
+    # (per-column LWW; a re-pull re-applies), so partial application never corrupts.
     for rec in payload.get("memories", []):
         try:
             updated, inserted, lam = _apply_memory_row(conn, rec, embedder, regen_embeddings, result)
@@ -279,8 +285,13 @@ def apply_changeset(
             else:
                 result.memories_skipped_lww += 1
             max_observed_lamport = max(max_observed_lamport, lam or 0)
+            conn.commit()
         except Exception as e:  # surface but don't abort
             result.errors.append(f"memory {rec.get('origin_id')}: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
     # --- confidence_log (idempotent on log_uuid) ---
     affected_origins: set[str] = set()
