@@ -262,7 +262,7 @@ fi
 # On upgrade installs the daemon may already be running with stale model_version
 # or schema knowledge — stop it first so the fresh `start` picks up current state.
 # `daemon.py stop` returns 0 if not running, so this is safe on fresh installs too.
-# --- Multi-node sync (default ON; opt out: CAIRN_SYNC_ENABLED=0) ---
+# --- Multi-node sync (default OFF; opt in: CAIRN_SYNC_ENABLED=1) ---
 # Persisted to cairn/.env, which cairn.config loads on import — so the daemon
 # (however started: install, cron, or Stop-hook respawn), every hook, and the CLI
 # all see the same settings. Discovery + pairing require explicit per-peer
@@ -275,7 +275,7 @@ set_env_kv() {  # idempotent KEY=VALUE upsert into cairn/.env
     echo "$1=$2" >> "$ENV_FILE.tmp"
     mv "$ENV_FILE.tmp" "$ENV_FILE"
 }
-SYNC_ENABLED="${CAIRN_SYNC_ENABLED:-1}"
+SYNC_ENABLED="${CAIRN_SYNC_ENABLED:-0}"
 set_env_kv CAIRN_SYNC_ENABLED "$SYNC_ENABLED"
 set_env_kv CAIRN_SYNC_SHARE_SESSIONS "${CAIRN_SYNC_SHARE_SESSIONS:-0}"
 if [ "$SYNC_ENABLED" = "1" ]; then
