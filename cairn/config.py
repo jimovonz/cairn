@@ -24,6 +24,36 @@ except FileNotFoundError:
     pass
 del _os_env
 
+
+def set_env_kv(key: str, value: str) -> None:
+    """Idempotently upsert KEY=value in cairn/.env and the live process env.
+
+    Mirrors install.sh's set_env_kv so the dashboard / pairing can persist
+    toggles (e.g. CAIRN_SYNC_ENABLED) that survive a daemon restart. Atomic
+    (temp + rename). Also sets os.environ[key] so the current process sees it."""
+    import os
+    path = os.path.join(os.path.dirname(__file__), ".env")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        lines = []
+    out, found = [], False
+    for ln in lines:
+        s = ln.strip()
+        if s and not s.startswith("#") and "=" in s and s.split("=", 1)[0].strip() == key:
+            out.append(f"{key}={value}")
+            found = True
+        else:
+            out.append(ln)
+    if not found:
+        out.append(f"{key}={value}")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+    os.replace(tmp, path)
+    os.environ[key] = value
+
 # === Deduplication ===
 DEDUP_THRESHOLD = 0.95          # Cosine similarity above which entries are considered near-identical
 

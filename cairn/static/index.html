@@ -748,6 +748,10 @@ a:hover { text-decoration: underline; }
     <div class="card">
       <h2>This node</h2>
       <div id="sync-identity" style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">…</div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+        <button id="sync-toggle-btn" onclick="syncToggle()" style="font-size:13px;background:var(--bg-card);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer">…</button>
+        <span id="sync-state-label" style="font-size:12px;color:var(--text-dim)"></span>
+      </div>
       <p style="color:var(--text-dim);font-size:12px;margin-top:8px">Traffic is encrypted (HTTPS, self-signed cert pinned at pairing). Read your fingerprint to a peer so they can verify it before approving — sharing is <b>mutual</b>: you each authorize the other.</p>
     </div>
 
@@ -2320,14 +2324,34 @@ function toggleTheme() {
 async function loadSync() {
   try {
     const id = await api('/api/sync/identity');
+    const enabled = !!id.enabled, running = !!id.running;
+    const stateTxt = enabled
+      ? (running ? '<span style="color:#3fb950">● sync on (services running)</span>'
+                 : '<span style="color:#d29922">● sync on (starting…)</span>')
+      : '<span style="color:var(--text-dim)">○ sync off</span>';
     document.getElementById('sync-identity').innerHTML =
       `<div><b>node id</b> ${id.node_id}</div>` +
       `<div><b>user</b> ${escapeHtml(id.user_id)}</div>` +
-      `<div><b>schema</b> v${id.schema_version}</div>`;
+      `<div><b>schema</b> v${id.schema_version}</div>` +
+      `<div style="margin-top:6px">${stateTxt}</div>`;
+    const btn = document.getElementById('sync-toggle-btn');
+    btn.textContent = enabled ? 'Disable sync' : 'Enable sync';
+    btn.dataset.enabled = enabled ? '1' : '0';
+    document.getElementById('sync-state-label').textContent =
+      enabled ? 'Pairing with a peer auto-enables this.' : 'Enable to discover & pair with peers.';
   } catch (e) {
     document.getElementById('sync-identity').textContent = 'sync unavailable: ' + e;
   }
   loadSyncOnline(); loadSyncRequests(); loadSyncPeers();
+}
+
+async function syncToggle() {
+  const btn = document.getElementById('sync-toggle-btn');
+  const enable = btn.dataset.enabled !== '1';  // flip current state
+  btn.disabled = true;
+  try { await syncPost(enable ? '/api/sync/enable' : '/api/sync/disable', {}); }
+  finally { btn.disabled = false; }
+  loadSync();
 }
 
 async function loadSyncRequests() {

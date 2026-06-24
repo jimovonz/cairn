@@ -1733,6 +1733,37 @@ def _generate_graph_viz(repo):
 # Management surface for the Sync dashboard tab: identity, discovered peers,
 # pairing-request queue (approve/deny), paired peers (revoke), outbound pairing.
 
+def _sync_enabled_flag() -> bool:
+    """Live CAIRN_SYNC_ENABLED — read from os.environ (config loads .env into it
+    at import and set_sync_enabled updates it on toggle), not the stale module
+    constant captured at config import time."""
+    return os.environ.get("CAIRN_SYNC_ENABLED", "").lower() in ("1", "true", "yes")
+
+
+def _sync_running() -> bool:
+    """Ask the running daemon whether sync services are actually up."""
+    try:
+        from cairn import daemon
+        if daemon.is_running():
+            r = daemon.send_request({"action": "sync_status"})
+            return bool(r and r.get("running"))
+    except Exception:
+        pass
+    return False
+
+
+def _auto_enable_sync() -> None:
+    """Pairing implies intent to sync — enable it (persisted) if currently off.
+    Embodies "auto-enable on pairing": approving or initiating a pairing turns
+    sync on so the periodic pull actually runs, without a separate toggle step."""
+    try:
+        if not _sync_enabled_flag():
+            from cairn.sync.service import set_sync_enabled
+            set_sync_enabled(True)
+    except Exception:
+        pass
+
+
 def api_sync_identity(params):
     from cairn.sync import identity, SCHEMA_VERSION
     return {
@@ -1740,7 +1771,17 @@ def api_sync_identity(params):
         "user_id": identity.get_user_id(),
         "public_key": identity.get_public_key_b64(),
         "schema_version": SCHEMA_VERSION,
+        "enabled": _sync_enabled_flag(),
+        "running": _sync_running(),
     }, 200
+
+
+def api_sync_set_enabled(body, enabled: bool):
+    """Toggle sync on/off from the dashboard. Persists to .env (unless
+    session_only) and signals the daemon to start/stop services live."""
+    from cairn.sync.service import set_sync_enabled
+    session_only = bool((body or {}).get("session_only"))
+    return set_sync_enabled(enabled, session_only=session_only), 200
 
 
 def api_sync_pairing_requests(params):
@@ -1775,6 +1816,8 @@ def api_sync_approve(params, request_id):
     conn = get_conn()
     try:
         res = pairing.approve_pairing(conn, int(request_id))
+        if res.get("ok"):
+            _auto_enable_sync()  # pairing implies intent to sync
         return res, (200 if res.get("ok") else 404)
     finally:
         conn.close()
@@ -1862,6 +1905,8 @@ def api_sync_pair(body):
     conn = get_conn()
     try:
         resp = client.send_pairing_request(url, my_url=my_url, conn=conn)
+        if resp.get("ok"):
+            _auto_enable_sync()  # pairing implies intent to sync
         return resp, (200 if resp.get("ok") else 502)
     finally:
         conn.close()
@@ -2052,6 +2097,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(content_length)) if content_length else {}
             try:
                 data, status = api_sync_pair(body)
+                self._send_json(data, status)
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+            return
+        if path in ("/api/sync/enable", "/api/sync/disable"):
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(content_length)) if content_length else {}
+            try:
+                data, status = api_sync_set_enabled(body, path.endswith("/enable"))
                 self._send_json(data, status)
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
