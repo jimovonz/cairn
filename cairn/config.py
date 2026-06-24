@@ -281,6 +281,12 @@ CROSS_ENCODER_SCORE_FLOOR = -3.0   # Drop candidates below this raw ms-marco log
 CROSS_ENCODER_MAX_CANDIDATES = 12  # Cap active pairs per CE call — CE latency is linear in pair count
 CROSS_ENCODER_MAX_ARCHIVED = 6     # Cap archived (negative-knowledge) pairs in the combined CE call
 
+# === Read-side memory relevance grading (docs/spec-memory-relevance-grading.md) ===
+RELEVANCE_LOGGING_ENABLED = True    # Log injected memories to memory_deliveries (instrument; T0)
+RELEVANCE_PREFILTER_ENABLED = False # Bucket-4 self-referential-meta prefilter — OFF by default
+                                    # (behaviour change: drops injected memories). Correction-exempt,
+                                    # drop-audited via the relevance_prefilter_drop metric when on.
+
 # === NLI (Natural Language Inference) for consolidation ===
 # Used by the consolidation pipeline to detect entailment between memory pairs.
 # Same lazy-load pattern as cross-encoder — loaded in daemon on first use.

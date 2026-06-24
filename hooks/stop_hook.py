@@ -399,6 +399,13 @@ def main() -> None:
     confidence_updates, retrieval_outcome = parsed.confidence_updates, parsed.retrieval_outcome
     keywords, intent = parsed.keywords, parsed.intent
     hash_claimed = parsed.hash_claimed
+    # Phase 2: agent-as-teacher relevance grades (0-3 + hard-neg) -> memory_deliveries
+    if parsed.relevance_grades:
+        try:
+            from cairn.relevance import apply_relevance_grades
+            apply_relevance_grades(list(parsed.relevance_grades), session_id=session_id)
+        except Exception as e:
+            log(f"relevance grade write-back failed: {e}")
 
     # Subagent mode: opportunistic — store what's volunteered, skip enforcement
     if is_subagent:
