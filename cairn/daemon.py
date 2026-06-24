@@ -328,6 +328,31 @@ def handle_client(conn, emb):
         elif action == "ping":
             response = {"status": "ok"}
 
+        elif action == "sync_start":
+            # Live-start P2P sync services (dashboard toggle / pairing auto-enable).
+            # force=True so it starts even if the daemon booted with sync disabled.
+            try:
+                from cairn.sync.service import start_sync_services, sync_running
+                start_sync_services(force=True)
+                response = {"ok": True, "running": sync_running()}
+            except Exception as e:  # noqa: BLE001
+                response = {"ok": False, "error": str(e)}
+
+        elif action == "sync_stop":
+            try:
+                from cairn.sync.service import stop_sync_services, sync_running
+                stop_sync_services()
+                response = {"ok": True, "running": sync_running()}
+            except Exception as e:  # noqa: BLE001
+                response = {"ok": False, "error": str(e)}
+
+        elif action == "sync_status":
+            try:
+                from cairn.sync.service import sync_running
+                response = {"ok": True, "running": sync_running()}
+            except Exception as e:  # noqa: BLE001
+                response = {"ok": False, "error": str(e)}
+
         elif action == "hook":
             route = request.get("route", "")
             payload = request.get("payload", {}) or {}

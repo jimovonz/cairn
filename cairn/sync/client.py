@@ -57,7 +57,8 @@ class CertPinError(Exception):
 
 
 def _https_post(url: str, path: str, body_bytes: bytes, headers: dict,
-                *, pinned_fp: Optional[str] = None, timeout: float = 30.0):
+                *, pinned_fp: Optional[str] = None, timeout: float = 30.0,
+                connect_timeout: Optional[float] = None):
     """POST over HTTPS to a self-signed peer, pinning its cert fingerprint.
 
     Returns (status, resp_bytes, peer_cert_fp). No CA chain is used; trust comes
@@ -72,9 +73,15 @@ def _https_post(url: str, path: str, body_bytes: bytes, headers: dict,
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     conn = http.client.HTTPSConnection(u.hostname, u.port or 8787,
-                                       timeout=timeout, context=ctx)
+                                       timeout=connect_timeout or timeout, context=ctx)
     try:
         conn.connect()
+        # Connect succeeded within connect_timeout; allow the longer read timeout
+        # for the transfer. Only matters when connect_timeout < timeout (fast-fail
+        # dialing in pull_all) — an absent peer fails the connect quickly instead
+        # of stalling the whole cycle for the full transfer timeout.
+        if connect_timeout and conn.sock is not None:
+            conn.sock.settimeout(timeout)
         der = conn.sock.getpeercert(binary_form=True)
         peer_fp = cert_fingerprint_from_der(der) if der else None
         if pinned_fp and peer_fp != pinned_fp:
@@ -140,8 +147,12 @@ def pull_from_peer(
     embedder=None,
     timeout: float = 30.0,
     max_rows: int = 5000,
+    connect_timeout: Optional[float] = None,
 ) -> PullResult:
-    """Pull from one peer. Updates sync_state high-water marks on success."""
+    """Pull from one peer. Updates sync_state high-water marks on success.
+
+    `connect_timeout` bounds the dial separately from the transfer `timeout`, so
+    an offline peer fails fast instead of stalling the cycle (see _https_post)."""
     attach_ephemeral(conn)
     result = PullResult(peer_node_id)
     peer_row = conn.execute(
@@ -173,7 +184,8 @@ def pull_from_peer(
     }
     try:
         status, data, peer_fp = _https_post(url, "/sync", body, headers,
-                                            pinned_fp=pinned_fp, timeout=timeout)
+                                            pinned_fp=pinned_fp, timeout=timeout,
+                                            connect_timeout=connect_timeout)
     except CertPinError as e:
         result.error = f"cert pin: {e}"
         _record_attempt(conn, peer_node_id, ok=False, error=result.error)
@@ -232,12 +244,54 @@ def _record_attempt(conn, peer_node_id: str, *, ok: bool, error: Optional[str]) 
         )
 
 
+# Pull tuning — an offline peer must never stall the cycle.
+PULL_CONNECT_TIMEOUT = 4.0   # fast-fail dial; a present peer answers well under this
+PULL_READ_TIMEOUT = 30.0     # patient once connected (large changesets)
+
+
 def pull_all(conn, *, embedder=None) -> list[PullResult]:
-    """Pull from every registered, approved peer."""
-    peers = conn.execute(
+    """Pull from every approved peer that is *currently present* on the network.
+
+    A paired peer is trusted, not necessarily reachable — laptops sleep, devices
+    roam or power off. We gate on live presence (the discovery beacon in
+    eph.discovered_peers) so we never assume a paired device is here:
+
+      * fresh beacon within the online window -> pull (peer is present)
+      * never beaconed at all                 -> attempt once (first contact, e.g.
+                                                 paired by URL); fast-fail dial so a
+                                                 dead URL costs ~PULL_CONNECT_TIMEOUT
+      * beaconed before but now stale          -> SKIP (peer is offline; no socket)
+
+    Skipping offline peers costs zero sockets and — since an absent peer transfers
+    nothing — zero apply_changeset writes, so presence gating also shrinks the
+    durable-DB contention surface.
+    """
+    from cairn import config
+    attach_ephemeral(conn)
+    window = getattr(config, "CAIRN_SYNC_ONLINE_WINDOW", 90)
+    peers = [r[0] for r in conn.execute(
         "SELECT peer_node_id FROM sync_peers WHERE status IS NULL OR status = 'approved'"
-    ).fetchall()
-    return [pull_from_peer(conn, p[0], embedder=embedder) for p in peers]
+    ).fetchall()]
+    if not peers:
+        return []
+    seen_ever = {r[0] for r in conn.execute(
+        "SELECT node_id FROM eph.discovered_peers").fetchall()}
+    fresh = {r[0] for r in conn.execute(
+        f"SELECT node_id FROM eph.discovered_peers "
+        f"WHERE last_seen >= datetime('now', '-{int(window)} seconds')").fetchall()}
+
+    results: list[PullResult] = []
+    for pid in peers:
+        if pid in fresh or pid not in seen_ever:
+            results.append(pull_from_peer(
+                conn, pid, embedder=embedder,
+                timeout=PULL_READ_TIMEOUT, connect_timeout=PULL_CONNECT_TIMEOUT))
+        else:
+            # Paired + seen before, but no fresh beacon -> offline. Skip silently.
+            r = PullResult(pid)
+            r.error = "offline: skipped (no fresh discovery beacon)"
+            results.append(r)
+    return results
 
 
 def send_pairing_request(url: str, *, user_id: Optional[str] = None,
