@@ -242,7 +242,10 @@ def layer1_5_search(user_message: str, session_id: str,
     result_ids = [r["id"] for r in project_results + global_results]
     record_metric(session_id, "layer1_5_injected", user_message[:80], len(result_ids))
     record_layer_delivery(session_id, "L1.5", result_ids)
-    return build_context_xml(user_message, project, "per-prompt", project_results, global_results)
+    from cairn.relevance import build_context_window
+    return build_context_xml(user_message, project, "per-prompt", project_results, global_results,
+                             session_id=session_id,
+                             context_text=build_context_window(user_message, transcript_path))
 
 
 _KNOWLEDGE_QUESTION_PATTERNS = (
@@ -474,7 +477,10 @@ def layer1_search(user_message: str, session_id: str) -> Optional[str]:
 
     result_ids = [r["id"] for r in project_results + global_results]
     record_layer_delivery(session_id, "L1", result_ids)
-    return build_context_xml(user_message, project, "first-prompt", project_results, global_results)
+    from cairn.relevance import build_context_window
+    return build_context_xml(user_message, project, "first-prompt", project_results, global_results,
+                             session_id=session_id,
+                             context_text=build_context_window(user_message, None))
 
 
 def main() -> None:

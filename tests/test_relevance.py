@@ -132,3 +132,66 @@ def test_grade_updates_most_recent_delivery_only(eph):
 def test_log_failsoft_empty():
     assert relevance.log_memory_deliveries([], session_id="s") == 0
     assert relevance.apply_relevance_grades([], session_id="s") == 0
+
+
+# ---- wiring: build_context_xml prefilter + delivery logging -------------------
+def test_build_context_xml_logs_deliveries(tmp_path, monkeypatch):
+    import sqlite3
+    p = str(tmp_path / "eph.db")
+    init_db.init_ephemeral(p)
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", p)
+    from hooks.hook_helpers import build_context_xml
+    pr = [{"id": 1, "type": "fact", "topic": "t", "content": "c", "project": "x",
+           "updated_at": "now", "confidence": 0.9, "score": 0.9, "similarity": 0.7,
+           "archived_reason": None}]
+    build_context_xml("q", "x", "per-prompt", pr, [], session_id="sess",
+                      context_text="[user] q")
+    rows = sqlite3.connect(p).execute(
+        "SELECT memory_id, context_text FROM memory_deliveries WHERE session_id='sess'").fetchall()
+    assert rows == [(1, "[user] q")]
+
+
+def _entry(i, typ, content):
+    return {"id": i, "type": typ, "topic": "t", "content": content, "project": "x",
+            "updated_at": "now", "confidence": 0.9, "score": 0.9, "similarity": 0.7,
+            "archived_reason": None}
+
+
+def test_build_context_xml_prefilter_gated_and_correction_exempt(tmp_path, monkeypatch):
+    p = str(tmp_path / "eph.db")
+    init_db.init_ephemeral(p)
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", p)
+    monkeypatch.setattr("cairn.config.RELEVANCE_PREFILTER_ENABLED", True)
+    from hooks.hook_helpers import build_context_xml
+    pr = [
+        _entry(1, "fact", "No memory of the user's brother exists yet"),  # meta -> dropped
+        _entry(2, "correction", "No memory of X exists yet"),             # correction -> exempt
+        _entry(3, "fact", "ms-marco rerank model is ms-marco-MiniLM"),    # normal -> kept
+    ]
+    xml = build_context_xml("q", "x", "per-prompt", pr, [], session_id="s", context_text="t")
+    assert 'id="1"' not in xml   # bucket-4 meta dropped
+    assert 'id="2"' in xml       # correction never gated
+    assert 'id="3"' in xml       # normal kept
+
+
+def test_build_context_xml_prefilter_off_by_default(tmp_path, monkeypatch):
+    p = str(tmp_path / "eph.db")
+    init_db.init_ephemeral(p)
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", p)
+    # default RELEVANCE_PREFILTER_ENABLED is False -> meta NOT dropped
+    from hooks.hook_helpers import build_context_xml
+    pr = [_entry(1, "fact", "No memory of the user's brother exists yet")]
+    xml = build_context_xml("q", "x", "per-prompt", pr, [], session_id="s", context_text="t")
+    assert 'id="1"' in xml
+
+
+def test_build_context_xml_no_session_skips_logging(tmp_path, monkeypatch):
+    import sqlite3
+    p = str(tmp_path / "eph.db")
+    init_db.init_ephemeral(p)
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", p)
+    from hooks.hook_helpers import build_context_xml
+    # bootstrap-style call (no session_id) must not log
+    build_context_xml("standing", "x", "project-bootstrap", [_entry(9, "fact", "c")], [])
+    n = sqlite3.connect(p).execute("SELECT COUNT(*) FROM memory_deliveries").fetchone()[0]
+    assert n == 0

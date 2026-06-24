@@ -547,11 +547,51 @@ def split_by_scope(results: list[dict[str, Any]], project: Optional[str]) -> tup
     return project_results, global_results
 
 
+def _relevance_prefilter(project_results, global_results, session_id):
+    """Drop bucket-4 self-referential meta-memories before injection (gated by
+    RELEVANCE_PREFILTER_ENABLED, default off). Corrections are never gated (spec).
+    Each drop is audited via the relevance_prefilter_drop metric."""
+    try:
+        from cairn import config
+        if not getattr(config, "RELEVANCE_PREFILTER_ENABLED", False):
+            return project_results, global_results
+        from cairn.relevance import is_self_referential_meta
+    except Exception:
+        return project_results, global_results
+
+    def _keep(r):
+        if r.get("type") == "correction":
+            return True  # corrections surface ungated (spec A.1)
+        if is_self_referential_meta(r):
+            try:
+                record_metric(session_id, "relevance_prefilter_drop",
+                              f"id={r.get('id')} {str(r.get('content', ''))[:60]}")
+            except Exception:
+                pass
+            return False
+        return True
+
+    return ([r for r in project_results if _keep(r)],
+            [r for r in global_results if _keep(r)])
+
+
 def build_context_xml(query: str, project: Optional[str], layer: str,
                       project_results: list[dict[str, Any]],
                       global_results: list[dict[str, Any]],
-                      instruction: Optional[str] = None) -> str:
-    """Build a complete <cairn_context> XML block."""
+                      instruction: Optional[str] = None, *,
+                      session_id: Optional[str] = None,
+                      context_text: Optional[str] = None,
+                      context_vec: Optional[bytes] = None) -> str:
+    """Build a complete <cairn_context> XML block.
+
+    When `session_id` is given (the semantic-match layers L1/L1.5), this also
+    runs the read-side relevance machinery on the injected set: the bucket-4
+    prefilter (gated) and a memory_deliveries log keyed by `context_text` (the
+    cleaned recent-context window). Bootstrap/correction layers omit session_id
+    so they stay ungated and unlogged."""
+    if session_id:
+        project_results, global_results = _relevance_prefilter(
+            project_results, global_results, session_id)
     safe_query = query[:80].replace('"', '&quot;')
     lines = [f'<cairn_context query="{safe_query}" current_project="{project or "none"}" layer="{layer}">']
     if instruction:
@@ -569,6 +609,19 @@ def build_context_xml(query: str, project: Optional[str], layer: str,
         lines.append("  </scope>")
 
     lines.append("</cairn_context>")
+
+    # Phase 1 instrument: log each injected (post-filter) memory to memory_deliveries.
+    if session_id:
+        try:
+            from cairn import config
+            if getattr(config, "RELEVANCE_LOGGING_ENABLED", True):
+                from cairn.relevance import log_memory_deliveries
+                log_memory_deliveries(project_results + global_results,
+                                      session_id=session_id,
+                                      context_text=context_text or query,
+                                      context_vec=context_vec)
+        except Exception:
+            pass
     return "\n".join(lines)
 
 
