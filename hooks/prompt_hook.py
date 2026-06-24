@@ -63,6 +63,34 @@ def log(msg: str) -> None:
     _base_log(f"[prompt] {msg}")
 
 
+# Per-cwd HEAD sentinel for code-graph freshness. Stored under a fixed sentinel
+# session so the last-seen HEAD persists across sessions per repo. Lets a
+# mid-session branch switch / pull / rebase trigger a background graph update —
+# which first-prompt-only build + the hourly cron sweep would otherwise miss.
+_GRAPH_HEAD_STATE_SESSION = "__cairn_graph_head__"
+
+
+def _graph_head_key(cwd: str) -> str:
+    return f"graph_head:{cwd}"
+
+
+def refresh_graph_on_head_change(session_id: str, cwd: str) -> None:
+    """Kick a background graph update if the repo's HEAD moved since last prompt."""
+    if not cwd:
+        return
+    try:
+        from cairn.repo_discovery import kick_graph_update_if_head_changed
+        last = load_hook_state(_GRAPH_HEAD_STATE_SESSION, _graph_head_key(cwd))
+        kicked, head = kick_graph_update_if_head_changed(cwd, last)
+        if head and head != last:
+            save_hook_state(_GRAPH_HEAD_STATE_SESSION, _graph_head_key(cwd), head)
+            if kicked:
+                record_metric(session_id, "graph_head_refresh", cwd)
+                log(f"graph: HEAD changed in {cwd} — kicked background update")
+    except Exception as _e:
+        log(f"graph head-refresh failed open: {type(_e).__name__}: {_e}")
+
+
 def is_first_prompt(session_id: str) -> bool:
     """Check if this is the first prompt of the session."""
     return load_hook_state(session_id, "first_prompt_done") is None
@@ -496,8 +524,13 @@ def main() -> None:
         # surfaces a one-line suggestion to manually run ingest.py when this
         # repo has no cairn ingest record (never invokes it automatically).
         try:
-            from cairn.repo_discovery import kick_graph_build, should_suggest_ingest
+            from cairn.repo_discovery import kick_graph_build, should_suggest_ingest, head_signature
             kick_graph_build(cwd)
+            # Seed the HEAD sentinel so subsequent-prompt branch-switch detection
+            # has a baseline (this first-prompt build already brought it current).
+            _seed_head = head_signature(cwd)
+            if _seed_head:
+                save_hook_state(_GRAPH_HEAD_STATE_SESSION, _graph_head_key(cwd), _seed_head)
             ingest_suggestion = should_suggest_ingest(cwd, get_conn())
             if ingest_suggestion:
                 context_parts.append(ingest_suggestion)
@@ -558,6 +591,12 @@ def main() -> None:
             save_hook_state(session_id, "format_spec_injected", "1")
 
     elif not is_subagent:
+        # Code-graph freshness: a mid-session branch switch / pull / rebase moves
+        # HEAD; the first-prompt-only build and hourly cron sweep would miss it
+        # until the next session or sweep. Detect HEAD movement and kick a
+        # background incremental update (portable — no native git hooks).
+        refresh_graph_on_head_change(session_id, cwd)
+
         # Layer 1.5: Per-prompt semantic injection for subsequent prompts
         # Skipped for subagents — short-lived, adds latency
         l1_5_context = layer1_5_search(user_message, session_id, transcript_path)

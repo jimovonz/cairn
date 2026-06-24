@@ -68,7 +68,7 @@ Input is JSON on stdin (or `--file`): `{repo, project?, commit?, findings:[{file
 - `cairn-graph --summary` / `--orientation` — repo-level modules/flows/hubs
 - `cairn-graph --file-context FILE` — a file's symbols, signatures, fan-in/out, risk tail
 
-This data is also surfaced automatically into sessions: a repo orientation block at session start (Tier 1, prompt hook) and per-file structural context on Read/Edit (Tier 2, pretool hook, deduped once-per-file). The Tier 2 hook also recovers file paths from `Bash` commands (`cat`/`sed`/`head` + `cch-edit.py`/`cch-write.py`), so it still fires in environments where Read/Edit are routed through Bash helpers. Both are gated by `GRAPH_ORIENTATION_ENABLED` / `GRAPH_FILE_CONTEXT_ENABLED` and fail open if no graph is built.
+This data is also surfaced automatically into sessions: a repo orientation block at session start (Tier 1, prompt hook) and per-file structural context on Read/Edit (Tier 2, pretool hook, deduped once-per-file). Tier 2 resolves the graph from the **accessed file's own location** (not cwd), so it still surfaces when cwd is a parent dir (e.g. `~/Projects`) and the file lives in a subrepo. The Tier 2 hook also recovers file paths from `Bash` commands (`cat`/`sed`/`head` + `cch-edit.py`/`cch-write.py`), so it still fires in environments where Read/Edit are routed through Bash helpers. Both are gated by `GRAPH_ORIENTATION_ENABLED` / `GRAPH_FILE_CONTEXT_ENABLED` and fail open if no graph is built.
 
 ### Fleet — keeping every repo graph-ready
 
@@ -77,6 +77,7 @@ This data is also surfaced automatically into sessions: a repo orientation block
 - **`cairn/graph_fleet.py`** discovers every git repo under the configured roots (`CAIRN_GRAPH_ROOTS`, colon-separated; default = parent of `CAIRN_HOME`), **builds** any missing graph and incrementally **`update`s** existing ones. Run `python3 -m cairn.graph_fleet` (sweep) or `--status`.
 - An **hourly cron** runs this sweep — the freshness backbone, daemon-independent. `install.sh` kicks an initial background bootstrap that builds all repos.
 - The **prompt hook** (`repo_discovery.kick_graph_build`) also build/updates the current repo's graph on first contact, as a per-session fast path.
+- **HEAD-change detection** (`repo_discovery.kick_graph_update_if_head_changed`, fired per-prompt from the prompt hook) catches a *mid-session* branch switch / pull / rebase / commit: it compares the repo's current HEAD against a per-cwd sentinel in `hook_state` and kicks a background `crg update` when it moved. This is the portable path (no native git hooks) — without it, a branch switch would leave the graph stale until the next hourly sweep or new session.
 - **Optional real-time layer:** set `CAIRN_GRAPH_WATCH=1` to also register repos with the `code-review-graph` watch daemon (`crg daemon`, 2s poll) for sub-hour freshness. Off by default — the daemon doesn't reliably persist when spawned outside a login shell and churns on volatile files (e.g. cairn's own ephemeral DB), so the cron sweep is the dependable mechanism.
 
 So every repo is graph-ready before first contact, independent of whether cairn has been active in it.
