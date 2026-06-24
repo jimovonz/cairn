@@ -574,8 +574,19 @@ def file_context_block(file_path, repo_root=None, max_symbols=12, risk_threshold
     callout for security-relevant / high-risk symbols. Pure SQL, no LLM. Returns
     None if no graph.db, the file isn't in the graph, or it has no symbols.
     """
+    # Resolve the graph from the FILE's own location when no repo_root is given.
+    # A common session runs with cwd at a parent dir (e.g. ~/Projects) while
+    # editing a file in a subrepo; walking up from cwd would miss the subrepo's
+    # already-built graph, so start the search from the file's directory instead.
+    if repo_root:
+        search_start = repo_root
+    else:
+        _fp = Path(file_path)
+        if not _fp.is_absolute():
+            _fp = Path.cwd() / _fp
+        search_start = str(_fp.parent)
     try:
-        db_path = _find_graph_db(repo_root)
+        db_path = _find_graph_db(search_start)
     except FileNotFoundError:
         return None
     rr = repo_root or str(db_path.parent.parent)
