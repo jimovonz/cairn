@@ -168,7 +168,7 @@ def test_pair_approve_then_signed_pull(make_node, fake_embedder):
 
         # 3. Client registers the peer and pulls — authenticated by signature.
         client_conn = client_node.conn()
-        client_mod.add_peer(client_conn, peer_node_id="server-peer", url=url, bearer_token="")
+        client_mod.add_peer(client_conn, peer_node_id="server-peer", url=url)
         client_node.activate()
         result = client_mod.pull_from_peer(client_node.conn(), "server-peer",
                                            embedder=fake_embedder)
@@ -193,7 +193,7 @@ def test_unapproved_peer_rejected(make_node):
         _wait_for_port(port)
         url = f"https://127.0.0.1:{port}"
         client_node.activate()
-        client_mod.add_peer(client_node.conn(), peer_node_id="server-peer", url=url, bearer_token="")
+        client_mod.add_peer(client_node.conn(), peer_node_id="server-peer", url=url)
         # No pairing/approval done → server has no pinned key for us.
         result = client_mod.pull_from_peer(client_node.conn(), "server-peer")
         assert not result.ok
@@ -217,7 +217,7 @@ def test_revoked_peer_rejected(make_node, fake_embedder):
         pending = pairing.list_pairing_requests(server_node.conn(), pending_only=True)
         approved = pairing.approve_pairing(server_node.conn(), pending[0]["id"])
         pairing.revoke_peer(server_node.conn(), approved["peer_node_id"])
-        client_mod.add_peer(client_node.conn(), peer_node_id="server-peer", url=url, bearer_token="")
+        client_mod.add_peer(client_node.conn(), peer_node_id="server-peer", url=url)
         client_node.activate()
         result = client_mod.pull_from_peer(client_node.conn(), "server-peer", embedder=fake_embedder)
         assert not result.ok and "401" in (result.error or "")
@@ -294,13 +294,13 @@ def test_approved_peer_url_follows_beacon(node):
     conn = node.conn()
     # An approved peer pinned at an old IP.
     conn.execute(
-        "INSERT INTO sync_peers (peer_node_id, url, bearer_token, peer_public_key, "
+        "INSERT INTO sync_peers (peer_node_id, url, peer_public_key, "
         "peer_cert_fingerprint, status, approved_at) "
-        "VALUES ('PEERFP', 'https://10.0.0.5:8787', '', 'PUB', 'CERTFP', 'approved', CURRENT_TIMESTAMP)")
+        "VALUES ('PEERFP', 'https://10.0.0.5:8787', 'PUB', 'CERTFP', 'approved', CURRENT_TIMESTAMP)")
     # A revoked peer that must NOT be moved.
     conn.execute(
-        "INSERT INTO sync_peers (peer_node_id, url, bearer_token, status) "
-        "VALUES ('REVFP', 'https://10.0.0.9:8787', '', 'revoked')")
+        "INSERT INTO sync_peers (peer_node_id, url, status) "
+        "VALUES ('REVFP', 'https://10.0.0.9:8787', 'revoked')")
     conn.commit()
 
     # Peer reappears at a new IP via a beacon.
@@ -344,12 +344,12 @@ def test_fetch_raw_session_from_authoring_peer(make_node, fake_embedder):
         # A approves B (pins B's pubkey); B registers A as a reachable peer.
         ac2 = a.conn()
         ac2.execute(
-            "INSERT INTO sync_peers (peer_node_id,url,bearer_token,peer_public_key,status,approved_at) "
-            "VALUES (?, '', '', ?, 'approved', CURRENT_TIMESTAMP)", (b_fp, b_pub))
+            "INSERT INTO sync_peers (peer_node_id,url,peer_public_key,status,approved_at) "
+            "VALUES (?, '', ?, 'approved', CURRENT_TIMESTAMP)", (b_fp, b_pub))
         ac2.commit()
         bc2 = b.conn()
         bc2.execute(
-            "INSERT INTO sync_peers (peer_node_id,url,bearer_token,status) VALUES (?, ?, '', 'approved')",
+            "INSERT INTO sync_peers (peer_node_id,url,status) VALUES (?, ?, 'approved')",
             (a_fp, url))
         bc2.commit()
         # B pulls A's memory (excerpt NOT included) + records sync_state mapping.

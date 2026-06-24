@@ -455,3 +455,37 @@ The v2 design above is implemented with these concrete choices:
 
 Deferred: mDNS/cross-subnet discovery; X25519 payload encryption (TLS covers the
 wire); key/cert rotation UX.
+
+---
+
+# v2.2 — operational tables off the durable DB; bearer auth removed
+
+Two hardening changes after live use surfaced sync contending with the
+memory-capture path for the durable write lock (the v0.16.0 lock-contention fix
+addressed the symptom; these address the structure):
+
+- **Operational sync tables moved to the ephemeral DB (durable schema v12).**
+  `discovered_peers` (LAN beacon cache) and `sync_state` (per-(peer, source-node)
+  pull high-water vector clock) are high-churn and fully recoverable — beacons
+  re-arrive, and a lost high-water just triggers an idempotent re-pull — so they
+  no longer live in the durable memory DB. They are created in `init_ephemeral`
+  and attached to each sync connection as `eph` by
+  `cairn.sync.attach_ephemeral`; all sync SQL references them as
+  `eph.discovered_peers` / `eph.sync_state`. The ephemeral path is derived
+  per-connection (the configured ephemeral DB for the real durable DB, otherwise
+  a `<stem>-ephemeral` sibling), so each node — and each test node — gets its own.
+  The v12 migration drops the durable copies. Sync now touches the durable file
+  only for actual synced memories (+ the local `sync_peers`/`pairing_requests`
+  trust registry).
+
+- **v1 bearer-token auth removed (durable schema v13).** The `sync_peers.bearer_token`
+  column and the bearer fallback in `server._authorized` are gone; `/sync` is
+  authenticated **only** by Ed25519 signature against the pinned, approved
+  `peer_public_key`. The fallback was already unreachable behind the
+  `MIN_COMPATIBLE_SCHEMA_VERSION` floor (a v1 peer is refused at 409 before auth
+  runs) and contradicted the v2 threat model's "no shared secret" guarantee. The
+  v13 migration `DROP COLUMN`s `bearer_token` (SQLite ≥ 3.35).
+
+Neither change touches the wire format — `discovered_peers`/`sync_state` were
+never synced and `sync_peers` is local-only — so the wire `SCHEMA_VERSION` stays
+**11**. Only the durable migration counter advances (→ 13).

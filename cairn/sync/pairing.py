@@ -40,11 +40,10 @@ def approve_pairing(conn, request_id: int, *, label: Optional[str] = None) -> di
     if not row:
         return {"ok": False, "error": "no such pairing request"}
     node_id, pub, user_id, url, cert_fp = row
-    # bearer_token is legacy NOT NULL — store '' for pubkey-authed peers.
     conn.execute(
         "INSERT INTO sync_peers "
-        "(peer_node_id, url, bearer_token, label, peer_public_key, peer_cert_fingerprint, status, approved_at) "
-        "VALUES (?, ?, '', ?, ?, ?, 'approved', CURRENT_TIMESTAMP) "
+        "(peer_node_id, url, label, peer_public_key, peer_cert_fingerprint, status, approved_at) "
+        "VALUES (?, ?, ?, ?, ?, 'approved', CURRENT_TIMESTAMP) "
         "ON CONFLICT(peer_node_id) DO UPDATE SET url = excluded.url, "
         "peer_public_key = excluded.peer_public_key, "
         "peer_cert_fingerprint = COALESCE(excluded.peer_cert_fingerprint, sync_peers.peer_cert_fingerprint), "
