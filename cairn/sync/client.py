@@ -21,6 +21,7 @@ except ImportError:
 
 from cairn.sync import SCHEMA_VERSION
 from cairn.sync.changeset import apply_changeset
+from cairn.sync.ephemeral import attach_ephemeral
 from cairn.sync.identity import (
     ensure_node_id,
     node_id_for_conn,
@@ -85,7 +86,7 @@ def _vector_clock_for_peer(conn, peer_node_id: str) -> dict[str, int]:
     (so the peer doesn't echo our own writes back).
     """
     rows = conn.execute(
-        "SELECT source_node_id, last_lamport FROM sync_state WHERE peer_node_id = ?",
+        "SELECT source_node_id, last_lamport FROM eph.sync_state WHERE peer_node_id = ?",
         (peer_node_id,),
     ).fetchall()
     vec = {src: lam for src, lam in rows}
@@ -116,7 +117,7 @@ def _update_sync_state(conn, peer_node_id: str, payload: dict) -> None:
             max_by_source[src] = max(max_by_source.get(src, 0), int(h.get("lamport") or 0))
     for src, lam in max_by_source.items():
         conn.execute(
-            "INSERT INTO sync_state (peer_node_id, source_node_id, last_lamport) VALUES (?, ?, ?) "
+            "INSERT INTO eph.sync_state (peer_node_id, source_node_id, last_lamport) VALUES (?, ?, ?) "
             "ON CONFLICT(peer_node_id, source_node_id) DO UPDATE SET "
             "last_lamport = MAX(last_lamport, excluded.last_lamport), updated_at = CURRENT_TIMESTAMP",
             (peer_node_id, src, lam),
@@ -132,16 +133,17 @@ def pull_from_peer(
     max_rows: int = 5000,
 ) -> PullResult:
     """Pull from one peer. Updates sync_state high-water marks on success."""
+    attach_ephemeral(conn)
     result = PullResult(peer_node_id)
     peer_row = conn.execute(
-        "SELECT url, bearer_token, include_excerpts, peer_cert_fingerprint "
+        "SELECT url, include_excerpts, peer_cert_fingerprint "
         "FROM sync_peers WHERE peer_node_id = ?",
         (peer_node_id,),
     ).fetchone()
     if not peer_row:
         result.error = f"unknown peer {peer_node_id}"
         return result
-    url, token, include_excerpts, pinned_fp = peer_row
+    url, include_excerpts, pinned_fp = peer_row
 
     since = _vector_clock_for_peer(conn, peer_node_id)
     body = json.dumps({
@@ -160,8 +162,6 @@ def pull_from_peer(
         "X-Cairn-Schema-Version": str(SCHEMA_VERSION),
         "Content-Type": "application/json",
     }
-    if token:  # v1 bearer fallback for peers paired before v2
-        headers["Authorization"] = f"Bearer {token}"
     try:
         status, data, peer_fp = _https_post(url, "/sync", body, headers,
                                             pinned_fp=pinned_fp, timeout=timeout)
@@ -324,9 +324,9 @@ def refresh_outbound(conn) -> list[dict]:
         st = check_pair_status(url) if url else None
         if st == "approved":
             conn.execute(
-                "INSERT INTO sync_peers (peer_node_id, url, bearer_token, "
+                "INSERT INTO sync_peers (peer_node_id, url, "
                 "peer_cert_fingerprint, status, approved_at) "
-                "VALUES (?, ?, '', ?, 'approved', CURRENT_TIMESTAMP) "
+                "VALUES (?, ?, ?, 'approved', CURRENT_TIMESTAMP) "
                 "ON CONFLICT(peer_node_id) DO UPDATE SET url = excluded.url, "
                 "peer_cert_fingerprint = COALESCE(excluded.peer_cert_fingerprint, sync_peers.peer_cert_fingerprint), "
                 "status = 'approved'",
@@ -347,6 +347,7 @@ def fetch_session(conn, origin_id: str, *, timeout: float = 15.0, cache: bool = 
     that authored it. Excerpts aren't bulk-synced, so this is on-demand and
     requires being connected to (approved by) the authoring peer, which must have
     opted into session sharing. Caches the result locally for offline re-view."""
+    attach_ephemeral(conn)
     row = conn.execute(
         "SELECT id, created_by_node FROM memories WHERE origin_id = ?", (origin_id,)
     ).fetchone()
@@ -363,7 +364,7 @@ def fetch_session(conn, origin_id: str, *, timeout: float = 15.0, cache: bool = 
     # UUID, recorded on pull). Map UUID -> fingerprint, then fall back to trying
     # the UUID directly (defensive).
     candidates = [r[0] for r in conn.execute(
-        "SELECT DISTINCT peer_node_id FROM sync_state WHERE source_node_id = ?", (src_node,)
+        "SELECT DISTINCT peer_node_id FROM eph.sync_state WHERE source_node_id = ?", (src_node,)
     ).fetchall()]
     candidates.append(src_node)
     peer = None
@@ -412,20 +413,21 @@ def fetch_session(conn, origin_id: str, *, timeout: float = 15.0, cache: bool = 
 
 # ---- Peer registry CLI helpers ----
 
-def add_peer(conn, *, peer_node_id: str, url: str, bearer_token: str,
+def add_peer(conn, *, peer_node_id: str, url: str,
              label: Optional[str] = None) -> None:
     conn.execute(
-        "INSERT INTO sync_peers (peer_node_id, url, bearer_token, label) VALUES (?, ?, ?, ?) "
+        "INSERT INTO sync_peers (peer_node_id, url, label) VALUES (?, ?, ?) "
         "ON CONFLICT(peer_node_id) DO UPDATE SET url = excluded.url, "
-        "bearer_token = excluded.bearer_token, label = excluded.label",
-        (peer_node_id, url, bearer_token, label),
+        "label = excluded.label",
+        (peer_node_id, url, label),
     )
     conn.commit()
 
 
 def remove_peer(conn, peer_node_id: str) -> None:
+    attach_ephemeral(conn)
     conn.execute("DELETE FROM sync_peers WHERE peer_node_id = ?", (peer_node_id,))
-    conn.execute("DELETE FROM sync_state WHERE peer_node_id = ?", (peer_node_id,))
+    conn.execute("DELETE FROM eph.sync_state WHERE peer_node_id = ?", (peer_node_id,))
     conn.commit()
 
 

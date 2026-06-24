@@ -98,7 +98,10 @@ def test_v4_creates_required_tables(tmp_path, monkeypatch):
     init_db.init()
     conn = sqlite3.connect(str(db))
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert {"node_state", "confidence_log", "sync_peers", "sync_state"}.issubset(tables)
+    # sync_state + discovered_peers relocated to the ephemeral DB (schema v12);
+    # they are no longer durable tables.
+    assert {"node_state", "confidence_log", "sync_peers"}.issubset(tables)
+    assert "sync_state" not in tables and "discovered_peers" not in tables
 
 
 def test_node_id_persists_across_init(tmp_path, monkeypatch):

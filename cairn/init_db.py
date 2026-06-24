@@ -233,12 +233,13 @@ def init():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_conf_log_memory ON confidence_log(memory_origin)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_conf_log_lamport ON confidence_log(lamport)")
-    # sync_peers — outbound peer registry; bearer_token stored locally only (never synced)
+    # sync_peers — outbound peer registry (local only, never synced). Auth is by
+    # pinned Ed25519 peer_public_key; the legacy bearer_token column was dropped
+    # in the v13 migration below.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sync_peers (
             peer_node_id     TEXT PRIMARY KEY,
             url              TEXT NOT NULL,
-            bearer_token     TEXT NOT NULL,
             label            TEXT,
             schema_version   INTEGER,
             include_excerpts INTEGER DEFAULT 0,
@@ -247,17 +248,11 @@ def init():
             last_error       TEXT
         )
     """)
-    # sync_state — per-(peer, source-node) high-water lamport; the vector clock that makes
-    # pull-based gossip converge in O(N) bandwidth.
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sync_state (
-            peer_node_id    TEXT NOT NULL,
-            source_node_id  TEXT NOT NULL,
-            last_lamport    INTEGER NOT NULL,
-            updated_at      TEXT DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (peer_node_id, source_node_id)
-        )
-    """)
+    # sync_state (per-(peer, source-node) high-water lamport vector clock) and
+    # discovered_peers (LAN beacon cache) are OPERATIONAL, high-churn, recoverable
+    # tables — they now live in the ephemeral DB (see init_ephemeral and
+    # cairn.sync.attach_ephemeral) so sync never churns the durable file with them.
+    # The durable copies are dropped by the v12 migration below.
     # memory_history needs a global UUID so re-anchoring on receipt is unambiguous
     try:
         conn.execute("ALTER TABLE memory_history ADD COLUMN history_uuid TEXT")
@@ -513,7 +508,7 @@ def init():
         print(f"Backfilled origin_id for {len(rows_without_origin)} existing memories")
     # v10 — sync v2: public-key pairing + dashboard authorization.
     #   sync_peers gains peer_public_key (pinned at approval), status, approved_at
-    #   (bearer_token kept nullable for one migration cycle — v1 peers still work).
+    #   (bearer_token was retained one cycle here, then dropped in v13 below.)
     #   New tables: pairing_requests (handshake queue), discovered_peers (LAN beacons).
     for _col, _ctype in (
         ("peer_public_key", "TEXT"),
@@ -539,17 +534,7 @@ def init():
             UNIQUE(peer_node_id, direction)
         )
     """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS discovered_peers (
-            node_id        TEXT PRIMARY KEY,
-            user_id        TEXT,
-            url            TEXT,
-            public_key     TEXT,
-            schema_version INTEGER,
-            first_seen     TEXT DEFAULT CURRENT_TIMESTAMP,
-            last_seen      TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+    # discovered_peers lives in the ephemeral DB (init_ephemeral) — not created here.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pairing_status ON pairing_requests(status)")
     if not conn.execute("SELECT 1 FROM schema_version WHERE version = 10").fetchone():
         conn.execute(
@@ -560,7 +545,6 @@ def init():
     for _tbl, _col in (
         ("sync_peers", "peer_cert_fingerprint"),
         ("pairing_requests", "cert_fingerprint"),
-        ("discovered_peers", "cert_fingerprint"),
     ):
         try:
             conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} TEXT")
@@ -569,6 +553,32 @@ def init():
     if not conn.execute("SELECT 1 FROM schema_version WHERE version = 11").fetchone():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (11, 'sync v2 HTTPS: peer TLS cert fingerprint pinning on sync_peers/pairing_requests/discovered_peers')"
+        )
+    # v12 — relocate operational sync tables to the ephemeral DB. discovered_peers
+    # (LAN beacon cache) and sync_state (pull high-water marks) are high-churn and
+    # fully recoverable (beacons re-arrive; a lost high-water just triggers an
+    # idempotent re-pull), so they no longer belong in the durable file they were
+    # contending on. Drop the durable copies; the canonical tables now live in the
+    # ephemeral DB (init_ephemeral). Not a wire change — these were never synced.
+    for _t in ("discovered_peers", "sync_state"):
+        conn.execute(f"DROP TABLE IF EXISTS {_t}")
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 12").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (12, 'relocate discovered_peers + sync_state to ephemeral DB (operational, high-churn, recoverable)')"
+        )
+    # v13 — drop the legacy v1 bearer_token column from sync_peers. Auth is now
+    # exclusively Ed25519-signature against the pinned peer_public_key (the bearer
+    # fallback in server._authorized was unreachable behind the schema floor and
+    # contradicted the v2 "no shared secret" threat model). Not a wire change —
+    # sync_peers is local-only. DROP COLUMN needs SQLite >= 3.35 (we require it);
+    # the try/except absorbs fresh DBs where the column never existed.
+    try:
+        conn.execute("ALTER TABLE sync_peers DROP COLUMN bearer_token")
+    except sqlite3.OperationalError:
+        pass
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 13").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (13, 'drop legacy sync_peers.bearer_token; Ed25519-signature auth only')"
         )
     conn.commit()
     conn.close()
@@ -658,6 +668,33 @@ def init_ephemeral(path=None):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_deliv_session ON calibration_deliveries(session_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_deliv_row ON calibration_deliveries(row_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_deliv_outcome ON calibration_deliveries(outcome)")
+    # Operational sync tables (relocated from the durable DB, schema v12). Both are
+    # high-churn and recoverable, so they belong off the durable file:
+    #   discovered_peers — LAN beacon cache, rewritten as beacons arrive.
+    #   sync_state       — per-(peer, source-node) pull high-water vector clock.
+    # cairn.sync.attach_ephemeral attaches this DB as `eph` on sync connections;
+    # these CREATE-IF-NOT-EXISTS are also mirrored there for self-heal.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS discovered_peers (
+            node_id          TEXT PRIMARY KEY,
+            user_id          TEXT,
+            url              TEXT,
+            public_key       TEXT,
+            schema_version   INTEGER,
+            first_seen       TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_seen        TEXT DEFAULT CURRENT_TIMESTAMP,
+            cert_fingerprint TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sync_state (
+            peer_node_id    TEXT NOT NULL,
+            source_node_id  TEXT NOT NULL,
+            last_lamport    INTEGER NOT NULL,
+            updated_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (peer_node_id, source_node_id)
+        )
+    """)
     conn.commit()
     conn.close()
 

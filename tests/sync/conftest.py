@@ -104,7 +104,13 @@ class Node:
             import pysqlite3 as sqlite3
         except ImportError:
             import sqlite3
-        return sqlite3.connect(self.db_path)
+        c = sqlite3.connect(self.db_path)
+        # Operational sync tables (discovered_peers, sync_state) live in this
+        # node's own ephemeral sibling DB; attach so direct queries + sync code
+        # resolve eph.* against it (per-node isolation).
+        from cairn.sync.ephemeral import attach_ephemeral
+        attach_ephemeral(c)
+        return c
 
     def activate(self) -> None:
         """Make this node the 'current' one for storage.py operations."""

@@ -15,6 +15,8 @@ import socket
 import time
 from typing import Callable, Optional
 
+from cairn.sync.ephemeral import attach_ephemeral
+
 DISCOVERY_PORT = 47391
 BEACON_MAGIC = "cairn-sync-beacon/1"
 # Keep beacon churn off the durable DB: only rewrite a discovered_peers row when
@@ -63,12 +65,13 @@ def record_beacon(conn, beacon: dict, *, self_node_id: Optional[str] = None) -> 
     nid = beacon.get("node_id")
     if not nid or nid == self_node_id:
         return False
+    attach_ephemeral(conn)
     url = beacon.get("url")
     # Throttle: skip the write entirely if we already hold a fresh, identical row
     # (beacons are sub-second; this caps discovered_peers writes to ~1/throttle
     # per peer or on-change, keeping the durable DB's write lock free for capture).
     fresh = conn.execute(
-        "SELECT 1 FROM discovered_peers WHERE node_id = ? "
+        "SELECT 1 FROM eph.discovered_peers WHERE node_id = ? "
         f"AND last_seen > datetime('now', '-{DISCOVERY_WRITE_THROTTLE_SEC} seconds') "
         "AND url IS ? AND user_id IS ? AND cert_fingerprint IS ?",
         (nid, url, beacon.get("user_id"), beacon.get("cert_fingerprint")),
@@ -76,7 +79,7 @@ def record_beacon(conn, beacon: dict, *, self_node_id: Optional[str] = None) -> 
     if fresh:
         return True
     conn.execute(
-        "INSERT INTO discovered_peers "
+        "INSERT INTO eph.discovered_peers "
         "(node_id, user_id, url, public_key, schema_version, cert_fingerprint, last_seen) "
         "VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
         "ON CONFLICT(node_id) DO UPDATE SET user_id = excluded.user_id, "
@@ -134,9 +137,10 @@ def listen(duration: float = 5.0, *, port: int = DISCOVERY_PORT,
 
 
 def list_discovered(conn, *, max_age_sec: Optional[int] = None) -> list[dict]:
+    attach_ephemeral(conn)
     cols = ["node_id", "user_id", "url", "public_key", "schema_version",
             "cert_fingerprint", "first_seen", "last_seen"]
-    q = f"SELECT {', '.join(cols)} FROM discovered_peers"
+    q = f"SELECT {', '.join(cols)} FROM eph.discovered_peers"
     if max_age_sec:
         q += f" WHERE last_seen >= datetime('now', '-{int(max_age_sec)} seconds')"
     q += " ORDER BY last_seen DESC"

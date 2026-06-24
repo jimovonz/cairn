@@ -47,14 +47,13 @@ def test_pull_via_http_replicates(make_node, fake_embedder):
             client_node.conn(),
             peer_node_id=server_node.node_id,
             url=f"https://127.0.0.1:{port}",
-            bearer_token="",
         )
         # Server-side: pin the client's public key as an approved peer — the
         # post-pairing state. v2 authenticates /sync by Ed25519 signature.
         server_conn = server_node.conn()
         server_conn.execute(
-            "INSERT INTO sync_peers (peer_node_id, url, bearer_token, peer_public_key, status, approved_at) "
-            "VALUES (?, '', '', ?, 'approved', CURRENT_TIMESTAMP)",
+            "INSERT INTO sync_peers (peer_node_id, url, peer_public_key, status, approved_at) "
+            "VALUES (?, '', ?, 'approved', CURRENT_TIMESTAMP)",
             (client_fp, client_pub),
         )
         server_conn.commit()
@@ -71,7 +70,9 @@ def test_pull_via_http_replicates(make_node, fake_embedder):
         httpd.shutdown()
 
 
-def test_unauthorized_token_rejected(make_node):
+def test_unapproved_peer_rejected(make_node):
+    """Signature auth is the only path (no bearer fallback): a peer whose public
+    key the server has NOT pinned/approved is rejected with 401."""
     server_node = make_node("server")
     client_node = make_node("client")
     port = _free_port()
@@ -80,19 +81,14 @@ def test_unauthorized_token_rejected(make_node):
     try:
         _wait_for_port(port)
         from cairn.sync.client import add_peer, pull_from_peer
+        client_node.activate()
         add_peer(
             client_node.conn(),
             peer_node_id=server_node.node_id,
             url=f"https://127.0.0.1:{port}",
-            bearer_token="WRONG-TOKEN",
         )
-        # Server registers the client peer with a DIFFERENT token
-        add_peer(
-            server_node.conn(),
-            peer_node_id=client_node.node_id,
-            url="http://unused",
-            bearer_token="REAL-TOKEN",
-        )
+        # Server has NOT approved/pinned the client's public key -> the signed
+        # request authenticates against no known key.
         result = pull_from_peer(client_node.conn(), server_node.node_id)
         assert not result.ok
         assert "401" in (result.error or ""), f"expected 401, got: {result.error}"
@@ -114,13 +110,11 @@ def test_schema_version_mismatch_returns_409(make_node, monkeypatch):
             client_node.conn(),
             peer_node_id=server_node.node_id,
             url=f"https://127.0.0.1:{port}",
-            bearer_token="t",
         )
         add_peer(
             server_node.conn(),
             peer_node_id=client_node.node_id,
             url="http://unused",
-            bearer_token="t",
         )
         # Client claims a schema_version BELOW the server's compatibility floor
         monkeypatch.setattr(client_mod, "SCHEMA_VERSION", 1)

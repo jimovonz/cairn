@@ -14,7 +14,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hmac
 import json
 import logging
 import os
@@ -78,37 +77,31 @@ def _nonce_unseen(nonce: str) -> bool:
 
 
 def _authorized(method: str, path: str, headers, body: bytes, conn) -> tuple[bool, Optional[str]]:
-    """Authorize a /sync request. v2: Ed25519 signature against the pinned,
-    approved peer_public_key. v1 fallback: bearer token. Returns (ok, peer_node)."""
+    """Authorize a /sync request by Ed25519 signature against the pinned,
+    approved peer_public_key. Returns (ok, peer_node)."""
     peer_node = headers.get("X-Cairn-Node", "").strip()
     if not peer_node:
         return False, None
     row = conn.execute(
-        "SELECT peer_public_key, bearer_token, status FROM sync_peers WHERE peer_node_id = ?",
+        "SELECT peer_public_key, status FROM sync_peers WHERE peer_node_id = ?",
         (peer_node,),
     ).fetchone()
     if not row:
         return False, None
-    pub, token, status = row
+    pub, status = row
     if status is not None and status != "approved":
         return False, None  # revoked / denied
-
-    # v2 signature path (preferred).
+    # Ed25519 signature against the pinned public key (the only auth path; the
+    # v1 bearer-token fallback was removed once no pre-v2 peers remained).
     sig = headers.get("X-Cairn-Signature", "").strip()
-    if sig and pub:
-        ts = headers.get("X-Cairn-Timestamp", "")
-        nonce = headers.get("X-Cairn-Nonce", "")
-        if not _fresh_timestamp(ts) or not _nonce_unseen(nonce):
-            return False, None
-        if verify_request(pub, method, path, body, ts, nonce, sig):
-            return True, peer_node
+    if not sig or not pub:
         return False, None
-
-    # v1 bearer fallback (peers paired before v2).
-    auth = headers.get("Authorization", "")
-    if auth.startswith("Bearer ") and token:
-        if hmac.compare_digest(token, auth[len("Bearer "):].strip()):
-            return True, peer_node
+    ts = headers.get("X-Cairn-Timestamp", "")
+    nonce = headers.get("X-Cairn-Nonce", "")
+    if not _fresh_timestamp(ts) or not _nonce_unseen(nonce):
+        return False, None
+    if verify_request(pub, method, path, body, ts, nonce, sig):
+        return True, peer_node
     return False, None
 
 
