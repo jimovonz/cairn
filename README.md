@@ -316,7 +316,7 @@ cairn/
 │   │   ├── response_filter.py #   strip Cairn artifacts from responses
 │   │   ├── cm_filter.py    #   strip [cm]/<memory> blocks
 │   │   └── sidecar.py      #   capture stripped artifacts for the hooks
-│   ├── sync/              # Multi-node sync (experimental, not installed by default)
+│   ├── sync/              # Multi-node sync v2 (opt-in: CAIRN_SYNC_ENABLED=1)
 │   └── static/
 │       └── index.html      # Dashboard single-page UI
 ├── logs/                   # Cron job output (consolidation, contradiction, calibration, graph)
@@ -420,7 +420,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test 
 
 ## Testing
 
-1141 tests across 67 test files. Most tests use mock vectors and patched DB paths — no embedding model required. Quality benchmarks (`test_retrieval_quality*.py`, `test_query_expansion.py`) use real embeddings for ground-truth validation and skip gracefully in CI. The table below is a representative selection covering the core retrieval/memory suite plus the proxy, calibration, code-graph, and review write-back subsystems; see `tests/` for the full set.
+1155 tests across 72 test files. Most tests use mock vectors and patched DB paths — no embedding model required. Quality benchmarks (`test_retrieval_quality*.py`, `test_query_expansion.py`) use real embeddings for ground-truth validation and skip gracefully in CI. The table below is a representative selection covering the core retrieval/memory suite plus the proxy, calibration, code-graph, and review write-back subsystems; see `tests/` for the full set.
 
 ```bash
 cd ~/cairn
@@ -482,7 +482,7 @@ python3 -m pytest tests/
 | `test_daemon_vector_search.py` | — | Daemon-resident vector search |
 | `test_dashboard_graph.py` | — | Dashboard graph/health endpoints |
 | `test_session_extract.py` | — | Session JSONL cleaning for the analyser |
-| `tests/sync/` | — | Multi-node sync (experimental): changeset merge, transport, schema migration, 3-node LAN |
+| `tests/sync/` | — | Multi-node sync v2 (opt-in): changeset merge, pubkey pairing, signed/cert-pinned transport, 3-node LAN |
 
 ## License
 

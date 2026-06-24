@@ -322,7 +322,7 @@ cairn/
 │   │   ├── response_filter.py         #   strip Cairn artifacts from responses
 │   │   ├── cm_filter.py               #   strip [cm]/<memory> blocks
 │   │   └── sidecar.py                 #   capture stripped artifacts for the hooks
-│   ├── sync/                          # Multi-node sync (experimental — see Multi-User Architecture)
+│   ├── sync/                          # Multi-node sync v2, opt-in (see Multi-User Architecture)
 │   ├── dashboard.py                   # Flask web dashboard (monitoring, memory browser, config editor)
 │   ├── static/index.html              # Dashboard frontend (vanilla JS, light/dark theme)
 │   └── hook.log                       # Debug log
@@ -1165,7 +1165,7 @@ All tunable parameters are centralised in `cairn/config.py`:
 
 ## Testing
 
-1141 tests across 67 files. Most tests use deterministic mock vectors and patched DB paths — no embedding model required. Quality benchmarks use real embeddings for ground-truth validation. The table below covers the core retrieval/memory suite; the proxy, calibration, code-graph, review write-back, and sync subsystems add the remaining files (see the README test table and `tests/`).
+1155 tests across 72 files. Most tests use deterministic mock vectors and patched DB paths — no embedding model required. Quality benchmarks use real embeddings for ground-truth validation. The table below covers the core retrieval/memory suite; the proxy, calibration, code-graph, review write-back, and sync subsystems add the remaining files (see the README test table and `tests/`).
 
 ```bash
 python3 -m pytest tests/
@@ -1451,7 +1451,7 @@ The commit SHA enables:
 
 Cairn is designed for extension to multi-user teams with shared knowledge. The architecture uses a hybrid local/global model with bidirectional sync.
 
-> **Status:** an experimental implementation of node-to-node sync lives in `cairn/sync/` (changeset replication, transport, identity, schema migration; covered by `tests/sync/`). It is **not** wired into `install.sh` and is off by default — the design below is the target architecture; `cairn/sync/` is the first increment toward it.
+> **Status:** node-to-node sync (v2) is implemented in `cairn/sync/` — Ed25519 keypair identity, UDP-broadcast LAN discovery, dashboard-authorized public-key pairing, signed + cert-pinned HTTPS transport, changeset replication with Lamport-clock LWW, and own-data-only sharing (covered by `tests/sync/`). It is wired into `install.sh` but **off by default** — opt in per node with `CAIRN_SYNC_ENABLED=1`. The broader hybrid local/global design below is the target architecture; `cairn/sync/` is the peer-to-peer increment delivered so far.
 
 #### Architecture overview
 
