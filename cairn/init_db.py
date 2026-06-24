@@ -15,7 +15,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 # verifies the FULL set and can never silently fall behind a newly-added table —
 # the metrics-only probe is exactly how "no such table: hook_state" went unrepaired.
 EPHEMERAL_TABLES = ("metrics", "hook_state", "pair_assessments",
-                    "pending_writes", "calibration_deliveries")
+                    "pending_writes", "calibration_deliveries", "memory_deliveries")
 
 def init():
     conn = sqlite3.connect(DB_PATH)
@@ -668,6 +668,32 @@ def init_ephemeral(path=None):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_deliv_session ON calibration_deliveries(session_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_deliv_row ON calibration_deliveries(row_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_deliv_outcome ON calibration_deliveries(outcome)")
+    # memory_deliveries — turn-indexed log of which general memories were injected
+    # into which prompt, keyed by a cleaned recent-context representation. Mirrors
+    # calibration_deliveries but for relevance grading: context_text (the cleaned
+    # current-prompt+last-turn window) is the cross-encoder student's input;
+    # context_vec is its embedding (nearest-context join key); context_intent is a
+    # nullable async-filled (T1) enrichment. grade (0-3, NULL=unlabelled) +
+    # hard_negative are the agent-as-teacher labels written back from the [cm] tail.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_deliveries (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id    TEXT NOT NULL,
+            turn_index    INTEGER,
+            memory_id     INTEGER NOT NULL,
+            context_text  TEXT,
+            context_vec   BLOB,
+            context_intent TEXT,
+            ce_score      REAL,
+            served_rank   INTEGER,
+            grade         INTEGER,
+            hard_negative INTEGER DEFAULT 0,
+            delivered_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_deliv_session ON memory_deliveries(session_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_deliv_memory ON memory_deliveries(memory_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_deliv_grade ON memory_deliveries(grade)")
     # Operational sync tables (relocated from the durable DB, schema v12). Both are
     # high-churn and recoverable, so they belong off the durable file:
     #   discovered_peers — LAN beacon cache, rewritten as beacons arrive.

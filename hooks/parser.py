@@ -33,6 +33,7 @@ class ParseResult(NamedTuple):
     keywords_explicit: bool = False   # True if 'keywords' was explicitly declared
     hash_claimed: Optional[int] = None  # Claimed response hash (h:NNN)
     is_compact: bool = False         # True if compact format was used
+    relevance_grades: tuple = ()     # (memory_id, grade 0-3, hard_neg) from rg — agent-as-teacher labels
 
 
 # Sentinel for "no memory block found"
@@ -237,6 +238,14 @@ def _parse_linkdef(text: str) -> Optional[ParseResult]:
                 reason = m.group(3).strip() if m.group(3) else None
                 confidence_updates.append((int(m.group(1)), m.group(2), reason))
 
+    # Relevance grades — agent-as-teacher 0-3 + hard-neg, "42:3" / "17:0!" (rg)
+    relevance_grades: list[tuple[int, int, bool]] = []
+    for rg in _g(data, "rg", "relevance_grades", default=[]):
+        if isinstance(rg, str):
+            m = re.match(r"\s*(\d+)\s*:\s*([0-3])\s*(!)?\s*$", rg)
+            if m:
+                relevance_grades.append((int(m.group(1)), int(m.group(2)), bool(m.group(3))))
+
     return ParseResult(
         entries=entries,
         complete=complete,
@@ -252,6 +261,7 @@ def _parse_linkdef(text: str) -> Optional[ParseResult]:
         keywords_explicit=bool(keywords),
         hash_claimed=None,
         is_compact=False,
+        relevance_grades=tuple(relevance_grades),
     )
 
 
