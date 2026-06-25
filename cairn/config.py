@@ -281,26 +281,36 @@ CROSS_ENCODER_SCORE_FLOOR = -3.0   # Drop candidates below this raw ms-marco log
 CROSS_ENCODER_MAX_CANDIDATES = 12  # Cap active pairs per CE call — CE latency is linear in pair count
 CROSS_ENCODER_MAX_ARCHIVED = 6     # Cap archived (negative-knowledge) pairs in the combined CE call
 
-# Device-aware reranker: a stronger model is auto-selected when a CUDA GPU is
-# present (benchmarked ~62ms on an RTX 4070 — cheaper than the small model on CPU).
-# bge-reranker-base outputs SIGMOID 0-1 scores (not ms-marco logits), so it needs
-# its own positive floor. CPU/no-GPU installs keep the small portable default.
-# The daemon (which owns the GPU) resolves this and returns the floor with scores,
-# so the hot hook path never imports torch.
+# Device-aware reranker (DORMANT — see RERANKER_BGE_ENABLED). bge-reranker-base
+# went live on thin validation (one micro-benchmark + an eyeball 0.0005 floor) and
+# was REVERTED until an A/B on real retrieval quality (rg labels, step 1b) shows it
+# beats ms-marco. Constants kept so the A/B can flip the flag, not rewrite code.
+# bge outputs SIGMOID 0-1 scores (not ms-marco logits), so it carries its own floor.
 CROSS_ENCODER_MODEL_CUDA = "BAAI/bge-reranker-base"
 CROSS_ENCODER_SCORE_FLOOR_CUDA = 0.0005  # eyeball-initial: drops only bge~0 noise; recalibrate from rg labels
 
+# Off until validated. When False, resolve_reranker returns the calibrated ms-marco
+# model + its -3.0 floor on EVERY device. ms-marco still loads on the GPU when CUDA
+# is present (sentence-transformers auto-selects the device) — i.e. ms-marco-on-GPU,
+# still ~12x faster than CPU, but with the floor we actually trust.
+RERANKER_BGE_ENABLED = False
+
 
 def resolve_reranker():
-    """Return (model_name, score_floor) for the active device — the stronger
-    bge model + its 0-1 floor on CUDA, the portable ms-marco + logit floor on CPU.
-    Imports torch lazily; only ever called inside the daemon (torch already loaded)."""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            return CROSS_ENCODER_MODEL_CUDA, CROSS_ENCODER_SCORE_FLOOR_CUDA
-    except Exception:
-        pass
+    """Return (model_name, score_floor) for the active device.
+
+    Default (RERANKER_BGE_ENABLED=False): the calibrated ms-marco model + its -3.0
+    logit floor on every device (it loads on GPU when present — auto device select).
+    When the flag is True AND a CUDA GPU is present: the dormant bge model + its 0-1
+    floor (the path the step-1b A/B will validate). Imports torch lazily; only ever
+    called inside the daemon (torch already loaded)."""
+    if RERANKER_BGE_ENABLED:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return CROSS_ENCODER_MODEL_CUDA, CROSS_ENCODER_SCORE_FLOOR_CUDA
+        except Exception:
+            pass
     return CROSS_ENCODER_MODEL, CROSS_ENCODER_SCORE_FLOOR
 
 # === Read-side memory relevance grading (docs/spec-memory-relevance-grading.md) ===
