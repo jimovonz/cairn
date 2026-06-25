@@ -135,6 +135,9 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Subagent memory capture** — a `SubagentStop` hook routes a subagent's final `[cm]` block (invisible to the parent `Stop` hook) into storage, chained to the parent session, enforcement skipped
 - **Dev-container support** — the daemon exposes a TCP listener (port 47390) with `cairn_recall`/`cairn_remember` opcodes plus a container injector and extension auto-installer, so containerised sessions reach the host cairn
 - **Calibration system (Phases 1–7)** — a complementary track that captures *how to interact with this user* (level, style, preferences); a per-session analyser, agent-invoked CLI, self-modification passes, and a dashboard tab. See the Calibration section below
+- **Relevance grading (agent-as-teacher)** — every injected memory is logged to a `memory_deliveries` table with full ranking provenance (reranker model, score components, layer, scope); the main agent grades each surfaced memory 0–3 (+ hard-negative) in the `[cm]` block's `rg` field, and a behavioural engagement signal mechanically detects whether the response actually *used* each memory via distinctive-term overlap (the primary, non-circular label). Read-side foundation for a future trained cross-encoder gate
+- **GPU-aware reranker** — the cross-encoder defaults to `ms-marco-MiniLM-L-6-v2` (logit floor −3.0) on every device; when `RERANKER_BGE_ENABLED` is set and CUDA is present it swaps to `BAAI/bge-reranker-base` (sigmoid floor 0.0005). The daemon owns the model so the hot hook path never imports torch; the cross-encoder scores a cleaned recent-context window, not the bare prompt
+- **Write-side generation provenance** — every agent-written memory is stamped with `GENERATION_PROMPT_VERSION` in `source_ref`, so downstream usefulness (grades, engagement) is attributable to the generation rules that produced it; `cairn/ab_writeside.py` is an offline A/B harness that replays the transcript corpus through two generation prompts and judges them blind, position-swapped, and pairwise with Opus 4.8
 
 ## Quick start
 
@@ -267,6 +270,19 @@ Retrieved results pass through 10 configurable gates before injection:
 
 All thresholds configurable in `cairn/config.py`.
 
+### Relevance grading & write-side quality
+
+Two feedback loops close the gap between *what gets injected* and *what was useful*, building the labelled data for a future trained gate.
+
+**Read side (`cairn/relevance.py`).** Every injected memory is logged to a `memory_deliveries` table keyed by a cleaned recent-context window (`build_context_window`), with ranking provenance (`reranker_model`, `score_components`, `layer`, `scope`). Two relevance labels are then attached:
+
+- **Behavioural engagement** (`score_engagement`/`apply_engagement`) — the Stop hook mechanically checks whether the response *used* each delivered memory, by counting the memory's distinctive terms (its tokens minus the prompt's) that resurface in the response. This is the primary, non-circular signal.
+- **Agent-as-teacher grades** — the main agent grades each surfaced memory 0–3 (plus a hard-negative flag) in the `[cm]` block's `rg` field; parsed and written back (`parse_relevance_grades`/`apply_relevance_grades`) to supplement engagement.
+
+An optional bucket-4 prefilter (`is_self_referential_meta`, gated by `RELEVANCE_PREFILTER_ENABLED`, off by default, corrections exempt) drops self-referential meta-memories. The reranker is GPU-aware (`config.resolve_reranker`): `ms-marco-MiniLM-L-6-v2` by default, `BAAI/bge-reranker-base` on CUDA when `RERANKER_BGE_ENABLED`. Phases 1–2 (instrument + agent labels) are implemented; a trained cross-encoder student that gates injections and lets the teacher step back (spec Phases 3–4) is future work. See `docs/spec-memory-relevance-grading.md`.
+
+**Write side.** Every agent-written memory is stamped with `GENERATION_PROMPT_VERSION` (`genA-v2`) in `source_ref`, so downstream usefulness is attributable to the generation rules that produced it. The live rules carry a dual-altitude transferability lever (capture the generalised cross-project principle, anchored by the specific instance). `cairn/ab_writeside.py` is an offline A/B harness: it replays the transcript corpus through two generation prompts (A = control, B = control + one speculative lever) and judges them with Opus 4.8 — blind, position-swapped, and pairwise on findability / self-sufficiency / fitness, with the session cohort as the A/B unit. CLI: `replay` and `ab`.
+
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical reference (1400+ lines), including:
@@ -294,6 +310,8 @@ cairn/
 │   ├── config.py           # All tunable parameters (env var overrides)
 │   ├── init_db.py          # Schema and migrations
 │   ├── query.py            # CLI query tool (20+ commands)
+│   ├── relevance.py        # Read-side relevance grading: delivery log, engagement, agent grades
+│   ├── ab_writeside.py     # Offline write-side generation A/B harness (replay + blind judge)
 │   ├── dashboard.py        # Web dashboard (localhost:8420)
 │   ├── embeddings.py       # Embedding with daemon support + composite scoring
 │   ├── daemon.py           # Background server (embeddings, cross-encoder, NLI, TCP listener)
@@ -338,7 +356,7 @@ cairn/
 ## Requirements
 
 - [Claude Code](https://claude.com/claude-code) v2.1+
-- Python 3.10+
+- Python 3.10+ with `pysqlite3-binary` (installed into the venv by `install.sh`) — cairn requires a single, current SQLite library: mixing stdlib `sqlite3` (3.45) with pysqlite3 (3.51) writers on the same WAL database risks corruption, so every `cairn/` and `hooks/` module routes through a pysqlite3 guard (enforced by `tests/test_sqlite_guard.py` and an `install.sh` assertion)
 - ~1.5GB disk (3 models + venv)
 - ~500MB download on first install (PyTorch CPU + sentence-transformers + 3 models; ~2.5GB with `--gpu`)
 - ~500MB RAM (when embedding daemon is running; auto-shuts down after 30min idle)
@@ -357,6 +375,8 @@ All tunable parameters are in `cairn/config.py`. Any value can be overridden via
 - Quality gate thresholds
 - Deduplication sensitivity
 - Cross-encoder re-ranking (`CROSS_ENCODER_ENABLED`, `CROSS_ENCODER_WEIGHT`, `CROSS_ENCODER_SCORE_FLOOR`)
+- GPU-aware reranker swap (`RERANKER_BGE_ENABLED` — `bge-reranker-base` on CUDA)
+- Relevance grading (`RELEVANCE_LOGGING_ENABLED`, `RELEVANCE_PREFILTER_ENABLED`) and write-side provenance (`GENERATION_PROMPT_VERSION`)
 - NLI consolidation/contradiction (`NLI_ENABLED`, `NLI_ENTAILMENT_THRESHOLD`, `NLI_CONTRADICTION_THRESHOLD`)
 - Consolidation clustering (`CONSOLIDATION_SIMILARITY_THRESHOLD`, `CONSOLIDATION_MIN_CLUSTER_SIZE`)
 - Query expansion (`QUERY_EXPANSION_FANOUT` — type-prefix fan-out, default on)
@@ -424,7 +444,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test 
 
 ```bash
 cd ~/cairn
-python3 -m pytest tests/
+.venv/bin/python -m pytest tests/   # use the venv python — system python3 lacks pysqlite3
 ```
 
 | Test file | Tests | What it covers |

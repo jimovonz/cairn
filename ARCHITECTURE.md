@@ -451,6 +451,31 @@ Primary key: `(session_id, key)`. Tracks per-session flags like continuation cou
 
 Primary key: `(id1, id2, mode)`. Stores the result of NLI + Haiku assessment for each memory pair, enabling incremental runs — only pairs involving memories written since the last run need assessment. Backfilled with all pairs above the similarity threshold for the full corpus.
 
+**memory_deliveries** — read-side relevance-grading delivery log (see [Read-Side Relevance Grading](#read-side-relevance-grading))
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INTEGER | Primary key (autoincrement) |
+| session_id | TEXT | Session the memory was injected into |
+| turn_index | INTEGER | Per-session turn counter (`MAX(turn_index)+1`) |
+| memory_id | INTEGER | The injected `memories.id` |
+| context_text | TEXT | Cleaned recent-context window that keyed the delivery (the cross-encoder student's input) |
+| context_vec | BLOB | Embedding of `context_text` (nearest-context join key) |
+| context_intent | TEXT | Nullable async-filled (T1) synthesised-intent enrichment |
+| ce_score | REAL | The reranker score that surfaced this row (falls back to composite `score`) |
+| served_rank | INTEGER | Rank at which it was injected |
+| grade | INTEGER | Agent-as-teacher relevance grade 0–3 (`NULL` = unlabelled) |
+| hard_negative | INTEGER | 1 when the agent flagged it actively wrong/misleading (`!`) |
+| reranker_model | TEXT | Model that produced `ce_score` — provenance across the ms-marco→bge transition |
+| score_components | TEXT | JSON of all score signals (`ce`/`composite`/`rrf`/`sim`/`conf`) |
+| layer | TEXT | Retrieval layer that delivered the memory |
+| scope | TEXT | `project` vs `global`, computed exactly as `split_by_scope` does |
+| engaged | INTEGER | Behavioural label: 1 used / 0 not-used / `NULL` no-signal (the PRIMARY label) |
+| engaged_score | REAL | Distinctive-term overlap ratio 0..1; `-1.0` = undecidable (memory redundant with prompt); `NULL` = not yet evaluated |
+| delivered_at | TIMESTAMP | When injected |
+
+Indexed on `session_id`, `memory_id`, and `grade`. Newer columns (`reranker_model`, `score_components`, `layer`, `scope`, `engaged`, `engaged_score`) are added by idempotent `ALTER TABLE` migrations for DBs predating them. One row per injected memory per turn; `grade`/`hard_negative` are written back from the response's `[cm]` `rg` field, and `engaged`/`engaged_score` are stamped mechanically at the next Stop.
+
 ## Concurrency
 
 The database uses SQLite in WAL (Write-Ahead Logging) mode with a 5-second busy timeout. This is essential because Cairn operates across concurrent Claude Code sessions, cron jobs, and external integrations (e.g. Telegram).
@@ -462,6 +487,22 @@ The database uses SQLite in WAL (Write-Ahead Logging) mode with a 5-second busy 
 All connection points (stop hook, prompt hook, query CLI, daemon) apply the busy timeout via `PRAGMA busy_timeout`. The `cairn/db.py` module provides a shared `connect()` helper that applies both WAL and timeout automatically.
 
 **Scaling limit**: WAL SQLite handles tens of concurrent sessions comfortably. At hundreds of concurrent writers, Postgres with connection pooling would be the upgrade path.
+
+### SQLite library discipline
+
+Cairn requires **pysqlite3** (a recent SQLite — 3.51 on dev machines), not the system stdlib `sqlite3` (3.45). A stdlib-vs-pysqlite3 version mix writing the same WAL-mode cairn DB is a documented corruption cause (commit `be91366` standardised 32 files on the guard after `ingest.py` / `backfill_ingestion.py` / `confluence_ingest.py` each slipped through). The guard sits at the top of every module that imports sqlite3:
+
+```python
+try:
+    import pysqlite3 as sqlite3
+except ImportError:
+    if os.environ.get("CAIRN_ALLOW_STDLIB_SQLITE") == "1":
+        import sqlite3   # explicit opt-in only
+    else:
+        raise ImportError("cairn requires pysqlite3 …")
+```
+
+Three layers enforce it. `tests/test_sqlite_guard.py` walks every `*.py` under `cairn/` and `hooks/` and fails if any imports stdlib `sqlite3` without the pysqlite3 guard — the allowlist is **empty** (no exemptions; `graph.py` was previously allowlisted as "graph.db only" but it also opens the WAL cairn DB, so it now carries the guard too). `install.sh` asserts at install time that the resolved module is pysqlite3 (`h.sqlite3.__name__.startswith("pysqlite3")`) and that `sqlite_version_info >= (3, 45)`, failing loud if stdlib leaked. Because pysqlite3 lives in the project venv, the test suite must run under that interpreter for the guard to resolve. The databases run `PRAGMA journal_mode=WAL` and deliberately **do not** set `synchronous=OFF` — durability over the marginal write speed. `tests/conftest.py` pops `CAIRN_PROXY_ENABLED` at import time so the proxy-on dev shell doesn't flip hooks into pointer-injection mode and produce ~18 spurious failures that are green in CI but red locally.
 
 ## Stop Hook — the core mechanism
 
@@ -534,7 +575,7 @@ The embedding layer supports two modes:
 
 The daemon serves three models, all lazily loaded on first use:
 1. **Bi-encoder** (`all-MiniLM-L6-v2`) — embedding generation for storage and search
-2. **Cross-encoder** (`cross-encoder/ms-marco-MiniLM-L-6-v2`) — retrieval re-ranking, jointly scoring (query, memory) pairs
+2. **Cross-encoder** (device-aware — see [Device-aware reranking](#device-aware-reranking)) — retrieval re-ranking, jointly scoring (query, memory) pairs
 3. **NLI model** (`cross-encoder/nli-MiniLM2-L6-H768`) — entailment/contradiction scoring for the consolidation pipeline
 
 ### Vector search
@@ -577,6 +618,17 @@ On every insert, the new memory's embedding is checked against existing entries 
 The dedup threshold was deliberately set high (0.95) to avoid accidentally overwriting distinct memories that happen to be semantically similar. Two genuinely different facts about the same domain will both be kept.
 
 The `BEFORE UPDATE` trigger on `memories` ensures the old content is preserved in `memory_history` before any overwrite.
+
+### Device-aware reranking
+
+The cross-encoder model and its score floor are resolved at use time by `config.resolve_reranker()`, which returns `(model_name, score_floor)` for the active device:
+
+- **Default** — `cross-encoder/ms-marco-MiniLM-L-6-v2` with a raw-logit floor of `-3.0` (`CROSS_ENCODER_SCORE_FLOOR`). ms-marco still loads on the GPU when CUDA is present (sentence-transformers auto-selects the device), so it is ~12× faster than CPU while keeping the floor the system has calibrated.
+- **When `RERANKER_BGE_ENABLED` is set AND a CUDA GPU is present** — `BAAI/bge-reranker-base` with a sigmoid `0–1` floor of `0.0005` (`CROSS_ENCODER_SCORE_FLOOR_CUDA`). bge emits sigmoid scores rather than ms-marco logits, so it carries its own floor.
+
+`RERANKER_BGE_ENABLED` is currently `True` on this branch (CUDA available; the loose `0.0005` floor is provisional pending recalibration from `rg` labels) — bge-reranker-base previously went live on thin validation and is being re-validated against real retrieval quality (the step-1b A/B over relevance grades) before the floor is trusted. The constants are kept so flipping the flag never requires a code change.
+
+Only the daemon imports torch: its `rerank` action loads the cross-encoder, scores `(query, candidate)` pairs, and returns `{scores, score_floor, model}` (the loaded model name `_cross_encoder_name` is reported as truer provenance than re-resolving). On the read side, `embeddings._daemon_rerank` threads the `(scores, floor, model)` tuple back so the hot hook path never imports torch; `find_similar` stamps the model onto each surfaced row's `reranker_model` and applies the device-appropriate floor, falling back to the static `CROSS_ENCODER_SCORE_FLOOR` if the daemon reports none. The CE scores the cleaned **recent-context window** (the `rerank_query` built by `relevance.build_context_window`), not the bare prompt, so write-time delivery keying and read-time reranking share one representation.
 
 ## Veracity System
 
@@ -1343,6 +1395,30 @@ Crons: analyser at 00:00, self-modification at 00:30. See `docs/spec-calibration
 ## Dev-Container Support
 
 For sessions running inside dev-containers, the daemon exposes a **TCP listener on port 47390** alongside its Unix socket, and `cairn_recall` / `cairn_remember` opcodes let a container shim dial the host daemon. `cairn/container_injector.py` injects context inside the container, with an extension auto-installer and VSIX staging so a containerised Claude Code / Copilot session reaches the same host cairn as the native session.
+
+## Read-Side Relevance Grading
+
+Bi-encoder recall is fast but blunt — it surfaces what is *semantically near*, not what is *relevant here*. Read-side relevance grading layers a learnable gate on top: bi-encoder recall (unchanged) → cross-encoder rerank over the recent-context window → inject → **log every delivery** → accumulate labels (agent grades + behavioural engagement) that will eventually train a student cross-encoder. The full design is `docs/spec-memory-relevance-grading.md`; the portable hot-path core lives in `cairn/relevance.py`.
+
+**The context window.** `relevance.build_context_window(current_prompt, transcript_path)` builds the cleaned representation that is used on *both* sides of the loop — as the delivery key at write time and as the cross-encoder's input at read time. This parity is load-bearing: the same string must be produced on both sides, so it reuses `session_extract.load_turns` (already stripping tool blocks, thinking, `<cairn_context>`, system reminders, and `[cm]` defs). The window is the prior user turn + the prior assistant turn (capped at `PRIOR_RESPONSE_CAP` = 600 chars, so a long response can't swamp the short current prompt in the embedding) + the current prompt; it fails soft to just the current prompt if the transcript is unavailable.
+
+**Bucket-4 prefilter.** `relevance.is_self_referential_meta(entry)` is a high-precision regex prefilter that drops "cairn-about-cairn" meta-memories ("cairn has no memory of X", "should be captured when shared") — it matches statements *about memory existence/coverage/gaps*, never the bare token "cairn" (which legitimate domain memories in this repo mention constantly). It is gated by `config.RELEVANCE_PREFILTER_ENABLED` (**default `False`** — it changes behaviour by dropping injected memories) and applied in `hook_helpers._relevance_prefilter`, which exempts `correction`-type memories (they surface ungated, per spec) and audits each drop via the `relevance_prefilter_drop` metric.
+
+**Delivery logging.** When `config.RELEVANCE_LOGGING_ENABLED` (default `True`), `hook_helpers` calls `relevance.log_memory_deliveries` after injection to write one [`memory_deliveries`](#ephemeral-database-cairn-ephemeraldb) row per injected memory, stamping ranking provenance per row — `reranker_model` (the model that produced `ce_score`), `score_components` (JSON of every score signal), `layer`, and `scope` (project vs global, computed exactly as `split_by_scope` does). It is fail-soft: instrumentation never breaks delivery.
+
+**Agent-as-teacher labels.** The agent grades each surfaced memory 0–3 in the `[cm]` block's `rg` field (`"42:3"`, `"17:0!"` where trailing `!` is a hard-negative — actively wrong/misleading, a distinct axis from mere irrelevance). `relevance.parse_relevance_grades` is the single source of truth for that grammar; `hooks/parser.py` delegates to it rather than re-implementing parsing. `relevance.apply_relevance_grades` writes `grade` + `hard_negative` onto the most-recent delivery row of each graded memory in the session.
+
+**Behavioural engagement (the primary, non-circular label).** Rather than trust the agent's self-report, `relevance.score_engagement` mechanically detects whether the response actually *used* each delivered memory: it computes the memory's **distinctive terms** (its tokens minus the prompt's tokens — the memory's marginal contribution, since terms shared with the prompt would recur whether or not the memory helped) and checks how many surface in the response. `engaged = 1` when ≥2 distinctive terms appear (one shared term is plausibly coincidental, two is not); `engaged_score` is the fraction surfaced; `(None, -1.0)` when there are no distinctive terms (the memory is redundant with the prompt — undecidable, so no false-zero signal). `relevance.apply_engagement` runs at Stop over this turn's not-yet-evaluated deliveries (`engaged_score IS NULL`), fetching each memory's current content from the durable DB. This is the PRIMARY training label; the agent `rg` grades supplement it.
+
+**Phase status.** Phase 1 (instrument — delivery log + provenance) and Phase 2 (agent-as-teacher labels + behavioural engagement) are implemented. Phase 3 (train a cross-encoder student on the accumulated labels) and Phase 4 (demote the agent-teacher once the student is trusted) are future. All heavy/generative work (T1 — synthesised intent, label densification) lives in async crons over the delivery log, never on the hot path.
+
+## Write-Side Generation Quality
+
+The largest lever on injected-memory quality is generating fewer, more findable, more self-sufficient memories *in the first place* — so this is a write-side complement to read-side grading.
+
+**Provenance.** `config.GENERATION_PROMPT_VERSION` (`genA-v2`) is stamped into `memories.source_ref` at insert time by the Stop hook, so the downstream usefulness of a memory (its `memory_deliveries` grades and engagement) is attributable to the generation-prompt version that produced it. `storage.insert_memories` resolves source_ref per entry with the precedence `entry["source_ref"]` > the `source_ref` call parameter > `NULL` — so the analyser and ingest set their own provenance (`analyser-session-arc`, review-writeback) and are unaffected, while plain agent writes get the version stamp. The `genA-v1 → genA-v2` bump records the addition of the **dual-altitude transferability** lever to the live generation rules (`.claude/rules/memory-system.md`): capture the generalised, cross-project form of a lesson anchored by the specific instance, so usefulness of `genA-v2` memories is attributable to that change.
+
+**Offline A/B harness.** `cairn/ab_writeside.py` validates speculative generation-rule changes offline (online A/B is too slow and sparse — write→surface→grade lags, and usefulness-when-surfaced confounds writer with retriever). It replays a transcript corpus through two generation prompts: **prompt-A** is the current-best control (suppression > findability > self-sufficiency > redundancy-awareness > transferability) and **prompt-B** is that control plus exactly one speculative lever (anticipated-question keyword seeding — adding 2–3 question-form phrasings to each entry's keywords), so the A/B isolates the speculation and nothing else. The judge is **Opus 4.8**, made independent by construction: **blind** (the two sets are "Set 1"/"Set 2", never told which is "ours"), **position-swapped** (judged in both orders; disagreement = position bias = tie), and **pairwise**, with a findability / self-sufficiency / fitness rubric. The A/B unit is the **session cohort**, never per-memory (per-memory collides under dedup). Fast write-time metrics — `dedup_rate`, `findability_backtest`, `self_sufficiency_coldread` — give cheaper signal alongside the judge. Every LLM and embedder call is injectable so the mechanics test without a model; the CLI exposes `replay` and `ab` subcommands. Nothing in it runs on the hot path.
 
 ## Limitations and Future Work
 
