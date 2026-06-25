@@ -334,6 +334,10 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     conn = get_conn()
     project: Optional[str] = get_session_project(conn, session_id)
     inserted: int = 0
+    # Write-side provenance (spec Part B): stamp the generation-prompt version that
+    # produced these agent memories, so downstream usefulness is attributable.
+    from cairn import config as _cfg
+    gen_version: str = getattr(_cfg, "GENERATION_PROMPT_VERSION", None) or "unknown"
     # Sync provenance — captured once per call, propagated to every INSERT/UPDATE below.
     # Skipped if the DB isn't v4-ready (legacy test fixtures, partial installs).
     sync_on: bool = _v4_ready(conn)
@@ -353,17 +357,17 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
             conn.execute(
                 "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, facts, "
                 "origin_id, created_by_node, updated_by_node, user_id, updated_by, lamport, "
-                "visibility, embedding_model_version) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "visibility, embedding_model_version, source_ref) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, facts_csv,
-                 str(uuid.uuid4()), node_id, node_id, user_id, user_id, lam, 'team', model_version)
+                 str(uuid.uuid4()), node_id, node_id, user_id, user_id, lam, 'team', model_version, gen_version)
             )
         else:
             conn.execute(
-                "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, facts, origin_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, facts, origin_id, source_ref) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, facts_csv,
-                 str(uuid.uuid4()))
+                 str(uuid.uuid4()), gen_version)
             )
 
     def _update_memory_full(mem_id, content, embedding_blob, session_id, project, keywords_csv,

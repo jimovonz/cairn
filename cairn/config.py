@@ -313,6 +313,15 @@ def resolve_reranker():
             pass
     return CROSS_ENCODER_MODEL, CROSS_ENCODER_SCORE_FLOOR
 
+# === Write-side generation provenance (docs/spec-memory-relevance-grading.md Part B) ===
+# Stamp every agent-written memory with the version of the generation instructions
+# (the memory-system rules) that produced it, so downstream read-grader usefulness
+# (memory_deliveries grades/engagement) is attributable to a prompt version — the
+# join key the offline A/B (ab_writeside.py) needs. Bump this whenever the memory
+# generation rules change materially. Stored in memories.source_ref for agent
+# writes (analyser/ingest set their own source_ref and are unaffected).
+GENERATION_PROMPT_VERSION = "genA-v1"
+
 # === Read-side memory relevance grading (docs/spec-memory-relevance-grading.md) ===
 RELEVANCE_LOGGING_ENABLED = True    # Log injected memories to memory_deliveries (instrument; T0)
 RELEVANCE_PREFILTER_ENABLED = False # Bucket-4 self-referential-meta prefilter — OFF by default

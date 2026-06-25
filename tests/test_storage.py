@@ -250,6 +250,21 @@ def test_insert_memories_behavioural(db_path, tmp_path):
     assert json.loads(rows[0][1]) == ["/hooks/storage.py"]
 
 
+# Step 3a: agent memories carry the generation-prompt-version provenance stamp
+# (memories.source_ref) so downstream usefulness is attributable to a prompt version.
+@pytest.mark.behavioural
+def test_insert_memories_stamps_generation_prompt_version(db_path):
+    import cairn.config as cfg
+    with patch.object(storage, "inline_backfill"), \
+         patch.object(cfg, "GENERATION_PROMPT_VERSION", "genTEST-v9"):
+        count = storage.insert_memories(
+            [{"type": "fact", "topic": "prov",
+              "content": "A sufficiently long memory content to clear the quality gate"}])
+    assert count == 1
+    rows = _query(db_path, "SELECT source_ref FROM memories WHERE topic = 'prov'")
+    assert rows[0][0] == "genTEST-v9"
+
+
 #TAG: [24F1] 2026-04-05
 # Verifies: empty list returns 0; short content rejected by quality gate; no transcript_path → associated_files NULL
 @pytest.mark.edge
