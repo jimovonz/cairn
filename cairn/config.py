@@ -327,6 +327,22 @@ def resolve_reranker():
 #   prior [cm] blocks in context).
 GENERATION_PROMPT_VERSION = "genA-v3"
 
+# === Write-side A/B (live, per-prompt) ===
+# When enabled, each user prompt is randomly assigned arm A (control = current live
+# rules) or arm B (control + ONE speculative variable injected this turn). The Stop
+# hook stamps each arm's memories with AB_ARM_VERSIONS[arm] in source_ref, so
+# outcomes compare by arm via `query.py --delivery-stats`. Per-prompt randomisation;
+# subagents are excluded. Flip AB_TEST_ENABLED off to stop the experiment.
+AB_TEST_ENABLED = True
+AB_ARM_VERSIONS = {"A": GENERATION_PROMPT_VERSION, "B": "genB-v1"}
+# The single speculative variable for arm B (swap this to test a different aspect):
+AB_B_INSTRUCTION = (
+    "[cairn A/B — arm B] For each memory you write THIS turn, additionally seed its "
+    "keywords (kw) with 2-3 QUESTION-FORM phrasings — the literal questions a future "
+    "session would type to find it (e.g. \"how do I X\", \"why does Y fail\", \"what "
+    "sets Z\") — alongside the normal keywords."
+)
+
 # === Time display (cairn/timeutil.py) ===
 # Storage is ALWAYS UTC (SQLite CURRENT_TIMESTAMP). This is the local timezone used
 # for DISPLAY and for "today/since/until" day-bucketing only. IANA name (e.g.

@@ -31,5 +31,9 @@ def _hermetic_proxy_state(monkeypatch):
     try:
         import cairn.config as _cfg
         monkeypatch.setattr(_cfg, "PROXY_ENABLED", False, raising=False)
+        # Force the live write-side A/B OFF so per-prompt random arm assignment
+        # doesn't make hook output non-deterministic across tests. Tests that
+        # exercise the A/B opt in explicitly.
+        monkeypatch.setattr(_cfg, "AB_TEST_ENABLED", False, raising=False)
     except Exception:
         pass
