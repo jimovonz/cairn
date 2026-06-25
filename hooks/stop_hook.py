@@ -50,12 +50,19 @@ def _async_writes_enabled() -> bool:
     return True
 
 
-def _enqueue_or_insert(entries, session_id, transcript_path) -> int:
+def _enqueue_or_insert(entries, session_id, transcript_path, source_ref=None) -> int:
     """Either enqueue for async drain or call insert_memories directly.
     Returns the number of entries that will be (or were) stored — for the
-    async path this is optimistic since dedup happens in the drain worker."""
+    async path this is optimistic since dedup happens in the drain worker.
+
+    source_ref (write provenance) is stamped per-entry here rather than passed as
+    a param so it rides through the async write_queue/drain JSON serialization for
+    free (like associated_files). setdefault: an explicit per-entry source_ref wins."""
     if not entries:
         return 0
+    if source_ref:
+        for e in entries:
+            e.setdefault("source_ref", source_ref)
     if _async_writes_enabled():
         from hooks.write_queue import enqueue_memories, spawn_drain
         enqueue_memories(entries, session_id=session_id, transcript_path=transcript_path)
@@ -111,7 +118,7 @@ AMEND_ONLY_SUFFIX = (
 from hooks.retrieval import (retrieve_context, layer2_cross_project_search,
                         load_context_cache, save_context_cache, is_context_cached, add_to_context_cache,
                         CONTEXT_CACHE_SIM_THRESHOLD)
-from cairn.config import MAX_CONTINUATIONS, WEAK_ENTRY_SCORE_FLOOR, CONTEXT_BOOTSTRAP_INTERVAL, CHECKPOINT_MAX_NOTES_PER_SESSION
+from cairn.config import MAX_CONTINUATIONS, WEAK_ENTRY_SCORE_FLOOR, CONTEXT_BOOTSTRAP_INTERVAL, CHECKPOINT_MAX_NOTES_PER_SESSION, GENERATION_PROMPT_VERSION
 
 
 def collect_memory_notes(transcript_path: str, session_id: str,
@@ -195,7 +202,8 @@ def collect_memory_notes(transcript_path: str, session_id: str,
         return 0
 
     to_store = unique_notes[:remaining_budget]
-    count = _enqueue_or_insert(to_store, session_id=session_id, transcript_path=transcript_path)
+    count = _enqueue_or_insert(to_store, session_id=session_id, transcript_path=transcript_path,
+                               source_ref=GENERATION_PROMPT_VERSION)
 
     save_hook_state(session_id, "memory_notes_stored", str(notes_stored + count))
     log(f"Memory notes: stored {count} of {len(all_notes)} found ({len(all_notes) - len(unique_notes)} deduped)")
@@ -414,7 +422,12 @@ def main() -> None:
     if not is_subagent:
         try:
             from cairn.relevance import apply_engagement
-            apply_engagement(text, session_id=session_id)
+            from cairn.session_extract import _clean_assistant_text
+            # Score the cleaned response — strip thinking + the [cm] block so terms
+            # the agent echoes only while WRITING new memories do not count as
+            # "engagement" (the [cm] tail would inflate the primary label). Reuses
+            # the read-side cleaner so this representation matches every other one.
+            apply_engagement(_clean_assistant_text(text), session_id=session_id)
         except Exception as e:
             log(f"engagement write-back failed: {e}")
 
@@ -425,7 +438,8 @@ def main() -> None:
         if retrieval_outcome:
             record_metric(session_id, f"retrieval_{retrieval_outcome}", context_need[:100] if context_need else None)
         if entries:
-            count = _enqueue_or_insert(entries, session_id=session_id, transcript_path=own_transcript)
+            count = _enqueue_or_insert(entries, session_id=session_id, transcript_path=own_transcript,
+                                       source_ref=f"subagent:{GENERATION_PROMPT_VERSION}")
             # Snapshot the subagent's final message so --context can recover its reasoning.
             try:
                 _snapshot_excerpts(session_id, own_transcript, text)
@@ -600,7 +614,8 @@ def main() -> None:
 
     # Insert memories into DB (enqueues for drain when CAIRN_HOOK_ASYNC_WRITES=1)
     if entries:
-        count = _enqueue_or_insert(entries, session_id=session_id, transcript_path=transcript_path)
+        count = _enqueue_or_insert(entries, session_id=session_id, transcript_path=transcript_path,
+                                   source_ref=GENERATION_PROMPT_VERSION)
         record_metric(session_id, "memories_stored", None, count)
         log(f"Stored {count} memories (session: {session_id[:8]}...)" if session_id else f"Stored {count} memories")
 
