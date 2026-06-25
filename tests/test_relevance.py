@@ -134,6 +134,61 @@ def test_log_failsoft_empty():
     assert relevance.apply_relevance_grades([], session_id="s") == 0
 
 
+# ---- step 1a: ranking provenance (reranker_model / score_components / layer / scope) ----
+def test_log_records_ranking_provenance(eph):
+    delivered = [
+        {"id": 42, "score": 0.8, "ce_score": 1.2, "rrf_score": 0.3, "similarity": 0.7,
+         "reranker_model": "BAAI/bge-reranker-base", "project": "proj"},
+        {"id": 17, "score": 0.5, "project": "other"},  # no CE / no model
+    ]
+    relevance.log_memory_deliveries(
+        delivered, session_id="s", layer="per-prompt", project="proj", eph_path=eph)
+    conn = sqlite3.connect(eph)
+    rows = conn.execute(
+        "SELECT memory_id, reranker_model, score_components, layer, scope "
+        "FROM memory_deliveries WHERE session_id='s' ORDER BY served_rank").fetchall()
+    # row 0 — full provenance, project scope (project==delivery project)
+    assert rows[0][0] == 42
+    assert rows[0][1] == "BAAI/bge-reranker-base"
+    comp = json.loads(rows[0][2])
+    assert comp == {"ce": 1.2, "composite": 0.8, "rrf": 0.3, "sim": 0.7}
+    assert rows[0][3] == "per-prompt"
+    assert rows[0][4] == "project"
+    # row 1 — no reranker model, only composite component, global scope
+    assert rows[1][0] == 17
+    assert rows[1][1] is None
+    assert json.loads(rows[1][2]) == {"composite": 0.5}
+    assert rows[1][4] == "global"
+
+
+def test_score_components_none_when_no_signals(eph):
+    relevance.log_memory_deliveries([{"id": 9}], session_id="s", eph_path=eph)
+    sc = sqlite3.connect(eph).execute(
+        "SELECT score_components, scope FROM memory_deliveries WHERE memory_id=9").fetchone()
+    assert sc[0] is None        # no score signals at all
+    assert sc[1] == "global"    # no project passed -> global
+
+
+def test_build_context_xml_stamps_layer_and_scope(tmp_path, monkeypatch):
+    p = str(tmp_path / "eph.db")
+    init_db.init_ephemeral(p)
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", p)
+    from hooks.hook_helpers import build_context_xml
+    pr = [{"id": 1, "type": "fact", "topic": "t", "content": "c", "project": "x",
+           "updated_at": "now", "confidence": 0.9, "score": 0.9, "similarity": 0.7,
+           "ce_score": 2.0, "reranker_model": "m", "archived_reason": None}]
+    gr = [{"id": 2, "type": "fact", "topic": "t", "content": "c2", "project": "y",
+           "updated_at": "now", "confidence": 0.9, "score": 0.4, "similarity": 0.3,
+           "archived_reason": None}]
+    build_context_xml("q", "x", "first-prompt", pr, gr, session_id="sess",
+                      context_text="[user] q")
+    rows = dict((r[0], (r[1], r[2], r[3])) for r in sqlite3.connect(p).execute(
+        "SELECT memory_id, layer, scope, reranker_model "
+        "FROM memory_deliveries WHERE session_id='sess'").fetchall())
+    assert rows[1][0] == "first-prompt" and rows[1][1] == "project" and rows[1][2] == "m"
+    assert rows[2][0] == "first-prompt" and rows[2][1] == "global" and rows[2][2] is None
+
+
 # ---- wiring: build_context_xml prefilter + delivery logging -------------------
 def test_build_context_xml_logs_deliveries(tmp_path, monkeypatch):
     import sqlite3

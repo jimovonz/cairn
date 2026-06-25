@@ -688,9 +688,22 @@ def init_ephemeral(path=None):
             served_rank   INTEGER,
             grade         INTEGER,
             hard_negative INTEGER DEFAULT 0,
+            reranker_model TEXT,
+            score_components TEXT,
+            layer         TEXT,
+            scope         TEXT,
             delivered_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Ranking provenance (step 1a) — migrate DBs predating these columns so the
+    # 0-3 training labels stay attributable to the model/scoring that produced
+    # them (ce_score is heterogeneous across the ms-marco->bge transition).
+    for _col, _ctype in (("reranker_model", "TEXT"), ("score_components", "TEXT"),
+                         ("layer", "TEXT"), ("scope", "TEXT")):
+        try:
+            conn.execute(f"ALTER TABLE memory_deliveries ADD COLUMN {_col} {_ctype}")
+        except sqlite3.OperationalError:
+            pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_deliv_session ON memory_deliveries(session_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_deliv_memory ON memory_deliveries(memory_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_deliv_grade ON memory_deliveries(grade)")

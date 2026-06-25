@@ -114,12 +114,38 @@ def _next_turn_index(conn: sqlite3.Connection, session_id: str) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
+def _score_components(r: dict[str, Any]) -> Optional[str]:
+    """JSON of the heterogeneous score signals on a delivered row, so a label can
+    be attributed to the exact scoring that produced it (ce_score is heterogeneous
+    across the ms-marco->bge reranker transition; the composite blends CE + RRF +
+    similarity). Only present keys are stored; returns None if nothing is known."""
+    comp = {}
+    for src, dst in (("ce_score", "ce"), ("score", "composite"), ("rrf_score", "rrf"),
+                     ("similarity", "sim"), ("confidence", "conf")):
+        v = r.get(src)
+        if v is not None:
+            try:
+                comp[dst] = round(float(v), 6)
+            except (TypeError, ValueError):
+                pass
+    if not comp:
+        return None
+    import json
+    return json.dumps(comp, separators=(",", ":"))
+
+
 def log_memory_deliveries(delivered: list[dict[str, Any]], *, session_id: str,
                           context_text: str = "", context_vec: Optional[bytes] = None,
                           turn_index: Optional[int] = None,
+                          layer: Optional[str] = None, project: Optional[str] = None,
                           eph_path: Optional[str] = None) -> int:
     """Insert one memory_deliveries row per injected memory. Fail-soft: returns
-    the count written (0 on any error) — instrumentation must never break delivery."""
+    the count written (0 on any error) — instrumentation must never break delivery.
+
+    Ranking provenance (step 1a) is stamped per row: reranker_model (the model that
+    produced ce_score, from the daemon), score_components (JSON of all score signals),
+    layer (the retrieval layer), and scope (project vs global, computed against
+    `project` exactly as split_by_scope does)."""
     if not delivered or not session_id:
         return 0
     try:
@@ -138,12 +164,15 @@ def log_memory_deliveries(delivered: list[dict[str, Any]], *, session_id: str,
             ce = r.get("ce_score")
             if ce is None:
                 ce = r.get("score")
+            scope = "project" if (project and r.get("project") == project) else "global"
             conn.execute(
                 "INSERT INTO memory_deliveries "
                 "(session_id, turn_index, memory_id, context_text, context_vec, "
-                " ce_score, served_rank) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " ce_score, served_rank, reranker_model, score_components, layer, scope) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (session_id, turn_index, int(mid), context_text, context_vec,
-                 ce, r.get("served_rank", rank)),
+                 ce, r.get("served_rank", rank), r.get("reranker_model"),
+                 _score_components(r), layer, scope),
             )
             n += 1
         conn.commit()

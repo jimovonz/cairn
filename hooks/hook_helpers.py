@@ -650,7 +650,8 @@ def build_context_xml(query: str, project: Optional[str], layer: str,
                 log_memory_deliveries(project_results + global_results,
                                       session_id=session_id,
                                       context_text=context_text or query,
-                                      context_vec=context_vec)
+                                      context_vec=context_vec,
+                                      layer=layer, project=project)
         except Exception:
             pass
     return "\n".join(lines)

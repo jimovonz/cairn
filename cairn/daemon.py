@@ -49,6 +49,7 @@ CAIRN_DIR = os.path.dirname(__file__)
 
 
 _cross_encoder: Any = None
+_cross_encoder_name: Any = None  # name of the loaded reranker — provenance for memory_deliveries
 _nli_model: Any = None
 
 
@@ -70,7 +71,7 @@ def _get_nli_model() -> Any:
 
 def _get_cross_encoder() -> Any:
     """Lazily load the cross-encoder model. Returns None if disabled or unavailable."""
-    global _cross_encoder
+    global _cross_encoder, _cross_encoder_name
     if _cross_encoder is not None:
         return _cross_encoder
     try:
@@ -80,6 +81,7 @@ def _get_cross_encoder() -> Any:
         from sentence_transformers import CrossEncoder
         model_name, _floor = resolve_reranker()  # device-aware: bge on CUDA, ms-marco on CPU
         _cross_encoder = CrossEncoder(model_name)
+        _cross_encoder_name = model_name
         return _cross_encoder
     except Exception:
         return None
@@ -259,7 +261,10 @@ def handle_client(conn, emb):
                 pairs = [(query, c) for c in candidates]
                 scores = ce.predict(pairs).tolist()
                 from cairn.config import resolve_reranker
-                response = {"scores": scores, "score_floor": resolve_reranker()[1]}
+                # Report the loaded model name (provenance) + its floor. _cross_encoder_name
+                # is the model actually in memory, truer than re-resolving.
+                response = {"scores": scores, "score_floor": resolve_reranker()[1],
+                            "model": _cross_encoder_name}
 
         elif action == "nli":
             pairs = request["pairs"]
