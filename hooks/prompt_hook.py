@@ -222,13 +222,17 @@ def layer1_5_search(user_message: str, session_id: str,
             return None
 
         from hooks.hook_helpers import load_injected_ids as _li
-        # rerank=False: L1.5 fires on every prompt — the cross-encoder pass
-        # (~0.5-1s) is reserved for the quality-critical L1/L3 paths. The 0.55
-        # similarity threshold already gates noise here.
+        from cairn.relevance import build_context_window
+        # Context-aware second-pass gate: the cross-encoder re-scores the
+        # shortlist against the recent-context window (current prompt + last
+        # turn + response), not the raw prompt — this is what minimises
+        # irrelevant injection on follow-up prompts. Affordable now that the
+        # reranker runs on GPU (ms-marco ~19ms / bge ~127ms per call).
+        _ctx = build_context_window(user_message, transcript_path)
         project_results, global_results, _ = hybrid_search(
             query, conn, project=project, session_id=session_id,
             threshold=L1_5_SIM_THRESHOLD, limit=L1_5_MAX_RESULTS,
-            exclude_ids=_li(session_id), rerank=False,
+            exclude_ids=_li(session_id), rerank=True, rerank_query=_ctx,
         )
         conn.close()
     except Exception as e:
@@ -462,10 +466,12 @@ def layer1_search(user_message: str, session_id: str) -> Optional[str]:
             return None
 
         from hooks.hook_helpers import load_injected_ids as _li
+        from cairn.relevance import build_context_window
         project_results, global_results, _ = hybrid_search(
             user_message, conn, project=project, session_id=session_id,
             threshold=L1_SIM_THRESHOLD, limit=L1_MAX_RESULTS,
             exclude_ids=_li(session_id),
+            rerank_query=build_context_window(user_message, None),
         )
         conn.close()
     except Exception as e:

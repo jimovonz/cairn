@@ -293,7 +293,7 @@ CROSS_ENCODER_SCORE_FLOOR_CUDA = 0.0005  # eyeball-initial: drops only bge~0 noi
 # model + its -3.0 floor on EVERY device. ms-marco still loads on the GPU when CUDA
 # is present (sentence-transformers auto-selects the device) — i.e. ms-marco-on-GPU,
 # still ~12x faster than CPU, but with the floor we actually trust.
-RERANKER_BGE_ENABLED = False
+RERANKER_BGE_ENABLED = True   # enabled: CUDA available; floor loose (0.0005) pending rg calibration
 
 
 def resolve_reranker():

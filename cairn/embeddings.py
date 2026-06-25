@@ -596,6 +596,7 @@ def find_similar(
     limit: Optional[int] = None,
     current_project: Optional[str] = None,
     rerank: bool = True,
+    rerank_query: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Find memories similar to the given text with full quality filtering.
 
@@ -906,7 +907,7 @@ def find_similar(
         active_for_ce = diverse if ce_active else []
         ce_pool = active_for_ce + (archived_candidates if ce_archived else [])
         candidate_texts = [f"{r.get('type', '')} {r.get('topic', '')}: {r.get('content', '')}" for r in ce_pool]
-        ce_out = _daemon_rerank(text, candidate_texts)
+        ce_out = _daemon_rerank(rerank_query or text, candidate_texts)
         ce_scores, ce_floor, ce_model = ce_out if ce_out else (None, None, None)
         floor = ce_floor if ce_floor is not None else CROSS_ENCODER_SCORE_FLOOR
         if ce_scores and len(ce_scores) == len(ce_pool):
