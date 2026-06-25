@@ -170,6 +170,22 @@ A mechanical **bucket-4 prefilter** (`is_self_referential_meta`) can drop self-r
 
 **Write side — generation quality.** Each agent-written memory is stamped with `config.GENERATION_PROMPT_VERSION` (`genA-v2`) in `memories.source_ref` (the provenance join key; precedence `entry["source_ref"] > call param > NULL`). The live generation rules carry a dual-altitude **transferability** lever (generalised principle + specific anchor). `cairn/ab_writeside.py` is an OFFLINE A/B harness: replay the transcript corpus through prompt-A (current-best control: suppression / findability / self-sufficiency / dedup / transferability) vs prompt-B (control + one speculative lever) → judge with Opus 4.8, BLIND + position-swapped + pairwise (rubric findability / self-sufficiency / fitness), A/B unit = session cohort. Metrics: dedup rate, findability backtest, self-sufficiency cold-read. CLI: `.venv/bin/python cairn/ab_writeside.py replay|ab --limit N [--dry-run]`.
 
+## Time handling (UTC storage, local display)
+
+Storage is **always UTC** (SQLite `CURRENT_TIMESTAMP` / `datetime('now')`); display
+and day-bucketing are **always local**. `cairn/timeutil.py` is the single source of
+truth (`fmt_local`, `since_bound_utc` / `until_bound_utc`, `now_local`); the local
+zone is `CAIRN_TZ` (IANA name) or the auto-detected system zone.
+
+- **Never** read a stored timestamp as local — a `created_at` of `2026-06-25
+  21:04:34` is UTC (e.g. `2026-06-26 09:04:34 NZST`). `query.py` already renders
+  local and `--today/--since/--until` already bucket by the local day; the
+  dashboard localises every `*_at` field. So trust those outputs as local.
+- When querying the DB directly, compare against UTC: use
+  `created_at >= datetime('now','-N minutes')` (UTC-relative) or
+  `timeutil.since_bound_utc(...)`, **not** a hand-typed local time. (This is the
+  exact trap behind the false "no memories today" outage.)
+
 ## SQLite library discipline (corruption prevention)
 
 ALL processes that open a cairn DB (`cairn.db`, `cairn-ephemeral.db`) MUST use a

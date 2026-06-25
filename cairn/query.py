@@ -112,16 +112,19 @@ def list_by_date(since=None, until=None, limit=50):
     conn.row_factory = sqlite3.Row
     conditions = ["deleted_at IS NULL"]
     params = []
+    # Day bounds are computed in LOCAL time then converted to UTC for the WHERE
+    # clause (updated_at is stored UTC). See cairn/timeutil.
+    from cairn import timeutil
     if since:
-        conditions.append("updated_at >= ?")
-        params.append(_parse_date(since))
+        lo = timeutil.since_bound_utc(since)
+        if lo:
+            conditions.append("updated_at >= ?")
+            params.append(lo)
     if until:
-        # Include the full day
-        parsed = _parse_date(until)
-        if len(parsed) == 10:  # date only, no time
-            parsed += " 23:59:59"
-        conditions.append("updated_at <= ?")
-        params.append(parsed)
+        hi = timeutil.until_bound_utc(until)
+        if hi:
+            conditions.append("updated_at <= ?")
+            params.append(hi)
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
     params.append(limit)
     rows = conn.execute(f"""
@@ -943,6 +946,7 @@ def format_rows(rows):
     if not rows:
         print("No results.")
         return
+    from cairn import timeutil
     for r in rows:
         keywords = None
         try:
@@ -951,10 +955,10 @@ def format_rows(rows):
             pass
         kw_suffix = f"  [k: {keywords}]" if keywords else ""
         if isinstance(r, dict):
-            print(f"[{r['id']}] {r['type']}/{r['topic']} (sim={r.get('similarity', 'N/A'):.3f}, {r['updated_at']})")
+            print(f"[{r['id']}] {r['type']}/{r['topic']} (sim={r.get('similarity', 'N/A'):.3f}, {timeutil.fmt_local(r['updated_at'])})")
             print(f"    {r['content']}{kw_suffix}")
         else:
-            print(f"[{r['id']}] {r['type']}/{r['topic']} ({r['updated_at']})")
+            print(f"[{r['id']}] {r['type']}/{r['topic']} ({timeutil.fmt_local(r['updated_at'])})")
             print(f"    {r['content']}{kw_suffix}")
 
 
