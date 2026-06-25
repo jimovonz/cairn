@@ -321,9 +321,11 @@ def resolve_reranker():
 # generation rules change materially. Stored in memories.source_ref for agent
 # writes (analyser/ingest set their own source_ref and are unaffected).
 #   genA-v1 -> genA-v2: added the dual-altitude transferability lever to the live
-#   rules (capture the generalised, cross-project form with the specific instance
-#   as anchor), so usefulness of genA-v2 memories is attributable to the change.
-GENERATION_PROMPT_VERSION = "genA-v2"
+#   rules (capture the generalised, cross-project form with the specific instance).
+#   genA-v2 -> genA-v3: added the in-session duplicate-suppression rule (do not
+#   re-emit a knowledge bite already written this session; the agent sees its own
+#   prior [cm] blocks in context).
+GENERATION_PROMPT_VERSION = "genA-v3"
 
 # === Time display (cairn/timeutil.py) ===
 # Storage is ALWAYS UTC (SQLite CURRENT_TIMESTAMP). This is the local timezone used
