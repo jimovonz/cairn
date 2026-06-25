@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from cairn import config
 from cairn.proxy.response_filter import CairnResponseFilter
-from cairn.proxy.request_inject import reinject_cm, inject_bootstrap, inject_prompt_context
+from cairn.proxy.request_inject import reinject_cm, inject_bootstrap, inject_prompt_context, sanitize_empty_text_blocks
 from cairn.proxy import sidecar
 
 UPSTREAM = config.PROXY_UPSTREAM
@@ -108,6 +108,10 @@ def _rewrite_request(body: bytes, session_id: str) -> bytes:
     if not isinstance(data, dict) or "messages" not in data:
         return body
     try:
+        # Drop empty text blocks first so a corrupt in-memory turn (thinking +
+        # empty text + tool_use) can't wedge the session in a 400 loop the
+        # on-disk transcript can't clear. Normalizes content before reinjection.
+        sanitize_empty_text_blocks(data)
         # Re-injecting verbatim [cm] into assistant turns is harmless on any
         # request (it only matches turns this session generated).
         reinject_cm(data, sidecar.load_cm_map(session_id))
