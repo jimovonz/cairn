@@ -4,41 +4,41 @@ This is the Cairn project — a persistent AI memory system using SQLite, Claude
 
 ## Cairn Database
 
-The memory database is at `./cairn/cairn.db`. Use `python3 ./cairn/query.py` to search it.
+The memory database is at `./cairn/cairn.db`. Use `.venv/bin/python ./cairn/query.py` to search it (all commands below require the venv interpreter — system `python3` lacks pysqlite3, which cairn now requires).
 
 Query commands:
-- `python3 ./cairn/query.py <search>` — full-text search
-- `python3 ./cairn/query.py --semantic <query>` — semantic similarity search
-- `python3 ./cairn/query.py --recent` — list recent memories
-- `python3 ./cairn/query.py --today` — memories from today
-- `python3 ./cairn/query.py --since <date>` — memories from date onward (ISO, today, yesterday, 3d, 2w, 1m)
-- `python3 ./cairn/query.py --since <date> --until <date>` — memories in a date range
-- `python3 ./cairn/query.py --type <type>` — filter by type
-- `python3 ./cairn/query.py --session <id>` — filter by session
-- `python3 ./cairn/query.py --chain <id>` — show session chain
-- `python3 ./cairn/query.py --project <name>` — list memories for a project
-- `python3 ./cairn/query.py --projects` — list all projects
-- `python3 ./cairn/query.py --label <session_id> <name>` — label a session chain
-- `python3 ./cairn/query.py --context <id>` — show conversation context for a memory
-- `python3 ./cairn/query.py --history <id>` — show version history
-- `python3 ./cairn/query.py --delete <id>` — delete a memory
-- `python3 ./cairn/query.py --compact [project]` — dense cairn dump for LLM ingestion
-- `python3 ./cairn/query.py --review` — surface low-confidence memories
-- `python3 ./cairn/query.py --verify-sources` — analyse source_messages accuracy
-- `python3 ./cairn/query.py --backfill` — generate missing embeddings
-- `python3 ./cairn/query.py --stats` — database statistics
+- `.venv/bin/python ./cairn/query.py <search>` — full-text search
+- `.venv/bin/python ./cairn/query.py --semantic <query>` — semantic similarity search
+- `.venv/bin/python ./cairn/query.py --recent` — list recent memories
+- `.venv/bin/python ./cairn/query.py --today` — memories from today
+- `.venv/bin/python ./cairn/query.py --since <date>` — memories from date onward (ISO, today, yesterday, 3d, 2w, 1m)
+- `.venv/bin/python ./cairn/query.py --since <date> --until <date>` — memories in a date range
+- `.venv/bin/python ./cairn/query.py --type <type>` — filter by type
+- `.venv/bin/python ./cairn/query.py --session <id>` — filter by session
+- `.venv/bin/python ./cairn/query.py --chain <id>` — show session chain
+- `.venv/bin/python ./cairn/query.py --project <name>` — list memories for a project
+- `.venv/bin/python ./cairn/query.py --projects` — list all projects
+- `.venv/bin/python ./cairn/query.py --label <session_id> <name>` — label a session chain
+- `.venv/bin/python ./cairn/query.py --context <id>` — show conversation context for a memory
+- `.venv/bin/python ./cairn/query.py --history <id>` — show version history
+- `.venv/bin/python ./cairn/query.py --delete <id>` — delete a memory
+- `.venv/bin/python ./cairn/query.py --compact [project]` — dense cairn dump for LLM ingestion
+- `.venv/bin/python ./cairn/query.py --review` — surface low-confidence memories
+- `.venv/bin/python ./cairn/query.py --verify-sources` — analyse source_messages accuracy
+- `.venv/bin/python ./cairn/query.py --backfill` — generate missing embeddings
+- `.venv/bin/python ./cairn/query.py --stats` — database statistics
 
 ## Repo Ingestion
 
 Ingest a git repository into Cairn as portable knowledge entries:
 
-- `python3 ./cairn/ingest.py /path/to/repo` — extract, distill, and store (incremental if previously ingested)
-- `python3 ./cairn/ingest.py /path/to/repo --dry-run` — preview without storing
-- `python3 ./cairn/ingest.py /path/to/repo --project name` — override project name
-- `python3 ./cairn/ingest.py /path/to/repo --full` — force full re-ingestion (skip incremental diff)
-- `python3 ./cairn/ingest.py /path/to/repo --verbose` — show extraction details
+- `.venv/bin/python ./cairn/ingest.py /path/to/repo` — extract, distill, and store (incremental if previously ingested)
+- `.venv/bin/python ./cairn/ingest.py /path/to/repo --dry-run` — preview without storing
+- `.venv/bin/python ./cairn/ingest.py /path/to/repo --project name` — override project name
+- `.venv/bin/python ./cairn/ingest.py /path/to/repo --full` — force full re-ingestion (skip incremental diff)
+- `.venv/bin/python ./cairn/ingest.py /path/to/repo --verbose` — show extraction details
 
-24 extractors: docs, deps, tree, config, schemas, entrypoints, HTTP routes, CLI args, exports, comments, TODOs, env vars, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI, tree-sitter AST (Python, JS, TS, TSX, Go, Rust, C, C++), dependency graph. Graph edges queryable via `python3 ./cairn/query.py --deps <project>`.
+24 extractors: docs, deps, tree, config, schemas, entrypoints, HTTP routes, CLI args, exports, comments, TODOs, env vars, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI, tree-sitter AST (Python, JS, TS, TSX, Go, Rust, C, C++), dependency graph. Graph edges queryable via `.venv/bin/python ./cairn/query.py --deps <project>`.
 
 ## Subagent & review memory capture
 
@@ -160,6 +160,16 @@ Phase 1 commands (stubs return exit 2 — wiring is verified, no behaviour yet):
 
 The CLI is **agent-invoked from natural-language intent**, never user-typed.
 
+## Read-side relevance grading & write-side A/B (docs/spec-memory-relevance-grading.md)
+
+**Read side — what gets injected, graded, and measured.** Every injected memory is logged to `memory_deliveries` (ephemeral DB) keyed by a cleaned recent-context window (`cairn/relevance.py:build_context_window`), with ranking provenance (`reranker_model`, `score_components`, `layer`, `scope`). Two labels accumulate per delivery:
+- **Agent-as-teacher grades** — the `rg` field in the `[cm]` block (`"id:grade"`, 0–3 + trailing `!` for hard-negative) is written back by `apply_relevance_grades`. (Behaviour already specified in the memory rules.)
+- **Behavioural engagement** (the PRIMARY, non-circular label) — at Stop time `apply_engagement` mechanically detects whether the response actually USED each delivered memory (distinctive-term overlap minus prompt terms) → `engaged` / `engaged_score`. Agent `rg` supplements it.
+
+A mechanical **bucket-4 prefilter** (`is_self_referential_meta`) can drop self-referential meta-memories (gated by `RELEVANCE_PREFILTER_ENABLED`, default off; corrections exempt). The cross-encoder reranker is device-aware (`config.resolve_reranker`): `BAAI/bge-reranker-base` (floor 0.0005) on CUDA when `RERANKER_BGE_ENABLED`, else `cross-encoder/ms-marco-MiniLM-L-6-v2` (floor −3.0); the daemon owns the model and scores the recent-context window, so the hot hook path never imports torch. Phases 1–2 (instrument + agent labels) are live; the trained cross-encoder student and teacher-demotion (Phases 3–4) are future work.
+
+**Write side — generation quality.** Each agent-written memory is stamped with `config.GENERATION_PROMPT_VERSION` (`genA-v2`) in `memories.source_ref` (the provenance join key; precedence `entry["source_ref"] > call param > NULL`). The live generation rules carry a dual-altitude **transferability** lever (generalised principle + specific anchor). `cairn/ab_writeside.py` is an OFFLINE A/B harness: replay the transcript corpus through prompt-A (current-best control: suppression / findability / self-sufficiency / dedup / transferability) vs prompt-B (control + one speculative lever) → judge with Opus 4.8, BLIND + position-swapped + pairwise (rubric findability / self-sufficiency / fitness), A/B unit = session cohort. Metrics: dedup rate, findability backtest, self-sufficiency cold-read. CLI: `.venv/bin/python cairn/ab_writeside.py replay|ab --limit N [--dry-run]`.
+
 ## SQLite library discipline (corruption prevention)
 
 ALL processes that open a cairn DB (`cairn.db`, `cairn-ephemeral.db`) MUST use a
@@ -186,7 +196,7 @@ All changes MUST be made on feature branches, not main. Branch naming: `feature/
 Before tagging a release on main:
 1. Docs are up to date (README.md, ARCHITECTURE.md)
 2. `install.sh` and `uninstall.sh` are verified (syntax check + review for unintended changes)
-3. All tests pass (`python3 -m pytest tests/`)
+3. All tests pass (`.venv/bin/python -m pytest tests/`)
 4. Tag with semver: `git tag -a v0.X.Y -m "description"`
 
 ## Memory system instructions
