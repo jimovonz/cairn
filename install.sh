@@ -76,9 +76,25 @@ fi
 [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "ERROR: Dependency install failed. Run manually:"; \
          echo "  $VENV_PATH/bin/pip install -e \"$CAIRN_HOME[test,ast,graph]\""; exit 1; }
 
-# Verify critical imports before proceeding
-"$VENV_PYTHON" -c "from cairn import embeddings; from hooks.hook_helpers import log" 2>/dev/null \
+# Verify critical imports before proceeding. Do NOT swallow stderr — the pysqlite3
+# guard raises a specific, actionable ImportError if pysqlite3-binary is missing.
+"$VENV_PYTHON" -c "from cairn import embeddings; from hooks.hook_helpers import log" \
     || { echo "ERROR: Post-install import check failed. Dependencies may be incomplete."; exit 1; }
+
+# Verify the SINGLE sqlite library. Mixed stdlib(3.45)-vs-pysqlite3(3.51) writers on
+# a WAL-mode cairn DB cause corruption (be91366), so every cairn writer must resolve
+# sqlite3 -> pysqlite3. Fail loud if stdlib leaked (missing pysqlite3-binary, or a
+# stray CAIRN_ALLOW_STDLIB_SQLITE=1 in the environment).
+"$VENV_PYTHON" - <<'PYSQLITE_CHECK' \
+    || { echo "ERROR: cairn is NOT running on pysqlite3 (mixed-sqlite WAL corruption risk)."; \
+         echo "  Ensure pysqlite3-binary is installed and CAIRN_ALLOW_STDLIB_SQLITE is unset."; exit 1; }
+import sys
+import pysqlite3
+import hooks.hook_helpers as h
+assert pysqlite3.sqlite_version_info >= (3, 45), "pysqlite3 too old: %s" % pysqlite3.sqlite_version
+assert h.sqlite3.__name__.startswith("pysqlite3"), "cairn resolved stdlib sqlite3: %s" % h.sqlite3.__name__
+print("  sqlite library OK: pysqlite3 %s (single-lib)" % pysqlite3.sqlite_version)
+PYSQLITE_CHECK
 
 # --- Database ---
 # Stop any running daemon BEFORE touching the DB — a live daemon (esp. with sync
