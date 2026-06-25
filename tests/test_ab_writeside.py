@@ -18,9 +18,13 @@ def test_build_generation_prompt_variants_differ():
     b = ab.build_generation_prompt("B", "TRANSCRIPT_BODY")
     assert "TRANSCRIPT_BODY" in a and "TRANSCRIPT_BODY" in b
     assert a != b
-    # prompt-B exercises the levers in priority order
-    assert "SUPPRESSION" in b and "FINDABILITY" in b and "SELF-SUFFICIENCY" in b
+    # Both arms carry the current-best proven levers (A is the rebased control)...
+    for lever in ("SUPPRESSION", "FINDABILITY", "SELF-SUFFICIENCY", "TRANSFERABILITY"):
+        assert lever in a and lever in b
     assert b.index("SUPPRESSION") < b.index("FINDABILITY") < b.index("SELF-SUFFICIENCY")
+    # ...and ONLY B carries the speculative lever — what the A/B isolates.
+    assert "ANTICIPATED-QUESTION" in b
+    assert "ANTICIPATED-QUESTION" not in a
 
 
 def test_build_generation_prompt_unknown_variant():
@@ -39,7 +43,7 @@ def test_generate_memory_set_parses_and_stamps():
     out = ab.generate_memory_set("cleaned text", "B", call_llm=fake_llm)
     assert len(out) == 1
     assert out[0]["content"] == "a durable fact"
-    assert out[0]["generation_prompt_version"] == "genB-v2"
+    assert out[0]["generation_prompt_version"] == "spec-qfkw-v1"
     assert "cleaned text" in calls[0]
 
 
@@ -57,7 +61,7 @@ def test_replay_session_runs_both_prompts(tmp_path):
                  "content": "done, added the feature"}}) + "\n")
     seen = {"A": 0, "B": 0}
     def fake_llm(prompt, *, model=None, **kw):
-        variant = "B" if "SUPPRESSION" in prompt else "A"
+        variant = "B" if "ANTICIPATED-QUESTION" in prompt else "A"  # both arms now share core levers
         seen[variant] += 1
         return ("[cm]: # '" + json.dumps(
             {"e": [{"t": "fact", "to": variant, "c": f"fact from {variant}"}],
