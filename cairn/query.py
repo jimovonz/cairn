@@ -942,6 +942,97 @@ def backfill_embeddings():
     print(f"Done. {len(rows)} embeddings generated.")
 
 
+def _version_label(source_ref):
+    """Bucket a memory's source_ref into a generation-version label for the
+    data-gathering readout."""
+    if not source_ref:
+        return "unversioned"
+    if source_ref.startswith("{"):
+        return "ingest"
+    return source_ref  # genA-v1/v2/v3, subagent:genA-v*, review-writeback, ...
+
+
+def _aggregate_outcomes(records):
+    """Pure aggregator for the delivery readout. records: iterable of
+    {key, engaged, engaged_score, grade}. engaged_score == -1.0 means
+    evaluated-but-undecidable and is excluded from the score average."""
+    from collections import defaultdict
+    g = defaultdict(lambda: {"n": 0, "engaged": 0, "scored": 0, "score_sum": 0.0,
+                             "graded": 0, "grade_sum": 0})
+    for r in records:
+        b = g[r["key"]]
+        b["n"] += 1
+        if r.get("engaged") == 1:
+            b["engaged"] += 1
+        sc = r.get("engaged_score")
+        if sc is not None and sc >= 0:
+            b["scored"] += 1
+            b["score_sum"] += sc
+        gr = r.get("grade")
+        if gr is not None:
+            b["graded"] += 1
+            b["grade_sum"] += gr
+    out = {}
+    for k, b in g.items():
+        out[k] = {
+            "n": b["n"],
+            "engaged_pct": round(b["engaged"] / b["n"] * 100, 1) if b["n"] else 0.0,
+            "avg_score": round(b["score_sum"] / b["scored"], 3) if b["scored"] else None,
+            "graded": b["graded"],
+            "avg_grade": round(b["grade_sum"] / b["graded"], 2) if b["graded"] else None,
+        }
+    return out
+
+
+def delivery_stats():
+    """Read-side data-gathering readout: injected-memory outcome (engagement +
+    agent grade) grouped by generation-prompt version (memories.source_ref) and by
+    reranker model. Turns the shipped write-side levers into evidence."""
+    from cairn.config import EPHEMERAL_DB_PATH
+    e = sqlite3.connect(EPHEMERAL_DB_PATH)
+    deliveries = e.execute(
+        "SELECT memory_id, reranker_model, engaged, engaged_score, grade FROM memory_deliveries"
+    ).fetchall()
+    if not deliveries:
+        print("No deliveries logged yet.")
+        return
+    # memory_id -> generation-version label (join across DBs)
+    ids = sorted({r[0] for r in deliveries})
+    ver = {}
+    d = sqlite3.connect(DB_PATH)
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        q = ",".join("?" * len(chunk))
+        for mid, sr in d.execute(f"SELECT id, source_ref FROM memories WHERE id IN ({q})", chunk):
+            ver[mid] = _version_label(sr)
+
+    def _rec(r, key):
+        return {"key": key, "engaged": r[2], "engaged_score": r[3], "grade": r[4]}
+
+    by_ver = _aggregate_outcomes(_rec(r, ver.get(r[0], "deleted/unknown")) for r in deliveries)
+    by_rer = _aggregate_outcomes(_rec(r, r[1] or "none") for r in deliveries)
+
+    n = len(deliveries)
+    scored = sum(1 for r in deliveries if r[3] is not None)
+    graded = sum(1 for r in deliveries if r[4] is not None)
+    print(f"=== Delivery outcomes ({n} deliveries) ===")
+    print(f"  label coverage: engagement-scored {scored}/{n} ({scored/n*100:.0f}%), "
+          f"agent-graded {graded}/{n} ({graded/n*100:.0f}%)")
+
+    def _table(title, agg):
+        print(f"\n{title}")
+        print(f"  {'group':<22} {'n':>6} {'engaged%':>9} {'avgScore':>9} {'graded':>7} {'avgGrade':>9}")
+        for k in sorted(agg, key=lambda x: -agg[x]["n"]):
+            a = agg[k]
+            print(f"  {k[:22]:<22} {a['n']:>6} {a['engaged_pct']:>8.1f}% "
+                  f"{(a['avg_score'] if a['avg_score'] is not None else '-'):>9} "
+                  f"{a['graded']:>7} "
+                  f"{(a['avg_grade'] if a['avg_grade'] is not None else '-'):>9}")
+
+    _table("by generation version (source_ref):", by_ver)
+    _table("by reranker model:", by_rer)
+
+
 def format_rows(rows):
     if not rows:
         print("No results.")
@@ -971,6 +1062,7 @@ Commands:
   --since <date>         Memories updated on or after date (ISO, today, yesterday, 3d, 2w, 1m)
   --until <date>         Memories updated on or before date
   --today                Shorthand for --since today
+  --delivery-stats       Injected-memory outcome (engagement/grade) by generation version + reranker
   --semantic <query>     Semantic similarity search
   --session <id>         List memories from a session
   --chain <id>           Show session chain (parent/child links)
@@ -1470,7 +1562,9 @@ def main_entry():
         sys.exit(1)
 
     cmd = sys.argv[1]
-    if cmd == "--today":
+    if cmd == "--delivery-stats":
+        delivery_stats()
+    elif cmd == "--today":
         format_rows(list_by_date(since="today"))
     elif cmd == "--since" and len(sys.argv) > 2:
         until = None
