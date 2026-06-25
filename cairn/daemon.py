@@ -100,8 +100,16 @@ _search_cache: dict = {"stamp": None, "meta": [], "M": None, "T": None, "t_pos":
 def _db_conn():
     try:
         import pysqlite3 as sqlite3  # type: ignore[import-untyped]
-    except ImportError:
-        import sqlite3  # type: ignore[no-redef]
+    except ImportError as _pysqlite_err:  # pragma: no cover
+        import os as _os
+        if _os.environ.get("CAIRN_ALLOW_STDLIB_SQLITE") == "1":
+            import sqlite3  # type: ignore[no-redef]
+        else:
+            raise ImportError(
+                "cairn requires pysqlite3 (WAL checkpoint-race fixes); stdlib sqlite3 can "
+                "corrupt WAL DBs under concurrent multi-version access. Set "
+                "CAIRN_ALLOW_STDLIB_SQLITE=1 to override."
+            ) from _pysqlite_err
     c = sqlite3.connect(os.path.join(CAIRN_DIR, "cairn.db"))
     c.execute("PRAGMA busy_timeout=5000")
     return c
@@ -281,8 +289,16 @@ def handle_client(conn, emb):
             limit = request.get("limit", 10)
             try:
                 import pysqlite3 as sqlite3  # type: ignore[import-untyped]
-            except ImportError:
-                import sqlite3
+            except ImportError as _pysqlite_err:  # pragma: no cover
+                import os as _os
+                if _os.environ.get("CAIRN_ALLOW_STDLIB_SQLITE") == "1":
+                    import sqlite3
+                else:
+                    raise ImportError(
+                        "cairn requires pysqlite3 (WAL checkpoint-race fixes); stdlib sqlite3 "
+                        "can corrupt WAL DBs under concurrent multi-version access. Set "
+                        "CAIRN_ALLOW_STDLIB_SQLITE=1 to override."
+                    ) from _pysqlite_err
             DB_PATH = os.path.join(CAIRN_DIR, "cairn.db")
             conn_db = sqlite3.connect(DB_PATH)
             results = emb.find_similar(conn_db, text, threshold=threshold, limit=limit)
