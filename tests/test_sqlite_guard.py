@@ -15,10 +15,11 @@ import re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# graph.py operates ONLY on .code-review-graph/graph.db — a separate file, not the
-# cairn memory or ephemeral DBs — so it is exempt. Keep this list minimal and
-# justified; do NOT add cairn-DB writers here.
-ALLOWLIST = {"cairn/graph.py"}
+# No exemptions: every cairn/ and hooks/ module that imports sqlite3 must use the
+# pysqlite3 guard. (graph.py was previously allowlisted as "graph.db only" but it
+# also opens the WAL cairn.db — graph.py:_cairn_db_path — so it now carries the
+# guard like every other writer.)
+ALLOWLIST: set[str] = set()
 
 _IMPORT_SQLITE = re.compile(r"^\s*import sqlite3", re.MULTILINE)
 
