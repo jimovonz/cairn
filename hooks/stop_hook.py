@@ -16,8 +16,17 @@ import json
 import re
 try:
     import pysqlite3 as sqlite3  # type: ignore[import-untyped]
-except ImportError:
-    import sqlite3
+except ImportError as _pysqlite_err:  # pragma: no cover
+    import os as _os
+    if _os.environ.get("CAIRN_ALLOW_STDLIB_SQLITE") == "1":
+        import sqlite3  # explicit opt-in; stdlib SQLite may corrupt WAL DBs under concurrent multi-version access
+    else:
+        raise ImportError(
+            "cairn requires pysqlite3 (a recent SQLite with WAL checkpoint-race fixes); "
+            "the system stdlib sqlite3 can corrupt WAL-mode DBs under concurrent "
+            "multi-version access. Install pysqlite3-binary, or set "
+            "CAIRN_ALLOW_STDLIB_SQLITE=1 to override."
+        ) from _pysqlite_err
 import sys
 import os
 from typing import Optional
@@ -719,11 +728,29 @@ def main() -> None:
                             save_injected_ids(session_id, injected_ids)
 
                             increment_continuation(session_id)
-                            result = {
-                                "decision": "block",
-                                "reason": f"CAIRN CONTEXT:\n{retrieved}"
-                            }
-                            print(json.dumps(result))
+                            # Artifact-free delivery: when the proxy is active, stage the
+                            # context to the sidecar so it is injected into the continuation
+                            # request under the hood, and block with a short innocuous reason
+                            # instead of dumping the <cairn_context> XML into the user's
+                            # terminal. Fail-open to the visible block if staging fails or the
+                            # proxy is off. Mirrors hook_helpers.deliver_additional_context.
+                            staged = False
+                            try:
+                                from cairn import config as _cfg
+                                if getattr(_cfg, "PROXY_ENABLED", False):
+                                    from cairn.proxy import sidecar as _sidecar
+                                    _sidecar.append_prompt_context(
+                                        session_id, f"CAIRN CONTEXT:\n{retrieved}")
+                                    staged = True
+                            except Exception as exc:
+                                log(f"L3 sidecar staging failed, visible fallback: {exc}")
+                            if staged:
+                                reason = ("Relevant Cairn context for your context_need has been "
+                                          "retrieved and is now available to you. Continue, "
+                                          "applying it to your response.")
+                            else:
+                                reason = f"CAIRN CONTEXT:\n{retrieved}"
+                            print(json.dumps({"decision": "block", "reason": reason}))
                             sys.exit(0)
                 else:
                     log(f"No context found for: {context_need}")
