@@ -74,11 +74,12 @@ def _get_cross_encoder() -> Any:
     if _cross_encoder is not None:
         return _cross_encoder
     try:
-        from cairn.config import CROSS_ENCODER_ENABLED, CROSS_ENCODER_MODEL
+        from cairn.config import CROSS_ENCODER_ENABLED, resolve_reranker
         if not CROSS_ENCODER_ENABLED:
             return None
         from sentence_transformers import CrossEncoder
-        _cross_encoder = CrossEncoder(CROSS_ENCODER_MODEL)
+        model_name, _floor = resolve_reranker()  # device-aware: bge on CUDA, ms-marco on CPU
+        _cross_encoder = CrossEncoder(model_name)
         return _cross_encoder
     except Exception:
         return None
@@ -257,7 +258,8 @@ def handle_client(conn, emb):
             else:
                 pairs = [(query, c) for c in candidates]
                 scores = ce.predict(pairs).tolist()
-                response = {"scores": scores}
+                from cairn.config import resolve_reranker
+                response = {"scores": scores, "score_floor": resolve_reranker()[1]}
 
         elif action == "nli":
             pairs = request["pairs"]

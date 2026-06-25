@@ -195,3 +195,31 @@ def test_build_context_xml_no_session_skips_logging(tmp_path, monkeypatch):
     build_context_xml("standing", "x", "project-bootstrap", [_entry(9, "fact", "c")], [])
     n = sqlite3.connect(p).execute("SELECT COUNT(*) FROM memory_deliveries").fetchone()[0]
     assert n == 0
+
+
+# ---- device-aware reranker resolution (config.resolve_reranker) ---------------
+def test_resolve_reranker_device_aware(monkeypatch):
+    import torch
+    from cairn import config
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    m, f = config.resolve_reranker()
+    assert m == config.CROSS_ENCODER_MODEL_CUDA
+    assert f == config.CROSS_ENCODER_SCORE_FLOOR_CUDA
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    m, f = config.resolve_reranker()
+    assert m == config.CROSS_ENCODER_MODEL
+    assert f == config.CROSS_ENCODER_SCORE_FLOOR
+
+
+def test_resolve_reranker_falls_back_when_torch_missing(monkeypatch):
+    # If torch import fails inside resolve, must fall back to the CPU default.
+    import builtins
+    from cairn import config
+    real_import = builtins.__import__
+    def _no_torch(name, *a, **k):
+        if name == "torch":
+            raise ImportError("no torch")
+        return real_import(name, *a, **k)
+    monkeypatch.setattr(builtins, "__import__", _no_torch)
+    m, f = config.resolve_reranker()
+    assert m == config.CROSS_ENCODER_MODEL and f == config.CROSS_ENCODER_SCORE_FLOOR

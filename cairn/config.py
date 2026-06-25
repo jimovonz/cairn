@@ -281,6 +281,28 @@ CROSS_ENCODER_SCORE_FLOOR = -3.0   # Drop candidates below this raw ms-marco log
 CROSS_ENCODER_MAX_CANDIDATES = 12  # Cap active pairs per CE call — CE latency is linear in pair count
 CROSS_ENCODER_MAX_ARCHIVED = 6     # Cap archived (negative-knowledge) pairs in the combined CE call
 
+# Device-aware reranker: a stronger model is auto-selected when a CUDA GPU is
+# present (benchmarked ~62ms on an RTX 4070 — cheaper than the small model on CPU).
+# bge-reranker-base outputs SIGMOID 0-1 scores (not ms-marco logits), so it needs
+# its own positive floor. CPU/no-GPU installs keep the small portable default.
+# The daemon (which owns the GPU) resolves this and returns the floor with scores,
+# so the hot hook path never imports torch.
+CROSS_ENCODER_MODEL_CUDA = "BAAI/bge-reranker-base"
+CROSS_ENCODER_SCORE_FLOOR_CUDA = 0.0005  # eyeball-initial: drops only bge~0 noise; recalibrate from rg labels
+
+
+def resolve_reranker():
+    """Return (model_name, score_floor) for the active device — the stronger
+    bge model + its 0-1 floor on CUDA, the portable ms-marco + logit floor on CPU.
+    Imports torch lazily; only ever called inside the daemon (torch already loaded)."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return CROSS_ENCODER_MODEL_CUDA, CROSS_ENCODER_SCORE_FLOOR_CUDA
+    except Exception:
+        pass
+    return CROSS_ENCODER_MODEL, CROSS_ENCODER_SCORE_FLOOR
+
 # === Read-side memory relevance grading (docs/spec-memory-relevance-grading.md) ===
 RELEVANCE_LOGGING_ENABLED = True    # Log injected memories to memory_deliveries (instrument; T0)
 RELEVANCE_PREFILTER_ENABLED = False # Bucket-4 self-referential-meta prefilter — OFF by default
