@@ -314,8 +314,17 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
 
 
 def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = None,
-                    transcript_path: Optional[str] = None) -> int:
-    """Insert memory entries, deduplicating via cosine similarity."""
+                    transcript_path: Optional[str] = None,
+                    source_ref: Optional[str] = None) -> int:
+    """Insert memory entries, deduplicating via cosine similarity.
+
+    source_ref is the write-provenance fallback (e.g. the generation-prompt
+    version, or "review-writeback"). Precedence per entry: entry["source_ref"]
+    > this param > NULL. NULL = "unknown provenance" — honest and trivially
+    excluded from the write-side A/B cohort, vs a false version that silently
+    poisons it. Stamped at the call site that knows the writer, never blanket-
+    defaulted in this shared sink (a forgetful caller then yields NULL, not a
+    wrong version)."""
     if not entries:
         return 0
 
@@ -334,10 +343,6 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     conn = get_conn()
     project: Optional[str] = get_session_project(conn, session_id)
     inserted: int = 0
-    # Write-side provenance (spec Part B): stamp the generation-prompt version that
-    # produced these agent memories, so downstream usefulness is attributable.
-    from cairn import config as _cfg
-    gen_version: str = getattr(_cfg, "GENERATION_PROMPT_VERSION", None) or "unknown"
     # Sync provenance — captured once per call, propagated to every INSERT/UPDATE below.
     # Skipped if the DB isn't v4-ready (legacy test fixtures, partial installs).
     sync_on: bool = _v4_ready(conn)
@@ -349,7 +354,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
         return bump_lamport(conn) if sync_on else 0
 
     def _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob,
-                       session_id, project, depth, keywords_csv, facts_csv=None) -> None:
+                       session_id, project, depth, keywords_csv, facts_csv=None,
+                       source_ref=None) -> None:
         """Single insertion path — branches on whether sync columns exist.
         Always stores topic_embedding (schema v8 dual-embedding)."""
         if sync_on:
@@ -360,14 +366,14 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                 "visibility, embedding_model_version, source_ref) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, facts_csv,
-                 str(uuid.uuid4()), node_id, node_id, user_id, user_id, lam, 'team', model_version, gen_version)
+                 str(uuid.uuid4()), node_id, node_id, user_id, user_id, lam, 'team', model_version, source_ref)
             )
         else:
             conn.execute(
                 "INSERT INTO memories (type, topic, content, embedding, topic_embedding, session_id, project, depth, keywords, facts, origin_id, source_ref) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, facts_csv,
-                 str(uuid.uuid4()), gen_version)
+                 str(uuid.uuid4()), source_ref)
             )
 
     def _update_memory_full(mem_id, content, embedding_blob, session_id, project, keywords_csv,
@@ -435,6 +441,8 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
         depth: Optional[int] = entry.get("depth")
         entry_keywords: Optional[list[str]] = entry.get("keywords")
         keywords_csv: Optional[str] = ",".join(entry_keywords) if entry_keywords else None
+        # Write provenance: per-entry override > call-level fallback > NULL (unknown).
+        entry_source_ref: Optional[str] = entry.get("source_ref") or source_ref
 
         # Content quality gate: reject memories with no retrievable knowledge
         if _is_empty_memory(content):
@@ -495,7 +503,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     )
                     record_metric(session_id, "contradiction_detected", f"{mem_type}/{topic}")
                 log(f"Distinct variant: type={mem_type} topic={topic} (sim={old_sim:.2f}) — inserting as new")
-                _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, facts_csv)
+                _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, facts_csv, source_ref=entry_source_ref)
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
@@ -540,7 +548,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     pass  # Embedding issues don't block insertion
 
             if not deduped:
-                _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, facts_csv)
+                _insert_memory(mem_type, topic, content, embedding_blob, topic_embedding_blob, session_id, project, depth, keywords_csv, facts_csv, source_ref=entry_source_ref)
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     emb.upsert_vec_index(conn, new_id, embedding_blob)

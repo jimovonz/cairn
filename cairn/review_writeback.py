@@ -196,7 +196,8 @@ def write_back(payload: dict, dry_run: bool = False) -> dict:
     cap = max(1, MAX_MEMORIES_PER_RESPONSE)
     for start in range(0, len(entries), cap):
         chunk = entries[start:start + cap]
-        inserted += insert_memories(chunk, session_id=session_id, transcript_path=repo_root)
+        inserted += insert_memories(chunk, session_id=session_id, transcript_path=repo_root,
+                                    source_ref="review-writeback")
 
     return {"inserted": inserted, "project": project, "session": session_id,
             "submitted": len(entries), "skipped": len(errors), "errors": errors}

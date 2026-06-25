@@ -250,19 +250,28 @@ def test_insert_memories_behavioural(db_path, tmp_path):
     assert json.loads(rows[0][1]) == ["/hooks/storage.py"]
 
 
-# Step 3a: agent memories carry the generation-prompt-version provenance stamp
-# (memories.source_ref) so downstream usefulness is attributable to a prompt version.
+# Step 3a: write provenance (memories.source_ref) is stamped at the CALL SITE that
+# knows the writer, never blanket-defaulted in this shared sink. Precedence per
+# entry: entry["source_ref"] > the source_ref param > NULL ("unknown provenance" —
+# honest and excludable from the A/B cohort, vs a false version that poisons it).
 @pytest.mark.behavioural
-def test_insert_memories_stamps_generation_prompt_version(db_path):
-    import cairn.config as cfg
-    with patch.object(storage, "inline_backfill"), \
-         patch.object(cfg, "GENERATION_PROMPT_VERSION", "genTEST-v9"):
-        count = storage.insert_memories(
-            [{"type": "fact", "topic": "prov",
-              "content": "A sufficiently long memory content to clear the quality gate"}])
-    assert count == 1
-    rows = _query(db_path, "SELECT source_ref FROM memories WHERE topic = 'prov'")
-    assert rows[0][0] == "genTEST-v9"
+def test_insert_memories_source_ref_provenance(db_path):
+    LONG = "A sufficiently long memory content to clear the quality gate"
+    with patch.object(storage, "inline_backfill"):
+        # 1. No source_ref anywhere -> NULL (the sink imposes no default).
+        storage.insert_memories([{"type": "fact", "topic": "prov_null", "content": LONG}])
+        # 2. Call-level param is the fallback.
+        storage.insert_memories([{"type": "fact", "topic": "prov_param", "content": LONG}],
+                                source_ref="genTEST-v9")
+        # 3. Per-entry source_ref overrides the call-level param.
+        storage.insert_memories([{"type": "fact", "topic": "prov_entry", "content": LONG,
+                                  "source_ref": "review-writeback"}],
+                                source_ref="genTEST-v9")
+    def _sr(topic):
+        return _query(db_path, "SELECT source_ref FROM memories WHERE topic = ?", (topic,))[0][0]
+    assert _sr("prov_null") is None
+    assert _sr("prov_param") == "genTEST-v9"
+    assert _sr("prov_entry") == "review-writeback"
 
 
 #TAG: [24F1] 2026-04-05

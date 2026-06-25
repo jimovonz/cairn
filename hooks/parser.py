@@ -238,13 +238,10 @@ def _parse_linkdef(text: str) -> Optional[ParseResult]:
                 reason = m.group(3).strip() if m.group(3) else None
                 confidence_updates.append((int(m.group(1)), m.group(2), reason))
 
-    # Relevance grades — agent-as-teacher 0-3 + hard-neg, "42:3" / "17:0!" (rg)
-    relevance_grades: list[tuple[int, int, bool]] = []
-    for rg in _g(data, "rg", "relevance_grades", default=[]):
-        if isinstance(rg, str):
-            m = re.match(r"\s*(\d+)\s*:\s*([0-3])\s*(!)?\s*$", rg)
-            if m:
-                relevance_grades.append((int(m.group(1)), int(m.group(2)), bool(m.group(3))))
+    # Relevance grades — agent-as-teacher 0-3 + hard-neg, "42:3" / "17:0!" (rg).
+    # Grammar lives in one place: cairn.relevance.parse_relevance_grades.
+    from cairn.relevance import parse_relevance_grades
+    relevance_grades = parse_relevance_grades(_g(data, "rg", "relevance_grades", default=[]))
 
     return ParseResult(
         entries=entries,
