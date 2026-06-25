@@ -313,6 +313,21 @@ def apply_confidence_updates(updates: list[tuple[int, str, Optional[str]]], sess
     return applied
 
 
+def _union_keywords(existing_csv: Optional[str], new_csv: Optional[str]) -> Optional[str]:
+    """Union two comma-separated keyword lists, case-insensitively deduped,
+    order-preserving (existing terms first, then new). Keywords are
+    context-targeting findability terms, so a re-encounter should ENRICH the set,
+    not clobber it. Returns None when the union is empty."""
+    def _split(csv):
+        return [t.strip() for t in (csv or "").split(",") if t.strip()]
+    out, seen = [], set()
+    for term in _split(existing_csv) + _split(new_csv):
+        if term.lower() not in seen:
+            seen.add(term.lower())
+            out.append(term)
+    return ",".join(out) or None
+
+
 def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = None,
                     transcript_path: Optional[str] = None,
                     source_ref: Optional[str] = None) -> int:
@@ -379,6 +394,15 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     def _update_memory_full(mem_id, content, embedding_blob, session_id, project, keywords_csv,
                             confidence=None, facts_csv=None) -> None:
         """Full-content update — branches on sync columns."""
+        # Keywords are context-targeting findability terms: union the new ones with
+        # the matched memory's existing set so a re-encounter ENRICHES findability
+        # instead of clobbering it. (Facts left as-is — they can contain commas.)
+        try:
+            _kwrow = conn.execute("SELECT keywords FROM memories WHERE id = ?", (mem_id,)).fetchone()
+            if _kwrow is not None:
+                keywords_csv = _union_keywords(_kwrow[0], keywords_csv)
+        except sqlite3.Error:
+            pass
         if sync_on:
             lam = _next_lamport()
             if confidence is not None:
