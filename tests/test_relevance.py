@@ -169,6 +169,90 @@ def test_score_components_none_when_no_signals(eph):
     assert sc[1] == "global"    # no project passed -> global
 
 
+# ---- step 2: behavioural engagement signal -----------------------------------
+def test_score_engagement_used_vs_unused():
+    mem = "The reranker uses bge-reranker-base with a sigmoid floor of 0.0005"
+    # response surfaces >=2 distinctive memory terms -> engaged
+    eng, score = relevance.score_engagement(
+        "I set the bge-reranker-base sigmoid floor as discussed", mem)
+    assert eng == 1 and score > 0
+    # response on an unrelated topic -> not engaged
+    eng, score = relevance.score_engagement("the weather is nice today", mem)
+    assert eng == 0 and score == 0.0
+
+
+def test_score_engagement_subtracts_prompt_terms():
+    # Terms shared with the prompt don't count (they'd be repeated regardless).
+    mem = "reranker floor calibration logit threshold"
+    prompt = "what is the reranker floor"           # 'reranker','floor' come from prompt
+    # response echoes only the prompt-shared terms -> NOT evidence of memory use
+    eng, score = relevance.score_engagement("the reranker floor matters", mem, prompt)
+    assert eng == 0
+    # response surfaces the memory-distinctive terms -> engaged
+    eng, score = relevance.score_engagement(
+        "calibration of the logit threshold", mem, prompt)
+    assert eng == 1
+
+
+def test_score_engagement_undecidable_when_redundant_with_prompt():
+    mem = "reranker floor"
+    prompt = "tune the reranker floor please"   # memory adds nothing over the prompt
+    eng, score = relevance.score_engagement("anything at all", mem, prompt)
+    assert eng is None and score == -1.0
+
+
+def _durable_with_memories(tmp_path, rows):
+    """Minimal durable DB with a memories table for engagement tests."""
+    p = str(tmp_path / "durable.db")
+    c = sqlite3.connect(p)
+    c.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT, "
+              "topic TEXT, keywords TEXT)")
+    c.executemany("INSERT INTO memories (id, content, topic, keywords) VALUES (?,?,?,?)", rows)
+    c.commit(); c.close()
+    return p
+
+
+def test_apply_engagement_stamps_rows(eph, tmp_path):
+    durable = _durable_with_memories(tmp_path, [
+        (1, "bge-reranker-base sigmoid floor calibration", "reranker", "bge logit"),
+        (2, "the user prefers concise commit messages", "style", "commits"),
+    ])
+    relevance.log_memory_deliveries(
+        [{"id": 1, "score": 0.9}, {"id": 2, "score": 0.5}],
+        session_id="s", context_text="[user] how do I tune the floor", eph_path=eph)
+    response = "I calibrated the bge-reranker-base sigmoid logit floor for you"
+    n = relevance.apply_engagement(response, session_id="s", eph_path=eph,
+                                   durable_path=durable)
+    assert n == 2
+    rows = dict((r[0], (r[1], r[2])) for r in sqlite3.connect(eph).execute(
+        "SELECT memory_id, engaged, engaged_score FROM memory_deliveries WHERE session_id='s'"))
+    assert rows[1][0] == 1            # memory 1 clearly used
+    assert rows[1][1] > 0
+    assert rows[2][0] == 0            # memory 2 (commit style) not used
+
+
+def test_apply_engagement_idempotent_only_unscored(eph, tmp_path):
+    durable = _durable_with_memories(tmp_path, [
+        (5, "distinctive terraform kubernetes helmchart", "infra", "deploy")])
+    relevance.log_memory_deliveries([{"id": 5, "score": 0.8}], session_id="s",
+                                    context_text="[user] q", eph_path=eph)
+    first = relevance.apply_engagement("using terraform and kubernetes helmchart",
+                                       session_id="s", eph_path=eph, durable_path=durable)
+    assert first == 1
+    # second call: row already scored (engaged_score NOT NULL) -> nothing re-scored
+    second = relevance.apply_engagement("totally different response",
+                                        session_id="s", eph_path=eph, durable_path=durable)
+    assert second == 0
+    eng = sqlite3.connect(eph).execute(
+        "SELECT engaged FROM memory_deliveries WHERE memory_id=5").fetchone()[0]
+    assert eng == 1   # preserved from first scoring, not clobbered
+
+
+def test_apply_engagement_failsoft_empty():
+    assert relevance.apply_engagement("", session_id="s") == 0
+    assert relevance.apply_engagement("resp", session_id="") == 0
+
+
 def test_build_context_xml_stamps_layer_and_scope(tmp_path, monkeypatch):
     p = str(tmp_path / "eph.db")
     init_db.init_ephemeral(p)

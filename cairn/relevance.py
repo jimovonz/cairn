@@ -229,3 +229,118 @@ def apply_relevance_grades(grades: list[tuple[int, int, bool]], *, session_id: s
         return 0
     finally:
         conn.close()
+
+
+# --- Step 2: behavioural engagement signal ------------------------------------
+# The cleaner, non-circular training spine (spec A.6 anti-Goodhart): rather than
+# trust the agent's self-report, mechanically detect whether the response actually
+# *used* each delivered memory. The marginal contribution of a memory is the set
+# of its distinctive terms NOT already in the prompt — if the response surfaces
+# those, the memory was drawn upon. This is the PRIMARY label; agent rg supplements.
+_ENG_STOPWORDS = frozenset((
+    "the", "and", "for", "are", "was", "were", "this", "that", "with", "from",
+    "have", "has", "had", "not", "but", "you", "your", "our", "its", "their",
+    "they", "them", "then", "than", "thus", "into", "onto", "over", "under",
+    "use", "used", "uses", "using", "via", "per", "any", "all", "can", "will",
+    "would", "should", "could", "may", "might", "must", "one", "two", "set",
+    "get", "got", "new", "old", "now", "out", "off", "let", "see",
+    "when", "what", "which", "where", "while", "here", "there", "been", "being",
+    "does", "doing", "done", "such", "some", "more", "most", "much", "many",
+    "also", "just", "only", "very", "like", "each", "both", "same", "other",
+    "about", "above", "after", "before", "between", "because", "these", "those",
+))
+_ENG_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_\-]{2,}")
+
+
+def _engagement_tokens(text: str) -> set[str]:
+    """Lowercased alnum tokens of length >=3, minus stopwords. Hyphen/underscore
+    kept (identifiers like 'bge-reranker', 'ce_score' are exactly the distinctive
+    terms we want). Returns a set — engagement is presence-based, not frequency."""
+    if not text:
+        return set()
+    return {t for t in _ENG_TOKEN_RE.findall(text.lower()) if t not in _ENG_STOPWORDS}
+
+
+def score_engagement(response_text: str, memory_text: str,
+                     prompt_text: str = "") -> tuple[Optional[int], float]:
+    """Did `response_text` use `memory_text`? Returns (engaged, score).
+
+    Distinctive terms = memory tokens that are NOT in the prompt (the memory's
+    marginal contribution — terms shared with the prompt would be repeated whether
+    or not the memory helped, so crediting them confounds topic-match with use).
+      * engaged = 1 if >=2 distinctive terms appear in the response (strong: one
+        shared term is plausibly coincidental, two is not), else 0.
+      * score   = fraction of distinctive terms surfaced (0..1).
+      * (None, -1.0) when there are NO distinctive terms (memory redundant with the
+        prompt) — undecidable, so no signal rather than a false 0."""
+    mem = _engagement_tokens(memory_text)
+    distinctive = mem - _engagement_tokens(prompt_text)
+    if not distinctive:
+        return None, -1.0
+    matched = distinctive & _engagement_tokens(response_text)
+    score = len(matched) / len(distinctive)
+    return (1 if len(matched) >= 2 else 0), score
+
+
+def _durable_path(durable_path: Optional[str]) -> str:
+    if durable_path:
+        return durable_path
+    import os
+    return (os.environ.get("CAIRN_DB_PATH")
+            or os.path.join(os.path.dirname(os.path.abspath(__file__)), "cairn.db"))
+
+
+def apply_engagement(response_text: str, *, session_id: str,
+                     eph_path: Optional[str] = None,
+                     durable_path: Optional[str] = None) -> int:
+    """Stamp the behavioural engagement signal on this session's not-yet-evaluated
+    deliveries (engaged_score IS NULL — i.e. those delivered for the current turn,
+    since prior turns were scored at their own Stop). Fetches each memory's content/
+    topic/keywords from the durable DB to compute distinctive-term overlap against
+    the response. Fail-soft: returns rows updated (0 on any error)."""
+    if not response_text or not session_id:
+        return 0
+    try:
+        conn = sqlite3.connect(_eph_path(eph_path))
+    except sqlite3.Error:
+        return 0
+    conn.execute("PRAGMA busy_timeout=5000")
+    try:
+        rows = conn.execute(
+            "SELECT id, memory_id, context_text FROM memory_deliveries "
+            "WHERE session_id = ? AND engaged_score IS NULL", (session_id,),
+        ).fetchall()
+        if not rows:
+            return 0
+        mem_ids = sorted({int(r[1]) for r in rows})
+        mem_text = {}
+        try:
+            dconn = sqlite3.connect(_durable_path(durable_path))
+            try:
+                qmarks = ",".join("?" * len(mem_ids))
+                for mid, content, topic, kw in dconn.execute(
+                    f"SELECT id, content, topic, keywords FROM memories "
+                    f"WHERE id IN ({qmarks})", mem_ids,
+                ):
+                    mem_text[int(mid)] = " ".join(p for p in (content, topic, kw) if p)
+            finally:
+                dconn.close()
+        except sqlite3.Error:
+            return 0
+        n = 0
+        for row_id, memory_id, ctx in rows:
+            mt = mem_text.get(int(memory_id))
+            if mt is None:
+                continue  # memory deleted since delivery — leave unscored
+            engaged, score = score_engagement(response_text, mt, ctx or "")
+            conn.execute(
+                "UPDATE memory_deliveries SET engaged = ?, engaged_score = ? WHERE id = ?",
+                (engaged, score, row_id),
+            )
+            n += 1
+        conn.commit()
+        return n
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
