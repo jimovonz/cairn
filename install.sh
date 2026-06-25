@@ -4,13 +4,23 @@ set -eo pipefail
 # Cairn Installer
 # Sets up persistent AI memory for Claude Code
 
-USE_GPU=false
+# Default: auto-detect a CUDA GPU (nvidia-smi present + a GPU listed). Override
+# with --gpu (force CUDA wheel) or --cpu (force the portable CPU-only wheel).
+USE_GPU=auto
 while [ $# -gt 0 ]; do
     case "$1" in
         --gpu) USE_GPU=true; shift ;;
-        *) echo "Unknown option: $1"; echo "Usage: ./install.sh [--gpu]"; exit 1 ;;
+        --cpu) USE_GPU=false; shift ;;
+        *) echo "Unknown option: $1"; echo "Usage: ./install.sh [--gpu|--cpu]"; exit 1 ;;
     esac
 done
+if [ "$USE_GPU" = auto ]; then
+    if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q "GPU"; then
+        USE_GPU=true
+    else
+        USE_GPU=false
+    fi
+fi
 
 CAIRN_HOME="$(cd "$(dirname "$0")" && pwd)"
 VENV_PATH="$CAIRN_HOME/.venv"
@@ -20,9 +30,9 @@ CLAUDE_DIR="$HOME/.claude"
 echo "=== Cairn Installer ==="
 echo "Install location: $CAIRN_HOME"
 if [ "$USE_GPU" = true ]; then
-    echo "Mode: GPU (CUDA)"
+    echo "Mode: GPU (CUDA — auto-detected; --cpu to force CPU)"
 else
-    echo "Mode: CPU (use --gpu for CUDA support)"
+    echo "Mode: CPU (no CUDA GPU detected; --gpu to force CUDA)"
 fi
 echo ""
 
