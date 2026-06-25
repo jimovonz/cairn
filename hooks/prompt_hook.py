@@ -508,6 +508,20 @@ def main() -> None:
 
     context_parts: list[str] = []
 
+    # Write-side A/B: assign this prompt to arm A (control) or B (control + one
+    # speculative variable) and record it so the Stop hook can stamp this turn's
+    # memories with the arm. Arm B gets its extra generation instruction injected now.
+    try:
+        from cairn import config as _abcfg
+        if getattr(_abcfg, "AB_TEST_ENABLED", False) and not is_subagent and session_id:
+            import random as _rnd
+            _arm = "B" if _rnd.random() < 0.5 else "A"
+            save_hook_state(session_id, "ab_arm", _arm)
+            if _arm == "B":
+                context_parts.append(_abcfg.AB_B_INSTRUCTION)
+    except Exception:
+        pass
+
     # Layer 1: First-prompt push (+ bootstrap)
     if is_first_prompt(session_id):
         mark_first_prompt_done(session_id)
