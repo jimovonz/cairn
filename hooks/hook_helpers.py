@@ -575,6 +575,33 @@ def _relevance_prefilter(project_results, global_results, session_id):
             [r for r in global_results if _keep(r)])
 
 
+def _suppress_superseded_pairs(project_results, global_results, session_id=None):
+    """Drop a superseded entry when the entry that superseded it is ALSO in this
+    result set. Memory supersession is recorded in archived_reason as "...(by #N)"
+    (consolidate.py), so we parse that id and drop the stale row only when #N is
+    present — a lone superseded entry is kept (the deliberate negative-knowledge
+    trail). Avoids spending a slot on a near-duplicate sitting next to its
+    superseder."""
+    all_rows = project_results + global_results
+    if len(all_rows) < 2:
+        return project_results, global_results
+    present = {r.get("id") for r in all_rows}
+    dropped = [0]
+
+    def _keep(r):
+        m = re.search(r"by #(\d+)", r.get("archived_reason") or "")
+        if m and int(m.group(1)) in present:
+            dropped[0] += 1
+            return False
+        return True
+
+    pr = [r for r in project_results if _keep(r)]
+    gr = [r for r in global_results if _keep(r)]
+    if dropped[0] and session_id:
+        record_metric(session_id, "superseded_pair_suppressed", None, dropped[0])
+    return pr, gr
+
+
 def build_context_xml(query: str, project: Optional[str], layer: str,
                       project_results: list[dict[str, Any]],
                       global_results: list[dict[str, Any]],
@@ -589,6 +616,10 @@ def build_context_xml(query: str, project: Optional[str], layer: str,
     prefilter (gated) and a memory_deliveries log keyed by `context_text` (the
     cleaned recent-context window). Bootstrap/correction layers omit session_id
     so they stay ungated and unlogged."""
+    # Correctness dedup (all layers): drop a superseded entry when its superseder
+    # is already in the same result set — see _suppress_superseded_pairs.
+    project_results, global_results = _suppress_superseded_pairs(
+        project_results, global_results, session_id)
     if session_id:
         project_results, global_results = _relevance_prefilter(
             project_results, global_results, session_id)
