@@ -160,6 +160,25 @@ Phase 1 commands (stubs return exit 2 — wiring is verified, no behaviour yet):
 
 The CLI is **agent-invoked from natural-language intent**, never user-typed.
 
+## SQLite library discipline (corruption prevention)
+
+ALL processes that open a cairn DB (`cairn.db`, `cairn-ephemeral.db`) MUST use a
+single SQLite library — **pysqlite3** — via the guard at the top of
+`cairn/ingest.py` (`try: import pysqlite3 as sqlite3` / `except ImportError`,
+falling back to stdlib only under explicit `CAIRN_ALLOW_STDLIB_SQLITE=1`). Mixing
+the system stdlib `sqlite3` (an older SQLite) with pysqlite3 on the same WAL file
+is a documented cause of `database disk image is malformed` corruption (commit
+be91366). Enforced by `tests/test_sqlite_guard.py` (no exemptions — every `cairn/`
+and `hooks/` module) and an `install.sh` post-install assertion that cairn actually
+resolves `sqlite3 -> pysqlite3`.
+
+- **External writers in OTHER repos** (e.g. `jira/confluence_ingest.py`) that
+  import cairn and write `cairn.db` are NOT covered by the in-repo test — copy the
+  guard into them manually.
+- **Never inspect a live cairn WAL DB with stdlib `sqlite3`** (including a bare
+  `import sqlite3` in a throwaway script while the daemon is running) — use
+  pysqlite3 or `query.py`. Concurrent stdlib access can corrupt the WAL.
+
 ## Git workflow
 
 All changes MUST be made on feature branches, not main. Branch naming: `feature/<short-description>` or `fix/<short-description>`. Merge to main only after testing.
