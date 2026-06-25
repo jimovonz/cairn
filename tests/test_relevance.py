@@ -252,18 +252,32 @@ def test_build_context_xml_no_session_skips_logging(tmp_path, monkeypatch):
     assert n == 0
 
 
-# ---- device-aware reranker resolution (config.resolve_reranker) ---------------
-def test_resolve_reranker_device_aware(monkeypatch):
+# ---- reranker resolution (config.resolve_reranker) ----------------------------
+def test_resolve_reranker_ms_marco_default_even_on_cuda(monkeypatch):
+    # Step 1b revert: bge dormant by default -> ms-marco + -3.0 floor on EVERY
+    # device, even when CUDA is present (it just loads on the GPU).
     import torch
     from cairn import config
+    monkeypatch.setattr(config, "RERANKER_BGE_ENABLED", False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    m, f = config.resolve_reranker()
+    assert m == config.CROSS_ENCODER_MODEL
+    assert f == config.CROSS_ENCODER_SCORE_FLOOR
+
+
+def test_resolve_reranker_bge_when_flag_on_and_cuda(monkeypatch):
+    # The dormant bge path the step-1b A/B will validate: flag on + CUDA -> bge.
+    import torch
+    from cairn import config
+    monkeypatch.setattr(config, "RERANKER_BGE_ENABLED", True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     m, f = config.resolve_reranker()
     assert m == config.CROSS_ENCODER_MODEL_CUDA
     assert f == config.CROSS_ENCODER_SCORE_FLOOR_CUDA
+    # flag on but no CUDA -> still ms-marco
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     m, f = config.resolve_reranker()
     assert m == config.CROSS_ENCODER_MODEL
-    assert f == config.CROSS_ENCODER_SCORE_FLOOR
 
 
 def test_resolve_reranker_falls_back_when_torch_missing(monkeypatch):
