@@ -223,3 +223,42 @@ def test_resolve_reranker_falls_back_when_torch_missing(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", _no_torch)
     m, f = config.resolve_reranker()
     assert m == config.CROSS_ENCODER_MODEL and f == config.CROSS_ENCODER_SCORE_FLOOR
+
+
+# ---- superseded-pair suppression (build_context_xml) --------------------------
+def _superseded(i, by_id):
+    e = _entry(i, "fact", f"old content {i}")
+    e["archived_reason"] = f"superseded: replaced (by #{by_id})"
+    return e
+
+
+def test_superseded_dropped_when_superseder_present(tmp_path, monkeypatch):
+    p = str(tmp_path / "eph.db"); init_db.init_ephemeral(p)
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", p)
+    from hooks.hook_helpers import build_context_xml
+    xml = build_context_xml("q", "x", "per-prompt",
+                            [_superseded(10, 11), _entry(11, "fact", "new")], [],
+                            session_id="s", context_text="t")
+    assert 'id="10"' not in xml   # stale row dropped (its superseder #11 is present)
+    assert 'id="11"' in xml
+
+
+def test_lone_superseded_kept(tmp_path, monkeypatch):
+    p = str(tmp_path / "eph.db"); init_db.init_ephemeral(p)
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", p)
+    from hooks.hook_helpers import build_context_xml
+    # superseder #11 NOT in the set -> keep the superseded row (negative-knowledge trail)
+    xml = build_context_xml("q", "x", "per-prompt", [_superseded(10, 11)], [],
+                            session_id="s", context_text="t")
+    assert 'id="10"' in xml
+
+
+def test_superseded_dropped_across_scopes(tmp_path, monkeypatch):
+    p = str(tmp_path / "eph.db"); init_db.init_ephemeral(p)
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", p)
+    from hooks.hook_helpers import build_context_xml
+    # superseded in project scope, superseder in global scope -> still dropped
+    xml = build_context_xml("q", "x", "per-prompt",
+                            [_superseded(10, 11)], [_entry(11, "fact", "new")],
+                            session_id="s", context_text="t")
+    assert 'id="10"' not in xml and 'id="11"' in xml
