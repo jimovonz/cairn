@@ -37,7 +37,9 @@ from typing import Any, Callable, Optional
 
 # Generation-prompt versions stamped onto each produced set (the provenance join
 # key from step 3a — config.GENERATION_PROMPT_VERSION is the live production one).
-GEN_PROMPT_VERSIONS = {"A": "genA-v1", "B": "genB-v2"}
+# Offline A/B arm labels (a namespace distinct from the production
+# config.GENERATION_PROMPT_VERSION stamp, so harness sets never collide with live).
+GEN_PROMPT_VERSIONS = {"A": "ctrl-best-v1", "B": "spec-qfkw-v1"}
 
 # The judge is the BEST model, made independent BY CONSTRUCTION (blind + position-
 # swapped), never a weaker local model (spec standing constraint).
@@ -45,27 +47,16 @@ JUDGE_MODEL = "claude-opus-4-8"
 
 
 # --- 3b: generation prompts ---------------------------------------------------
-_PROMPT_A = """\
-You are distilling a development session transcript into durable memory entries
-for a persistent memory system.
+# Both arms encode our CURRENT BEST generation knowledge (the levers we believe in).
+# The A arm IS that best-known control; the B arm is the control PLUS one SPECULATIVE,
+# unproven lever — so the offline A/B isolates exactly the speculation, nothing else
+# (control advanced to current knowledge per the arm-rebasing rule).
+_PREAMBLE = """\
+You are distilling a development session transcript into durable memory entries for
+a persistent memory system. A future session will read these with ZERO other
+context. Apply these rules IN PRIORITY ORDER:"""
 
-Read the transcript below and emit the memories worth keeping. Output ONLY a
-single memory block in this exact link-definition format on the last line:
-
-[cm]: # '{"e":[{"t":"TYPE","to":"topic","c":"content"}],"ok":true,"ctx":"s","kw":["k1","k2"]}'
-
-TYPE is one of: decision, preference, fact, correction, person, project, skill,
-workflow. One entry per durable nugget. Keep each content line to one sentence.
-
-TRANSCRIPT:
-{transcript}
-"""
-
-_PROMPT_B = """\
-You are distilling a development session transcript into durable memory entries
-for a persistent memory system. A future session will read these with ZERO other
-context. Apply these rules IN PRIORITY ORDER:
-
+_CORE_LEVERS = """\
 1. SUPPRESSION (what NOT to write) — do not emit self-referential meta ("cairn has
    no memory of X", "should be captured when shared"), ephemeral state snapshots,
    or anything already obvious from the code/git. When in doubt, omit. Fewer,
@@ -82,7 +73,21 @@ context. Apply these rules IN PRIORITY ORDER:
    in a DIFFERENT project could apply, anchored by the concrete case (file, value,
    error). Prefer the generalised lesson with the specific case attached over a bare
    project-local fact. Split into two entries only when the general principle and the
-   specific fact each have independent future value.
+   specific fact each have independent future value."""
+
+# SPECULATIVE (B only) — unproven hypothesis: seeding keywords with the literal
+# QUESTION-FORM phrasings a future session would type closes the topic-vs-intent gap
+# better than noun-style keywords (spec B.1 findability-qf as an explicit signal). It
+# may instead dilute the keywords — which is exactly what this A/B exists to find out.
+# Measurable via the findability backtest (3d) on the two sets.
+_SPECULATIVE_B = """\
+6. ANTICIPATED-QUESTION SEEDING (speculative) — in each entry's kw, ALSO include 2-3
+   QUESTION-FORM phrasings: the literal questions a future session would type to find
+   this entry ("how do I X", "why does Y fail", "what sets Z"), alongside the noun
+   keywords. Hypothesis: question-shaped keywords match real future intent better
+   than topic nouns."""
+
+_OUTPUT = """\
 
 Output ONLY a single memory block on the last line:
 
@@ -95,6 +100,8 @@ TRANSCRIPT:
 {transcript}
 """
 
+_PROMPT_A = _PREAMBLE + "\n\n" + _CORE_LEVERS + "\n" + _OUTPUT
+_PROMPT_B = _PREAMBLE + "\n\n" + _CORE_LEVERS + "\n" + _SPECULATIVE_B + "\n" + _OUTPUT
 _PROMPTS = {"A": _PROMPT_A, "B": _PROMPT_B}
 
 
