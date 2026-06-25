@@ -126,3 +126,39 @@ def inject_prompt_context(data: dict, context_text: str) -> dict:
                 content.append({"type": "text", "text": payload})
             return data
     return data
+
+
+def sanitize_empty_text_blocks(data: dict) -> dict:
+    """Drop empty/whitespace-only text content blocks from messages.
+
+    The Anthropic API rejects a request with HTTP 400 "messages: text content
+    blocks must be non-empty" if any message carries a ``{"type":"text","text":""}``
+    block. Claude Code can hold such a block in its in-memory conversation (e.g. an
+    assistant turn that streamed thinking + an empty text + a tool_use), and it is
+    reconstructed into every subsequent request — wedging the session in a 400 loop
+    that editing the on-disk transcript cannot clear (the live process never re-reads
+    it). As the request-rewrite layer we strip these blocks unconditionally so the
+    session self-heals on its next turn. Fail-open: never raise.
+
+    If filtering would empty a message entirely, a single-space placeholder is left
+    so the message stays valid (space is non-empty, so the API accepts it) and any
+    tool_use/tool_result pairing across messages is preserved.
+    """
+    try:
+        for msg in data.get("messages", []):
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            kept = [
+                b for b in content
+                if not (isinstance(b, dict) and b.get("type") == "text"
+                        and not b.get("text", "").strip())
+            ]
+            if len(kept) == len(content):
+                continue
+            msg["content"] = kept if kept else [{"type": "text", "text": " "}]
+    except Exception:
+        pass
+    return data
