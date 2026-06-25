@@ -407,6 +407,17 @@ def main() -> None:
         except Exception as e:
             log(f"relevance grade write-back failed: {e}")
 
+    # Step 2: behavioural engagement — mechanically detect whether THIS response
+    # actually used each memory delivered for the current turn (distinctive-term
+    # overlap), the PRIMARY non-circular label beside the agent grade. Main session
+    # only: a subagent response would be scored against the parent turn's deliveries.
+    if not is_subagent:
+        try:
+            from cairn.relevance import apply_engagement
+            apply_engagement(text, session_id=session_id)
+        except Exception as e:
+            log(f"engagement write-back failed: {e}")
+
     # Subagent mode: opportunistic — store what's volunteered, skip enforcement
     if is_subagent:
         if confidence_updates:

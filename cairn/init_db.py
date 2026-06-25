@@ -692,14 +692,23 @@ def init_ephemeral(path=None):
             score_components TEXT,
             layer         TEXT,
             scope         TEXT,
+            engaged       INTEGER,
+            engaged_score REAL,
             delivered_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    # Ranking provenance (step 1a) — migrate DBs predating these columns so the
-    # 0-3 training labels stay attributable to the model/scoring that produced
-    # them (ce_score is heterogeneous across the ms-marco->bge transition).
+    # Ranking provenance (step 1a) + behavioural engagement (step 2) — migrate DBs
+    # predating these columns so the 0-3 training labels stay attributable to the
+    # model/scoring that produced them (ce_score is heterogeneous across the
+    # ms-marco->bge transition), and so the mechanical engagement signal (did the
+    # response actually use the memory) sits beside the agent grade.
+    #   engaged       — 1 used / 0 not-used / NULL no-signal (the PRIMARY label)
+    #   engaged_score — distinctive-term overlap ratio 0..1; -1.0 = evaluated but
+    #                   undecidable (memory redundant with the prompt); NULL = not
+    #                   yet evaluated (the unscored sentinel).
     for _col, _ctype in (("reranker_model", "TEXT"), ("score_components", "TEXT"),
-                         ("layer", "TEXT"), ("scope", "TEXT")):
+                         ("layer", "TEXT"), ("scope", "TEXT"),
+                         ("engaged", "INTEGER"), ("engaged_score", "REAL")):
         try:
             conn.execute(f"ALTER TABLE memory_deliveries ADD COLUMN {_col} {_ctype}")
         except sqlite3.OperationalError:
