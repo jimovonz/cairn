@@ -37,7 +37,7 @@ from typing import Any, Callable, Optional
 
 # Generation-prompt versions stamped onto each produced set (the provenance join
 # key from step 3a — config.GENERATION_PROMPT_VERSION is the live production one).
-GEN_PROMPT_VERSIONS = {"A": "genA-v1", "B": "genB-v1"}
+GEN_PROMPT_VERSIONS = {"A": "genA-v1", "B": "genB-v2"}
 
 # The judge is the BEST model, made independent BY CONSTRUCTION (blind + position-
 # swapped), never a weaker local model (spec standing constraint).
@@ -77,6 +77,12 @@ context. Apply these rules IN PRIORITY ORDER:
    include the what, the why, and enough context to act. No dangling references.
 4. REDUNDANCY-AWARENESS — collapse near-duplicate nuggets into one entry; do not
    restate the same fact in multiple entries.
+5. TRANSFERABILITY (dual altitude) — write each nugget at the highest altitude that
+   still carries its instance: state the reusable principle/pattern a future session
+   in a DIFFERENT project could apply, anchored by the concrete case (file, value,
+   error). Prefer the generalised lesson with the specific case attached over a bare
+   project-local fact. Split into two entries only when the general principle and the
+   specific fact each have independent future value.
 
 Output ONLY a single memory block on the last line:
 

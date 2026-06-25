@@ -39,7 +39,7 @@ def test_generate_memory_set_parses_and_stamps():
     out = ab.generate_memory_set("cleaned text", "B", call_llm=fake_llm)
     assert len(out) == 1
     assert out[0]["content"] == "a durable fact"
-    assert out[0]["generation_prompt_version"] == "genB-v1"
+    assert out[0]["generation_prompt_version"] == "genB-v2"
     assert "cleaned text" in calls[0]
 
 

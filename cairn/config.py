@@ -320,7 +320,10 @@ def resolve_reranker():
 # join key the offline A/B (ab_writeside.py) needs. Bump this whenever the memory
 # generation rules change materially. Stored in memories.source_ref for agent
 # writes (analyser/ingest set their own source_ref and are unaffected).
-GENERATION_PROMPT_VERSION = "genA-v1"
+#   genA-v1 -> genA-v2: added the dual-altitude transferability lever to the live
+#   rules (capture the generalised, cross-project form with the specific instance
+#   as anchor), so usefulness of genA-v2 memories is attributable to the change.
+GENERATION_PROMPT_VERSION = "genA-v2"
 
 # === Read-side memory relevance grading (docs/spec-memory-relevance-grading.md) ===
 RELEVANCE_LOGGING_ENABLED = True    # Log injected memories to memory_deliveries (instrument; T0)
