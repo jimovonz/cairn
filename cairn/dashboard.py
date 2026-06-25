@@ -84,8 +84,8 @@ def api_stats(params):
         pass
     db_size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
     growth = rows_to_list(conn.execute("""
-        SELECT DATE(created_at) as date, COUNT(*) as count
-        FROM memories GROUP BY DATE(created_at) ORDER BY date
+        SELECT DATE(created_at, 'localtime') as date, COUNT(*) as count
+        FROM memories GROUP BY DATE(created_at, 'localtime') ORDER BY date
     """).fetchall())
     conn.close()
     return {
@@ -565,14 +565,14 @@ def api_metrics(params):
         FROM all_metrics GROUP BY event ORDER BY count DESC
     """).fetchall())
     latency_series = rows_to_list(conn.execute("""
-        SELECT DATE(created_at) as date, AVG(value) as avg_ms, COUNT(*) as count
+        SELECT DATE(created_at, 'localtime') as date, AVG(value) as avg_ms, COUNT(*) as count
         FROM all_metrics WHERE event = 'retrieval_latency_ms'
-        GROUP BY DATE(created_at) ORDER BY date
+        GROUP BY DATE(created_at, 'localtime') ORDER BY date
     """).fetchall())
     layer_series = rows_to_list(conn.execute("""
-        SELECT DATE(created_at) as date, event, COUNT(*) as count
+        SELECT DATE(created_at, 'localtime') as date, event, COUNT(*) as count
         FROM all_metrics WHERE event LIKE 'layer%' OR event LIKE 'retrieval_%'
-        GROUP BY DATE(created_at), event ORDER BY date
+        GROUP BY DATE(created_at, 'localtime'), event ORDER BY date
     """).fetchall())
     embed_events = ("embed_daemon_ms", "embed_local_ms", "search_vec_ms", "search_brute_ms", "fanout_ms")
     placeholders = ",".join("?" * len(embed_events))
@@ -586,9 +586,9 @@ def api_metrics(params):
         FROM all_metrics WHERE event IN ({placeholders}) GROUP BY event
     """, embed_events).fetchall())
     embed_series = rows_to_list(conn.execute(f"""
-        SELECT DATE(created_at) as date, event, AVG(value) as avg_ms, COUNT(*) as count
+        SELECT DATE(created_at, 'localtime') as date, event, AVG(value) as avg_ms, COUNT(*) as count
         FROM all_metrics WHERE event IN ({placeholders})
-        GROUP BY DATE(created_at), event ORDER BY date
+        GROUP BY DATE(created_at, 'localtime'), event ORDER BY date
     """, embed_events).fetchall())
     # Graph-injection metrics surfaced explicitly so the frontend can render them
     # alongside gotcha_injected / file_context_injected without scanning `summary`.
@@ -652,11 +652,11 @@ def api_enforcement(params):
 
     # Daily series for the last 14 days
     series = rows_to_list(conn.execute(f"""
-        SELECT DATE(created_at) as date, event, COUNT(*) as count
+        SELECT DATE(created_at, 'localtime') as date, event, COUNT(*) as count
         FROM metrics
         WHERE event IN ({placeholders})
         AND created_at >= datetime('now', '-14 days')
-        GROUP BY DATE(created_at), event ORDER BY date
+        GROUP BY DATE(created_at, 'localtime'), event ORDER BY date
     """, ENFORCEMENT_EVENTS).fetchall())
 
     # L5 satisfaction ratio (the key health metric)
@@ -1856,6 +1856,27 @@ def api_sync_pair(body):
 
 # Route table: (method, pattern) -> handler
 # Patterns use {name} for path params, converted to regex groups
+def _looks_like_timestamp(v: str) -> bool:
+    """A stored UTC datetime like '2026-06-25 21:04:34' (not a date-only bucket)."""
+    return (len(v) >= 16 and v[4] == "-" and v[7] == "-"
+            and v[10] in " T" and ":" in v[11:16])
+
+
+def _localize_timestamps(obj):
+    """Recursively convert any '*_at' UTC timestamp field to a local-time display
+    string so the dashboard shows local time everywhere. Storage is untouched —
+    presentation only (cairn/timeutil; single source of truth). Date-only chart
+    buckets are left alone (handled by DATE(...,'localtime') in their queries)."""
+    from cairn import timeutil
+    if isinstance(obj, dict):
+        return {k: (timeutil.fmt_local(v) if isinstance(v, str) and k.endswith("_at")
+                    and _looks_like_timestamp(v) else _localize_timestamps(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_localize_timestamps(x) for x in obj]
+    return obj
+
+
 _ROUTES: list[tuple[str, str, callable]] = [
     ("GET", "/api/stats", lambda p, **kw: api_stats(p)),
     ("GET", "/api/memories", lambda p, **kw: api_memories(p)),
@@ -1908,7 +1929,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass  # Suppress request logging
 
     def _send_json(self, data, status=200):
-        body = json.dumps(data, default=str).encode("utf-8")
+        body = json.dumps(_localize_timestamps(data), default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", len(body))

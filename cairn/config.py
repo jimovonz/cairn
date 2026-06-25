@@ -325,6 +325,14 @@ def resolve_reranker():
 #   as anchor), so usefulness of genA-v2 memories is attributable to the change.
 GENERATION_PROMPT_VERSION = "genA-v2"
 
+# === Time display (cairn/timeutil.py) ===
+# Storage is ALWAYS UTC (SQLite CURRENT_TIMESTAMP). This is the local timezone used
+# for DISPLAY and for "today/since/until" day-bucketing only. IANA name (e.g.
+# "Pacific/Auckland"); None = auto-detect the system zone. cairn.timeutil is the
+# single source of truth — never render or compare stored timestamps without it.
+import os as _os_tz
+CAIRN_TZ = _os_tz.environ.get("CAIRN_TZ")
+
 # === Read-side memory relevance grading (docs/spec-memory-relevance-grading.md) ===
 RELEVANCE_LOGGING_ENABLED = True    # Log injected memories to memory_deliveries (instrument; T0)
 RELEVANCE_PREFILTER_ENABLED = False # Bucket-4 self-referential-meta prefilter — OFF by default
