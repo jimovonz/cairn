@@ -194,14 +194,16 @@ def _daemon_vector_search(texts: list[str], n_base: int, min_sim: float,
 
 
 def _daemon_rerank(query: str, candidates: list[str]):
-    """Re-rank candidates via the daemon's cross-encoder. Returns (scores, score_floor)
-    or None. The daemon resolves the device-appropriate model + floor (bge on CUDA,
-    ms-marco on CPU) and reports the floor so this process needn't import torch."""
+    """Re-rank candidates via the daemon's cross-encoder. Returns
+    (scores, score_floor, model_name) or None. The daemon resolves the
+    device-appropriate model + floor (bge on CUDA, ms-marco on CPU) and reports
+    both (+ the loaded model name, for delivery provenance) so this process
+    needn't import torch."""
     try:
         from cairn.daemon import send_request
         resp = send_request({"action": "rerank", "query": query, "candidates": candidates})
         if resp and resp.get("scores") is not None:
-            return resp["scores"], resp.get("score_floor")
+            return resp["scores"], resp.get("score_floor"), resp.get("model")
     except (ConnectionError, TimeoutError, OSError) as e:
         _log_embed(f"daemon rerank unavailable: {type(e).__name__}: {e}", "warning")
     except Exception as e:
@@ -896,11 +898,12 @@ def find_similar(
         ce_pool = active_for_ce + (archived_candidates if ce_archived else [])
         candidate_texts = [f"{r.get('type', '')} {r.get('topic', '')}: {r.get('content', '')}" for r in ce_pool]
         ce_out = _daemon_rerank(text, candidate_texts)
-        ce_scores, ce_floor = ce_out if ce_out else (None, None)
+        ce_scores, ce_floor, ce_model = ce_out if ce_out else (None, None, None)
         floor = ce_floor if ce_floor is not None else CROSS_ENCODER_SCORE_FLOOR
         if ce_scores and len(ce_scores) == len(ce_pool):
             for i, r in enumerate(ce_pool):
                 r["ce_score"] = ce_scores[i]
+                r["reranker_model"] = ce_model  # provenance for memory_deliveries
             if ce_active:
                 pre_filter = len(diverse)
                 above_floor = [r for r in diverse if r["ce_score"] >= floor]
