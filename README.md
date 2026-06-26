@@ -134,6 +134,7 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Review write-back (`cairn-review-writeback`)** — persists durable review rationale (the *why* that survives the fix) keyed to the target repo and changed file/symbol, surfaced later via `cairn-graph --knowledge`
 - **Subagent memory capture** — a `SubagentStop` hook routes a subagent's final `[cm]` block (invisible to the parent `Stop` hook) into storage, chained to the parent session, enforcement skipped
 - **Dev-container support** — the daemon exposes a TCP listener (port 47390) with `cairn_recall`/`cairn_remember` opcodes plus a container injector and extension auto-installer, so containerised sessions reach the host cairn
+- **Multi-node sync (v2, opt-in)** — peer-to-peer LAN replication in `cairn/sync/`: Ed25519 keypair identity, UDP-broadcast discovery, dashboard-authorized public-key pairing, signed + cert-pinned HTTPS transport, and changeset replication with Lamport-clock last-write-wins. Nodes share only their own memories; raw session transcripts are never synced. Wired into `install.sh` but **off by default** — opt in per node with `CAIRN_SYNC_ENABLED=1`. See the Multi-User Architecture section of [ARCHITECTURE.md](ARCHITECTURE.md)
 - **Calibration system (Phases 1–7)** — a complementary track that captures *how to interact with this user* (level, style, preferences); a per-session analyser, agent-invoked CLI, self-modification passes, and a dashboard tab. See the Calibration section below
 - **Relevance grading (agent-as-teacher)** — every injected memory is logged to a `memory_deliveries` table with full ranking provenance (reranker model, score components, layer, scope); the main agent grades each surfaced memory 0–3 (+ hard-negative) in the `[cm]` block's `rg` field, and a behavioural engagement signal mechanically detects whether the response actually *used* each memory via distinctive-term overlap (the primary, non-circular label). Read-side foundation for a future trained cross-encoder gate
 - **GPU-aware reranker** — the cross-encoder defaults to `ms-marco-MiniLM-L-6-v2` (logit floor −3.0) on every device; when `RERANKER_BGE_ENABLED` is set and CUDA is present it swaps to `BAAI/bge-reranker-base` (sigmoid floor 0.0005). The daemon owns the model so the hot hook path never imports torch; the cross-encoder scores a cleaned recent-context window, not the bare prompt
@@ -383,6 +384,24 @@ All tunable parameters are in `cairn/config.py`. Any value can be overridden via
 - Query expansion (`QUERY_EXPANSION_FANOUT` — type-prefix fan-out, default on)
 - Trailing intent detection threshold
 - Loop protection limits
+
+Notable subsystem toggles (all `CAIRN_<NAME>` env overrides; defaults from `cairn/config.py` unless noted):
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `CAIRN_PROXY_ENABLED` | on via `install.sh` (code default off) | Artifact-free API proxy; opt out with `=0` |
+| `CAIRN_PROXY_PORT` | `8789` | Proxy listen port (`CAIRN_PROXY_HOST` `127.0.0.1`, `CAIRN_PROXY_UPSTREAM` the Anthropic API) |
+| `CAIRN_SYNC_ENABLED` | off | Multi-node peer-to-peer sync; opt in with `=1` |
+| `CAIRN_SYNC_SHARE_SESSIONS` | off | Serve raw session transcripts behind synced memories to approved peers (sensitive; off by default) |
+| `CAIRN_SYNC_PORT` / `CAIRN_SYNC_DISCOVERY_PORT` | `8787` / `47391` | Sync HTTPS server port / UDP LAN discovery port |
+| `CAIRN_TCP_LISTENER_ENABLED` | on | Daemon TCP listener for container-side hook shims (`CAIRN_TCP_PORT` `47390`) |
+| `CONTAINER_AUTO_INSTALL_ENABLED` | on | Push staged VSIX extensions into dev containers (`CONTAINER_AUTO_INSTALL_VSIX_DIR`); `CONTAINER_AUTO_DEPLOY_HOOKS` deploys hook shims |
+| `CAIRN_GRAPH_ROOTS` | parent of cairn checkout | Colon-separated roots the graph fleet keeps graph-ready |
+| `CAIRN_GRAPH_WATCH` | off | Real-time `crg` watch daemon on top of the hourly sweep; opt in with `=1` |
+| `CAIRN_MODE` | unset | `read-only` runs context injection but skips memory writes/enforcement (for scheduled tasks) |
+| `AB_TEST_ENABLED` | on | Live per-prompt write-side A/B experiment |
+| `CAIRN_TZ` | system tz | Override local timezone for date stamping |
+| `CAIRN_ALLOW_STDLIB_SQLITE` | off | Override the pysqlite3 requirement with stdlib `sqlite3` (`=1`; unsafe under concurrent WAL access) |
 
 ## Key design decisions
 

@@ -94,13 +94,17 @@ So every repo is graph-ready before first contact, independent of whether cairn 
 
 The daemon exposes a **TCP listener on port 47390** alongside its Unix socket so container shims can dial the host daemon via `cairn_recall` / `cairn_remember` opcodes. `cairn/container_injector.py` injects context inside the container, with an extension auto-installer and VSIX staging, so a containerised session reaches the same host cairn as the native session.
 
+## Multi-node sync (v2)
+
+`cairn/sync/` is opt-in peer-to-peer LAN replication, **off by default** — set `CAIRN_SYNC_ENABLED=1` per node to opt in (wired into `install.sh`). When enabled the daemon runs the HTTPS sync server, UDP-broadcasts a LAN discovery beacon, and pulls from approved peers. Identity is an Ed25519 keypair; pairing is dashboard-authorized by public key; transport is signed + cert-pinned; replication is changeset-based with Lamport-clock last-write-wins. **Only a node's own memories are shared**, and raw session transcripts are never synced (a node may opt in to serving them behind its memories to approved peers via `CAIRN_SYNC_SHARE_SESSIONS=1`). Ports: HTTPS `CAIRN_SYNC_PORT=8787`, discovery `CAIRN_SYNC_DISCOVERY_PORT=47391`. See the Multi-User Architecture section of `ARCHITECTURE.md`.
+
 ## Calibration system (Phases 1–7)
 
 Phase 1 shipped scaffolding (schema, extractor, stubbed CLI). Phase 2 ships the analyser: a single LLM pass per session over a cleaned transcript produces sectioned JSON across 13 bounded dimensions, writing 8 dimensions to `calibration_rows` and 5 to the existing `memories` table with `source_ref="analyser-session-arc"`. A post-pass scores effectiveness on prior `calibration_deliveries`. See `docs/spec-calibration-system.md` (especially Amendment 1) for the dimension list and design rationale.
 
 Phase 2 commands:
 - `cairn-calibration-analyser analyse <jsonl> [--dry-run]` — analyse a single session
-- `cairn-calibration-analyser cron [--idle-minutes N] [--limit K]` — one cron pass: walks `~/.claude/projects/*/*.jsonl`, picks idle un-analysed sessions, runs the analyser on up to K of them (oldest first), per-session try/except so one failure doesn't block the rest
+- `cairn-calibration-analyser cron [--idle-minutes N] [--limit K]` — one cron pass: walks `~/.claude/projects/*/*.jsonl`, picks idle un-analysed sessions (idle ≥ `--idle-minutes`, default 15, so active sessions are left alone), runs the analyser on up to K of them (oldest first), per-session try/except so one failure doesn't block the rest
 - `cairn-calibration-analyser list-idle` — print idle un-analysed session paths
 
 The analyser invokes `claude -p` with `CAIRN_MODE=read-only` so the analyser pass doesn't itself trigger the Stop hook capture path. Defaults to `claude-sonnet-4-6` — the 13-dim sectioned output benefits from a mode-switching-capable model (per cairn entry 2087), and per-call cost is amortised across many future retrievals. Override via `--model` flag or `CAIRN_ANALYSER_MODEL` env var.
@@ -139,15 +143,15 @@ Effectiveness scoring updates `calibration_deliveries.outcome` AND bumps the cor
 
 **Phase 7 — CLAUDE.md import** (`cairn-calibration-import-claude-md [path]`): one-shot scanner for first-person preference statements ("I prefer X", "Always/Never Y", "Stop Z"). Idempotent via SHA tracking in `hook_state`. Seeds rows as pinned `explicit` with confidence 0.90.
 
-Phase 1 scaffolding (still applies):
+Foundation (Phase 1, still current):
 
-Calibration captures *how to interact with this user* (level, style, preferences) — complementing Cairn knowledge which captures *what is known*. Phase 1 lands foundation only: schema, transcript extractor, and stubbed CLI. The analyser, injector, and dashboard come in later phases. See `docs/spec-calibration-system.md` for the full design.
+Calibration captures *how to interact with this user* (level, style, preferences) — complementing Cairn knowledge which captures *what is known*. Phase 1 laid the foundation — schema, transcript extractor, CLI — and the analyser, injector, self-modification, and dashboard are all now shipped (Phases 2–7 above). See `docs/spec-calibration-system.md` for the full design.
 
 Schema (created by `init_db.init` / `init_db.init_ephemeral`):
 - `calibration_rows` (durable DB) — id, content, kw, qf, source, confidence, pinned, layer, session_scope, supersession, archived_at, effectiveness counters, embedding
 - `calibration_deliveries` (ephemeral DB) — turn-indexed log of which rows were injected into which session/turn, with outcome scoring fields
 
-Phase 1 commands (stubs return exit 2 — wiring is verified, no behaviour yet):
+CLI commands (all implemented; agent-invoked from natural-language intent, never user-typed):
 - `python3 ./cairn/session_extract.py <jsonl>` — clean a session JSONL to user/assistant text only, dropping tool blocks, thinking, `<cairn_context>`, `<system-reminder>`, and `[cm]` link-defs. Flags: `--with-tools`, `--corrections-only`, `--turn-range A-B`, `--last-N-minutes N`, `--json`.
 - `cairn-calibration --show-profile [subject]` — show calibration profile
 - `cairn-calibration --review` — Tier 2 review queue
