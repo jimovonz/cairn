@@ -381,11 +381,13 @@ CRON_SELFMOD="30 0 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON -m cairn.calibration_se
 # graph-ready quickly without waiting for a session. The daemon keeps existing repos
 # current in real time between sweeps. Only runs if code-review-graph is installed.
 CRON_GRAPH_FLEET="17 * * * * $VENV_PYTHON -m cairn.graph_fleet >> $CAIRN_HOME/logs/graph-fleet.log 2>&1 $CRON_MARKER"
-# Proxy keep-alive — `start` is idempotent (no-op if running); critical because
-# ANTHROPIC_BASE_URL points Claude Code at the proxy. Empty unless opted in.
+# Proxy keep-alive — `start-fresh` is idempotent (no-op if running AND current) but
+# ALSO restarts a running-but-stale daemon (proxy code newer than the live process),
+# so a pulled proxy fix reaches the daemon within 5 min without a manual restart.
+# Critical because ANTHROPIC_BASE_URL points Claude Code at the proxy. Empty unless opted in.
 CRON_PROXY=""
 if [ "${CAIRN_PROXY_ENABLED:-}" = "1" ]; then
-    CRON_PROXY="*/5 * * * * CAIRN_PROXY_ENABLED=1 CAIRN_PROXY_PORT=$PROXY_PORT $VENV_PYTHON -m cairn.proxy.server start --port $PROXY_PORT >/dev/null 2>&1 $CRON_MARKER"
+    CRON_PROXY="*/5 * * * * CAIRN_PROXY_ENABLED=1 CAIRN_PROXY_PORT=$PROXY_PORT $VENV_PYTHON -m cairn.proxy.server start-fresh --port $PROXY_PORT >/dev/null 2>&1 $CRON_MARKER"
 fi
 
 # Remove any existing cairn cron entries (including legacy contradiction_scan.py and calibration variants)
