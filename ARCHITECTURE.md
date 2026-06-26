@@ -123,6 +123,13 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
 │  │ Why:  Project awareness without prompt content     │  │
 │  └───────────────────────────────────────────────────┘  │
 │                                                         │
+│  CORRECTION BOOTSTRAP: TOP CORRECTIONS, NO QUERY        │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │ When: First message of session                    │  │
+│  │ How:  Top-N corrections by confidence, no query   │  │
+│  │ Why:  96% of corrections never match semantically │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
 │  Layer 1: FIRST-PROMPT PUSH                             │
 │  ┌───────────────────────────────────────────────────┐  │
 │  │ When: First message of session (after bootstrap)  │  │
@@ -133,7 +140,8 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
 │  Layer 1.5: PER-PROMPT PUSH                             │
 │  ┌───────────────────────────────────────────────────┐  │
 │  │ When: Every subsequent message in the session     │  │
-│  │ How:  Embed user message → search (high threshold)│  │
+│  │ How:  Embed → search (high threshold) → context-  │  │
+│  │       window-aware cross-encoder rerank           │  │
 │  │ Why:  Surface context mid-conversation            │  │
 │  └───────────────────────────────────────────────────┘  │
 │                                                         │
@@ -504,6 +512,33 @@ except ImportError:
 
 Three layers enforce it. `tests/test_sqlite_guard.py` walks every `*.py` under `cairn/` and `hooks/` and fails if any imports stdlib `sqlite3` without the pysqlite3 guard — the allowlist is **empty** (no exemptions; `graph.py` was previously allowlisted as "graph.db only" but it also opens the WAL cairn DB, so it now carries the guard too). `install.sh` asserts at install time that the resolved module is pysqlite3 (`h.sqlite3.__name__.startswith("pysqlite3")`) and that `sqlite_version_info >= (3, 45)`, failing loud if stdlib leaked. Because pysqlite3 lives in the project venv, the test suite must run under that interpreter for the guard to resolve. The databases run `PRAGMA journal_mode=WAL` and deliberately **do not** set `synchronous=OFF` — durability over the marginal write speed. `tests/conftest.py` pops `CAIRN_PROXY_ENABLED` at import time so the proxy-on dev shell doesn't flip hooks into pointer-injection mode and produce ~18 spurious failures that are green in CI but red locally.
 
+### Embedding daemon wire protocol
+
+`cairn/daemon.py` keeps the sentence-transformers model (and, lazily, the cross-encoder reranker and NLI model) resident in RAM, eliminating the ~3 s cold start every hook would otherwise pay. Clients talk to it over a **Unix socket** (`cairn/.daemon.sock`) with a trivial framing convention: send one JSON object, half-close the write side (`SHUT_WR`), read the JSON reply until EOF. `send_request` is the in-process client; it returns `None` (rather than raising) when the daemon is down, so every caller degrades to in-process model loading. A `.daemon.pid` file tracks the process for `start`/`stop`/`status`.
+
+Each request carries an `action`; the dispatcher in `handle_client` recognises:
+
+| Action | Request fields | Response | Purpose |
+|--------|---------------|----------|---------|
+| `embed` | `text` | `{vector}` (hex blob) | Single embedding — encodes via the model directly, never `emb.embed()`, to avoid recursing back into the daemon client |
+| `embed_batch` | `texts[]` | `{vectors[]}` | Batched embeddings |
+| `vector_search` | `texts[]`, `n_base`, `min_sim` (0.15), `top_k` (300) | `{rows[]}` | Server-side similarity over a cached embedding matrix (see below) |
+| `rerank` | `query`, `candidates[]` | `{scores[], score_floor, model}` | Cross-encoder rerank; `scores: null` when no reranker is loaded; reports the in-memory model name as provenance |
+| `nli` | `pairs[]` | `{scores[]}` | NLI entailment/contradiction logits for consolidation; `null` if model unavailable |
+| `similarity` | `text`, `threshold` (0.5), `limit` (10) | `{results[]}` | `embeddings.find_similar` against the live DB |
+| `ping` | — | `{status: "ok"}` | Liveness probe |
+| `hook` | `route`, `payload` | `{stdout, stderr, exit_code}` | Run a registered hook (`userpromptsubmit`/`stop`/`pretool`/`posttool`) under the venv interpreter (120 s timeout) — the container path |
+| `cairn_recall` | `text`, `limit` (10), `threshold` (0.3) | `{results[]}` | Semantic search for container clients with no `query.py` access |
+| `cairn_remember` | `type`, `topic`, `content`, `project?`, `session_id?` | `{ok}` / `{error}` | Insert a memory through the same path as `query.py --add` |
+
+**Lazy model caches.** Only the embedding model is loaded eagerly at startup. `_get_cross_encoder` and `_get_nli_model` populate module-level globals on first use, so a daemon that only ever serves embeds never pays to load the reranker or NLI model.
+
+**Cached search matrix.** `vector_search` does not re-read embeddings per query. `_ensure_search_cache` keeps a stacked `(N x dim)` matrix `M` (plus a topic matrix `T`) keyed by a DB "stamp"; it rebuilds only when the stamp changes, so repeated searches are matrix multiplies against resident memory.
+
+**Idle lifecycle.** The accept loop runs with `server.settimeout(IDLE_TIMEOUT)` where `IDLE_TIMEOUT = 1800` (30 minutes). If no connection arrives within the window, `accept()` raises `socket.timeout` and the daemon shuts itself down cleanly (unlinking the socket and PID file) — it is respawned by the next hook that needs it. SIGTERM/SIGINT trigger the same clean shutdown.
+
+**TCP listener.** When `CAIRN_TCP_LISTENER_ENABLED` (default true), the daemon also spawns a background thread listening on TCP `CAIRN_TCP_PORT` (47390). `_detect_docker0_ip` binds it to the `docker0` bridge IP (the containers' default gateway, parsed from `ip -4 -o addr show docker0`) when present, falling back to `0.0.0.0`. This lets container-side shims reach the host daemon — chiefly via `cairn_recall`/`cairn_remember`/`hook` — without bind-mounting the Unix socket. The same `handle_client` dispatcher serves both transports. On startup the daemon also conditionally starts the dev-container extension injector and (opt-in) the peer-to-peer sync services; failures in either are swallowed so they can never take the daemon down.
+
 ## Stop Hook — the core mechanism
 
 `hooks/stop_hook.py` is a Claude Code Stop hook registered in `.claude/settings.json`. It runs as a shell command after every LLM response, receiving JSON on stdin with:
@@ -833,6 +868,12 @@ On every subsequent message in the session, the prompt hook embeds the user's me
 
 Uses `L1_5_ENABLED` (default true), `L1_5_SIM_THRESHOLD`, and `L1_5_MAX_RESULTS` from config.
 
+**Context-window-aware rerank.** Layer 1.5 (and Layer 1) do not rerank against the bare user message. Both pass `relevance.build_context_window(user_message, transcript_path)` — the cleaned `[prev user] + [prev assistant] + [user]` recent-context window (see [Read-Side Relevance Grading](#read-side-relevance-grading)) — as the cross-encoder `rerank_query`, so a follow-up like "what about the other one?" is scored against the exchange it refers to, not the pronoun alone.
+
+### Correction bootstrap
+
+Behavioural corrections describe *patterns of how to work*, not facts that match a specific query — so semantic push rarely surfaces them (empirically 96% of corrections never appear cross-session under query-driven retrieval alone). `correction_bootstrap` (`prompt_hook.py`) therefore injects the top `CORRECTION_BOOTSTRAP_MAX` (5) non-archived `correction` memories unconditionally on the first prompt of every session, ranked by confidence (most-corroborated first) with `updated_at` as tiebreaker — no query embedding involved. They are emitted under the `correction-bootstrap` layer (no `<instruction>` chrome; the layer legend lives in the rules file) and logged via `record_layer_delivery`. This is the only retrieval path that ignores similarity entirely: the value of a correction is independent of whether the current prompt happens to resemble it.
+
 ### Layer 2: Keyword cross-project
 
 The LLM can include `keywords: authentication, JWT, session tokens` in its memory block. The Stop hook extracts these keywords and searches global memories (excluding the current project) for strong matches (`L2_SIM_THRESHOLD >= 0.60`). Results are staged in `.staged_context` and injected on the next prompt via the UserPromptSubmit hook.
@@ -869,7 +910,7 @@ File matching is by exact path or basename (for when the same file is referenced
 rrf_score = Σ 1/(k + rank_i)  across each search method that found this memory
 ```
 
-Where `k = 60` (standard constant). A memory found by both methods gets contributions from both rank terms — dual-match memories naturally score higher than single-method matches.
+Where `k = RRF_K` (config, 60 — the standard constant that prevents a single high rank from dominating). A memory found by both methods gets contributions from both rank terms — dual-match memories naturally score higher than single-method matches.
 
 FTS5 uses Porter stemming and unicode61 tokenizer. Stopwords are filtered before building the OR-joined query. Each search path returns up to 20 candidates; RRF merges them, and the fused score replaces the old hardcoded 0.30 penalty for FTS-only results.
 
@@ -1304,18 +1345,24 @@ Phase 4: Execute (if --execute)
 
 ### Contradiction detection
 
-Finds unflagged contradictions — memories that say opposite things but weren't caught at write time (different type/topic, or below negation heuristic threshold). The same pipeline also detects **plan→implementation pairs**: an older memory phrased as intent ("plan", "candidate", "next step", "should", …) that a newer memory confirms was built.
+Finds unflagged contradictions — memories that say opposite things but weren't caught at write time (different type/topic, or below negation heuristic threshold). The same pipeline also detects **plan→implementation pairs**: an older memory phrased as intent ("plan", "candidate", "next step", "should", …) that a newer memory confirms was built. (This supersedes `cairn/contradiction_scan.py`, the legacy standalone scanner that found negation-mismatch pairs and merely *annotated* the older memory rather than archiving it.)
 
 ```
-Phase 1: Bi-encoder candidate pairs
-  Find pairs of active memories with cosine similarity ≥ 0.70
+Phase 1: Bi-encoder candidate pairs (two-tier selection)
+  Find pairs of active memories with cosine similarity ≥ CONTRADICTION_SIMILARITY_THRESHOLD (0.70)
+    Tier 1 (always included): same type+topic pairs — highest contradiction signal
+    Tier 2 (fills remaining budget to CONTRADICTION_MAX_PAIRS=2000): cross-topic
+      pairs, sampled evenly across similarity bands so low-similarity
+      contradictions surface, not just near-duplicates
   Skip pairs already assessed (pair_assessments cache)
   Split: pairs whose older memory reads as a plan/intent (keyword heuristic)
   bypass NLI — a plan and the fact implementing it never scores as a contradiction
       │
-Phase 2: NLI contradiction scoring (via daemon)
-  Score non-plan pairs for contradiction signal using NLI model
-  Keep pairs above NLI_CONTRADICTION_THRESHOLD
+Phase 2: NLI contradiction pre-filter (DISABLED by default)
+  NLI_CONTRADICTION_PREFILTER_ENABLED defaults False — the NLI contra-logit is
+  non-discriminative for supersession (AUC ~0.5) and net-harmful as a gate, so
+  non-plan candidates pass straight to Haiku. When enabled, non-plan pairs are
+  scored and only those above NLI_CONTRADICTION_THRESHOLD proceed.
       │
 Phase 3: Haiku assessment (batched)
   NLI-confirmed pairs + plan candidates judged by Haiku, one verdict per pair:
@@ -1351,6 +1398,14 @@ python3 cairn/consolidate.py --execute                    # execute consolidatio
 python3 cairn/consolidate.py --contradictions              # dry-run contradiction scan
 python3 cairn/consolidate.py --contradictions --execute    # execute contradiction scan
 ```
+
+## Memory Audit Agent
+
+Consolidation and contradiction detection are *mechanical* — they merge near-duplicates and archive superseded entries. `cairn/audit_agent.py` is the complementary *editorial* pass: it spends a `claude -p` turn re-reading the original transcript alongside the one-line memories it produced, to confirm, enrich, correct, or fill gaps.
+
+**Flow.** `audit_agent.py [session_id]` (or the most-recent session with unaudited memories, via `find_session`) collects every memory for that session above the watermark, reconstructs the relevant transcript segment from the earliest such memory's timestamp (`get_transcript_segment`), and builds a prompt instructing the agent to: (1) review each memory against the transcript — enrich the *accurate-but-thin* (`--update <id>` adding the why / alternatives / outcome), correct the inaccurate, `--archive` the superseded; (2) **find gaps** — decisions, user corrections, rejected approaches, facts, or preferences that were discussed but never captured, adding each with `--add`; (3) advance the watermark; (4) report. It is launched with `claude -p --allowedTools Bash`, a 120 s timeout, and `CAIRN_MODE=read-only` in the environment so the agent's own turns do not recursively trigger the Stop-hook capture path while it edits memories through `query.py`.
+
+**Incremental watermark.** Per-session progress is a *memory-id* watermark, not a timestamp: `hook_state[session_id]["last_audit_id"]`. `get_unaudited` returns only memories with `id > last_audit_id`; `query.py --audit <session_id>` advances it to the current max. So each run audits only memories created since the last pass, and `find_session` scans the 10 most-recently-active sessions for any with `id > last_audit_id`.
 
 ## API Proxy (artifact-free injection)
 
@@ -1396,7 +1451,17 @@ Crons: analyser at 00:00, self-modification at 00:30. See `docs/spec-calibration
 
 ## Dev-Container Support
 
-For sessions running inside dev-containers, the daemon exposes a **TCP listener on port 47390** alongside its Unix socket, and `cairn_recall` / `cairn_remember` opcodes let a container shim dial the host daemon. `cairn/container_injector.py` injects context inside the container, with an extension auto-installer and VSIX staging so a containerised Claude Code / Copilot session reaches the same host cairn as the native session.
+For sessions running inside dev-containers, the daemon exposes a **TCP listener on port 47390** (`CAIRN_TCP_PORT`, bound to the `docker0` bridge IP) alongside its Unix socket, and the `cairn_recall` / `cairn_remember` / `hook` opcodes let a container-side shim dial the host daemon without bind-mounting the socket. A containerised Claude Code / Copilot session therefore reaches the *same* host cairn DB as a native session.
+
+**Auto-injection on container start.** `cairn/container_injector.py` runs as a background thread inside the daemon (gated by `CONTAINER_AUTO_INSTALL_ENABLED`, default true). `watch_loop` subscribes to `docker events` and, for each started container that `_is_dev_container` recognises (via VS Code's `devcontainer.local_folder` label or a `com.docker.compose.project.config_files` value pointing inside `.devcontainer/`), dispatches `_handle_container_start`. The watcher is self-healing — it restarts the `docker events` subscription after a 5 s backoff if it dies, and is wrapped so it can never crash the daemon.
+
+`_handle_container_start` does three things once `code-server` is reachable (`_wait_for_code_cli`, polling up to 120 s):
+
+- **Hook deployment** (`CONTAINER_AUTO_DEPLOY_HOOKS`, default true) — `docker cp`s the `shims/cairn-hook.py` shim to `/opt/cairn-shims/` and renders `templates/copilot-hooks-container.json` (substituting the shim path) into `~/.github/hooks/cairn.json`, so the in-container assistant's hooks call back to the host daemon over TCP. No project-side `devcontainer.json` mount is required.
+- **VSIX staging / auto-install** — any `*.vsix` staged in `CONTAINER_AUTO_INSTALL_VSIX_DIR` (`~/.local/share/cairn-vsix`) is copied into the container and installed with `code --install-extension … --force` via the resolved `code-server` CLI. This carries unpublishable personal extensions into the container.
+- **Managed instructions** — for every installed extension that declares `contributes.chatInstructions`, plus cairn's own container-side instructions, it assembles a managed block and writes it into the workspace `.github/` (with a `.gitignore` entry) so the extensions' instructions reach the model even where VS Code's native injection doesn't fire.
+
+Transcripts sent through the `hook` opcode are stashed atomically under `transcripts/container/<session_id>.jsonl` so `query.py --context` can recover a container session's history after the container is gone.
 
 ## Read-Side Relevance Grading
 
