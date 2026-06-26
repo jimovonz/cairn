@@ -281,7 +281,7 @@ Two feedback loops close the gap between *what gets injected* and *what was usef
 
 An optional bucket-4 prefilter (`is_self_referential_meta`, gated by `RELEVANCE_PREFILTER_ENABLED`, off by default, corrections exempt) drops self-referential meta-memories. The reranker is GPU-aware (`config.resolve_reranker`): `ms-marco-MiniLM-L-6-v2` by default, `BAAI/bge-reranker-base` on CUDA when `RERANKER_BGE_ENABLED`. Phases 1–2 (instrument + agent labels) are implemented; a trained cross-encoder student that gates injections and lets the teacher step back (spec Phases 3–4) is future work. See `docs/spec-memory-relevance-grading.md`.
 
-**Write side.** Every agent-written memory is stamped with `GENERATION_PROMPT_VERSION` (`genA-v3`) in `source_ref`, so downstream usefulness is attributable to the generation rules that produced it. The live rules carry a dual-altitude transferability lever (capture the generalised cross-project principle, anchored by the specific instance). `cairn/ab_writeside.py` is an offline A/B harness: it replays the transcript corpus through two generation prompts (A = control, B = control + one speculative lever) and judges them with Opus 4.8 — blind, position-swapped, and pairwise on findability / self-sufficiency / fitness, with the session cohort as the A/B unit. CLI: `replay` and `ab`.
+**Write side.** Every agent-written memory is stamped with `GENERATION_PROMPT_VERSION` (`genA-v3`) in `source_ref`, so downstream usefulness is attributable to the generation rules that produced it. The live rules carry a dual-altitude transferability lever (capture the generalised cross-project principle, anchored by the specific instance). `cairn/ab_writeside.py` is an offline A/B harness: it replays the transcript corpus through two generation prompts (A = control, B = control + one speculative lever) and judges them with Opus 4.8 — blind, position-swapped, and pairwise on findability / self-sufficiency / fitness, with the session cohort as the A/B unit (CLI: `replay`/`ab`). Separately, a **live per-prompt A/B** (`AB_TEST_ENABLED`, on) randomly assigns each prompt to arm A (control) or arm B (control + one speculative variable, `AB_B_INSTRUCTION`), stamps each memory with its arm in `source_ref` (`genA-v3` vs `genB-v1`), and compares outcomes by arm via `query.py --delivery-stats` (engagement/grade per generation version + reranker).
 
 ## Architecture
 
@@ -377,6 +377,7 @@ All tunable parameters are in `cairn/config.py`. Any value can be overridden via
 - Cross-encoder re-ranking (`CROSS_ENCODER_ENABLED`, `CROSS_ENCODER_WEIGHT`, `CROSS_ENCODER_SCORE_FLOOR`)
 - GPU-aware reranker swap (`RERANKER_BGE_ENABLED` — `bge-reranker-base` on CUDA)
 - Relevance grading (`RELEVANCE_LOGGING_ENABLED`, `RELEVANCE_PREFILTER_ENABLED`) and write-side provenance (`GENERATION_PROMPT_VERSION`)
+- Live write-side A/B (`AB_TEST_ENABLED`, `AB_ARM_VERSIONS`, `AB_B_INSTRUCTION`) and local timezone (`CAIRN_TZ`)
 - NLI consolidation/contradiction (`NLI_ENABLED`, `NLI_ENTAILMENT_THRESHOLD`, `NLI_CONTRADICTION_THRESHOLD`)
 - Consolidation clustering (`CONSOLIDATION_SIMILARITY_THRESHOLD`, `CONSOLIDATION_MIN_CLUSTER_SIZE`)
 - Query expansion (`QUERY_EXPANSION_FANOUT` — type-prefix fan-out, default on)
