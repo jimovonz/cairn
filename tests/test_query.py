@@ -634,3 +634,24 @@ def test_backfill_embeddings_no_project_prefix(backfill_env, capsys):
 
     embed_arg = mock_emb.embed.call_args[0][0]
     assert embed_arg == "decision db use sqlite"
+
+
+def test_aggregate_outcomes_and_version_label():
+    from cairn.query import _aggregate_outcomes, _version_label
+    recs = [
+        {"key": "A", "engaged": 1, "engaged_score": 0.5, "grade": 3},
+        {"key": "A", "engaged": 0, "engaged_score": 0.0, "grade": None},
+        {"key": "A", "engaged": None, "engaged_score": -1.0, "grade": None},  # undecidable: excluded from score avg
+        {"key": "B", "engaged": 1, "engaged_score": 0.8, "grade": None},
+    ]
+    agg = _aggregate_outcomes(recs)
+    a = agg["A"]
+    assert a["n"] == 3
+    assert a["engaged_pct"] == round(1 / 3 * 100, 1)
+    assert a["avg_score"] == 0.25            # (0.5 + 0.0)/2, the -1.0 excluded
+    assert a["graded"] == 1 and a["avg_grade"] == 3
+    assert agg["B"]["avg_score"] == 0.8 and agg["B"]["graded"] == 0 and agg["B"]["avg_grade"] is None
+    # version bucketing
+    assert _version_label(None) == "unversioned"
+    assert _version_label("genA-v3") == "genA-v3"
+    assert _version_label('{"repo": "x"}') == "ingest"

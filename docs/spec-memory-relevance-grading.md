@@ -1,7 +1,38 @@
 # Cairn Memory Relevance System — Read-Side Grading + Write-Side Quality
 
-Status: design v1 (spec only, no code). Supersedes ad-hoc threshold tuning as the
-primary lever on injected-memory quality.
+Status: design v1 + **implemented (Phases 1–2)** on branch
+`feature/memory-relevance-grading-impl`. The body below is the original design;
+the "Implementation status" block records where the build deviates. Supersedes
+ad-hoc threshold tuning as the primary lever on injected-memory quality.
+
+## Implementation status (as-built)
+
+- **Done (read side):** the `memory_deliveries` delivery log (`cairn/init_db.py`,
+  `cairn/relevance.py`) with ranking provenance columns `reranker_model`,
+  `score_components`, `layer`, `scope`; the mechanical bucket-4 prefilter
+  (`is_self_referential_meta`, gated by `RELEVANCE_PREFILTER_ENABLED`, default
+  off, corrections exempt); agent-as-teacher 0–3 + hard-negative grades via the
+  `[cm]` `rg` field (`hooks/parser.py` delegates to
+  `relevance.parse_relevance_grades`; `apply_relevance_grades` writes back).
+- **Added beyond the spec — behavioural engagement** (`relevance.score_engagement`
+  / `apply_engagement`, columns `engaged` / `engaged_score`): mechanical
+  distinctive-term overlap (minus prompt terms) between the cleaned response and
+  each delivered memory, promoted to the PRIMARY non-circular label with the agent
+  grade as supplement (strengthens A.2/A.6's confident-signal-only guard).
+- **Hardware changed since A.7:** A.7 assumed no CUDA. The box now has a CUDA GPU,
+  so the reranker is device-aware (`config.resolve_reranker`): `bge-reranker-base`
+  (floor 0.0005) on CUDA when `RERANKER_BGE_ENABLED`, else `ms-marco-MiniLM-L-6-v2`
+  (floor −3.0); the daemon owns the model and the hot hook path never imports
+  torch. bge-vs-ms-marco on real retrieval quality is not yet A/B-validated.
+- **Done (write side, Part B):** generation-prompt-version provenance
+  (`config.GENERATION_PROMPT_VERSION` → `memories.source_ref`); the dual-altitude
+  transferability lever promoted into the live generation rules; the offline A/B
+  harness `cairn/ab_writeside.py`. The B.1 levers were realised as **prompt-A =
+  current-best control vs prompt-B = control + one speculative lever** (so the A/B
+  isolates a single variable), not one all-levers prompt.
+- **Not yet built:** Phase 3 (trained cross-encoder student) and Phase 4 (demote
+  teacher) await label volume; the A/B harness has not been run on the full corpus
+  (an Opus-cost batch job).
 
 ## Problem
 

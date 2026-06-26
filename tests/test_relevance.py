@@ -290,6 +290,30 @@ def test_build_context_xml_logs_deliveries(tmp_path, monkeypatch):
     assert rows == [(1, "[user] q")]
 
 
+def test_build_context_xml_records_context_vec(tmp_path, monkeypatch):
+    # context_vec (the empirical-context join key) is embedded from context_text at
+    # delivery time when an embedder is available.
+    p = str(tmp_path / "eph.db")
+    init_db.init_ephemeral(p)
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", p)
+    import hooks.hook_helpers as hh
+
+    class _Emb:
+        def embed(self, text, allow_slow=True):
+            return [0.1, 0.2, 0.3]
+        def to_blob(self, vec):
+            return b"\x01\x02\x03\x04"
+    monkeypatch.setattr(hh, "get_embedder", lambda: _Emb())
+    pr = [{"id": 1, "type": "fact", "topic": "t", "content": "c", "project": "x",
+           "updated_at": "now", "confidence": 0.9, "score": 0.9, "similarity": 0.7,
+           "archived_reason": None}]
+    hh.build_context_xml("q", "x", "per-prompt", pr, [], session_id="sess",
+                         context_text="[user] q")
+    cv = sqlite3.connect(p).execute(
+        "SELECT context_vec FROM memory_deliveries WHERE session_id='sess'").fetchone()[0]
+    assert cv == b"\x01\x02\x03\x04"
+
+
 def _entry(i, typ, content):
     return {"id": i, "type": typ, "topic": "t", "content": content, "project": "x",
             "updated_at": "now", "confidence": 0.9, "score": 0.9, "similarity": 0.7,
@@ -415,3 +439,22 @@ def test_superseded_dropped_across_scopes(tmp_path, monkeypatch):
                             [_superseded(10, 11)], [_entry(11, "fact", "new")],
                             session_id="s", context_text="t")
     assert 'id="10"' not in xml and 'id="11"' in xml
+
+
+# ---- write-side live A/B: arm-stamped source_ref --------------------------------
+def test_arm_source_ref(eph, monkeypatch):
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", eph)
+    from hooks import stop_hook
+    from hooks.hook_helpers import save_hook_state
+    from cairn import config
+    monkeypatch.setattr(config, "AB_TEST_ENABLED", True)
+    # no arm assigned yet -> falls back to the plain generation version
+    assert stop_hook._arm_source_ref("s") == config.GENERATION_PROMPT_VERSION
+    save_hook_state("s", "ab_arm", "B")
+    assert stop_hook._arm_source_ref("s") == config.AB_ARM_VERSIONS["B"]
+    save_hook_state("s", "ab_arm", "A")
+    assert stop_hook._arm_source_ref("s") == config.AB_ARM_VERSIONS["A"]
+    # experiment off -> default version regardless of a stale arm
+    monkeypatch.setattr(config, "AB_TEST_ENABLED", False)
+    save_hook_state("s", "ab_arm", "B")
+    assert stop_hook._arm_source_ref("s") == config.GENERATION_PROMPT_VERSION

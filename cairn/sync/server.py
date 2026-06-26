@@ -2,8 +2,9 @@
 
 stdlib-only HTTP. v2 auth: each /sync request is signed with the peer's Ed25519
 key and verified against the public key pinned in sync_peers at pairing-approval
-time (status='approved'). A v1 bearer-token fallback remains for peers paired
-before v2. /pair accepts a self-certifying, signed pairing request and queues it
+time (status='approved'). The v1 bearer-token fallback has been removed (durable
+schema v13; no pre-v2 peers remain) — every /sync request must be Ed25519-signed.
+/pair accepts a self-certifying, signed pairing request and queues it
 in pairing_requests for the host to approve from the dashboard — no access is
 granted until approval. See docs/multi-node-sync.md v2.
 

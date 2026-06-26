@@ -1,6 +1,17 @@
-# Cairn Multi-Node Sync — Design
+# Cairn Multi-Node Sync — Design & As-Built
 
-Status: design v1, branch `feature/multi-node-sync`.
+Status: **implemented (v2)** — peer-to-peer, offline-first, autodiscovery +
+public-key pairing + HTTPS cert-pinned transport. Code lives in `cairn/sync/`
+(`identity.py`, `discovery.py`, `pairing.py`, `server.py`, `client.py`,
+`changeset.py`, `ephemeral.py`, `service.py`, `cli.py`).
+
+> This document records both the design rationale (why the system is shaped the
+> way it is) and the **as-built** protocol. Where the early v1 design and the
+> shipped code diverge, the as-built sections are authoritative — the v1 design
+> narrative is retained below for context because the *sync core* it describes
+> (changeset extract/apply, Lamport clock, per-peer vector clock, LWW,
+> visibility, embedding regen) is exactly what shipped. Only **how peers find
+> each other** and **how trust is established** changed.
 
 ## Problem
 
@@ -15,477 +26,398 @@ Today every cairn install is a single-node SQLite database. We want a 20-enginee
 ## Non-goals
 
 - Strong consistency. We accept eventual convergence; conflict resolution is deterministic but not "linearizable."
-- Real-time push. Pull-based, polled. A sync interval of 30–300s is acceptable.
-- Hiding nodes from each other. Peers are explicitly listed in `~/.cairn/peers.json`; no autodiscovery in v1.
+- Real-time push. Pull-based, polled. The shipped pull interval is `CAIRN_SYNC_PULL_INTERVAL` (default 120s).
+- ~~Hiding nodes from each other. Peers are explicitly listed; no autodiscovery.~~ **Superseded:** v2 ships LAN autodiscovery (UDP broadcast). Discovery makes a node *visible*, not *trusted* — access still requires explicit pairing approval.
 
 ## Identity model
 
-Three IDs, each with one job.
+Two identity namespaces, one per concern:
 
-| Column | Scope | Semantics | Mutability |
-|---|---|---|---|
-| `memories.id` (existing INTEGER PK) | local only | Auto-increment row counter. **Never synced.** Stays as the FK target for local-only tables (`memory_history`, `memory_annotation_log`, `correction_triggers`, `memory_source_excerpt`, `memories_vec`). | local |
-| `memories.origin_id` (existing TEXT) | global | The row's cross-node identity. UUIDv4 generated at first insert; never changes. **This is the sync key.** Already populated for all existing rows by `init_db.init()` backfill. | immutable |
-| `memories.created_by_node` (NEW TEXT) | global | The node UUID that first inserted this row. Provenance for "who wrote this." | immutable |
-| `memories.created_by_user` (existing `user_id`) | global | The user identifier (`$USER@$hostname` or LDAP handle) at the creating node. | immutable |
-| `memories.updated_by_node` (NEW TEXT) | global | Last node to mutate the row. Used for LWW conflict tiebreak. | mutable |
-| `memories.updated_by_user` (existing `updated_by` repurposed) | global | Last user to mutate. | mutable |
-| `memories.lamport` (NEW INTEGER) | global | Per-node Lamport clock value at last mutation. Used as primary LWW ordering key. Beats `updated_at` because wall clocks lie. | mutable |
+- **Data-provenance identity** — `node_id`, a UUIDv4 in `~/.cairn/node_id`
+  (generated on first run, survives DB rebuild). This is what is written to
+  `memories.created_by_node` / `updated_by_node` and what the Lamport vector
+  clock is keyed on. **It is NOT derived from the public key.**
+- **Auth identity** — the Ed25519 **public-key fingerprint**,
+  `base32(sha256(raw_pubkey))[:52]` (`identity.fingerprint`). This is
+  self-certifying (a commitment to the public key) and is the value used as
+  `X-Cairn-Node` on the wire, advertised in beacons, and pinned in
+  `sync_peers`/`pairing_requests`. `service.start_sync_services` and the CLI use
+  the fingerprint as the network node id.
 
-The local `id` and the global `origin_id` are decoupled. When node A's row crosses to node B, B inserts it with a fresh local `id` but preserves `origin_id`. Node B's local FK tables (`memory_history` etc.) reference B's local `id`. History rows themselves are synced separately (see below) and re-anchored to the local `id` via `origin_id` lookup.
+These are two separate IDs by design — the provenance UUID stays stable for the
+memory rows regardless of key rotation, while the cryptographic fingerprint is
+the auth principal.
 
-### Node ID
+The per-row column model (from the v1 design, unchanged):
 
-`~/.cairn/node_id` — a single UUIDv4 written on first run. Survives reinstall. **Not** derived from hostname/MAC (which leak info and aren't stable). If the file is deleted, a new identity is generated and the node looks like a new peer to everyone else — that's a feature, not a bug, because the previous node's identity may still be active elsewhere.
+| Column | Scope | Semantics |
+|---|---|---|
+| `memories.id` (INTEGER PK) | local only | Auto-increment row counter. **Never synced.** FK target for local-only tables. |
+| `memories.origin_id` (TEXT) | global | The row's cross-node identity (UUIDv4 at first insert; immutable). **The sync key.** |
+| `memories.created_by_node` (TEXT) | global | Node UUID that first inserted the row. Provenance + vector-clock key. Immutable. |
+| `memories.created_by_user` (`user_id`) | global | User identifier at the creating node. Immutable. |
+| `memories.updated_by_node` (TEXT) | global | Last node to mutate the row. LWW tiebreak. Mutable. |
+| `memories.lamport` (INTEGER) | global | Per-node Lamport clock at last mutation. Primary LWW ordering key. Mutable. |
+| `memories.embedding_model_version` (TEXT) | global | Creator's embedding-model id, carried so a receiver knows whether it must regen. |
+
+When node A's row crosses to node B, B inserts it with a fresh local `id` but
+preserves `origin_id`. Local FK tables re-anchor to B's local `id` via
+`origin_id` lookup on receipt.
+
+### Node ID (data provenance)
+
+`~/.cairn/node_id` — a single UUIDv4 written on first run (`ensure_node_id`).
+Survives reinstall. **Not** derived from hostname/MAC. If deleted, a new
+identity is generated and the node looks like a new peer.
 
 ### User ID
 
-`~/.cairn/user_id` overrides; otherwise `f"{os.getenv('USER')}@{socket.gethostname()}"`. For team rollout this becomes an LDAP/email handle.
+`~/.cairn/user_id` overrides; otherwise `f"{USER}#{first6hex(node_id)}"`
+(`get_user_id`) — e.g. `alice#5f3a9c`. The short per-node suffix disambiguates
+two people sharing a username on the LAN with zero setup. This is a human label
+only; the auth principal is the public key.
+
+### Keypair (auth)
+
+Each node generates an **Ed25519 keypair** on first run (`ensure_keypair`):
+
+- `~/.cairn/node_key`      — raw 32-byte private seed, `chmod 600`, never leaves the machine.
+- `~/.cairn/node_key.pub`  — base64 public key.
+
+The auth fingerprint is `fingerprint(pubkey)` (see Identity model). Keys survive
+DB rebuild like `node_id`.
+
+### TLS cert (transport)
+
+Each node also generates a long-lived **self-signed EC P-256 cert**
+(`ensure_tls_cert` → `~/.cairn/tls_cert.pem`, `tls_key.pem`). Peers pin its
+SHA-256 fingerprint (TOFU) at pairing time; there is no CA.
 
 ## What syncs, what doesn't
 
 | Table / column | Synced? | Notes |
 |---|---|---|
-| `memories` (canonical fields) | YES | `type, topic, content, confidence, archived_reason, deleted_at, keywords, project, depth, associated_files, origin_id, created_by_*, updated_by_*, lamport, visibility, embedding_model_version` |
-| `memories.embedding` | NO | Regenerated locally on receipt. Avoids ~1.5KB/row + model-version coupling. |
-| `memories.id, created_at, updated_at` | NO | Local counters and wall-clock timestamps. `lamport` is the cross-node ordering key. |
+| `memories` (canonical fields) | YES | `type, topic, content, confidence, archived_reason, deleted_at, keywords, project, depth, associated_files, origin_id, created_by_node, updated_by_node, lamport, visibility, embedding_model_version` (see `SYNCED_MEMORY_COLS` in `changeset.py`). |
+| `memories.embedding` | NO | Regenerated locally on receipt. Avoids per-row payload + model-version coupling. |
+| `memories.id, created_at, updated_at` | NO | Local counters / wall-clock. `lamport` is the cross-node ordering key. |
 | `memories_fts`, `memories_vec` | NO | Derived; rebuilt by triggers / regen. |
 | `memory_history` | YES | Re-anchored to local `id` via `origin_id` lookup on receipt. |
-| `memory_annotation_log` | YES | Confidence votes must accumulate across the team. |
+| `confidence_log` | YES | Confidence votes accumulate across the team (synced canonical source). |
 | `correction_triggers` | YES | Re-anchored via `origin_id`. |
-| `pair_assessments` | YES | LLM judgments are expensive — share to dedupe work. Re-anchored via origin_id on both sides. |
+| `pair_assessments` | YES | LLM judgments are expensive — shared to dedupe work. Re-anchored via origin_id. |
 | `ingested_repos` | YES | Per memory 1378. |
+| `tombstones` | YES | Deletions propagate (earliest-wins). |
 | `sessions, hook_state, metrics, ingestion_cache` | NO | Local operational state. |
-| `memory_source_excerpt` | OPTIONAL (default NO) | Transcripts may be private. Per-team opt-in via `peers.json`. |
-| Visibility = `private` | NEVER | Filtered out at extraction time. |
+| `discovered_peers, sync_state` | NO (and never synced) | Operational; live in the **ephemeral** DB (see below). |
+| `sync_peers, pairing_requests` | NO | Local trust registry. |
+| session excerpts | OPT-IN (`CAIRN_SYNC_SHARE_SESSIONS`) | Not bulk-synced — pulled lazily, one at a time, via `/session` (own-data-only, never for private memories). |
+| Visibility = `private` | NEVER | Filtered out unconditionally at extraction time. |
+
+### Own-data-only extraction
+
+A node serves **only rows it authored** (`created_by_node == self_node`) from
+`/sync` — there is no relay of other nodes' data. A full team picture therefore
+requires pairing with each source directly; the per-source Lamport vector clock
+still applies on top. (`extract_changeset`.)
 
 ## Conflict resolution
 
-Per-column rules (deterministic, hash-able, no human in the loop):
+- **`content`, `topic`, `type`, `keywords`, `project`, `depth`,
+  `archived_reason`** — Last-Writer-Wins. Incoming wins iff
+  `(incoming_lamport, incoming_node) > (local_lamport, local_node)` compared
+  lexicographically (`_apply_memory_row`). Lamport beats wall clocks; the
+  node-id string comparison is the deterministic tiebreaker for equal lamports
+  (the lexically-greater node id wins).
+- **`confidence`** — Counter, not LWW. Recomputed deterministically from the
+  union of `confidence_log` entries, so two nodes voting independently both
+  stick and any two nodes with the same log converge to the same value.
+- **`deleted_at`** — Tombstone (earliest-wins). Hard-delete is local-only and
+  never propagates.
+- **`memory_history`, `confidence_log`** — Pure append; union by row UUID.
 
-- **`content`, `topic`, `type`, `keywords`, `project`, `depth`, `archived_reason`** — Last-Writer-Wins ordered by `(lamport DESC, updated_by_node ASC)`. Lamport beats wall clocks; node ID lex-ordering is the deterministic tiebreaker for simultaneous edits.
-- **`confidence`** — Counter, not LWW. The column becomes a **derived view** computed from `confidence_log` entries (see below). Two nodes voting `+` independently both stick; `-!` annotations both stick.
-- **`deleted_at`** — Tombstone. Once non-null on any node, it becomes non-null on all (earliest wins). Hard-delete is local-only and never propagates.
-- **`memory_history`** — Pure append. On sync, union by `(origin_id, lamport, changed_by_node)`.
-- **`memory_annotation_log`** — Pure append. Union by row UUID (`annotation_uuid`, NEW).
-
-### Confidence as a counter
-
-The current `confidence` column is mutated in-place by `apply_confidence_updates()`. This breaks under multi-node — two nodes both seeing a `+` would either double-boost (if naive sum) or one would clobber the other (if LWW).
-
-Replace with:
-
-```
-CREATE TABLE confidence_log (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,   -- local
-    log_uuid      TEXT NOT NULL UNIQUE,                -- global
-    memory_origin TEXT NOT NULL,                       -- FK to memories.origin_id
-    direction     TEXT NOT NULL,                       -- '+', '-', '-!'
-    reason        TEXT,
-    node_id       TEXT NOT NULL,
-    user_id       TEXT,
-    session_id    TEXT,
-    lamport       INTEGER NOT NULL,
-    created_at    TEXT DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX idx_conf_log_memory ON confidence_log(memory_origin);
-```
-
-`memories.confidence` is **recomputed deterministically** from `confidence_log` entries for that memory: starting from `CONFIDENCE_DEFAULT (0.7)`, apply `+` boosts in `(lamport, log_uuid)` order using the existing saturating formula. Recompute is cheap (mean ~3 votes per memory, max ~50) and runs on insert + on changeset apply.
-
-This makes confidence convergent: any two nodes with the same `confidence_log` set produce the same `confidence` value.
-
-`memory_annotation_log` and `confidence_log` are nearly the same data — `confidence_log` is the synced canonical source; `memory_annotation_log` becomes derived/local-only and may eventually be dropped. For v1 we maintain both during transition.
-
-## Lamport clocks
-
-Every mutating operation:
+### Lamport clock
 
 ```python
-node_lamport = max(node_lamport, peer_lamport_seen) + 1
-row.lamport = node_lamport
+new = max(local_lamport, observed) + 1   # identity.bump_lamport
 ```
 
-The per-node clock lives in `node_state.lamport` (a single-row table). When applying a peer changeset, we bump the local clock past the highest received lamport, so subsequent local edits are causally after observed peer edits.
+The per-node clock lives in `node_state` (key `lamport`). When applying a peer
+changeset, `apply_changeset` tracks the highest received lamport and bumps the
+local clock past it, so subsequent local edits are causally after observed peer
+edits.
+
+### Per-peer vector clock (`sync_state`)
+
+`since_lamport_by_node` maps each *source node UUID* → the highest lamport this
+node has already pulled for that source via a given peer. The pull request sends
+it; `extract_changeset` returns only rows with `lamport > threshold` for their
+`created_by_node`. This keeps gossip bandwidth O(N) instead of O(N²).
+`sync_state` is stored in the ephemeral DB (`eph.sync_state`, PK
+`(peer_node_id, source_node_id)`).
 
 ## Sync mechanism
 
-**Hand-rolled, pull-based, peer-to-peer.** No central authority.
+**Hand-rolled, pull-based, peer-to-peer.** No central authority. JSON over
+HTTPS.
 
-### Why hand-rolled (rejecting cr-sqlite)
+### Transport: HTTPS, always
 
-- The `memories` table already has `origin_id, user_id, updated_by, team_id, source_ref, deleted_at, synced_at` columns and a `schema_version` table — the previous design intended hand-rolled sync.
-- cr-sqlite would give per-column LWW free, but: (a) it's a loadable extension every node must deploy, (b) embedding regeneration still needs an out-of-band trigger, (c) confidence-as-counter doesn't fit the LWW model and would need bypass machinery anyway.
-- A JSON-over-HTTPS payload is auditable, easy to authenticate, and easy to diff in tests.
+The sync server wraps its socket in TLS using the node's self-signed cert. The
+client (`http.client.HTTPSConnection`) pins the peer's cert SHA-256 — captured
+TOFU at pairing, stored in `sync_peers.peer_cert_fingerprint`, verified on
+every request (`_https_post` raises `CertPinError` on mismatch). On the first
+successful pull the fingerprint is pinned if it was not already. Ed25519 request
+signatures authenticate the *client* to the server; TLS + cert pinning
+authenticate the *server* to the client and encrypt everything. No CA.
 
-### Wire format
+### Endpoints
 
-Pull request (B asks A "what's new since I last asked?"):
+The server (`server.py`, stdlib `http.server`) exposes exactly four POST
+endpoints:
 
-```http
-POST /sync HTTP/1.1
-Authorization: Bearer <peer-token>
-X-Cairn-Node: <B's node_id>
-X-Cairn-Schema-Version: 4
-Content-Type: application/json
+- `POST /sync` — changeset pull (authorized, signed).
+- `POST /pair` — queue a signed, self-certifying pairing request.
+- `POST /pair/status` — a requester asks whether it has been approved yet.
+- `POST /session` — serve the raw session excerpt behind one of *our* memories
+  (own-data-only, never private; gated by `CAIRN_SYNC_SHARE_SESSIONS`).
 
+(There is no `/changeset` or `/pull` endpoint — the pull endpoint is `/sync`.)
+
+### Auth on every signed request
+
+Each authorized request carries:
+
+```
+X-Cairn-Node:        <our auth fingerprint>
+X-Cairn-Timestamp:   <unix seconds>
+X-Cairn-Nonce:       <random>
+X-Cairn-Signature:   base64( ed25519( METHOD \n PATH \n sha256(body) \n ts \n nonce ) )
+X-Cairn-Schema-Version: <SCHEMA_VERSION>
+```
+
+The server's `_authorized` looks up `peer_public_key` by `X-Cairn-Node`,
+rejects if `status != 'approved'`, rejects stale timestamps (`±300s`,
+`_TS_TOLERANCE_SEC`) and replayed nonces (in-memory seen-set pruned at the same
+tolerance), then verifies the Ed25519 signature over the canonical message.
+**There is no bearer-token fallback** — it was removed (the `bearer_token`
+column was dropped in durable schema v13) once no pre-v2 peers remained.
+
+### Pull wire format
+
+Request body to `/sync`:
+
+```json
 {
-  "since_lamport_by_node": {
-    "<node-A-uuid>": 18432,
-    "<node-C-uuid>": 9921
-  },
-  "max_rows": 1000,
+  "since_lamport_by_node": { "<source-node-uuid>": 18432, "...": 9921 },
+  "max_rows": 5000,
   "include_excerpts": false
 }
 ```
 
-Response:
+Response (`extract_changeset`):
 
 ```json
 {
-  "schema_version": 4,
-  "node_id": "<A's node_id>",
+  "schema_version": 11,
+  "node_id": "<server fingerprint>",
   "lamport_now": 18450,
-  "memories":            [ { "origin_id": ..., "lamport": ..., ... }, ... ],
-  "memory_history":      [ { "history_uuid": ..., "memory_origin": ..., ... }, ... ],
-  "confidence_log":      [ { "log_uuid": ..., "memory_origin": ..., ... }, ... ],
+  "memories":            [ ... ],
+  "memory_history":      [ ... ],
+  "confidence_log":      [ ... ],
   "correction_triggers": [ ... ],
   "pair_assessments":    [ ... ],
   "ingested_repos":      [ ... ],
-  "tombstones":          [ { "origin_id": ..., "deleted_at": ..., "by_node": ... }, ... ]
+  "tombstones":          [ ... ]
 }
 ```
 
-The requesting node:
-1. Verifies `schema_version` matches (else aborts with clear error).
-2. Applies rows in dependency order: `memories` first, then `*_log` and `*_history` (which FK by `origin_id`).
-3. For each `memories` row: lookup by `origin_id`. If absent, INSERT with fresh local `id`. If present, per-column LWW merge.
-4. After insert, regenerate embedding locally and upsert to `memories_vec`. FTS triggers auto-fire.
-5. Recompute `confidence` from the union of local + received `confidence_log` entries.
-6. Update `sync_state` vector clock.
+`max_rows` defaults to 5000. `include_excerpts` is per-peer
+(`sync_peers.include_excerpts`).
 
-### `sync_state` and `sync_peers`
+The requesting node (`apply_changeset`):
+1. Applies `memories` first, then `*_log`/`*_history`/tombstones (FK by `origin_id`).
+2. Per `memories` row: lookup by `origin_id`; INSERT with fresh local `id` if absent, else per-column LWW merge.
+3. Regenerates the embedding locally and upserts `memories_vec`; FTS triggers auto-fire.
+4. Recomputes `confidence` from the union of local + received `confidence_log`.
+5. Bumps the local Lamport clock past the highest received lamport.
+6. Updates `sync_state` high-water marks for this peer.
 
-```sql
-CREATE TABLE sync_peers (
-    peer_node_id    TEXT PRIMARY KEY,
-    url             TEXT NOT NULL,
-    bearer_token    TEXT NOT NULL,
-    label           TEXT,
-    schema_version  INTEGER,
-    include_excerpts INTEGER DEFAULT 0,
-    last_attempted_at TEXT,
-    last_succeeded_at TEXT,
-    last_error      TEXT
-);
+### Schema-version handshake
 
-CREATE TABLE sync_state (
-    peer_node_id    TEXT NOT NULL,
-    source_node_id  TEXT NOT NULL,           -- a row originated by this node
-    last_lamport    INTEGER NOT NULL,        -- highest lamport seen for that source via this peer
-    PRIMARY KEY (peer_node_id, source_node_id)
-);
+Every request carries `X-Cairn-Schema-Version`. A peer below
+`MIN_COMPATIBLE_SCHEMA_VERSION` is refused with `409` and a body
+`{"error":"schema_version_mismatch","server":...,"min_compatible":...,"client":...}`.
+Wire `SCHEMA_VERSION = 11`; `MIN_COMPATIBLE_SCHEMA_VERSION = 11`
+(`cairn/sync/__init__.py`). `apply_changeset` reads a fixed column set via
+`rec.get()`, so *additive* schema changes are tolerated across the floor —
+newer fields are ignored, missing fields default to NULL. The compatibility
+floor is bumped only for a non-additive/breaking change.
 
-CREATE TABLE node_state (
-    key TEXT PRIMARY KEY,
-    value TEXT
-);
--- key='node_id', key='user_id', key='lamport', key='embedding_model_version'
+## Discovery (LAN autodiscovery)
+
+Our own **UDP broadcast** — no mDNS (deferred). Beacons go out on
+`CAIRN_SYNC_DISCOVERY_PORT` (default 47391) carrying public info only:
+
+```json
+{ "magic": "cairn-sync-beacon/1", "node_id": "<fingerprint>",
+  "user_id": "alice#5f3a9c", "url": "https://192.168.1.42:8787",
+  "public_key": "<b64>", "schema_version": 11, "cert_fingerprint": "<sha256>" }
 ```
 
-The vector-clock-per-peer (`sync_state`) is what makes pull-based gossip converge in O(N) bandwidth instead of O(N²) — when B asks A, B says "give me everything past the lamports I've already seen, regardless of which node originated them," and A filters accordingly.
+Beacons are unauthenticated by design — discovery grants **no access**.
+Listeners record beacons into `eph.discovered_peers`. To keep beacon churn off
+the durable write lock, `record_beacon` throttles writes: it skips a write when
+a fresh identical row exists newer than `DISCOVERY_WRITE_THROTTLE_SEC` (20s).
+It also self-heals an approved peer's pull URL on IP change — but never touches
+the pinned cert, so a lying beacon can't redirect a pull to a host that can't
+present the pinned cert.
 
-### Schema version handshake
-
-Every request and response carries `X-Cairn-Schema-Version`. Mismatch → 409 with the body `{"error": "schema_version_mismatch", "server": 4, "client": 3}`. The client logs and skips that peer until upgraded. No partial sync across schema versions.
-
-## Embedding model versioning
-
-`embedding_model_version TEXT` (new column on `memories`, also stored in `node_state`). Format: `<model-name>@<sha256-prefix>` e.g. `sentence-transformers/all-MiniLM-L6-v2@dca72b`. On receipt:
-
-- If incoming row's model matches local: copy embedding (future optimization; v1 always regenerates).
-- If different: regenerate locally with the local model. The local copy carries the local `embedding_model_version`; the canonical row carries the *creator's* model version unchanged.
-
-The vector index (`memories_vec`) is always populated from local embeddings.
-
-## Visibility
-
-`visibility TEXT NOT NULL DEFAULT 'team'` ∈ `{private, team, public}`.
-
-- **private** — never enters any sync payload. Personal scratchpad.
-- **team** — synced to listed peers (default).
-- **public** — flagged for hypothetical future cross-team sharing. Treated as `team` in v1.
-
-Visibility is mutable; flipping `team → private` does NOT retract previously-synced copies (impossible). The UI must warn.
-
-## Migration plan (v3 → v4)
-
-`init_db.init()` already does ALTER TABLE-then-pass migrations. Add v4:
-
-```python
-# Schema v4 — multi-node sync
-for col, coltype in [
-    ("created_by_node", "TEXT"),
-    ("updated_by_node", "TEXT"),
-    ("lamport", "INTEGER DEFAULT 0"),
-    ("visibility", "TEXT DEFAULT 'team'"),
-    ("embedding_model_version", "TEXT"),
-]:
-    try: conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {coltype}")
-    except sqlite3.OperationalError: pass
-
-# new tables: confidence_log, sync_peers, sync_state, node_state
-# backfill: created_by_node = local node_id, lamport = id (preserves order),
-#           visibility = 'team', embedding_model_version = current model id
-```
-
-Backfill rationale:
-- `created_by_node = <local node_id>` — every existing memory was authored on this machine.
-- `lamport = id` — preserves total order; no two existing rows clash.
-- `visibility = 'team'` — opt-out, not opt-in; the user can re-mark privately afterwards.
-- `embedding_model_version` — read from the live embedder.
-
-Migration is **idempotent** — re-running `init()` is a no-op after v4.
-
-## Rollout
-
-1. **Solo (current):** v4 schema lands; node_id generated; nothing else changes for single-node users. No regressions, no opt-in needed.
-2. **Two-node test bed:** host + lubuntu-browse VM. Both run v4. Pull-only sync VM ← host. Validates row replay, embedding regen, FTS rebuild, no duplicate-by-content.
-3. **Bidirectional + offline conflict:** both sides edit same memory's `confidence_log` while VM offline; sync; verify deterministic merge.
-4. **Three-node simulation:** third local cairn at `$CAIRN_HOME=/tmp/cairn-node3` to validate gossip convergence.
-5. **LAN team rollout:** rendezvous node (any one machine) reduces N² gossip; everyone syncs against it on a 5-min cron, plus pairwise as fallback.
-
-## Open questions deferred to post-v1
-
-- Auth strong enough for prod: bearer tokens are fine on a trusted LAN; need OIDC / mTLS for internet-facing.
-- Per-author confidence weighting (memory 581) — defer until we have multi-node data showing it matters.
-- Encryption at rest of the synced payload — the sync transport is HTTPS, but local DBs are plaintext.
-- Selective sync ("don't pull memories from project X") — possible via filter in the request body, deferred.
-
----
-
-# v2 — Discovery, public-key pairing, and dashboard authorization
-
-Status: design v2. Supersedes two v1 decisions: the "no autodiscovery" non-goal,
-and bearer-token auth. The v1 sync *core* (changeset extract/apply, Lamport
-clock, `sync_state` vector clock, LWW, visibility, embedding regen) is unchanged —
-v2 only replaces **how peers find each other** and **how trust is established**.
-
-## Motivation
-
-v1 required hand-editing a peer registry and sharing a symmetric bearer token
-out-of-band per peer. That doesn't scale to ad-hoc sharing and a leaked token is
-a silent compromise. v2 makes any cairn node able to **advertise itself on the
-LAN**, lets another node **request to sync**, and requires the host to
-**explicitly authorize each interconnection from the dashboard** — the same trust
-model as Syncthing (device = keypair, local discovery, approve-this-device,
-then mutual-auth transport). There is still **no central server**: pairing is
-peer-to-peer and every node remains a complete offline-first local DB.
-
-## Identity becomes a keypair
-
-Each node generates an **Ed25519 keypair** on first run, stored alongside the
-existing identity files:
-
-- `~/.cairn/node_key`      — private key, `chmod 600`, never leaves the machine.
-- `~/.cairn/node_key.pub`  — public key.
-- `~/.cairn/node_id`       — **derived** as `base32(sha256(pubkey))[:52]` (a
-  Syncthing-style device fingerprint) instead of a bare UUIDv4. Stable, globally
-  unique, and *self-certifying*: the ID is a commitment to the public key, so a
-  peer can't impersonate a node_id without its private key.
-
-`user_id` is unchanged (`$USER@host` or override) — it is a human label, not an
-auth principal. The **public key is the auth principal**; `created_by_node` (the
-device fingerprint) becomes cryptographically attributable rather than
-self-declared.
-
-## Discovery (advertising)
-
-A node opts into discovery (`CAIRN_SYNC_ADVERTISE=1`). When on, it broadcasts a
-small beacon on the local segment — **mDNS/DNS-SD** service type
-`_cairn-sync._tcp` (fall back to UDP broadcast on `47391` where mDNS is blocked):
-
-```
-{ "node_id": "<device-fingerprint>", "user_id": "alice@thinkpad",
-  "url": "https://192.168.1.42:8787", "schema_version": 10, "proto": 2 }
-```
-
-Discovery only makes a node *visible and dialable*; it grants **no access**.
-Beacons are unauthenticated by design (they carry only public info). A node that
-doesn't advertise can still pair by dialing a known URL — discovery is
-convenience, not a security boundary.
+"Online" in the dashboard = a beacon seen within `CAIRN_SYNC_ONLINE_WINDOW`
+(90s).
 
 ## Pairing handshake + dashboard authorization
 
 Trust is established once per peer pair, interactively:
 
-1. **Request.** Node B (the requester) dials A's `/pair` endpoint with a signed
-   request: `{node_id_B, pubkey_B, user_id_B, url_B, nonce, ts}` signed by B's
-   private key. A verifies the signature proves possession of `pubkey_B` and that
-   `node_id_B == fingerprint(pubkey_B)` (self-certifying check).
-2. **Queue.** A stores it in `pairing_requests` with `status='pending'`. No sync
-   access is granted yet. A returns `202 Accepted`.
-3. **Authorize.** A's **dashboard** shows a pending-pairing queue with B's
-   `user_id`, fingerprint (displayed for out-of-band verification, exactly like
-   reading a Syncthing device ID aloud), and source IP. The host clicks
-   **Approve** or **Deny**.
-4. **Pin.** On approve, B's pubkey is pinned into `sync_peers` (`peer_public_key`,
-   `status='approved'`). From then on, all `/sync` requests from B are
-   authenticated by signature against the pinned key.
+1. **Request.** Requester B dials A's `/pair` with a signed body
+   `{node_id, public_key, user_id, url, cert_fingerprint, nonce/ts in headers}`.
+   A verifies the signature proves possession of the presented key and that the
+   claimed `node_id == fingerprint(public_key)` (self-certifying check). B also
+   records a local `outbound` `pairing_requests` row.
+2. **Queue.** A inserts an `inbound` `pairing_requests` row with
+   `status='pending'` and returns `202`. No access granted.
+3. **Authorize.** A's dashboard Sync tab shows the pending queue with B's
+   `user_id`, fingerprint (for out-of-band verification, Syncthing-style), and
+   source IP. The host clicks **Approve** or **Deny**.
+4. **Pin.** On approve (`approve_pairing`), B's public key **and** cert
+   fingerprint are pinned into `sync_peers` (`status='approved'`). From then on
+   B's `/sync` requests authenticate by signature against the pinned key, over
+   TLS pinned by cert fingerprint.
 
-Bidirectional sync requires **mutual approval** — A approving B lets B pull from
-A; for A to pull from B, B must approve A symmetrically. The dashboard surfaces
-both directions.
+**Approval round-trip for the requester:** B polls A's signed `/pair/status`;
+when A approves, `refresh_outbound` promotes the `outbound` row into
+`sync_peers` and pulling begins. This runs automatically in the daemon's
+listener thread and can also be triggered via the dashboard `/api/sync/refresh`.
 
-Trust is **TOFU** (trust-on-first-approve): the fingerprint shown at approval
-time is the commitment. To defend against a discovery-time MITM, the host can
-verify the displayed fingerprint against B over a side channel before approving —
-optional on a trusted LAN, recommended otherwise.
+Bidirectional sync requires **mutual approval** — A approving B lets B pull
+from A; for A to pull from B, B must approve A symmetrically (and own-data-only
+extraction means each side only ever serves its own rows).
 
-## Auth on the sync path (replaces bearer token)
+Trust is **TOFU**: the fingerprint shown at approval is the commitment. Revoking
+(`revoke_peer`) sets `sync_peers.status='revoked'`; future requests from that
+key are rejected, but already-pulled memories are retained with attribution. A
+revoked peer must be re-approved to resume.
 
-`sync_peers.bearer_token` is **removed**; `peer_public_key` replaces it. Each
-`/sync` request carries:
+## Operational tables on the ephemeral DB
 
-```
-X-Cairn-Node: <node_id>
-X-Cairn-Timestamp: <unix>
-X-Cairn-Nonce: <random>
-X-Cairn-Signature: ed25519( method | path | sha256(body) | ts | nonce )
-```
+`discovered_peers` (beacon cache) and `sync_state` (pull high-water vector
+clock) are high-churn and fully recoverable (beacons re-arrive; a lost
+high-water just triggers an idempotent re-pull), so they live in the
+**ephemeral** DB, not the durable memory DB. `ephemeral.attach_ephemeral(conn)`
+attaches it as alias `eph` and ensures the two tables exist; all sync SQL
+references `eph.discovered_peers` / `eph.sync_state`. The path is derived
+per-connection (the configured ephemeral DB for the real durable DB, otherwise
+a `<stem>-ephemeral` sibling), giving each node — and each test node — its own.
+This keeps sync off the durable write lock except for actual synced memories
+plus the local `sync_peers`/`pairing_requests` trust registry.
 
-The server (`cairn/sync/server.py::_authorized`) looks up `peer_public_key` by
-`X-Cairn-Node`, verifies the signature, rejects if `status != 'approved'`,
-rejects stale timestamps (±300s window) and replayed nonces (short-lived seen-set).
-This is transport-agnostic: it works over plain HTTP, and composes with TLS
-(self-signed certs pinned at pairing time) for confidentiality without a CA.
+## The daemon service
 
-## Schema delta (v10)
+When `CAIRN_SYNC_ENABLED=1`, `service.start_sync_services` launches four
+background threads (no user action beyond enabling sync):
 
-```sql
--- sync_peers: drop bearer_token, add the pinned key + approval state
-ALTER TABLE sync_peers ADD COLUMN peer_public_key TEXT;     -- pinned at approval
-ALTER TABLE sync_peers ADD COLUMN status TEXT DEFAULT 'approved'; -- approved|revoked
-ALTER TABLE sync_peers ADD COLUMN approved_at TEXT;
--- (bearer_token retained as nullable for one migration cycle, then dropped)
+1. **HTTPS sync server** (`/sync`, `/pair`, `/pair/status`, `/session`) on `CAIRN_SYNC_PORT`.
+2. **Advertiser** — broadcasts a beacon every `CAIRN_SYNC_ADVERTISE_INTERVAL` (15s).
+3. **Listener** — records beacons and periodically runs `refresh_outbound` to promote approved outbound pairings.
+4. **Pull loop** — `pull_all` from every approved peer every `CAIRN_SYNC_PULL_INTERVAL` (120s).
 
-CREATE TABLE pairing_requests (
-    id              INTEGER PRIMARY KEY,
-    peer_node_id    TEXT NOT NULL,          -- = fingerprint(peer_public_key)
-    peer_public_key TEXT NOT NULL,
-    user_id         TEXT,
-    url             TEXT,
-    source_ip       TEXT,
-    direction       TEXT DEFAULT 'inbound', -- inbound (they asked) | outbound (we asked)
-    status          TEXT DEFAULT 'pending', -- pending|approved|denied
-    requested_at    TEXT DEFAULT CURRENT_TIMESTAMP,
-    decided_at      TEXT
-);
-```
+`start_sync_services` advertises `https://<lan_ip>:<CAIRN_SYNC_PORT>` and the
+auth **fingerprint** as the node id.
 
-`node_state` gains nothing new — the keypair lives in `~/.cairn/` so it survives
-DB rebuild (same rationale as `node_id` in v1). Bump `SCHEMA_VERSION` to 10 in
-`cairn/sync/__init__.py`; the v1 handshake (`X-Cairn-Schema-Version`, 409 on
-mismatch) already gates cross-version sync, so v1 and v2 nodes simply refuse each
-other until upgraded — acceptable, no production peers exist.
+## CLI (`cairn-sync`)
+
+`cli.py` exposes these subcommands (all over the same HTTPS/signature path):
+
+| Subcommand | Purpose |
+|---|---|
+| `id` | show this node's sync identity (fingerprint, user_id, pubkey) |
+| `serve` | run the sync HTTPS server (`--bind`, `--db`) |
+| `advertise` | broadcast LAN discovery beacons (`--url`, `--sync-port`, `--port`, `--interval`) |
+| `discover` | listen for peer beacons (`--timeout`, `--port`, `--watch`) |
+| `pair <url>` | send a pairing request to a peer URL (`--my-url`, `--sync-port`) |
+| `requests` | list pairing requests (`--all` includes decided) |
+| `approve <id>` | approve a pending request (`--label`) → pin pubkey + cert |
+| `deny <id>` | deny a pending request |
+| `peers` | list paired peers |
+| `revoke <node_id>` | revoke a paired peer |
+| `pull` | pull changesets from peers (`--peer` for one) |
+| `session <origin_id>` | fetch the raw session behind a synced memory |
 
 ## Dashboard endpoints
 
-- `GET  /api/sync/pairing-requests`            — pending queue (+ recent decided).
-- `POST /api/sync/pairing-requests/<id>/approve` — pin pubkey → `sync_peers`.
-- `POST /api/sync/pairing-requests/<id>/deny`    — mark denied; no access granted.
-- `GET  /api/sync/peers`                        — approved peers, last sync, errors.
-- `POST /api/sync/peers/<node_id>/revoke`        — set `status='revoked'`.
+The dashboard Sync tab (`dashboard.py`) reads `discovered_peers` /
+`pairing_requests` / `sync_peers`:
 
-## Trust revocation
+- `GET  /api/sync/identity`                       — this node's identity.
+- `GET  /api/sync/pairing-requests`              — pending + recent decided.
+- `GET  /api/sync/peers`                          — approved peers, last sync, errors.
+- `GET  /api/sync/discovered`                     — raw beacon cache.
+- `GET  /api/sync/online`                         — peers seen within `CAIRN_SYNC_ONLINE_WINDOW`, annotated with relationship state (connected / requested / incoming / available / revoked).
+- `POST /api/sync/pairing-requests/<id>/approve`  — pin pubkey → `sync_peers`.
+- `POST /api/sync/pairing-requests/<id>/deny`     — mark denied.
+- `POST /api/sync/peers/<node_id>/revoke`          — set `status='revoked'`.
+- `POST /api/sync/refresh`                         — poll outbound-pending peers and promote approved ones.
+- `POST /api/sync/pair`                            — send an outbound pairing request from the dashboard.
 
-Revoking sets `sync_peers.status='revoked'` — future `/sync` requests from that
-key are rejected. Memories already pulled are **retained with attribution**
-(deleting them would lose corroboration history and is unenforceable anyway, like
-the `team→private` case). A revoked peer must be re-approved (fresh pairing) to
-resume.
+## Embedding model versioning
 
-## Threat model (v2, trusted-LAN scope)
+`embedding_model_version` is a `<model-name>@<sha256-prefix>` string
+(`get_embedding_model_version`, e.g.
+`sentence-transformers/all-MiniLM-L6-v2@<8hex>`). The hash is name-derived (an
+"advertised model version", honestly not a verified weight digest). The
+canonical row carries the *creator's* version; the receiver always regenerates
+the embedding locally with its own model and the local `memories_vec` is always
+populated from local embeddings.
 
-- **Impersonation** — prevented: `node_id` is a commitment to the pubkey;
-  signatures prove key possession.
-- **Unauthorized sync** — prevented: no pinned, approved key ⇒ 401.
-- **Discovery MITM** — mitigated by out-of-band fingerprint verification at
-  approval (TOFU); residual risk acceptable on a trusted LAN.
-- **Token leakage** — eliminated: there is no shared secret.
-- **Replay** — mitigated: timestamp window + nonce seen-set.
-- **At-rest confidentiality** — unchanged from v1: local DBs are plaintext
-  (still an open question); the keypair only protects the wire + identity.
+## Visibility
 
-## Open questions (v2)
+`visibility ∈ {private, team, public}`:
 
-- Outbound auto-pairing UX: when *we* discover a peer, do we one-click request, or
-  require typing/scanning their fingerprint first?
-- mDNS reliability across managed switches / VLANs — may need the UDP-broadcast
-  fallback or a manual URL path as the dependable default (mirrors the v1
-  graph-watch-daemon lesson: cron/manual is the dependable backbone, real-time is
-  the optimization).
-- Key rotation: rotating a node's keypair changes its `node_id`/fingerprint, so it
-  reads as a new peer and must be re-approved. Acceptable, but document it.
+- **private** — never enters any sync payload (filtered unconditionally in
+  `extract_changeset`); never served via `/session`.
+- **team** — synced to approved peers (default).
+- **public** — treated as `team`.
 
----
+Flipping `team → private` does NOT retract previously-synced copies (impossible).
 
-# v2.1 — as implemented
+## Config flags (`cairn/config.py`)
 
-The v2 design above is implemented with these concrete choices:
+| Flag | Default | Meaning |
+|---|---|---|
+| `CAIRN_SYNC_ENABLED` | **off** (`""`) | Master opt-in; gates the daemon services. |
+| `CAIRN_SYNC_PORT` | `8787` | HTTPS sync server port. |
+| `CAIRN_SYNC_BIND` | `0.0.0.0` | Sync server bind address. |
+| `CAIRN_SYNC_DISCOVERY_PORT` | `47391` | UDP discovery broadcast port. |
+| `CAIRN_SYNC_ADVERTISE_INTERVAL` | `15` (s) | Beacon broadcast interval. |
+| `CAIRN_SYNC_PULL_INTERVAL` | `120` (s) | Pull-loop interval. |
+| `CAIRN_SYNC_ONLINE_WINDOW` | `90` (s) | Beacon freshness window for "online". |
+| `CAIRN_SYNC_SHARE_SESSIONS` | **off** | Allow serving raw session excerpts via `/session`. |
 
-- **Transport: HTTPS, always.** The sync server wraps its socket in TLS using a
-  self-signed EC P-256 cert (`~/.cairn/tls_cert.pem`). The client
-  (`http.client.HTTPSConnection`) pins the peer's cert SHA-256 — captured TOFU at
-  pairing, stored in `sync_peers.peer_cert_fingerprint`, verified on every pull.
-  No CA. Ed25519 request signatures still authenticate the *client* to the server;
-  TLS authenticates the *server* to the client and encrypts everything.
-- **Discovery: our own UDP broadcast, no mDNS.** Beacons (incl. cert fingerprint)
-  on udp/47391. The **daemon** runs advertiser + listener threads when
-  `CAIRN_SYNC_ENABLED=1`, so `discovered_peers` populates with zero user action.
-  "Online" = a beacon seen within `CAIRN_SYNC_ONLINE_WINDOW` (90s).
-- **Approval round-trip.** Requesters record an `outbound` row and poll the peer's
-  signed `/pair/status`; on approval the peer is auto-promoted into `sync_peers`
-  and pulling begins. The dashboard shows: online users (request access),
-  incoming requests (approve/deny), my requests (waiting/approved), connected peers.
-- **Schema v11** adds the cert-fingerprint columns. Wire `SCHEMA_VERSION = 11`.
-- **Config**: `CAIRN_SYNC_ENABLED` (opt-in), `CAIRN_SYNC_PORT` (8787),
-  `CAIRN_SYNC_BIND`, `CAIRN_SYNC_DISCOVERY_PORT` (47391),
-  `CAIRN_SYNC_ADVERTISE_INTERVAL` (15s), `CAIRN_SYNC_ONLINE_WINDOW` (90s).
+## Schema versions
 
-Deferred: mDNS/cross-subnet discovery; X25519 payload encryption (TLS covers the
-wire); key/cert rotation UX.
+- **Wire** `SCHEMA_VERSION = 11` (HTTPS + cert pinning; 10 = pubkey
+  pairing/signatures; 9 = bearer). `MIN_COMPATIBLE_SCHEMA_VERSION = 11`.
+- **Durable** migrations advanced past the wire version for changes that don't
+  touch the wire: **v12** moved `discovered_peers`/`sync_state` to the ephemeral
+  DB; **v13** dropped `sync_peers.bearer_token`. Neither bumps the wire version
+  because those tables were never synced and `sync_peers` is local-only.
 
----
+## Open questions / deferred
 
-# v2.2 — operational tables off the durable DB; bearer auth removed
-
-Two hardening changes after live use surfaced sync contending with the
-memory-capture path for the durable write lock (the v0.16.0 lock-contention fix
-addressed the symptom; these address the structure):
-
-- **Operational sync tables moved to the ephemeral DB (durable schema v12).**
-  `discovered_peers` (LAN beacon cache) and `sync_state` (per-(peer, source-node)
-  pull high-water vector clock) are high-churn and fully recoverable — beacons
-  re-arrive, and a lost high-water just triggers an idempotent re-pull — so they
-  no longer live in the durable memory DB. They are created in `init_ephemeral`
-  and attached to each sync connection as `eph` by
-  `cairn.sync.attach_ephemeral`; all sync SQL references them as
-  `eph.discovered_peers` / `eph.sync_state`. The ephemeral path is derived
-  per-connection (the configured ephemeral DB for the real durable DB, otherwise
-  a `<stem>-ephemeral` sibling), so each node — and each test node — gets its own.
-  The v12 migration drops the durable copies. Sync now touches the durable file
-  only for actual synced memories (+ the local `sync_peers`/`pairing_requests`
-  trust registry).
-
-- **v1 bearer-token auth removed (durable schema v13).** The `sync_peers.bearer_token`
-  column and the bearer fallback in `server._authorized` are gone; `/sync` is
-  authenticated **only** by Ed25519 signature against the pinned, approved
-  `peer_public_key`. The fallback was already unreachable behind the
-  `MIN_COMPATIBLE_SCHEMA_VERSION` floor (a v1 peer is refused at 409 before auth
-  runs) and contradicted the v2 threat model's "no shared secret" guarantee. The
-  v13 migration `DROP COLUMN`s `bearer_token` (SQLite ≥ 3.35).
-
-Neither change touches the wire format — `discovered_peers`/`sync_state` were
-never synced and `sync_peers` is local-only — so the wire `SCHEMA_VERSION` stays
-**11**. Only the durable migration counter advances (→ 13).
+- mDNS / cross-subnet discovery (UDP broadcast is the shipped default).
+- X25519 payload encryption (TLS already covers the wire).
+- Key/cert rotation UX — rotating a keypair changes the fingerprint, so the node
+  reads as a new peer and must be re-approved.
+- At-rest confidentiality — local DBs are still plaintext.
+- Per-author confidence weighting (memory 581) — deferred until multi-node data shows it matters.
+- Selective sync ("don't pull project X") — deferred.

@@ -76,9 +76,25 @@ fi
 [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "ERROR: Dependency install failed. Run manually:"; \
          echo "  $VENV_PATH/bin/pip install -e \"$CAIRN_HOME[test,ast,graph]\""; exit 1; }
 
-# Verify critical imports before proceeding
-"$VENV_PYTHON" -c "from cairn import embeddings; from hooks.hook_helpers import log" 2>/dev/null \
+# Verify critical imports before proceeding. Do NOT swallow stderr — the pysqlite3
+# guard raises a specific, actionable ImportError if pysqlite3-binary is missing.
+"$VENV_PYTHON" -c "from cairn import embeddings; from hooks.hook_helpers import log" \
     || { echo "ERROR: Post-install import check failed. Dependencies may be incomplete."; exit 1; }
+
+# Verify the SINGLE sqlite library. Mixed stdlib(3.45)-vs-pysqlite3(3.51) writers on
+# a WAL-mode cairn DB cause corruption (be91366), so every cairn writer must resolve
+# sqlite3 -> pysqlite3. Fail loud if stdlib leaked (missing pysqlite3-binary, or a
+# stray CAIRN_ALLOW_STDLIB_SQLITE=1 in the environment).
+"$VENV_PYTHON" - <<'PYSQLITE_CHECK' \
+    || { echo "ERROR: cairn is NOT running on pysqlite3 (mixed-sqlite WAL corruption risk)."; \
+         echo "  Ensure pysqlite3-binary is installed and CAIRN_ALLOW_STDLIB_SQLITE is unset."; exit 1; }
+import sys
+import pysqlite3
+import hooks.hook_helpers as h
+assert pysqlite3.sqlite_version_info >= (3, 45), "pysqlite3 too old: %s" % pysqlite3.sqlite_version
+assert h.sqlite3.__name__.startswith("pysqlite3"), "cairn resolved stdlib sqlite3: %s" % h.sqlite3.__name__
+print("  sqlite library OK: pysqlite3 %s (single-lib)" % pysqlite3.sqlite_version)
+PYSQLITE_CHECK
 
 # --- Database ---
 # Stop any running daemon BEFORE touching the DB — a live daemon (esp. with sync
@@ -365,11 +381,13 @@ CRON_SELFMOD="30 0 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON -m cairn.calibration_se
 # graph-ready quickly without waiting for a session. The daemon keeps existing repos
 # current in real time between sweeps. Only runs if code-review-graph is installed.
 CRON_GRAPH_FLEET="17 * * * * $VENV_PYTHON -m cairn.graph_fleet >> $CAIRN_HOME/logs/graph-fleet.log 2>&1 $CRON_MARKER"
-# Proxy keep-alive — `start` is idempotent (no-op if running); critical because
-# ANTHROPIC_BASE_URL points Claude Code at the proxy. Empty unless opted in.
+# Proxy keep-alive — `start-fresh` is idempotent (no-op if running AND current) but
+# ALSO restarts a running-but-stale daemon (proxy code newer than the live process),
+# so a pulled proxy fix reaches the daemon within 5 min without a manual restart.
+# Critical because ANTHROPIC_BASE_URL points Claude Code at the proxy. Empty unless opted in.
 CRON_PROXY=""
 if [ "${CAIRN_PROXY_ENABLED:-}" = "1" ]; then
-    CRON_PROXY="*/5 * * * * CAIRN_PROXY_ENABLED=1 CAIRN_PROXY_PORT=$PROXY_PORT $VENV_PYTHON -m cairn.proxy.server start --port $PROXY_PORT >/dev/null 2>&1 $CRON_MARKER"
+    CRON_PROXY="*/5 * * * * CAIRN_PROXY_ENABLED=1 CAIRN_PROXY_PORT=$PROXY_PORT $VENV_PYTHON -m cairn.proxy.server start-fresh --port $PROXY_PORT >/dev/null 2>&1 $CRON_MARKER"
 fi
 
 # Remove any existing cairn cron entries (including legacy contradiction_scan.py and calibration variants)

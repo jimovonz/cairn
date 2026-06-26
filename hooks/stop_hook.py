@@ -80,6 +80,22 @@ def _enqueue_or_insert(entries, session_id, transcript_path, source_ref=None) ->
     return insert_memories(entries, session_id=session_id, transcript_path=transcript_path)
 
 
+def _arm_source_ref(session_id: str) -> str:
+    """Write-provenance source_ref for this turn: the A/B arm's version when the
+    experiment is on (set per-prompt by the prompt hook in hook_state ab_arm), else
+    the plain generation-prompt version."""
+    try:
+        from cairn import config as _c
+        if getattr(_c, "AB_TEST_ENABLED", False):
+            from hooks.hook_helpers import load_hook_state
+            arm = load_hook_state(session_id, "ab_arm")
+            if arm in getattr(_c, "AB_ARM_VERSIONS", {}):
+                return _c.AB_ARM_VERSIONS[arm]
+    except Exception:
+        pass
+    return GENERATION_PROMPT_VERSION
+
+
 def _enqueue_or_apply_confidence(updates, session_id) -> int:
     if not updates:
         return 0
@@ -212,7 +228,7 @@ def collect_memory_notes(transcript_path: str, session_id: str,
 
     to_store = unique_notes[:remaining_budget]
     count = _enqueue_or_insert(to_store, session_id=session_id, transcript_path=transcript_path,
-                               source_ref=GENERATION_PROMPT_VERSION)
+                               source_ref=_arm_source_ref(session_id))
 
     save_hook_state(session_id, "memory_notes_stored", str(notes_stored + count))
     log(f"Memory notes: stored {count} of {len(all_notes)} found ({len(all_notes) - len(unique_notes)} deduped)")
@@ -624,7 +640,7 @@ def main() -> None:
     # Insert memories into DB (enqueues for drain when CAIRN_HOOK_ASYNC_WRITES=1)
     if entries:
         count = _enqueue_or_insert(entries, session_id=session_id, transcript_path=transcript_path,
-                                   source_ref=GENERATION_PROMPT_VERSION)
+                                   source_ref=_arm_source_ref(session_id))
         record_metric(session_id, "memories_stored", None, count)
         log(f"Stored {count} memories (session: {session_id[:8]}...)" if session_id else f"Stored {count} memories")
 

@@ -255,6 +255,17 @@ def test_insert_memories_behavioural(db_path, tmp_path):
 # entry: entry["source_ref"] > the source_ref param > NULL ("unknown provenance" —
 # honest and excludable from the A/B cohort, vs a false version that poisons it).
 @pytest.mark.behavioural
+def test_union_keywords():
+    # Keyword union on dedup: re-encounters ENRICH a memory's keywords, not clobber.
+    assert storage._union_keywords("a,b", "b,c") == "a,b,c"
+    assert storage._union_keywords("Foo,bar", "foo,BAZ") == "Foo,bar,BAZ"  # case-insensitive dedup, first casing kept
+    assert storage._union_keywords("a, b ", " c ,a") == "a,b,c"            # whitespace stripped
+    assert storage._union_keywords(None, "x") == "x"
+    assert storage._union_keywords("x", None) == "x"
+    assert storage._union_keywords(None, None) is None
+    assert storage._union_keywords("", "") is None
+
+
 def test_insert_memories_source_ref_provenance(db_path):
     LONG = "A sufficiently long memory content to clear the quality gate"
     with patch.object(storage, "inline_backfill"):
