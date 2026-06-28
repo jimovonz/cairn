@@ -389,6 +389,12 @@ CRON_PROXY=""
 if [ "${CAIRN_PROXY_ENABLED:-}" = "1" ]; then
     CRON_PROXY="*/5 * * * * CAIRN_PROXY_ENABLED=1 CAIRN_PROXY_PORT=$PROXY_PORT $VENV_PYTHON -m cairn.proxy.server start-fresh --port $PROXY_PORT >/dev/null 2>&1 $CRON_MARKER"
 fi
+# Daemon rerank health — restarts a responsive-but-poisoned daemon (e.g. a
+# GPU-resident cross-encoder that throws cudaErrorLaunchFailure on every predict
+# after a GPU fault). Ping-liveness misses this: the model is cached so the
+# process stays up while the relevance gate is silently off. Every 15 min; the
+# probe is a one-pair rerank and a no-op on the happy path.
+CRON_DAEMON_HEALTH="*/15 * * * * ${CRON_PATH_PREFIX}$VENV_PYTHON $CAIRN_HOME/cairn/daemon.py healthcheck >> $CAIRN_HOME/logs/daemon-health.log 2>&1 $CRON_MARKER"
 
 # Remove any existing cairn cron entries (including legacy contradiction_scan.py and calibration variants)
 EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.analyser\|cairn.calibration_selfmod\|cairn.graph_fleet\|cairn.proxy.server" || true)
@@ -400,8 +406,9 @@ $CRON_CONTRADICTION
 $CRON_ANALYSER
 $CRON_SELFMOD
 $CRON_GRAPH_FLEET
-$CRON_PROXY" | sed '/^$/d' | crontab -
-echo "Installed cron: consolidation (3:00 AM), contradiction scan (3:30 AM), calibration analyser (00:00), calibration selfmod (00:30), graph fleet sweep (hourly :17)."
+$CRON_PROXY
+$CRON_DAEMON_HEALTH" | sed '/^$/d' | crontab -
+echo "Installed cron: consolidation (3:00 AM), contradiction scan (3:30 AM), calibration analyser (00:00), calibration selfmod (00:30), graph fleet sweep (hourly :17), daemon rerank health (every 15 min)."
 
 # --- Code-graph fleet bootstrap ---
 # Build graphs for all local repos so every repo is graph-ready for first contact.
