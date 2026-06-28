@@ -294,6 +294,13 @@ CROSS_ENCODER_SCORE_FLOOR_CUDA = 0.0005  # eyeball-initial: drops only bge~0 noi
 # is present (sentence-transformers auto-selects the device) — i.e. ms-marco-on-GPU,
 # still ~12x faster than CPU, but with the floor we actually trust.
 RERANKER_BGE_ENABLED = True   # enabled: CUDA available; floor loose (0.0005) pending rg calibration
+# bge needs a FAST discrete GPU, not just any CUDA device. Measured: bge-reranker-base
+# is 444ms on a 3.9GB Quadro T2000 (Turing laptop) vs 62ms on an RTX 4070 — and fp16
+# is WORSE on the T2000 (1885ms, poor Turing fp16 throughput). ms-marco is 72ms there.
+# So gate bge on VRAM as a capability proxy: a 4GB laptop GPU fits bge but is too slow
+# for it. <threshold -> ms-marco (fast everywhere). The T2000 (3.9GB) stays ms-marco;
+# the 4070 (8GB) gets bge.
+RERANKER_MIN_VRAM_GB = 6.0
 
 
 def resolve_reranker():
@@ -308,7 +315,12 @@ def resolve_reranker():
         try:
             import torch
             if torch.cuda.is_available():
-                return CROSS_ENCODER_MODEL_CUDA, CROSS_ENCODER_SCORE_FLOOR_CUDA
+                vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+                # VRAM as a capability proxy: bge fits a 4GB laptop GPU but is too
+                # slow on it (444ms T2000 vs 62ms 4070). Only a fast discrete GPU
+                # (>= RERANKER_MIN_VRAM_GB) gets bge; everything else gets ms-marco.
+                if vram_gb >= RERANKER_MIN_VRAM_GB:
+                    return CROSS_ENCODER_MODEL_CUDA, CROSS_ENCODER_SCORE_FLOOR_CUDA
         except Exception:
             pass
     return CROSS_ENCODER_MODEL, CROSS_ENCODER_SCORE_FLOOR
