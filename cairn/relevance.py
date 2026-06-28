@@ -70,14 +70,23 @@ def build_context_window(current_prompt: str, transcript_path: Optional[str] = N
             prior_user = users[-1] if users else ""
         except Exception:
             pass
-    parts = []
+    # Current prompt FIRST so it survives the cross-encoder's 512-token
+    # right-truncation. The rerank window (~1500 tokens median) overflows the CE
+    # limit ~3x, and HF truncation_side="right" keeps the front and drops the
+    # tail. With the current prompt LAST (the old order) it was truncated out of
+    # EVERY window that had a prior turn — the reranker scored relevance against
+    # the prior turn, blind to the current question (measured: 100% of windows
+    # with a prior turn dropped the current prompt; fixing it lifted ms-marco
+    # AUC 0.579->0.695 and cut junk leak 87%->63% on the gold set). Leading with
+    # the current prompt guarantees the gate sees what was asked; prior context
+    # fills the remaining budget and is the part safely dropped.
+    parts = [f"[user] {cur}"]
     if prior_user:
         parts.append(f"[prev user] {prior_user}")
     if prior_asst:
         capped = (prior_asst if len(prior_asst) <= prior_response_cap
                   else prior_asst[:prior_response_cap].rstrip() + " …")
         parts.append(f"[prev assistant] {capped}")
-    parts.append(f"[user] {cur}")
     return "\n".join(parts).strip()
 
 
