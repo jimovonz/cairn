@@ -115,6 +115,34 @@ def test_log_and_grade_roundtrip(eph):
     assert hn[42] == 0 and hn[17] == 1
 
 
+def test_grade_drop_records_metric(eph):
+    """A grade for a memory with no matching delivery matches 0 rows and must be
+    surfaced as an rg_grade_dropped metric (compaction-chained-session signal
+    loss), not silently swallowed."""
+    relevance.log_memory_deliveries([{"id": 1, "score": 0.9}], session_id="s",
+                                    context_text="t", eph_path=eph)
+    # Grade id 1 (exists) and id 999 (no delivery -> drop).
+    upd = relevance.apply_relevance_grades([(1, 3, False), (999, 2, False)],
+                                           session_id="s", eph_path=eph)
+    assert upd == 1  # only the real delivery updated
+    conn = sqlite3.connect(eph)
+    m = conn.execute(
+        "SELECT session_id, detail, value FROM metrics WHERE event='rg_grade_dropped'"
+    ).fetchone()
+    assert m is not None and m[0] == "s"
+    assert m[2] == 1 and "999" in m[1]
+
+
+def test_grade_no_drop_metric_when_all_match(eph):
+    """No rg_grade_dropped metric when every grade lands."""
+    relevance.log_memory_deliveries([{"id": 5, "score": 0.9}], session_id="s",
+                                    context_text="t", eph_path=eph)
+    relevance.apply_relevance_grades([(5, 2, False)], session_id="s", eph_path=eph)
+    conn = sqlite3.connect(eph)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM metrics WHERE event='rg_grade_dropped'").fetchone()[0] == 0
+
+
 def test_grade_updates_most_recent_delivery_only(eph):
     # Same memory delivered across two turns; a grade applies to the latest only.
     relevance.log_memory_deliveries([{"id": 7, "score": 0.9}], session_id="s",

@@ -227,6 +227,7 @@ def apply_relevance_grades(grades: list[tuple[int, int, bool]], *, session_id: s
     conn.execute("PRAGMA busy_timeout=5000")
     try:
         n = 0
+        dropped = []
         for mid, grade, hard in grades:
             cur = conn.execute(
                 "UPDATE memory_deliveries SET grade = ?, hard_negative = ? WHERE id = ("
@@ -234,7 +235,24 @@ def apply_relevance_grades(grades: list[tuple[int, int, bool]], *, session_id: s
                 "  ORDER BY id DESC LIMIT 1)",
                 (int(grade), 1 if hard else 0, session_id, int(mid)),
             )
-            n += cur.rowcount
+            if cur.rowcount:
+                n += cur.rowcount
+            else:
+                dropped.append(int(mid))
+        # Silent-drop visibility: a grade matches 0 rows when no delivery for
+        # (session_id, memory_id) exists — typically a compaction-chained session
+        # where the delivery was logged under the parent but the grade arrives
+        # under the child. Without this, the agent grades honestly yet the signal
+        # vanishes. Record it as a metric so --stats surfaces the loss.
+        if dropped:
+            try:
+                conn.execute(
+                    "INSERT INTO metrics (event, session_id, detail, value) VALUES (?, ?, ?, ?)",
+                    ("rg_grade_dropped", session_id,
+                     ",".join(str(m) for m in dropped[:20]), len(dropped)),
+                )
+            except sqlite3.Error:
+                pass
         conn.commit()
         return n
     except sqlite3.Error:
