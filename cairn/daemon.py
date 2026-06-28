@@ -545,17 +545,62 @@ def is_running():
         return False
 
 
+def _rerank_healthy() -> bool:
+    """True if the daemon's cross-encoder rerank actually works — not just that
+    the process answers ping. Distinguishes a responsive-but-poisoned daemon (a
+    GPU-resident model that now throws cudaErrorLaunchFailure on every predict
+    after a GPU fault) from a healthy one: the model is cached, so the process
+    stays up while the relevance gate is silently dead. Returns True when
+    reranking is legitimately disabled (nothing to heal)."""
+    try:
+        from cairn.config import CROSS_ENCODER_ENABLED
+    except Exception:
+        return True
+    if not CROSS_ENCODER_ENABLED:
+        return True
+    try:
+        resp = send_request({"action": "rerank", "query": "health probe",
+                             "candidates": ["health probe candidate"]})
+    except Exception:
+        return False
+    if not resp or resp.get("error"):
+        return False
+    scores = resp.get("scores")
+    return isinstance(scores, list) and len(scores) == 1
+
+
+def _stop_daemon() -> None:
+    """SIGTERM the running daemon and wait for it to exit (best-effort)."""
+    import time
+    try:
+        with open(PID_PATH, encoding="utf-8") as f:
+            pid = int(f.read().strip())
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
+        return
+    for _ in range(20):
+        time.sleep(0.5)
+        if not is_running():
+            return
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: daemon.py [start|stop|status]")
+        print("Usage: daemon.py [start|stop|status|healthcheck]")
         sys.exit(1)
 
     cmd = sys.argv[1]
 
     if cmd == "start":
         if is_running():
-            print("Daemon already running.")
-            sys.exit(0)
+            if _rerank_healthy():
+                print("Daemon already running.")
+                sys.exit(0)
+            # Responsive but the rerank gate is dead (e.g. GPU fault poisoned the
+            # cached cross-encoder). Restart to reload the model on a healthy
+            # device — ping-liveness alone would leave the gate silently off.
+            print("Daemon running but rerank unhealthy — restarting to reload model.")
+            _stop_daemon()
         # Launch as detached subprocess
         import subprocess
         cairn_dir = os.path.dirname(os.path.abspath(__file__))
@@ -601,6 +646,30 @@ if __name__ == "__main__":
                 print("Daemon PID exists but not responding.")
         else:
             print("Daemon not running.")
+
+    elif cmd == "healthcheck":
+        # Cron entry point: verify the daemon is up AND reranking works; restart
+        # if the gate is dead. Idempotent and quiet on the happy path.
+        if is_running() and _rerank_healthy():
+            sys.exit(0)
+        if is_running():
+            print("rerank unhealthy — restarting daemon.")
+            _stop_daemon()
+        import subprocess, time
+        cairn_dir = os.path.dirname(os.path.abspath(__file__))
+        subprocess.Popen(
+            [sys.executable, "-c",
+             f"import os; os.chdir({repr(cairn_dir)}); "
+             "from cairn.daemon import run_server; run_server()"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True)
+        for _ in range(20):
+            time.sleep(1)
+            if is_running() and _rerank_healthy():
+                print("daemon healthy.")
+                sys.exit(0)
+        print("daemon restarted (rerank not yet confirmed).")
+        sys.exit(0)
 
     else:
         print(f"Unknown command: {cmd}")
