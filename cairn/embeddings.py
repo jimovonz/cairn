@@ -956,6 +956,14 @@ def find_similar(
             if ce_archived:
                 archived_candidates = [r for r in archived_candidates
                                        if r["ce_score"] >= floor]
+        else:
+            # Reranker produced no usable scores — daemon down, rerank action
+            # unavailable, or length mismatch. The CE relevance gate did NOT run;
+            # results fall through ranked by embedding composite (cosine+conf+rrf)
+            # alone, so semantically-similar-but-irrelevant memories are no longer
+            # rejected. Surface this silent degradation as a metric so "no gate"
+            # is monitored rather than invisible (cf. vec0 writes, dropped grades).
+            _record_embed_metric("rerank_unavailable", len(ce_pool))
         _record_embed_metric("rerank_ms", (_time.perf_counter() - t_rerank) * 1000)
 
     results = diverse[:limit]
