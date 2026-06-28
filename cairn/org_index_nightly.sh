@@ -16,7 +16,7 @@ echo "=== org-index nightly $(ts) org=$ORG ==="
 # 1. Locatability (remote, needs gh). gh uses keyring auth which may be
 #    unavailable in a headless cron env — detect and skip rather than fail.
 if gh auth status >/dev/null 2>&1; then
-    "$PY" "$CC/org_index.py" build --org "$ORG" \
+    "$PY" "$CC/org_index.py" build --org "$ORG" --pushed-within-months 12 \
         && "$PY" "$CC/org_index.py" stranded --stale-days 90 > "$REPORTS/stranded.txt" \
         && echo "locatability: ok -> $REPORTS/stranded.txt"
 else
