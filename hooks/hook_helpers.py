@@ -543,8 +543,17 @@ def format_entry(r: dict[str, Any]) -> str:
             f'  <entry id="{r["id"]}" superseded="true" reason="{reason}" days="{days}">'
             f'{content}</entry>'
         )
+    # Annotate live org-index location status (DRIFT/MISSING). Imported lazily:
+    # retrieval imports hook_helpers at module load, so a top-level import here
+    # would be circular. Best-effort — falls back to no annotation on any error.
+    loc = ""
+    try:
+        from hooks.retrieval import _loc_attr
+        loc = _loc_attr(r["id"])
+    except Exception:
+        loc = ""
     return (
-        f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}">'
+        f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}"{loc}>'
         f'{content}</entry>'
     )
 

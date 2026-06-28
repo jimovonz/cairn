@@ -30,7 +30,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "org_index.db")
 
@@ -60,6 +60,33 @@ def gh_obj(path):
         # expected and non-fatal — caller decides.
         return None
     return json.loads(p.stdout)
+
+# -------------------------------------------------------------------- rate limit
+
+def _rate_status():
+    """(remaining, reset_epoch) for the core REST quota. The rate_limit endpoint
+    does NOT itself consume quota, so we can poll it freely to stage the walk."""
+    p = subprocess.run(
+        ["gh", "api", "rate_limit", "--jq",
+         '.resources.core | "\\(.remaining) \\(.reset)"'],
+        capture_output=True, text=True)
+    if p.returncode != 0:
+        return None, None
+    try:
+        rem, reset = p.stdout.split()
+        return int(rem), int(reset)
+    except ValueError:
+        return None, None
+
+def _stage_for_rate(min_rate, log):
+    """Block until the core quota recovers when it dips below min_rate, so a
+    large org walk never errors out mid-run. Sleeps to the reset + a buffer."""
+    rem, reset = _rate_status()
+    if rem is None or rem >= min_rate:
+        return
+    wait = max(0, reset - int(time.time())) + 5
+    log(f"  [rate] core remaining {rem} < {min_rate}; sleeping {wait}s to reset")
+    time.sleep(wait)
 
 # ------------------------------------------------------------------------ schema
 
@@ -110,7 +137,8 @@ def iso_now():
     return datetime.now(timezone.utc).isoformat()
 
 def build(org, db_path, only_repos=None, max_branches=None,
-          include_archived=False, verbose=True):
+          include_archived=False, pushed_within_months=None, min_rate=200,
+          resume=False, verbose=True):
     con = connect(db_path)
     cur = con.cursor()
 
@@ -125,10 +153,23 @@ def build(org, db_path, only_repos=None, max_branches=None,
         repos = [r for r in repos if r["name"] in want]
     if not include_archived:
         repos = [r for r in repos if not r.get("archived")]
+    if pushed_within_months:
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(days=int(pushed_within_months * 30.44))).isoformat()
+        before = len(repos)
+        repos = [r for r in repos if (r.get("pushed_at") or "") >= cutoff]
+        log(f"[build] pushed-within {pushed_within_months}mo: "
+            f"{len(repos)}/{before} repos (cutoff {cutoff[:10]})")
 
-    log(f"[build] {org}: {len(repos)} repos")
+    if resume:
+        done = {r[0] for r in cur.execute("SELECT DISTINCT repo FROM branches")}
+        repos = [r for r in repos if r["name"] not in done]
+        log(f"[build] resume: skipping {len(done)} already-indexed repos")
+
+    log(f"[build] {org}: {len(repos)} repos to index")
     api_calls = 0
     for ri, repo in enumerate(repos, 1):
+        _stage_for_rate(min_rate, log)   # block if quota is low before each repo
         name = repo["name"]
         default = repo.get("default_branch") or "main"
         cur.execute(
@@ -311,6 +352,12 @@ def main():
     b.add_argument("--repos", nargs="*", help="limit to these repo names")
     b.add_argument("--max-branches", type=int, default=None)
     b.add_argument("--include-archived", action="store_true")
+    b.add_argument("--pushed-within-months", type=float, default=None,
+                   help="only index repos pushed within the last N months")
+    b.add_argument("--min-rate", type=int, default=200,
+                   help="pause the walk if core API quota drops below this")
+    b.add_argument("--resume", action="store_true",
+                   help="skip repos already present in the index (continue a run)")
 
     f = sub.add_parser("find", help="locate a file across all repos/branches")
     f.add_argument("term")
@@ -327,7 +374,9 @@ def main():
     a = ap.parse_args()
     if a.cmd == "build":
         build(a.org, a.db, only_repos=a.repos, max_branches=a.max_branches,
-              include_archived=a.include_archived)
+              include_archived=a.include_archived,
+              pushed_within_months=a.pushed_within_months, min_rate=a.min_rate,
+              resume=a.resume)
     elif a.cmd == "find":
         find(a.db, a.term, a.limit)
     elif a.cmd == "stranded":
