@@ -26,6 +26,7 @@ Query commands:
 - `.venv/bin/python ./cairn/query.py --review` — surface low-confidence memories
 - `.venv/bin/python ./cairn/query.py --verify-sources` — analyse source_messages accuracy
 - `.venv/bin/python ./cairn/query.py --backfill` — generate missing embeddings
+- `.venv/bin/python ./cairn/query.py --heal-vec` — index embedded rows missing from the `memories_vec` ANN index (heals the silent vec0-write gap; `--stats` reports the gap)
 - `.venv/bin/python ./cairn/query.py --stats` — database statistics
 
 ## Repo Ingestion
