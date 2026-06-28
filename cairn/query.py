@@ -542,12 +542,12 @@ def delete_memory(memory_id):
 
 def add_memory(mem_type, topic, content, project=None, session_id=None):
     """Manually add a memory entry with proper attribution and embedding."""
-    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
+    from cairn import embeddings as emb
+    conn = emb.connect_db(DB_PATH)
 
     # Generate embedding for semantic search
     embedding_blob = None
     try:
-        from cairn import embeddings as emb
         project_prefix = f"{project} " if project else ""
         search_text = f"{project_prefix}{mem_type} {topic} {content}"
         vec = emb.embed(search_text)
@@ -562,18 +562,23 @@ def add_memory(mem_type, topic, content, project=None, session_id=None):
     )
     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-    # Update vec index if embedding was generated
+    # Update vec index if embedding was generated. The boolean return is the
+    # signal that the row is semantically retrievable — surface an index
+    # failure at the call site rather than swallowing it (the silent-failure
+    # bug that left 1587 rows embedded-but-unindexed).
+    indexed = False
     if embedding_blob:
-        try:
-            from cairn import embeddings as emb
-            emb.upsert_vec_index(conn, new_id, embedding_blob)
-        except Exception:
-            pass
+        indexed = emb.upsert_vec_index(conn, new_id, embedding_blob)
 
     conn.commit()
     conn.close()
-    has_emb = "with embedding" if embedding_blob else "without embedding"
-    print(f"Added memory {new_id}: {mem_type}/{topic} ({has_emb})")
+    if not embedding_blob:
+        emb_state = "without embedding"
+    elif indexed:
+        emb_state = "with embedding+index"
+    else:
+        emb_state = "embedding only (INDEX FAILED)"
+    print(f"Added memory {new_id}: {mem_type}/{topic} ({emb_state})")
     print(f"  {content}")
 
 
@@ -726,9 +731,33 @@ def stats():
     sessions = conn.execute("SELECT COUNT(DISTINCT session_id) FROM memories WHERE session_id IS NOT NULL").fetchone()[0]
     session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
 
+    # Vec-index coverage: embedded, non-deleted rows that are actually present in
+    # the ANN index. A gap means rows are --semantic-invisible (the silent vec0
+    # write failure) — surface it as a monitored metric with the --heal-vec hint.
+    vec_indexed = None
+    vec_gap = None
+    try:
+        from cairn import embeddings as emb
+        if emb._load_vec(conn):
+            embedded_live = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
+            ).fetchone()[0]
+            vec_indexed = conn.execute(
+                "SELECT COUNT(*) FROM memories m WHERE m.embedding IS NOT NULL AND m.deleted_at IS NULL "
+                "AND m.id IN (SELECT memory_id FROM memories_vec)"
+            ).fetchone()[0]
+            vec_gap = embedded_live - vec_indexed
+    except Exception:
+        pass
+
     print("=== Memory Stats ===")
     print(f"Total memories: {total}")
     print(f"With embeddings: {with_emb}")
+    if vec_gap is not None:
+        line = f"Vec index: {vec_indexed}/{vec_indexed + vec_gap} embedded rows indexed (gap {vec_gap})"
+        if vec_gap > 0:
+            line += " — run --heal-vec"
+        print(line)
     print(f"History entries: {history_count}")
     print(f"Memory sessions: {sessions}")
     print(f"Tracked sessions: {session_count}")
@@ -917,7 +946,7 @@ def backfill_embeddings():
         print("sentence-transformers not available")
         return
 
-    conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
+    conn = emb.connect_db(DB_PATH)
     rows = conn.execute(
         "SELECT id, type, topic, content, project FROM memories WHERE embedding IS NULL AND deleted_at IS NULL"
     ).fetchall()
@@ -940,6 +969,52 @@ def backfill_embeddings():
     conn.commit()
     conn.close()
     print(f"Done. {len(rows)} embeddings generated.")
+
+
+def heal_vec():
+    """Backfill the ANN index for rows that have an embedding but no vec row.
+
+    Complements --backfill (which only fills embedding IS NULL): this heals the
+    embedded-but-unindexed gap left by the historical silent vec0-write failure,
+    so those rows become --semantic-retrievable. Idempotent — re-running with a
+    zero gap is a no-op."""
+    try:
+        from cairn import embeddings as emb
+    except ImportError:
+        print("sentence-transformers not available")
+        return
+
+    conn = emb.connect_db(DB_PATH)
+    if not emb._load_vec(conn):
+        print("vec index unavailable (sqlite_vec not loadable); cannot heal.")
+        conn.close()
+        return
+
+    rows = conn.execute(
+        "SELECT id, embedding FROM memories "
+        "WHERE embedding IS NOT NULL AND deleted_at IS NULL "
+        "AND id NOT IN (SELECT memory_id FROM memories_vec)"
+    ).fetchall()
+
+    if not rows:
+        print("vec index gap is 0 — nothing to heal.")
+        conn.close()
+        return
+
+    print(f"Healing {len(rows)} embedded-but-unindexed rows...")
+    healed = 0
+    for mem_id, blob in rows:
+        if emb.upsert_vec_index(conn, mem_id, blob):
+            healed += 1
+    conn.commit()
+
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM memories "
+        "WHERE embedding IS NOT NULL AND deleted_at IS NULL "
+        "AND id NOT IN (SELECT memory_id FROM memories_vec)"
+    ).fetchone()[0]
+    conn.close()
+    print(f"Done. Healed {healed}, remaining gap {remaining}.")
 
 
 def _version_label(source_ref):
@@ -1079,6 +1154,7 @@ Commands:
   --review               Surface low-confidence memories for inspection
   --verify-sources       Analyse accuracy of LLM source_messages estimates
   --backfill             Generate embeddings for memories missing them
+  --heal-vec             Index embedded rows missing from the ANN vec index
   --check                Validate system health (DB, hooks, daemon, embeddings)
   --bootstrap [project]  Show standing-context memories for a project (from CWD if omitted)
   --audit <session_id>   Dump unaudited memories from session for review
@@ -1627,6 +1703,8 @@ def main_entry():
         verify_sources()
     elif cmd == "--backfill":
         backfill_embeddings()
+    elif cmd == "--heal-vec":
+        heal_vec()
     elif cmd == "--check":
         sys.exit(check())
     elif cmd == "--audit":
