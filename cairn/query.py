@@ -1066,7 +1066,7 @@ def delivery_stats():
     from cairn.config import EPHEMERAL_DB_PATH
     e = sqlite3.connect(EPHEMERAL_DB_PATH)
     deliveries = e.execute(
-        "SELECT memory_id, reranker_model, engaged, engaged_score, grade FROM memory_deliveries"
+        "SELECT memory_id, reranker_model, engaged, engaged_score, grade, layer FROM memory_deliveries"
     ).fetchall()
     if not deliveries:
         print("No deliveries logged yet.")
@@ -1086,6 +1086,7 @@ def delivery_stats():
 
     by_ver = _aggregate_outcomes(_rec(r, ver.get(r[0], "deleted/unknown")) for r in deliveries)
     by_rer = _aggregate_outcomes(_rec(r, r[1] or "none") for r in deliveries)
+    by_layer = _aggregate_outcomes(_rec(r, r[5] or "(none)") for r in deliveries)
 
     n = len(deliveries)
     scored = sum(1 for r in deliveries if r[3] is not None)
@@ -1093,6 +1094,15 @@ def delivery_stats():
     print(f"=== Delivery outcomes ({n} deliveries) ===")
     print(f"  label coverage: engagement-scored {scored}/{n} ({scored/n*100:.0f}%), "
           f"agent-graded {graded}/{n} ({graded/n*100:.0f}%)")
+    # Honest grading coverage: the agent only grades context it actually drew on,
+    # which lives in the per-prompt layer (the one carrying the JIT grading nudge).
+    # The first-prompt bootstrap dump is standing context the agent legitimately
+    # omits, so a blended coverage % badly understates grading where it matters.
+    pp = [r for r in deliveries if r[5] == "per-prompt"]
+    if pp:
+        pp_graded = sum(1 for r in pp if r[4] is not None)
+        print(f"  per-prompt grading coverage (the gradeable layer): "
+              f"{pp_graded}/{len(pp)} ({pp_graded/len(pp)*100:.0f}%)")
 
     def _table(title, agg):
         print(f"\n{title}")
@@ -1106,6 +1116,7 @@ def delivery_stats():
 
     _table("by generation version (source_ref):", by_ver)
     _table("by reranker model:", by_rer)
+    _table("by injection layer:", by_layer)
 
 
 def format_rows(rows):
