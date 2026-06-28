@@ -401,15 +401,29 @@ def test_resolve_reranker_ms_marco_default_even_on_cuda(monkeypatch):
     assert f == config.CROSS_ENCODER_SCORE_FLOOR
 
 
+def _fake_vram(monkeypatch, gb):
+    """Make torch report a GPU of `gb` GiB so the VRAM capability gate is testable."""
+    import torch
+    class _Props:
+        total_memory = int(gb * 1e9)
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda i=0: _Props())
+
+
 def test_resolve_reranker_bge_when_flag_on_and_cuda(monkeypatch):
-    # The dormant bge path the step-1b A/B will validate: flag on + CUDA -> bge.
+    # bge requires flag on + CUDA + a FAST GPU (VRAM >= RERANKER_MIN_VRAM_GB).
     import torch
     from cairn import config
     monkeypatch.setattr(config, "RERANKER_BGE_ENABLED", True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    # Big discrete GPU (e.g. 8GB 4070) -> bge.
+    _fake_vram(monkeypatch, 8.0)
     m, f = config.resolve_reranker()
     assert m == config.CROSS_ENCODER_MODEL_CUDA
     assert f == config.CROSS_ENCODER_SCORE_FLOOR_CUDA
+    # Small laptop GPU (e.g. 3.9GB T2000) fits bge in VRAM but is too slow -> ms-marco.
+    _fake_vram(monkeypatch, 3.9)
+    m, f = config.resolve_reranker()
+    assert m == config.CROSS_ENCODER_MODEL
     # flag on but no CUDA -> still ms-marco
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     m, f = config.resolve_reranker()
