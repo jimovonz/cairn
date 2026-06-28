@@ -50,6 +50,8 @@ CAIRN_DIR = os.path.dirname(__file__)
 
 _cross_encoder: Any = None
 _cross_encoder_name: Any = None  # name of the loaded reranker — provenance for memory_deliveries
+_cross_encoder_floor: Any = None  # score floor matched to the loaded model
+_force_cpu_reranker: bool = False  # set after a GPU predict fault — pins reload to ms-marco/CPU
 _nli_model: Any = None
 
 
@@ -71,17 +73,25 @@ def _get_nli_model() -> Any:
 
 def _get_cross_encoder() -> Any:
     """Lazily load the cross-encoder model. Returns None if disabled or unavailable."""
-    global _cross_encoder, _cross_encoder_name
+    global _cross_encoder, _cross_encoder_name, _cross_encoder_floor
     if _cross_encoder is not None:
         return _cross_encoder
     try:
-        from cairn.config import CROSS_ENCODER_ENABLED, resolve_reranker
+        from cairn.config import (CROSS_ENCODER_ENABLED, resolve_reranker,
+                                  CROSS_ENCODER_MODEL, CROSS_ENCODER_SCORE_FLOOR)
         if not CROSS_ENCODER_ENABLED:
             return None
         from sentence_transformers import CrossEncoder
-        model_name, _floor = resolve_reranker()  # device-aware: bge on CUDA, ms-marco on CPU
-        _cross_encoder = CrossEncoder(model_name)
+        if _force_cpu_reranker:
+            # Post-fault: pin to the small ms-marco model on CPU so the gate keeps
+            # working (weak > dead) until a restart reloads the best GPU model.
+            model_name, _floor = CROSS_ENCODER_MODEL, CROSS_ENCODER_SCORE_FLOOR
+            _cross_encoder = CrossEncoder(model_name, device="cpu")
+        else:
+            model_name, _floor = resolve_reranker()  # device-aware: bge on CUDA, ms-marco on CPU
+            _cross_encoder = CrossEncoder(model_name)
         _cross_encoder_name = model_name
+        _cross_encoder_floor = _floor
         return _cross_encoder
     except Exception:
         return None
@@ -267,11 +277,21 @@ def handle_client(conn, emb):
                 response = {"scores": None}
             else:
                 pairs = [(query, c) for c in candidates]
-                scores = ce.predict(pairs).tolist()
-                from cairn.config import resolve_reranker
-                # Report the loaded model name (provenance) + its floor. _cross_encoder_name
-                # is the model actually in memory, truer than re-resolving.
-                response = {"scores": scores, "score_floor": resolve_reranker()[1],
+                try:
+                    scores = ce.predict(pairs).tolist()
+                except Exception as ce_err:
+                    # A GPU fault (e.g. cudaErrorLaunchFailure) poisons the cached
+                    # GPU model so every predict throws. Evict it, pin to ms-marco
+                    # on CPU, and retry once — the gate degrades to working-weak
+                    # immediately instead of staying dead until the restart cron.
+                    global _cross_encoder, _force_cpu_reranker
+                    _cross_encoder = None
+                    _force_cpu_reranker = True
+                    ce = _get_cross_encoder()
+                    if ce is None:
+                        raise ce_err
+                    scores = ce.predict(pairs).tolist()
+                response = {"scores": scores, "score_floor": _cross_encoder_floor,
                             "model": _cross_encoder_name}
 
         elif action == "nli":
