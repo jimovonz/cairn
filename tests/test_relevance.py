@@ -37,7 +37,19 @@ def test_context_window_caps_long_prior_response(tmp_path):
     # The capped prior response must not let the long response dominate.
     assert "X" * 100 in win
     assert "X" * 200 not in win
-    assert win.endswith("[user] follow up")
+    # Current prompt now leads the window (truncation-safety), prior context trails.
+    assert win.startswith("[user] follow up")
+
+
+def test_context_window_leads_with_current_prompt(tmp_path):
+    # Regression: the current prompt MUST be first so it survives the cross-encoder
+    # 512-token right-truncation. A long prior turn must not push it past the cut.
+    t = tmp_path / "s.jsonl"
+    _write_transcript(t, [("user", "old q " * 500), ("assistant", "old a " * 500)])
+    win = relevance.build_context_window("THE CURRENT QUESTION", str(t))
+    assert win.startswith("[user] THE CURRENT QUESTION")
+    # current prompt appears before any prior-context marker
+    assert win.index("[user]") < win.index("[prev user]")
 
 
 def test_context_window_dedupes_current_prompt_if_already_tail(tmp_path):
