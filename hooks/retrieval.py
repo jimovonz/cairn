@@ -31,7 +31,7 @@ from cairn.config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
                      L3_GLOBAL_SIM_WITHOUT_PROJECT, L3_PROJECT_QUALITY_FLOOR,
                      L3_MAX_PROJECT_RESULTS, L3_MAX_GLOBAL_RESULTS,
                      WEAK_ENTRY_SCORE_FLOOR, RRF_K, GLOBAL_HARD_FLOOR,
-                     REFERENCE_MIN_SIMILARITY)
+                     REFERENCE_MIN_SIMILARITY, ORG_INDEX_ENABLED)
 
 
 CONTEXT_CACHE_SIM_THRESHOLD: float = 0.9
@@ -63,19 +63,18 @@ def _loc_index() -> Any:
         from cairn.cairn_verify import Index
         p = os.path.join(os.path.dirname(cairn.__file__), "org_index.db")
         _LOC_IDX = Index(p) if os.path.exists(p) else None  # Index() exits if absent
-    except Exception:
+    except (Exception, SystemExit):  # Index.__init__ sys.exit()s on a TOCTOU-deleted db
         _LOC_IDX = None
     return _LOC_IDX
 
 
 def _facts_for(mem_id: int) -> Optional[str]:
     """Fetch a memory's facts column via a cached read-only cairn.db handle.
-    Read-only (mode=ro) so it never checkpoints the WAL — safe from stdlib."""
+    Read-only (mode=ro) via the module-level pysqlite3 alias — single-library, no WAL checkpoint."""
     global _FACTS_CONN
     try:
         if _FACTS_CONN is None:
             import os
-            import sqlite3
             import cairn
             p = os.path.join(os.path.dirname(cairn.__file__), "cairn.db")
             _FACTS_CONN = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
@@ -90,6 +89,8 @@ def location_annotation(mem_id: int) -> Optional[str]:
     """Live org-index status for a memory's file:/repo: claims, or None.
     Returns a short label only for DRIFT/MISSING (actionable staleness)."""
     try:
+        if not ORG_INDEX_ENABLED:
+            return None
         idx = _loc_index()
         if idx is None:
             return None
