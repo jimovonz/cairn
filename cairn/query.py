@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
 """Query the Cairn database. Used by Claude Code to retrieve context."""
 
+import os
+import sys
+
+# Re-exec under venv python if not already in the venv.
+# MUST run before `import pysqlite3` below: under a bare `python3` (no pysqlite3),
+# this bounces into the venv interpreter (which has pysqlite3) instead of tripping
+# the ImportError guard. Previously this block sat after the import and was dead code.
+if __name__ == "__main__":
+    _venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".venv", "bin", "python3")
+    if os.path.exists(_venv_python) and sys.prefix == sys.base_prefix:
+        os.execv(_venv_python, [_venv_python] + sys.argv)
+
 try:
     import pysqlite3 as sqlite3  # type: ignore[import-untyped]
 except ImportError as _pysqlite_err:  # pragma: no cover
-    import os as _os
-    if _os.environ.get("CAIRN_ALLOW_STDLIB_SQLITE") == "1":
+    if os.environ.get("CAIRN_ALLOW_STDLIB_SQLITE") == "1":
         import sqlite3  # explicit opt-in; stdlib SQLite may corrupt WAL DBs under concurrent multi-version access
     else:
         raise ImportError(
@@ -14,15 +25,7 @@ except ImportError as _pysqlite_err:  # pragma: no cover
             "multi-version access. Install pysqlite3-binary, or set "
             "CAIRN_ALLOW_STDLIB_SQLITE=1 to override."
         ) from _pysqlite_err
-import sys
-import os
 import uuid
-
-# Re-exec under venv python if not already in the venv
-if __name__ == "__main__":
-    _venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".venv", "bin", "python3")
-    if os.path.exists(_venv_python) and sys.prefix == sys.base_prefix:
-        os.execv(_venv_python, [_venv_python] + sys.argv)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 
