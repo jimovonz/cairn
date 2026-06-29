@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from cairn.repo_discovery import _resolve_crg, _graph_db_present
+import cairn.config as _config  # noqa: F401 — import side-effect loads cairn/.env into os.environ so CAIRN_GRAPH_WATCH etc. are honoured
 
 # Sentinel "session" under which the fleet records its last-sweep summary in the
 # ephemeral hook_state table (hook_state PK is (session_id, key)).
