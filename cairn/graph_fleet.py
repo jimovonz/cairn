@@ -54,6 +54,10 @@ def _record_sweep_state(stats: dict) -> None:
 
 # Directory names never worth graphing — skip to save build time/noise.
 _SKIP_DIRS = {"node_modules", ".venv", "venv", "__pycache__", ".cache", "vendor"}
+# Skip graphing submodules larger than this many tracked files — vendor trees
+# like a Linux kernel (~80k files) or u-boot are huge, pointless to symbol-graph,
+# and stall the sweep. In-house libs are tiny (e.g. ugv-nav-msgs ~70 files).
+_MAX_SUBMODULE_FILES = int(os.environ.get("CAIRN_GRAPH_MAX_SUBMODULE_FILES", "5000"))
 
 
 def _default_roots() -> list[str]:
@@ -93,9 +97,24 @@ def _submodules_of(repo: str, timeout: int = 60) -> list[str]:
         sub = (Path(repo) / rel).resolve()
         if any(part in _SKIP_DIRS for part in sub.parts):
             continue
-        if sub.is_dir() and (sub / ".git").exists():
-            subs.append(str(sub))
+        if not (sub.is_dir() and (sub / ".git").exists()):
+            continue
+        n = _tracked_file_count(str(sub))
+        if n > _MAX_SUBMODULE_FILES:
+            print(f"  [graph_fleet] skip submodule {sub} ({n} files > "
+                  f"{_MAX_SUBMODULE_FILES}) — vendor/oversized", file=sys.stderr)
+            continue
+        subs.append(str(sub))
     return subs
+
+
+def _tracked_file_count(repo: str, timeout: int = 30) -> int:
+    try:
+        p = subprocess.run(["git", "-C", repo, "ls-files"],
+                           capture_output=True, text=True, timeout=timeout)
+    except (subprocess.SubprocessError, OSError):
+        return 0
+    return p.stdout.count("\n") if p.returncode == 0 else 0
 
 
 def discover_repos(roots: Optional[list[str]] = None, max_depth: int = 2) -> list[str]:
