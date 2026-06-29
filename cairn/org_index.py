@@ -12,9 +12,11 @@ we were on. This index answers both questions that were hard that day:
     1. "Where is <file> across the org, on ANY branch?"   -> `find`
     2. "What unmerged work is going stale and at risk?"   -> `stranded`
 
-Storage note: uses the stdlib `sqlite3`. Unlike cairn (concurrent multi-version
-readers, hence its pysqlite3 requirement) this is a single-writer nightly job on
-a throwaway DB, so stdlib + WAL is fine.
+Storage note: goes through the shared pysqlite3 guard (like every cairn/ module
+that touches a SQLite DB — enforced by tests/test_sqlite_guard.py). This catalog
+is a single-writer nightly job on its own throwaway org_index.db, so the WAL
+mixed-library corruption risk does not strictly apply, but the project keeps one
+SQLite library everywhere rather than allowlisting exceptions.
 
 Subcommands:
     build     walk the org and (re)populate the catalog
@@ -26,7 +28,19 @@ Subcommands:
 import argparse
 import json
 import os
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError as _pysqlite_err:  # pragma: no cover
+    import os as _os
+    if _os.environ.get("CAIRN_ALLOW_STDLIB_SQLITE") == "1":
+        import sqlite3  # explicit opt-in; stdlib SQLite may corrupt WAL DBs under concurrent multi-version access
+    else:
+        raise ImportError(
+            "cairn requires pysqlite3 (a recent SQLite with WAL checkpoint-race fixes); "
+            "the system stdlib sqlite3 can corrupt WAL-mode DBs under concurrent "
+            "multi-version access. Install pysqlite3-binary, or set "
+            "CAIRN_ALLOW_STDLIB_SQLITE=1 to override."
+        ) from _pysqlite_err
 import subprocess
 import sys
 import time
