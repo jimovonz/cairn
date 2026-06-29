@@ -141,6 +141,23 @@ CAIRN_SYNC_ONLINE_WINDOW = int(_os.environ.get("CAIRN_SYNC_ONLINE_WINDOW", "90")
 # serving the raw session behind its own memories to approved peers on demand.
 CAIRN_SYNC_SHARE_SESSIONS = _os.environ.get("CAIRN_SYNC_SHARE_SESSIONS", "").lower() in ("1", "true", "yes")
 del _os
+
+# === Org-wide git index (org_index.py / interface_registry.py / cairn_verify.py) ===
+# Locatability + cross-repo index over one or more GitHub orgs, plus the
+# location-claim annotation injected into retrieved memories. OPT-IN: a memory
+# tool making scheduled `gh` API calls is a real side effect, so it stays OFF
+# until ORG_INDEX_ENABLED is set. When disabled, the nightly build, its cron and
+# the CLAUDE.md routing all no-op, and the injection annotation degrades to
+# nothing (location_annotation simply finds no org_index.db).
+import os as _os_oi
+ORG_INDEX_ENABLED = _os_oi.environ.get("ORG_INDEX_ENABLED", "").lower() in ("1", "true", "yes")
+# Comma-separated GitHub orgs to index, e.g. "robotics-plus,YamahaAg".
+ORG_INDEX_ORGS = [_o.strip() for _o in _os_oi.environ.get("ORG_INDEX_ORGS", "").split(",") if _o.strip()]
+ORG_INDEX_GH_HOST = _os_oi.environ.get("ORG_INDEX_GH_HOST") or None        # set for GitHub Enterprise
+ORG_INDEX_GH_ACCOUNT = _os_oi.environ.get("ORG_INDEX_GH_ACCOUNT") or None  # gh account (multi-account); used by the nightly wrapper
+ORG_INDEX_PUSHED_WITHIN_MONTHS = float(_os_oi.environ.get("ORG_INDEX_PUSHED_WITHIN_MONTHS", "12"))
+ORG_INDEX_MIN_RATE = int(_os_oi.environ.get("ORG_INDEX_MIN_RATE", "200"))
+del _os_oi
 # When enabled, the container injector also docker cp's the shim and hook
 # config into every new dev container, so cairn works with zero per-project
 # devcontainer.json edits.
@@ -461,3 +478,22 @@ PROXY_HOST = _os_proxy.environ.get("CAIRN_PROXY_HOST", "127.0.0.1")
 PROXY_PORT = int(_os_proxy.environ.get("CAIRN_PROXY_PORT", "8789"))  # 8787 is sync server default
 PROXY_UPSTREAM = _os_proxy.environ.get("CAIRN_PROXY_UPSTREAM", "https://api.anthropic.com")
 PROXY_REWRITE = _os_proxy.environ.get("CAIRN_PROXY_REWRITE", "1").lower() in ("1", "true", "yes")
+
+# === Dashboard override key map ===
+# The config editor must write/read each setting under the EXACT env var that
+# the setting actually reads — and those diverge: most read their own name
+# (ORG_INDEX_*, CAIRN_SYNC_*), but the PROXY_* group reads CAIRN_PROXY_*. We
+# derive attr -> env-key by parsing this file's own `environ.get("…")` calls, so
+# the dashboard round-trips saves instead of guessing a blanket CAIRN_ prefix.
+# Presence in this map also marks a setting as genuinely env-overridable (vs a
+# literal constant the dashboard can show but not actually override).
+def _build_env_key_map():
+    import re as _re, pathlib as _pl
+    try:
+        _src = _pl.Path(__file__).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    return {m.group(1): m.group(2) for m in _re.finditer(
+        r'^([A-Z][A-Z0-9_]*)\s*=\s*[^\n]*?environ\.get\(\s*"([^"]+)"', _src, _re.M)}
+
+CONFIG_ENV_KEYS = _build_env_key_map()

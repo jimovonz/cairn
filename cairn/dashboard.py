@@ -899,14 +899,28 @@ def api_projects(params):
 
 
 def api_config_get(params):
+    # Each setting's override key is the EXACT env var it reads (config derives
+    # this map by parsing its own environ.get calls); fall back to the attr name.
+    env_keys = getattr(config, "CONFIG_ENV_KEYS", {})
     params_out = {}
     for name in sorted(dir(config)):
-        if name.startswith("_") or not name.isupper():
+        if name.startswith("_") or not name.isupper() or name == "CONFIG_ENV_KEYS":
             continue
         val = getattr(config, name)
-        if not isinstance(val, (int, float, bool, str)):
+        # Scalars shown as-is; string lists rendered as CSV; None as empty string.
+        if isinstance(val, (int, float, bool, str)):
+            disp, typ = val, type(val).__name__
+        elif isinstance(val, list) and all(isinstance(x, str) for x in val):
+            disp, typ = ",".join(val), "csv"
+        elif val is None:
+            disp, typ = "", "str"
+        else:
             continue
-        params_out[name] = {"value": val, "type": type(val).__name__, "env_var": f"CAIRN_{name}"}
+        params_out[name] = {
+            "value": disp, "type": typ,
+            "env_var": env_keys.get(name, name),
+            "env_overridable": name in env_keys,
+        }
     overrides = {}
     if os.path.exists(ENV_PATH):
         with open(ENV_PATH) as f:
@@ -916,7 +930,7 @@ def api_config_get(params):
                     key, val = line.split("=", 1)
                     overrides[key.strip()] = val.strip()
     for name, info in params_out.items():
-        env_key = f"CAIRN_{name}"
+        env_key = info["env_var"]
         info["is_overridden"] = env_key in overrides
         if info["is_overridden"]:
             info["override"] = overrides[env_key]
@@ -935,8 +949,9 @@ def api_config_update(body):
                 if line and not line.startswith("#") and "=" in line:
                     key, val = line.split("=", 1)
                     existing[key.strip()] = val.strip()
+    env_keys = getattr(config, "CONFIG_ENV_KEYS", {})
     for name, value in data["updates"].items():
-        env_key = f"CAIRN_{name}"
+        env_key = env_keys.get(name, name)
         if value is None:
             existing.pop(env_key, None)
         else:
