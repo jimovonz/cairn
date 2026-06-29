@@ -950,8 +950,16 @@ def api_config_update(body):
                     key, val = line.split("=", 1)
                     existing[key.strip()] = val.strip()
     env_keys = getattr(config, "CONFIG_ENV_KEYS", {})
+    skipped = []
     for name, value in data["updates"].items():
-        env_key = env_keys.get(name, name)
+        # Only settings config actually reads from the environment are
+        # overridable (CONFIG_ENV_KEYS is derived from its environ.get calls).
+        # Writing a bare attr-name key for a non-overridable setting would
+        # persist a .env line config never reads — skip rather than mislead.
+        if name not in env_keys:
+            skipped.append(name)
+            continue
+        env_key = env_keys[name]
         if value is None:
             existing.pop(env_key, None)
         else:
@@ -961,7 +969,7 @@ def api_config_update(body):
         f.write("# These override defaults in cairn/config.py\n")
         for key, val in sorted(existing.items()):
             f.write(f"{key}={val}\n")
-    return {"status": "saved", "overrides": existing}, 200
+    return {"status": "saved", "overrides": existing, "skipped": skipped}, 200
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────

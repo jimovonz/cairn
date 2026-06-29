@@ -24,6 +24,17 @@ import argparse
 import json
 import os
 import re
+import sys
+
+# Re-exec under the cairn venv so pysqlite3 and `import cairn.*` resolve. MUST run
+# BEFORE the pysqlite3 guard below — under a bare python3 that guard raises, so a
+# re-exec placed in __main__ never runs (mirrors query.py). No-op inside a venv.
+if __name__ == "__main__":
+    _venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", ".venv", "bin", "python3")
+    if os.path.exists(_venv_python) and sys.prefix == sys.base_prefix:
+        os.execv(_venv_python, [_venv_python] + sys.argv)
+
 try:
     import pysqlite3 as sqlite3  # type: ignore[import-untyped]
 except ImportError as _pysqlite_err:  # pragma: no cover
@@ -41,7 +52,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_INDEX = os.path.join(HERE, "org_index.db")
-DEFAULT_CAIRN = "/home/jameo/Projects/cairn/cairn/cairn.db"
+DEFAULT_CAIRN = os.path.join(HERE, "cairn.db")  # portable, mirrors DEFAULT_INDEX (was a hardcoded /home path)
 
 FILE_RE = re.compile(r"^file:(.+)$")
 REPO_RE = re.compile(r"^repo:(.+)$")
@@ -162,10 +173,4 @@ def main():
     verify(a.cairn, a.index, mem_id=a.id, show_ok=a.show_ok)
 
 if __name__ == "__main__":
-    # Re-exec under the cairn venv so `import cairn.*` resolves (mirrors
-    # graph_fleet.py / query.py). No-op when already inside a venv.
-    _venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", ".venv", "bin", "python3")
-    if os.path.exists(_venv_python) and sys.prefix == sys.base_prefix:
-        os.execv(_venv_python, [_venv_python] + sys.argv)
     main()

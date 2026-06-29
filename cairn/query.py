@@ -118,16 +118,25 @@ def list_by_date(since=None, until=None, limit=50):
     # Day bounds are computed in LOCAL time then converted to UTC for the WHERE
     # clause (updated_at is stored UTC). See cairn/timeutil.
     from cairn import timeutil
+    # A provided-but-unparseable bound yields None from *_bound_utc; raise rather
+    # than silently dropping the filter (which would return unfiltered rows as if
+    # they matched the range).
     if since:
         lo = timeutil.since_bound_utc(since)
-        if lo:
-            conditions.append("updated_at >= ?")
-            params.append(lo)
+        if lo is None:
+            raise ValueError(
+                f"unparseable --since date: {since!r} "
+                "(use ISO YYYY-MM-DD, today, yesterday, or Nh/Nd/Nw/Nm)")
+        conditions.append("updated_at >= ?")
+        params.append(lo)
     if until:
         hi = timeutil.until_bound_utc(until)
-        if hi:
-            conditions.append("updated_at <= ?")
-            params.append(hi)
+        if hi is None:
+            raise ValueError(
+                f"unparseable --until date: {until!r} "
+                "(use ISO YYYY-MM-DD, today, yesterday, or Nh/Nd/Nw/Nm)")
+        conditions.append("updated_at <= ?")
+        params.append(hi)
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
     params.append(limit)
     rows = conn.execute(f"""
