@@ -440,3 +440,22 @@ PROXY_HOST = _os_proxy.environ.get("CAIRN_PROXY_HOST", "127.0.0.1")
 PROXY_PORT = int(_os_proxy.environ.get("CAIRN_PROXY_PORT", "8789"))  # 8787 is sync server default
 PROXY_UPSTREAM = _os_proxy.environ.get("CAIRN_PROXY_UPSTREAM", "https://api.anthropic.com")
 PROXY_REWRITE = _os_proxy.environ.get("CAIRN_PROXY_REWRITE", "1").lower() in ("1", "true", "yes")
+
+# === Dashboard override key map ===
+# The config editor must write/read each setting under the EXACT env var that
+# the setting actually reads — and those diverge: most read their own name
+# (ORG_INDEX_*, CAIRN_SYNC_*), but the PROXY_* group reads CAIRN_PROXY_*. We
+# derive attr -> env-key by parsing this file's own `environ.get("…")` calls, so
+# the dashboard round-trips saves instead of guessing a blanket CAIRN_ prefix.
+# Presence in this map also marks a setting as genuinely env-overridable (vs a
+# literal constant the dashboard can show but not actually override).
+def _build_env_key_map():
+    import re as _re, pathlib as _pl
+    try:
+        _src = _pl.Path(__file__).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    return {m.group(1): m.group(2) for m in _re.finditer(
+        r'^([A-Z][A-Z0-9_]*)\s*=\s*[^\n]*?environ\.get\(\s*"([^"]+)"', _src, _re.M)}
+
+CONFIG_ENV_KEYS = _build_env_key_map()
