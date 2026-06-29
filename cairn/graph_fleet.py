@@ -65,8 +65,42 @@ def _default_roots() -> list[str]:
     return [os.path.dirname(home)]
 
 
+def _submodules_of(repo: str, timeout: int = 60) -> list[str]:
+    """Absolute working-tree paths of INITIALIZED submodules (recursive) under
+    `repo`. The depth-2 glob in discover_repos misses deep submodules — e.g. the
+    ROS2 `ros2_ws/src/intern/*` libraries (ugv-nav-msgs, stdx, geometry) sit 3-5
+    levels down. code-review-graph is per-repo and a parent build does not index
+    submodule contents (they are gitlinks), so each initialized submodule needs
+    its own graph. Uninitialized submodules (status flag '-') are empty → skipped.
+    """
+    try:
+        p = subprocess.run(["git", "-C", repo, "submodule", "status", "--recursive"],
+                           capture_output=True, text=True, timeout=timeout)
+    except (subprocess.SubprocessError, OSError):
+        return []
+    if p.returncode != 0:
+        return []
+    subs: list[str] = []
+    for line in p.stdout.splitlines():
+        if not line.strip() or line[0] == "-":   # '-' = not initialized (empty)
+            continue
+        # "<flag><sha> <path> (<describe>)" — path is the second field; a
+        # describe suffix " (…)" may or may not be present.
+        parts = line[1:].split(maxsplit=1)
+        if len(parts) < 2:
+            continue
+        rel = parts[1].rsplit(" (", 1)[0].strip()
+        sub = (Path(repo) / rel).resolve()
+        if any(part in _SKIP_DIRS for part in sub.parts):
+            continue
+        if sub.is_dir() and (sub / ".git").exists():
+            subs.append(str(sub))
+    return subs
+
+
 def discover_repos(roots: Optional[list[str]] = None, max_depth: int = 2) -> list[str]:
-    """Find git repos under roots. Resolves symlinks, de-dupes by realpath."""
+    """Find git repos under roots, INCLUDING initialized submodules (any depth).
+    Resolves symlinks, de-dupes by realpath."""
     roots = roots or _default_roots()
     found: set[str] = set()
     for root in roots:
@@ -81,6 +115,12 @@ def discover_repos(roots: Optional[list[str]] = None, max_depth: int = 2) -> lis
                 if any(part in _SKIP_DIRS for part in repo.parts):
                     continue
                 found.add(str(repo))
+    # Expand submodules: `git submodule status --recursive` finds them at any
+    # depth, which the bounded glob above cannot. Snapshot first so we don't
+    # re-scan freshly-added submodules (--recursive already covers nesting).
+    for repo in list(found):
+        for sub in _submodules_of(repo):
+            found.add(sub)
     return sorted(found)
 
 
