@@ -141,6 +141,23 @@ CAIRN_SYNC_ONLINE_WINDOW = int(_os.environ.get("CAIRN_SYNC_ONLINE_WINDOW", "90")
 # serving the raw session behind its own memories to approved peers on demand.
 CAIRN_SYNC_SHARE_SESSIONS = _os.environ.get("CAIRN_SYNC_SHARE_SESSIONS", "").lower() in ("1", "true", "yes")
 del _os
+
+# === Org-wide git index (org_index.py / interface_registry.py / cairn_verify.py) ===
+# Locatability + cross-repo index over one or more GitHub orgs, plus the
+# location-claim annotation injected into retrieved memories. OPT-IN: a memory
+# tool making scheduled `gh` API calls is a real side effect, so it stays OFF
+# until ORG_INDEX_ENABLED is set. When disabled, the nightly build, its cron and
+# the CLAUDE.md routing all no-op, and the injection annotation degrades to
+# nothing (location_annotation simply finds no org_index.db).
+import os as _os_oi
+ORG_INDEX_ENABLED = _os_oi.environ.get("ORG_INDEX_ENABLED", "").lower() in ("1", "true", "yes")
+# Comma-separated GitHub orgs to index, e.g. "robotics-plus,YamahaAg".
+ORG_INDEX_ORGS = [_o.strip() for _o in _os_oi.environ.get("ORG_INDEX_ORGS", "").split(",") if _o.strip()]
+ORG_INDEX_GH_HOST = _os_oi.environ.get("ORG_INDEX_GH_HOST") or None        # set for GitHub Enterprise
+ORG_INDEX_GH_ACCOUNT = _os_oi.environ.get("ORG_INDEX_GH_ACCOUNT") or None  # gh account (multi-account); used by the nightly wrapper
+ORG_INDEX_PUSHED_WITHIN_MONTHS = float(_os_oi.environ.get("ORG_INDEX_PUSHED_WITHIN_MONTHS", "12"))
+ORG_INDEX_MIN_RATE = int(_os_oi.environ.get("ORG_INDEX_MIN_RATE", "200"))
+del _os_oi
 # When enabled, the container injector also docker cp's the shim and hook
 # config into every new dev container, so cairn works with zero per-project
 # devcontainer.json edits.

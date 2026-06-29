@@ -92,13 +92,16 @@ def _stage_for_rate(min_rate, log):
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
-    name           TEXT PRIMARY KEY,
+    org            TEXT NOT NULL,
+    name           TEXT NOT NULL,
     default_branch TEXT,
     archived       INTEGER DEFAULT 0,
     pushed_at      TEXT,
-    indexed_at     REAL
+    indexed_at     REAL,
+    PRIMARY KEY (org, name)
 );
 CREATE TABLE IF NOT EXISTS branches (
+    org         TEXT NOT NULL,
     repo        TEXT NOT NULL,
     branch      TEXT NOT NULL,
     tip_sha     TEXT,
@@ -108,26 +111,38 @@ CREATE TABLE IF NOT EXISTS branches (
     status      TEXT,        -- identical|ahead|behind|diverged|default
     is_default  INTEGER DEFAULT 0,
     tree_indexed INTEGER DEFAULT 0,
-    PRIMARY KEY (repo, branch)
+    PRIMARY KEY (org, repo, branch)
 );
 CREATE TABLE IF NOT EXISTS files (
+    org      TEXT NOT NULL,
     repo     TEXT NOT NULL,
     branch   TEXT NOT NULL,
     path     TEXT NOT NULL,
     blob_sha TEXT,
     size     INTEGER,
     basename TEXT,
-    PRIMARY KEY (repo, branch, path)
+    PRIMARY KEY (org, repo, branch, path)
 );
 CREATE INDEX IF NOT EXISTS idx_files_basename ON files(basename);
 CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
-    path, repo UNINDEXED, branch UNINDEXED, content=''
+    path, org UNINDEXED, repo UNINDEXED, branch UNINDEXED, content=''
 );
 """
 
 def connect(db_path):
     con = sqlite3.connect(db_path)
     con.execute("PRAGMA journal_mode=WAL")
+    # Auto-migrate a pre-multi-org db (repos lacks the `org` column): drop the
+    # old tables and recreate. The index is fully rederivable from gh, so wiping
+    # is cheaper and safer than an in-place ALTER across four tables + fts.
+    try:
+        cols = [r[1] for r in con.execute("PRAGMA table_info(repos)")]
+        if cols and "org" not in cols:
+            for _t in ("files_fts", "files", "branches", "repos"):
+                con.execute(f"DROP TABLE IF EXISTS {_t}")
+            con.commit()
+    except sqlite3.Error:
+        pass
     con.executescript(SCHEMA)
     return con
 
@@ -138,13 +153,15 @@ def iso_now():
 
 def build(org, db_path, only_repos=None, max_branches=None,
           include_archived=False, pushed_within_months=None, min_rate=200,
-          resume=False, verbose=True):
+          resume=False, gh_host=None, verbose=True):
     con = connect(db_path)
     cur = con.cursor()
+    if gh_host:
+        os.environ["GH_HOST"] = gh_host  # gh subprocesses inherit this (GHE)
 
     def log(*a):
         if verbose:
-            print(*a, file=sys.stderr, flush=True)
+            print(f"[{org}]", *a, file=sys.stderr, flush=True)
 
     repos = list(gh_lines(f"orgs/{org}/repos?per_page=100",
                           jq=".[] | {name, default_branch, archived, pushed_at}"))
@@ -162,7 +179,7 @@ def build(org, db_path, only_repos=None, max_branches=None,
             f"{len(repos)}/{before} repos (cutoff {cutoff[:10]})")
 
     if resume:
-        done = {r[0] for r in cur.execute("SELECT DISTINCT repo FROM branches")}
+        done = {r[0] for r in cur.execute("SELECT repo FROM branches WHERE org=?", (org,))}
         repos = [r for r in repos if r["name"] not in done]
         log(f"[build] resume: skipping {len(done)} already-indexed repos")
 
@@ -173,12 +190,12 @@ def build(org, db_path, only_repos=None, max_branches=None,
         name = repo["name"]
         default = repo.get("default_branch") or "main"
         cur.execute(
-            "INSERT OR REPLACE INTO repos VALUES (?,?,?,?,?)",
-            (name, default, int(bool(repo.get("archived"))),
+            "INSERT OR REPLACE INTO repos VALUES (?,?,?,?,?,?)",
+            (org, name, default, int(bool(repo.get("archived"))),
              repo.get("pushed_at"), time.time()))
-        # fresh per-repo rows
-        cur.execute("DELETE FROM branches WHERE repo=?", (name,))
-        cur.execute("DELETE FROM files WHERE repo=?", (name,))
+        # fresh per-repo rows (scoped to this org)
+        cur.execute("DELETE FROM branches WHERE org=? AND repo=?", (org, name))
+        cur.execute("DELETE FROM files WHERE org=? AND repo=?", (org, name))
 
         try:
             branches = list(gh_lines(
@@ -241,18 +258,18 @@ def build(org, db_path, only_repos=None, max_branches=None,
                             continue
                         path = ent["path"]
                         base = path.rsplit("/", 1)[-1]
-                        rows.append((name, bname, path, ent.get("sha"),
+                        rows.append((org, name, bname, path, ent.get("sha"),
                                      ent.get("size"), base))
                     cur.executemany(
-                        "INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?)", rows)
+                        "INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?)", rows)
                     cur.executemany(
-                        "INSERT INTO files_fts (path, repo, branch) VALUES (?,?,?)",
-                        [(r[2], r[0], r[1]) for r in rows])
+                        "INSERT INTO files_fts (path, org, repo, branch) VALUES (?,?,?,?)",
+                        [(r[3], r[0], r[1], r[2]) for r in rows])
                     tree_indexed = 1
 
             cur.execute(
-                "INSERT OR REPLACE INTO branches VALUES (?,?,?,?,?,?,?,?,?)",
-                (name, bname, sha, tip_date, ahead, behind, status,
+                "INSERT OR REPLACE INTO branches VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (org, name, bname, sha, tip_date, ahead, behind, status,
                  int(is_default), tree_indexed))
         con.commit()
 
@@ -275,69 +292,81 @@ def find(db_path, term, limit=50):
     # exact-ish basename match first, then FTS path match
     like = f"%{term}%"
     rows = con.execute(
-        """SELECT f.repo, f.branch, f.path, b.status, b.is_default, b.tip_date
-           FROM files f JOIN branches b ON b.repo=f.repo AND b.branch=f.branch
+        """SELECT f.org, f.repo, f.branch, f.path, b.status, b.is_default, b.tip_date
+           FROM files f JOIN branches b
+             ON b.org=f.org AND b.repo=f.repo AND b.branch=f.branch
            WHERE f.basename = ? OR f.path LIKE ?
-           ORDER BY b.is_default DESC, f.repo, f.branch
+           ORDER BY b.is_default DESC, f.org, f.repo, f.branch
            LIMIT ?""",
         (term, like, limit)).fetchall()
     if not rows:
         print(f"No match for '{term}'. (Is the index built?)")
         return
-    for repo, branch, path, status, is_def, tip in rows:
+    for org, repo, branch, path, status, is_def, tip in rows:
         tag = "default" if is_def else (status or "?")
         age = _age_days(tip)
         agestr = f"{age}d old" if age is not None else "age?"
         flag = "" if is_def or status in ("identical", "behind") else "  ⚠ unmerged"
-        print(f"{repo:28} {branch:24} [{tag:9}] {agestr:9} {path}{flag}")
+        print(f"{org+'/'+repo:32} {branch:24} [{tag:9}] {agestr:9} {path}{flag}")
 
-def stranded(db_path, stale_days=90, limit=100):
+def stranded(db_path, stale_days=90, limit=100, org=None):
     """Branches with unique commits (ahead/diverged), ranked by staleness.
-    These are the 'work at risk' — unmerged and aging."""
+    These are the 'work at risk' — unmerged and aging. Optional org filter."""
     con = connect(db_path)
-    rows = con.execute(
-        """SELECT repo, branch, ahead_by, behind_by, status, tip_date
-           FROM branches
-           WHERE is_default=0 AND status IN ('ahead','diverged') AND ahead_by>0
-           ORDER BY tip_date ASC
-           LIMIT ?""", (limit,)).fetchall()
+    q = ("SELECT org, repo, branch, ahead_by, behind_by, status, tip_date "
+         "FROM branches WHERE is_default=0 AND status IN ('ahead','diverged') "
+         "AND ahead_by>0")
+    params = []
+    if org:
+        q += " AND org=?"
+        params.append(org)
+    q += " ORDER BY tip_date ASC LIMIT ?"
+    params.append(limit)
+    rows = con.execute(q, params).fetchall()
     if not rows:
         print("No stranded branches found. (Index built? Org fully merged?)")
         return
-    print(f"{'REPO':28} {'BRANCH':28} {'AHEAD':>5} {'BEHIND':>6} {'AGE':>7}  STATUS")
-    print("-" * 92)
-    for repo, branch, ahead, behind, status, tip in rows:
+    print(f"{'ORG/REPO':38} {'BRANCH':26} {'AHEAD':>5} {'BEHIND':>6} {'AGE':>7}  STATUS")
+    print("-" * 100)
+    for org_, repo, branch, ahead, behind, status, tip in rows:
         age = _age_days(tip)
         agestr = f"{age}d" if age is not None else "?"
         mark = "  ← STALE" if (age is not None and age >= stale_days) else ""
-        print(f"{repo:28} {branch:28} {ahead or 0:>5} {behind or 0:>6} "
+        print(f"{org_+'/'+repo:38} {branch:26} {ahead or 0:>5} {behind or 0:>6} "
               f"{agestr:>7}  {status}{mark}")
 
-def branches(db_path, repo):
+def branches(db_path, repo, org=None):
     con = connect(db_path)
-    rows = con.execute(
-        """SELECT branch, ahead_by, behind_by, status, is_default, tip_date,
-                  tree_indexed
-           FROM branches WHERE repo=? ORDER BY is_default DESC, tip_date DESC""",
-        (repo,)).fetchall()
+    q = ("SELECT org, branch, ahead_by, behind_by, status, is_default, tip_date, "
+         "tree_indexed FROM branches WHERE repo=?")
+    params = [repo]
+    if org:
+        q += " AND org=?"
+        params.append(org)
+    q += " ORDER BY org, is_default DESC, tip_date DESC"
+    rows = con.execute(q, params).fetchall()
     if not rows:
         print(f"No branches indexed for '{repo}'.")
         return
-    for br, ahead, behind, status, is_def, tip, ti in rows:
+    for org_, br, ahead, behind, status, is_def, tip, ti in rows:
         age = _age_days(tip)
-        print(f"{br:30} {'(default)' if is_def else status or '?':10} "
+        print(f"{org_+'/'+repo:32} {br:28} {'(default)' if is_def else status or '?':10} "
               f"ahead={ahead or 0:<4} behind={behind or 0:<4} "
               f"age={age if age is not None else '?'}d tree={'y' if ti else 'n'}")
 
 def stats(db_path):
     con = connect(db_path)
-    r = con.execute("SELECT COUNT(*) FROM repos").fetchone()[0]
-    b = con.execute("SELECT COUNT(*) FROM branches").fetchone()[0]
-    f = con.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-    st = con.execute(
-        "SELECT COUNT(*) FROM branches WHERE status IN ('ahead','diverged') "
-        "AND ahead_by>0").fetchone()[0]
-    print(f"repos={r}  branches={b}  indexed files={f}  stranded branches={st}")
+    orgs = [o for (o,) in con.execute("SELECT DISTINCT org FROM repos ORDER BY org")]
+    if not orgs:
+        print("empty index (no orgs built)")
+        return
+    for o in orgs:
+        r = con.execute("SELECT COUNT(*) FROM repos WHERE org=?", (o,)).fetchone()[0]
+        b = con.execute("SELECT COUNT(*) FROM branches WHERE org=?", (o,)).fetchone()[0]
+        f = con.execute("SELECT COUNT(*) FROM files WHERE org=?", (o,)).fetchone()[0]
+        st = con.execute("SELECT COUNT(*) FROM branches WHERE org=? AND "
+                         "status IN ('ahead','diverged') AND ahead_by>0", (o,)).fetchone()[0]
+        print(f"{o}: repos={r}  branches={b}  files={f}  stranded={st}")
 
 # -------------------------------------------------------------------------- main
 
@@ -347,15 +376,17 @@ def main():
     ap.add_argument("--db", default=DEFAULT_DB, help=f"SQLite path (default {DEFAULT_DB})")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    b = sub.add_parser("build", help="walk the org and populate the catalog")
-    b.add_argument("--org", required=True)
+    b = sub.add_parser("build", help="walk one or more orgs and populate the catalog")
+    b.add_argument("--orgs", nargs="*", default=None,
+                   help="orgs to index (default: cairn config ORG_INDEX_ORGS)")
     b.add_argument("--repos", nargs="*", help="limit to these repo names")
+    b.add_argument("--gh-host", default=None, help="GitHub host (default: github.com; set for GHE)")
     b.add_argument("--max-branches", type=int, default=None)
     b.add_argument("--include-archived", action="store_true")
     b.add_argument("--pushed-within-months", type=float, default=None,
-                   help="only index repos pushed within the last N months")
-    b.add_argument("--min-rate", type=int, default=200,
-                   help="pause the walk if core API quota drops below this")
+                   help="only index repos pushed within the last N months (default: config)")
+    b.add_argument("--min-rate", type=int, default=None,
+                   help="pause the walk if core API quota drops below this (default: config)")
     b.add_argument("--resume", action="store_true",
                    help="skip repos already present in the index (continue a run)")
 
@@ -365,24 +396,36 @@ def main():
 
     s = sub.add_parser("stranded", help="unmerged work at risk, by staleness")
     s.add_argument("--stale-days", type=int, default=90)
+    s.add_argument("--org", default=None, help="limit to one org")
 
     br = sub.add_parser("branches", help="list indexed branches for a repo")
     br.add_argument("repo")
+    br.add_argument("--org", default=None, help="disambiguate repo across orgs")
 
     sub.add_parser("stats", help="index summary")
 
     a = ap.parse_args()
     if a.cmd == "build":
-        build(a.org, a.db, only_repos=a.repos, max_branches=a.max_branches,
-              include_archived=a.include_archived,
-              pushed_within_months=a.pushed_within_months, min_rate=a.min_rate,
-              resume=a.resume)
+        from cairn import config
+        orgs = a.orgs or config.ORG_INDEX_ORGS
+        if not orgs:
+            sys.exit("no orgs to index: pass --orgs or set ORG_INDEX_ORGS "
+                     "(and ORG_INDEX_ENABLED) in cairn config")
+        host = a.gh_host or config.ORG_INDEX_GH_HOST
+        pwm = (a.pushed_within_months if a.pushed_within_months is not None
+               else config.ORG_INDEX_PUSHED_WITHIN_MONTHS)
+        mr = a.min_rate if a.min_rate is not None else config.ORG_INDEX_MIN_RATE
+        for org in orgs:
+            build(org, a.db, only_repos=a.repos, max_branches=a.max_branches,
+                  include_archived=a.include_archived,
+                  pushed_within_months=pwm, min_rate=mr,
+                  resume=a.resume, gh_host=host)
     elif a.cmd == "find":
         find(a.db, a.term, a.limit)
     elif a.cmd == "stranded":
-        stranded(a.db, a.stale_days)
+        stranded(a.db, a.stale_days, org=a.org)
     elif a.cmd == "branches":
-        branches(a.db, a.repo)
+        branches(a.db, a.repo, org=a.org)
     elif a.cmd == "stats":
         stats(a.db)
 

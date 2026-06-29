@@ -69,13 +69,16 @@ class Index:
         self.repos = {r[0] for r in self.con.execute("SELECT name FROM repos")}
 
     def locate(self, repo, path):
-        """Return (status, branches) for a (repo, path) claim."""
+        """Return (status, branches) for a (repo, path) claim. Org-agnostic:
+        matches the repo name in any indexed org (repo names are ~unique), with
+        the branches join scoped by org so same-named repos don't cross-join."""
         if repo not in self.repos:
             return "UNKNOWN", []
         base = path.rsplit("/", 1)[-1]
         rows = self.con.execute(
             """SELECT f.branch, b.is_default
-               FROM files f JOIN branches b ON b.repo=f.repo AND b.branch=f.branch
+               FROM files f JOIN branches b
+                 ON b.org=f.org AND b.repo=f.repo AND b.branch=f.branch
                WHERE f.repo=? AND (f.path=? OR f.path LIKE ? OR f.basename=?)""",
             (repo, path, f"%{path}", base)).fetchall()
         if not rows:
