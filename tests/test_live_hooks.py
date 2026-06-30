@@ -67,6 +67,16 @@ def run_claude(prompt, timeout=60):
 
 
 # Verifies: both hooks fire and read input fields correctly
+@pytest.fixture(autouse=True)
+def _cleanup_smoke_memories():
+    """This live test inserts a real cairn-smoke-test memory through the actual
+    pipeline; always remove it afterward so repeated runs do not pollute the
+    corpus. (cleanup() previously ran only in __main__, not under pytest, which
+    leaked ~92 rows into cairn.db over time.)"""
+    yield
+    cleanup()
+
+
 def test_hooks_fire_and_fields_valid():
     """Send a prompt through claude -p, verify both hooks fire and read their
     input fields correctly. This catches field name renames in Claude Code updates."""

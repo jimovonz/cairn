@@ -1,8 +1,11 @@
 # Calibration System — Design Specification
 
-**Status:** Design complete, not yet implemented
+**Status:** **Implemented — Phases 1–7 shipped.** This document is the original
+design; the as-built system (analyser, per-qf retrieval, dashboard, self-modification,
+CLAUDE.md import, and the natural-language → CLI mapping) is documented in the
+project `CLAUDE.md` "Calibration system (Phases 1–7)" section, which is the
+source of truth where the two differ.
 **Bundled with:** Cairn (shares SQLite, retrieval primitives, hooks, daemon)
-**Branch target:** `feature/calibration-system`
 
 ## Purpose
 

@@ -123,6 +123,13 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
 │  │ Why:  Project awareness without prompt content     │  │
 │  └───────────────────────────────────────────────────┘  │
 │                                                         │
+│  CORRECTION BOOTSTRAP: TOP CORRECTIONS, NO QUERY        │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │ When: First message of session                    │  │
+│  │ How:  Top-N corrections by confidence, no query   │  │
+│  │ Why:  96% of corrections never match semantically │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
 │  Layer 1: FIRST-PROMPT PUSH                             │
 │  ┌───────────────────────────────────────────────────┐  │
 │  │ When: First message of session (after bootstrap)  │  │
@@ -133,7 +140,8 @@ This creates a self-reinforcing loop: the instruction tells the LLM to do it, an
 │  Layer 1.5: PER-PROMPT PUSH                             │
 │  ┌───────────────────────────────────────────────────┐  │
 │  │ When: Every subsequent message in the session     │  │
-│  │ How:  Embed user message → search (high threshold)│  │
+│  │ How:  Embed → search (high threshold) → context-  │  │
+│  │       window-aware cross-encoder rerank           │  │
 │  │ Why:  Surface context mid-conversation            │  │
 │  └───────────────────────────────────────────────────┘  │
 │                                                         │
@@ -451,6 +459,31 @@ Primary key: `(session_id, key)`. Tracks per-session flags like continuation cou
 
 Primary key: `(id1, id2, mode)`. Stores the result of NLI + Haiku assessment for each memory pair, enabling incremental runs — only pairs involving memories written since the last run need assessment. Backfilled with all pairs above the similarity threshold for the full corpus.
 
+**memory_deliveries** — read-side relevance-grading delivery log (see [Read-Side Relevance Grading](#read-side-relevance-grading))
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INTEGER | Primary key (autoincrement) |
+| session_id | TEXT | Session the memory was injected into |
+| turn_index | INTEGER | Per-session turn counter (`MAX(turn_index)+1`) |
+| memory_id | INTEGER | The injected `memories.id` |
+| context_text | TEXT | Cleaned recent-context window that keyed the delivery (the cross-encoder student's input) |
+| context_vec | BLOB | Embedding of `context_text` (nearest-context join key) |
+| context_intent | TEXT | Nullable async-filled (T1) synthesised-intent enrichment |
+| ce_score | REAL | The reranker score that surfaced this row (falls back to composite `score`) |
+| served_rank | INTEGER | Rank at which it was injected |
+| grade | INTEGER | Agent-as-teacher relevance grade 0–3 (`NULL` = unlabelled) |
+| hard_negative | INTEGER | 1 when the agent flagged it actively wrong/misleading (`!`) |
+| reranker_model | TEXT | Model that produced `ce_score` — provenance across the ms-marco→bge transition |
+| score_components | TEXT | JSON of all score signals (`ce`/`composite`/`rrf`/`sim`/`conf`) |
+| layer | TEXT | Retrieval layer that delivered the memory |
+| scope | TEXT | `project` vs `global`, computed exactly as `split_by_scope` does |
+| engaged | INTEGER | Behavioural label: 1 used / 0 not-used / `NULL` no-signal (the PRIMARY label) |
+| engaged_score | REAL | Distinctive-term overlap ratio 0..1; `-1.0` = undecidable (memory redundant with prompt); `NULL` = not yet evaluated |
+| delivered_at | TIMESTAMP | When injected |
+
+Indexed on `session_id`, `memory_id`, and `grade`. Newer columns (`reranker_model`, `score_components`, `layer`, `scope`, `engaged`, `engaged_score`) are added by idempotent `ALTER TABLE` migrations for DBs predating them. One row per injected memory per turn; `grade`/`hard_negative` are written back from the response's `[cm]` `rg` field, and `engaged`/`engaged_score` are stamped mechanically at the next Stop.
+
 ## Concurrency
 
 The database uses SQLite in WAL (Write-Ahead Logging) mode with a 5-second busy timeout. This is essential because Cairn operates across concurrent Claude Code sessions, cron jobs, and external integrations (e.g. Telegram).
@@ -462,6 +495,49 @@ The database uses SQLite in WAL (Write-Ahead Logging) mode with a 5-second busy 
 All connection points (stop hook, prompt hook, query CLI, daemon) apply the busy timeout via `PRAGMA busy_timeout`. The `cairn/db.py` module provides a shared `connect()` helper that applies both WAL and timeout automatically.
 
 **Scaling limit**: WAL SQLite handles tens of concurrent sessions comfortably. At hundreds of concurrent writers, Postgres with connection pooling would be the upgrade path.
+
+### SQLite library discipline
+
+Cairn requires **pysqlite3** (a recent SQLite — 3.51 on dev machines), not the system stdlib `sqlite3` (3.45). A stdlib-vs-pysqlite3 version mix writing the same WAL-mode cairn DB is a documented corruption cause (commit `be91366` standardised 32 files on the guard after `ingest.py` / `backfill_ingestion.py` / `confluence_ingest.py` each slipped through). The guard sits at the top of every module that imports sqlite3:
+
+```python
+try:
+    import pysqlite3 as sqlite3
+except ImportError:
+    if os.environ.get("CAIRN_ALLOW_STDLIB_SQLITE") == "1":
+        import sqlite3   # explicit opt-in only
+    else:
+        raise ImportError("cairn requires pysqlite3 …")
+```
+
+Three layers enforce it. `tests/test_sqlite_guard.py` walks every `*.py` under `cairn/` and `hooks/` and fails if any imports stdlib `sqlite3` without the pysqlite3 guard — the allowlist is **empty** (no exemptions; `graph.py` was previously allowlisted as "graph.db only" but it also opens the WAL cairn DB, so it now carries the guard too). `install.sh` asserts at install time that the resolved module is pysqlite3 (`h.sqlite3.__name__.startswith("pysqlite3")`) and that `sqlite_version_info >= (3, 45)`, failing loud if stdlib leaked. Because pysqlite3 lives in the project venv, the test suite must run under that interpreter for the guard to resolve. The databases run `PRAGMA journal_mode=WAL` and deliberately **do not** set `synchronous=OFF` — durability over the marginal write speed. `tests/conftest.py` pops `CAIRN_PROXY_ENABLED` at import time so the proxy-on dev shell doesn't flip hooks into pointer-injection mode and produce ~18 spurious failures that are green in CI but red locally.
+
+### Embedding daemon wire protocol
+
+`cairn/daemon.py` keeps the sentence-transformers model (and, lazily, the cross-encoder reranker and NLI model) resident in RAM, eliminating the ~3 s cold start every hook would otherwise pay. Clients talk to it over a **Unix socket** (`cairn/.daemon.sock`) with a trivial framing convention: send one JSON object, half-close the write side (`SHUT_WR`), read the JSON reply until EOF. `send_request` is the in-process client; it returns `None` (rather than raising) when the daemon is down, so every caller degrades to in-process model loading. A `.daemon.pid` file tracks the process for `start`/`stop`/`status`.
+
+Each request carries an `action`; the dispatcher in `handle_client` recognises:
+
+| Action | Request fields | Response | Purpose |
+|--------|---------------|----------|---------|
+| `embed` | `text` | `{vector}` (hex blob) | Single embedding — encodes via the model directly, never `emb.embed()`, to avoid recursing back into the daemon client |
+| `embed_batch` | `texts[]` | `{vectors[]}` | Batched embeddings |
+| `vector_search` | `texts[]`, `n_base`, `min_sim` (0.15), `top_k` (300) | `{rows[]}` | Server-side similarity over a cached embedding matrix (see below) |
+| `rerank` | `query`, `candidates[]` | `{scores[], score_floor, model}` | Cross-encoder rerank; `scores: null` when no reranker is loaded; reports the in-memory model name as provenance |
+| `nli` | `pairs[]` | `{scores[]}` | NLI entailment/contradiction logits for consolidation; `null` if model unavailable |
+| `similarity` | `text`, `threshold` (0.5), `limit` (10) | `{results[]}` | `embeddings.find_similar` against the live DB |
+| `ping` | — | `{status: "ok"}` | Liveness probe |
+| `hook` | `route`, `payload` | `{stdout, stderr, exit_code}` | Run a registered hook (`userpromptsubmit`/`stop`/`pretool`/`posttool`) under the venv interpreter (120 s timeout) — the container path |
+| `cairn_recall` | `text`, `limit` (10), `threshold` (0.3) | `{results[]}` | Semantic search for container clients with no `query.py` access |
+| `cairn_remember` | `type`, `topic`, `content`, `project?`, `session_id?` | `{ok}` / `{error}` | Insert a memory through the same path as `query.py --add` |
+
+**Lazy model caches.** Only the embedding model is loaded eagerly at startup. `_get_cross_encoder` and `_get_nli_model` populate module-level globals on first use, so a daemon that only ever serves embeds never pays to load the reranker or NLI model.
+
+**Cached search matrix.** `vector_search` does not re-read embeddings per query. `_ensure_search_cache` keeps a stacked `(N x dim)` matrix `M` (plus a topic matrix `T`) keyed by a DB "stamp"; it rebuilds only when the stamp changes, so repeated searches are matrix multiplies against resident memory.
+
+**Idle lifecycle.** The accept loop runs with `server.settimeout(IDLE_TIMEOUT)` where `IDLE_TIMEOUT = 1800` (30 minutes). If no connection arrives within the window, `accept()` raises `socket.timeout` and the daemon shuts itself down cleanly (unlinking the socket and PID file) — it is respawned by the next hook that needs it. SIGTERM/SIGINT trigger the same clean shutdown.
+
+**TCP listener.** When `CAIRN_TCP_LISTENER_ENABLED` (default true), the daemon also spawns a background thread listening on TCP `CAIRN_TCP_PORT` (47390). `_detect_docker0_ip` binds it to the `docker0` bridge IP (the containers' default gateway, parsed from `ip -4 -o addr show docker0`) when present, falling back to `0.0.0.0`. This lets container-side shims reach the host daemon — chiefly via `cairn_recall`/`cairn_remember`/`hook` — without bind-mounting the Unix socket. The same `handle_client` dispatcher serves both transports. On startup the daemon also conditionally starts the dev-container extension injector and (opt-in) the peer-to-peer sync services; failures in either are swallowed so they can never take the daemon down.
 
 ## Stop Hook — the core mechanism
 
@@ -534,7 +610,7 @@ The embedding layer supports two modes:
 
 The daemon serves three models, all lazily loaded on first use:
 1. **Bi-encoder** (`all-MiniLM-L6-v2`) — embedding generation for storage and search
-2. **Cross-encoder** (`cross-encoder/ms-marco-MiniLM-L-6-v2`) — retrieval re-ranking, jointly scoring (query, memory) pairs
+2. **Cross-encoder** (device-aware — see [Device-aware reranking](#device-aware-reranking)) — retrieval re-ranking, jointly scoring (query, memory) pairs
 3. **NLI model** (`cross-encoder/nli-MiniLM2-L6-H768`) — entailment/contradiction scoring for the consolidation pipeline
 
 ### Vector search
@@ -574,9 +650,22 @@ On every insert, the new memory's embedding is checked against existing entries 
 - **Same type + topic, different content** → **hard contradiction detected** — old entry's confidence is dropped to 0.2, then overwritten with new content at fresh 0.7 confidence. The old content is preserved in `memory_history`.
 - **Neither** → insert new row
 
+When dedup updates an existing memory, the new entry's **keywords are unioned** with the existing set (case-insensitive, order-preserving; `storage._union_keywords`), not overwritten — keywords are context-targeting findability terms, so a re-encounter enriches the set rather than clobbering it.
+
 The dedup threshold was deliberately set high (0.95) to avoid accidentally overwriting distinct memories that happen to be semantically similar. Two genuinely different facts about the same domain will both be kept.
 
 The `BEFORE UPDATE` trigger on `memories` ensures the old content is preserved in `memory_history` before any overwrite.
+
+### Device-aware reranking
+
+The cross-encoder model and its score floor are resolved at use time by `config.resolve_reranker()`, which returns `(model_name, score_floor)` for the active device:
+
+- **Default** — `cross-encoder/ms-marco-MiniLM-L-6-v2` with a raw-logit floor of `-3.0` (`CROSS_ENCODER_SCORE_FLOOR`). ms-marco still loads on the GPU when CUDA is present (sentence-transformers auto-selects the device), so it is ~12× faster than CPU while keeping the floor the system has calibrated.
+- **When `RERANKER_BGE_ENABLED` is set AND a CUDA GPU is present** — `BAAI/bge-reranker-base` with a sigmoid `0–1` floor of `0.0005` (`CROSS_ENCODER_SCORE_FLOOR_CUDA`). bge emits sigmoid scores rather than ms-marco logits, so it carries its own floor.
+
+`RERANKER_BGE_ENABLED` is currently `True` on this branch (CUDA available; the loose `0.0005` floor is provisional pending recalibration from `rg` labels) — bge-reranker-base previously went live on thin validation and is being re-validated against real retrieval quality (the step-1b A/B over relevance grades) before the floor is trusted. The constants are kept so flipping the flag never requires a code change.
+
+Only the daemon imports torch: its `rerank` action loads the cross-encoder, scores `(query, candidate)` pairs, and returns `{scores, score_floor, model}` (the loaded model name `_cross_encoder_name` is reported as truer provenance than re-resolving). On the read side, `embeddings._daemon_rerank` threads the `(scores, floor, model)` tuple back so the hot hook path never imports torch; `find_similar` stamps the model onto each surfaced row's `reranker_model` and applies the device-appropriate floor, falling back to the static `CROSS_ENCODER_SCORE_FLOOR` if the daemon reports none. The CE scores the cleaned **recent-context window** (the `rerank_query` built by `relevance.build_context_window`), not the bare prompt, so write-time delivery keying and read-time reranking share one representation.
 
 ## Veracity System
 
@@ -779,6 +868,12 @@ On every subsequent message in the session, the prompt hook embeds the user's me
 
 Uses `L1_5_ENABLED` (default true), `L1_5_SIM_THRESHOLD`, and `L1_5_MAX_RESULTS` from config.
 
+**Context-window-aware rerank.** Layer 1.5 (and Layer 1) do not rerank against the bare user message. Both pass `relevance.build_context_window(user_message, transcript_path)` — the cleaned `[prev user] + [prev assistant] + [user]` recent-context window (see [Read-Side Relevance Grading](#read-side-relevance-grading)) — as the cross-encoder `rerank_query`, so a follow-up like "what about the other one?" is scored against the exchange it refers to, not the pronoun alone.
+
+### Correction bootstrap
+
+Behavioural corrections describe *patterns of how to work*, not facts that match a specific query — so semantic push rarely surfaces them (empirically 96% of corrections never appear cross-session under query-driven retrieval alone). `correction_bootstrap` (`prompt_hook.py`) therefore injects the top `CORRECTION_BOOTSTRAP_MAX` (5) non-archived `correction` memories unconditionally on the first prompt of every session, ranked by confidence (most-corroborated first) with `updated_at` as tiebreaker — no query embedding involved. They are emitted under the `correction-bootstrap` layer (no `<instruction>` chrome; the layer legend lives in the rules file) and logged via `record_layer_delivery`. This is the only retrieval path that ignores similarity entirely: the value of a correction is independent of whether the current prompt happens to resemble it.
+
 ### Layer 2: Keyword cross-project
 
 The LLM can include `keywords: authentication, JWT, session tokens` in its memory block. The Stop hook extracts these keywords and searches global memories (excluding the current project) for strong matches (`L2_SIM_THRESHOLD >= 0.60`). Results are staged in `.staged_context` and injected on the next prompt via the UserPromptSubmit hook.
@@ -815,7 +910,7 @@ File matching is by exact path or basename (for when the same file is referenced
 rrf_score = Σ 1/(k + rank_i)  across each search method that found this memory
 ```
 
-Where `k = 60` (standard constant). A memory found by both methods gets contributions from both rank terms — dual-match memories naturally score higher than single-method matches.
+Where `k = RRF_K` (config, 60 — the standard constant that prevents a single high rank from dominating). A memory found by both methods gets contributions from both rank terms — dual-match memories naturally score higher than single-method matches.
 
 FTS5 uses Porter stemming and unicode61 tokenizer. Stopwords are filtered before building the OR-joined query. Each search path returns up to 20 candidates; RRF merges them, and the fused score replaces the old hardcoded 0.30 penalty for FTS-only results.
 
@@ -1250,18 +1345,24 @@ Phase 4: Execute (if --execute)
 
 ### Contradiction detection
 
-Finds unflagged contradictions — memories that say opposite things but weren't caught at write time (different type/topic, or below negation heuristic threshold). The same pipeline also detects **plan→implementation pairs**: an older memory phrased as intent ("plan", "candidate", "next step", "should", …) that a newer memory confirms was built.
+Finds unflagged contradictions — memories that say opposite things but weren't caught at write time (different type/topic, or below negation heuristic threshold). The same pipeline also detects **plan→implementation pairs**: an older memory phrased as intent ("plan", "candidate", "next step", "should", …) that a newer memory confirms was built. (This supersedes `cairn/contradiction_scan.py`, the legacy standalone scanner that found negation-mismatch pairs and merely *annotated* the older memory rather than archiving it.)
 
 ```
-Phase 1: Bi-encoder candidate pairs
-  Find pairs of active memories with cosine similarity ≥ 0.70
+Phase 1: Bi-encoder candidate pairs (two-tier selection)
+  Find pairs of active memories with cosine similarity ≥ CONTRADICTION_SIMILARITY_THRESHOLD (0.70)
+    Tier 1 (always included): same type+topic pairs — highest contradiction signal
+    Tier 2 (fills remaining budget to CONTRADICTION_MAX_PAIRS=2000): cross-topic
+      pairs, sampled evenly across similarity bands so low-similarity
+      contradictions surface, not just near-duplicates
   Skip pairs already assessed (pair_assessments cache)
   Split: pairs whose older memory reads as a plan/intent (keyword heuristic)
   bypass NLI — a plan and the fact implementing it never scores as a contradiction
       │
-Phase 2: NLI contradiction scoring (via daemon)
-  Score non-plan pairs for contradiction signal using NLI model
-  Keep pairs above NLI_CONTRADICTION_THRESHOLD
+Phase 2: NLI contradiction pre-filter (DISABLED by default)
+  NLI_CONTRADICTION_PREFILTER_ENABLED defaults False — the NLI contra-logit is
+  non-discriminative for supersession (AUC ~0.5) and net-harmful as a gate, so
+  non-plan candidates pass straight to Haiku. When enabled, non-plan pairs are
+  scored and only those above NLI_CONTRADICTION_THRESHOLD proceed.
       │
 Phase 3: Haiku assessment (batched)
   NLI-confirmed pairs + plan candidates judged by Haiku, one verdict per pair:
@@ -1297,6 +1398,14 @@ python3 cairn/consolidate.py --execute                    # execute consolidatio
 python3 cairn/consolidate.py --contradictions              # dry-run contradiction scan
 python3 cairn/consolidate.py --contradictions --execute    # execute contradiction scan
 ```
+
+## Memory Audit Agent
+
+Consolidation and contradiction detection are *mechanical* — they merge near-duplicates and archive superseded entries. `cairn/audit_agent.py` is the complementary *editorial* pass: it spends a `claude -p` turn re-reading the original transcript alongside the one-line memories it produced, to confirm, enrich, correct, or fill gaps.
+
+**Flow.** `audit_agent.py [session_id]` (or the most-recent session with unaudited memories, via `find_session`) collects every memory for that session above the watermark, reconstructs the relevant transcript segment from the earliest such memory's timestamp (`get_transcript_segment`), and builds a prompt instructing the agent to: (1) review each memory against the transcript — enrich the *accurate-but-thin* (`--update <id>` adding the why / alternatives / outcome), correct the inaccurate, `--archive` the superseded; (2) **find gaps** — decisions, user corrections, rejected approaches, facts, or preferences that were discussed but never captured, adding each with `--add`; (3) advance the watermark; (4) report. It is launched with `claude -p --allowedTools Bash`, a 120 s timeout, and `CAIRN_MODE=read-only` in the environment so the agent's own turns do not recursively trigger the Stop-hook capture path while it edits memories through `query.py`.
+
+**Incremental watermark.** Per-session progress is a *memory-id* watermark, not a timestamp: `hook_state[session_id]["last_audit_id"]`. `get_unaudited` returns only memories with `id > last_audit_id`; `query.py --audit <session_id>` advances it to the current max. So each run audits only memories created since the last pass, and `find_session` scans the 10 most-recently-active sessions for any with `id > last_audit_id`.
 
 ## API Proxy (artifact-free injection)
 
@@ -1342,7 +1451,43 @@ Crons: analyser at 00:00, self-modification at 00:30. See `docs/spec-calibration
 
 ## Dev-Container Support
 
-For sessions running inside dev-containers, the daemon exposes a **TCP listener on port 47390** alongside its Unix socket, and `cairn_recall` / `cairn_remember` opcodes let a container shim dial the host daemon. `cairn/container_injector.py` injects context inside the container, with an extension auto-installer and VSIX staging so a containerised Claude Code / Copilot session reaches the same host cairn as the native session.
+For sessions running inside dev-containers, the daemon exposes a **TCP listener on port 47390** (`CAIRN_TCP_PORT`, bound to the `docker0` bridge IP) alongside its Unix socket, and the `cairn_recall` / `cairn_remember` / `hook` opcodes let a container-side shim dial the host daemon without bind-mounting the socket. A containerised Claude Code / Copilot session therefore reaches the *same* host cairn DB as a native session.
+
+**Auto-injection on container start.** `cairn/container_injector.py` runs as a background thread inside the daemon (gated by `CONTAINER_AUTO_INSTALL_ENABLED`, default true). `watch_loop` subscribes to `docker events` and, for each started container that `_is_dev_container` recognises (via VS Code's `devcontainer.local_folder` label or a `com.docker.compose.project.config_files` value pointing inside `.devcontainer/`), dispatches `_handle_container_start`. The watcher is self-healing — it restarts the `docker events` subscription after a 5 s backoff if it dies, and is wrapped so it can never crash the daemon.
+
+`_handle_container_start` does three things once `code-server` is reachable (`_wait_for_code_cli`, polling up to 120 s):
+
+- **Hook deployment** (`CONTAINER_AUTO_DEPLOY_HOOKS`, default true) — `docker cp`s the `shims/cairn-hook.py` shim to `/opt/cairn-shims/` and renders `templates/copilot-hooks-container.json` (substituting the shim path) into `~/.github/hooks/cairn.json`, so the in-container assistant's hooks call back to the host daemon over TCP. No project-side `devcontainer.json` mount is required.
+- **VSIX staging / auto-install** — any `*.vsix` staged in `CONTAINER_AUTO_INSTALL_VSIX_DIR` (`~/.local/share/cairn-vsix`) is copied into the container and installed with `code --install-extension … --force` via the resolved `code-server` CLI. This carries unpublishable personal extensions into the container.
+- **Managed instructions** — for every installed extension that declares `contributes.chatInstructions`, plus cairn's own container-side instructions, it assembles a managed block and writes it into the workspace `.github/` (with a `.gitignore` entry) so the extensions' instructions reach the model even where VS Code's native injection doesn't fire.
+
+Transcripts sent through the `hook` opcode are stashed atomically under `transcripts/container/<session_id>.jsonl` so `query.py --context` can recover a container session's history after the container is gone.
+
+## Read-Side Relevance Grading
+
+Bi-encoder recall is fast but blunt — it surfaces what is *semantically near*, not what is *relevant here*. Read-side relevance grading layers a learnable gate on top: bi-encoder recall (unchanged) → cross-encoder rerank over the recent-context window → inject → **log every delivery** → accumulate labels (agent grades + behavioural engagement) that will eventually train a student cross-encoder. The full design is `docs/spec-memory-relevance-grading.md`; the portable hot-path core lives in `cairn/relevance.py`.
+
+**The context window.** `relevance.build_context_window(current_prompt, transcript_path)` builds the cleaned representation that is used on *both* sides of the loop — as the delivery key at write time and as the cross-encoder's input at read time. This parity is load-bearing: the same string must be produced on both sides, so it reuses `session_extract.load_turns` (already stripping tool blocks, thinking, `<cairn_context>`, system reminders, and `[cm]` defs). The window is the prior user turn + the prior assistant turn (capped at `PRIOR_RESPONSE_CAP` = 600 chars, so a long response can't swamp the short current prompt in the embedding) + the current prompt; it fails soft to just the current prompt if the transcript is unavailable.
+
+**Bucket-4 prefilter.** `relevance.is_self_referential_meta(entry)` is a high-precision regex prefilter that drops "cairn-about-cairn" meta-memories ("cairn has no memory of X", "should be captured when shared") — it matches statements *about memory existence/coverage/gaps*, never the bare token "cairn" (which legitimate domain memories in this repo mention constantly). It is gated by `config.RELEVANCE_PREFILTER_ENABLED` (**default `False`** — it changes behaviour by dropping injected memories) and applied in `hook_helpers._relevance_prefilter`, which exempts `correction`-type memories (they surface ungated, per spec) and audits each drop via the `relevance_prefilter_drop` metric.
+
+**Delivery logging.** When `config.RELEVANCE_LOGGING_ENABLED` (default `True`), `hook_helpers` calls `relevance.log_memory_deliveries` after injection to write one [`memory_deliveries`](#ephemeral-database-cairn-ephemeraldb) row per injected memory, stamping ranking provenance per row — `reranker_model` (the model that produced `ce_score`), `score_components` (JSON of every score signal), `layer`, and `scope` (project vs global, computed exactly as `split_by_scope` does). It is fail-soft: instrumentation never breaks delivery.
+
+**Agent-as-teacher labels.** The agent grades each surfaced memory 0–3 in the `[cm]` block's `rg` field (`"42:3"`, `"17:0!"` where trailing `!` is a hard-negative — actively wrong/misleading, a distinct axis from mere irrelevance). `relevance.parse_relevance_grades` is the single source of truth for that grammar; `hooks/parser.py` delegates to it rather than re-implementing parsing. `relevance.apply_relevance_grades` writes `grade` + `hard_negative` onto the most-recent delivery row of each graded memory in the session.
+
+**Behavioural engagement (the primary, non-circular label).** Rather than trust the agent's self-report, `relevance.score_engagement` mechanically detects whether the response actually *used* each delivered memory: it computes the memory's **distinctive terms** (its tokens minus the prompt's tokens — the memory's marginal contribution, since terms shared with the prompt would recur whether or not the memory helped) and checks how many surface in the response. `engaged = 1` when ≥2 distinctive terms appear (one shared term is plausibly coincidental, two is not); `engaged_score` is the fraction surfaced; `(None, -1.0)` when there are no distinctive terms (the memory is redundant with the prompt — undecidable, so no false-zero signal). `relevance.apply_engagement` runs at Stop over this turn's not-yet-evaluated deliveries (`engaged_score IS NULL`), fetching each memory's current content from the durable DB. This is the PRIMARY training label; the agent `rg` grades supplement it.
+
+**Phase status.** Phase 1 (instrument — delivery log + provenance) and Phase 2 (agent-as-teacher labels + behavioural engagement) are implemented. Phase 3 (train a cross-encoder student on the accumulated labels) and Phase 4 (demote the agent-teacher once the student is trusted) are future. All heavy/generative work (T1 — synthesised intent, label densification) lives in async crons over the delivery log, never on the hot path.
+
+## Write-Side Generation Quality
+
+The largest lever on injected-memory quality is generating fewer, more findable, more self-sufficient memories *in the first place* — so this is a write-side complement to read-side grading.
+
+**Provenance.** `config.GENERATION_PROMPT_VERSION` (`genA-v3`) is stamped into `memories.source_ref` at insert time by the Stop hook, so the downstream usefulness of a memory (its `memory_deliveries` grades and engagement) is attributable to the generation-prompt version that produced it. `storage.insert_memories` resolves source_ref per entry with the precedence `entry["source_ref"]` > the `source_ref` call parameter > `NULL` — so the analyser and ingest set their own provenance (`analyser-session-arc`, review-writeback) and are unaffected, while plain agent writes get the version stamp. The `genA-v1 → genA-v3` bump records the addition of the **dual-altitude transferability** lever to the live generation rules (`.claude/rules/memory-system.md`): capture the generalised, cross-project form of a lesson anchored by the specific instance, so usefulness of `genA-v3` memories is attributable to that change.
+
+**Live per-prompt A/B (`config.AB_TEST_ENABLED`, on).** The real, data-gathering experiment runs in production: the prompt hook randomly assigns each user prompt to **arm A** (control = the current live generation rules) or **arm B** (control + exactly one speculative variable, `config.AB_B_INSTRUCTION` — currently anticipated-question keyword seeding), records the arm in `hook_state`, and injects arm-B's extra instruction for that turn (post-cache `additionalContext`, so the prompt cache is undisturbed). The Stop hook reads the turn's arm and stamps that turn's memories with the arm's version in `source_ref` (`config.AB_ARM_VERSIONS`: A=`genA-v3`, B=`genB-v1`); subagents are excluded. Because every delivery already logs engagement + agent grades keyed to `memory_id`, the arms are compared with no extra capture via `query.py --delivery-stats` (outcome grouped by generation version and reranker). Per-prompt randomisation (the smallest independent unit) accrues data fastest and cancels session-level confounds; the dedup-collision caveat (a near-duplicate B write merges into an existing row) is a manageable analysis nuance, not an attribution loss.
+
+**Offline A/B harness.** `cairn/ab_writeside.py` validates speculative generation-rule changes offline (online A/B is too slow and sparse — write→surface→grade lags, and usefulness-when-surfaced confounds writer with retriever). It replays a transcript corpus through two generation prompts: **prompt-A** is the current-best control (suppression > findability > self-sufficiency > redundancy-awareness > transferability) and **prompt-B** is that control plus exactly one speculative lever (anticipated-question keyword seeding — adding 2–3 question-form phrasings to each entry's keywords), so the A/B isolates the speculation and nothing else. The judge is **Opus 4.8**, made independent by construction: **blind** (the two sets are "Set 1"/"Set 2", never told which is "ours"), **position-swapped** (judged in both orders; disagreement = position bias = tie), and **pairwise**, with a findability / self-sufficiency / fitness rubric. The A/B unit is the **session cohort**, never per-memory (per-memory collides under dedup). Fast write-time metrics — `dedup_rate`, `findability_backtest`, `self_sufficiency_coldread` — give cheaper signal alongside the judge. Every LLM and embedder call is injectable so the mechanics test without a model; the CLI exposes `replay` and `ab` subcommands. Nothing in it runs on the hot path.
 
 ## Limitations and Future Work
 

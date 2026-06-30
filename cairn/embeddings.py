@@ -349,8 +349,27 @@ def _load_vec(conn: sqlite3.Connection) -> bool:
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
         return True
-    except (ImportError, OSError):
+    except Exception:
+        # Best-effort: any load failure (missing module, OSError, or a
+        # sqlite3 OperationalError like "error during initialization" when the
+        # extension is re-loaded in a long-lived process such as the test
+        # runner) means the vec index is unavailable on this conn — degrade to
+        # False so callers (connect_db, upsert_vec_index) never crash on it.
         return False
+
+
+def connect_db(path: str, load_vec: bool = True) -> sqlite3.Connection:
+    """Canonical cairn-DB connection: busy_timeout set and (by default) the
+    sqlite-vec extension loaded so writes to memories_vec succeed.
+
+    Defence in depth against the "no such module: vec0" class of silent write
+    failures: any new writer that routes through here is index-capable by
+    construction, instead of relying on each call site to remember _load_vec."""
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA busy_timeout=5000")
+    if load_vec:
+        _load_vec(conn)
+    return conn
 
 
 def _recency_decay(updated_at_str: str) -> float:
@@ -579,14 +598,27 @@ def _topic_candidates_brute(
     return results[:k]
 
 
-def upsert_vec_index(conn: sqlite3.Connection, memory_id: int, embedding_blob: bytes) -> None:
-    """Insert or update a vector in the vec index."""
+def upsert_vec_index(conn: sqlite3.Connection, memory_id: int, embedding_blob: bytes) -> bool:
+    """Insert or update a vector in the vec index. Returns True on success.
+
+    Self-loads the sqlite-vec extension on this connection first: the vec0
+    virtual table is only reachable once the extension is loaded, and write
+    callers historically opened bare connections that never loaded it, so the
+    INSERT raised "no such module: vec0" and was silently swallowed — leaving
+    rows embedded but absent from the ANN index (keyword-findable, invisible to
+    --semantic). Loading here (idempotent on an already-loaded conn) makes the
+    index write self-sufficient for every caller without touching them."""
+    if not _load_vec(conn):
+        _log_embed(f"vec index unavailable, skipping upsert for memory {memory_id}", "warning")
+        return False
     try:
         conn.execute("DELETE FROM memories_vec WHERE memory_id = ?", (memory_id,))
         conn.execute("INSERT INTO memories_vec (memory_id, embedding) VALUES (?, ?)",
                      (memory_id, embedding_blob))
+        return True
     except Exception as e:
         _log_embed(f"vec index upsert failed for memory {memory_id}: {type(e).__name__}: {e}", "warning")
+        return False
 
 
 def find_similar(
@@ -929,6 +961,14 @@ def find_similar(
             if ce_archived:
                 archived_candidates = [r for r in archived_candidates
                                        if r["ce_score"] >= floor]
+        else:
+            # Reranker produced no usable scores — daemon down, rerank action
+            # unavailable, or length mismatch. The CE relevance gate did NOT run;
+            # results fall through ranked by embedding composite (cosine+conf+rrf)
+            # alone, so semantically-similar-but-irrelevant memories are no longer
+            # rejected. Surface this silent degradation as a metric so "no gate"
+            # is monitored rather than invisible (cf. vec0 writes, dropped grades).
+            _record_embed_metric("rerank_unavailable", len(ce_pool))
         _record_embed_metric("rerank_ms", (_time.perf_counter() - t_rerank) * 1000)
 
     results = diverse[:limit]

@@ -84,8 +84,8 @@ def api_stats(params):
         pass
     db_size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
     growth = rows_to_list(conn.execute("""
-        SELECT DATE(created_at) as date, COUNT(*) as count
-        FROM memories GROUP BY DATE(created_at) ORDER BY date
+        SELECT DATE(created_at, 'localtime') as date, COUNT(*) as count
+        FROM memories GROUP BY DATE(created_at, 'localtime') ORDER BY date
     """).fetchall())
     conn.close()
     return {
@@ -565,14 +565,14 @@ def api_metrics(params):
         FROM all_metrics GROUP BY event ORDER BY count DESC
     """).fetchall())
     latency_series = rows_to_list(conn.execute("""
-        SELECT DATE(created_at) as date, AVG(value) as avg_ms, COUNT(*) as count
+        SELECT DATE(created_at, 'localtime') as date, AVG(value) as avg_ms, COUNT(*) as count
         FROM all_metrics WHERE event = 'retrieval_latency_ms'
-        GROUP BY DATE(created_at) ORDER BY date
+        GROUP BY DATE(created_at, 'localtime') ORDER BY date
     """).fetchall())
     layer_series = rows_to_list(conn.execute("""
-        SELECT DATE(created_at) as date, event, COUNT(*) as count
+        SELECT DATE(created_at, 'localtime') as date, event, COUNT(*) as count
         FROM all_metrics WHERE event LIKE 'layer%' OR event LIKE 'retrieval_%'
-        GROUP BY DATE(created_at), event ORDER BY date
+        GROUP BY DATE(created_at, 'localtime'), event ORDER BY date
     """).fetchall())
     embed_events = ("embed_daemon_ms", "embed_local_ms", "search_vec_ms", "search_brute_ms", "fanout_ms")
     placeholders = ",".join("?" * len(embed_events))
@@ -586,9 +586,9 @@ def api_metrics(params):
         FROM all_metrics WHERE event IN ({placeholders}) GROUP BY event
     """, embed_events).fetchall())
     embed_series = rows_to_list(conn.execute(f"""
-        SELECT DATE(created_at) as date, event, AVG(value) as avg_ms, COUNT(*) as count
+        SELECT DATE(created_at, 'localtime') as date, event, AVG(value) as avg_ms, COUNT(*) as count
         FROM all_metrics WHERE event IN ({placeholders})
-        GROUP BY DATE(created_at), event ORDER BY date
+        GROUP BY DATE(created_at, 'localtime'), event ORDER BY date
     """, embed_events).fetchall())
     # Graph-injection metrics surfaced explicitly so the frontend can render them
     # alongside gotcha_injected / file_context_injected without scanning `summary`.
@@ -652,11 +652,11 @@ def api_enforcement(params):
 
     # Daily series for the last 14 days
     series = rows_to_list(conn.execute(f"""
-        SELECT DATE(created_at) as date, event, COUNT(*) as count
+        SELECT DATE(created_at, 'localtime') as date, event, COUNT(*) as count
         FROM metrics
         WHERE event IN ({placeholders})
         AND created_at >= datetime('now', '-14 days')
-        GROUP BY DATE(created_at), event ORDER BY date
+        GROUP BY DATE(created_at, 'localtime'), event ORDER BY date
     """, ENFORCEMENT_EVENTS).fetchall())
 
     # L5 satisfaction ratio (the key health metric)
@@ -899,14 +899,28 @@ def api_projects(params):
 
 
 def api_config_get(params):
+    # Each setting's override key is the EXACT env var it reads (config derives
+    # this map by parsing its own environ.get calls); fall back to the attr name.
+    env_keys = getattr(config, "CONFIG_ENV_KEYS", {})
     params_out = {}
     for name in sorted(dir(config)):
-        if name.startswith("_") or not name.isupper():
+        if name.startswith("_") or not name.isupper() or name == "CONFIG_ENV_KEYS":
             continue
         val = getattr(config, name)
-        if not isinstance(val, (int, float, bool, str)):
+        # Scalars shown as-is; string lists rendered as CSV; None as empty string.
+        if isinstance(val, (int, float, bool, str)):
+            disp, typ = val, type(val).__name__
+        elif isinstance(val, list) and all(isinstance(x, str) for x in val):
+            disp, typ = ",".join(val), "csv"
+        elif val is None:
+            disp, typ = "", "str"
+        else:
             continue
-        params_out[name] = {"value": val, "type": type(val).__name__, "env_var": f"CAIRN_{name}"}
+        params_out[name] = {
+            "value": disp, "type": typ,
+            "env_var": env_keys.get(name, name),
+            "env_overridable": name in env_keys,
+        }
     overrides = {}
     if os.path.exists(ENV_PATH):
         with open(ENV_PATH) as f:
@@ -916,7 +930,7 @@ def api_config_get(params):
                     key, val = line.split("=", 1)
                     overrides[key.strip()] = val.strip()
     for name, info in params_out.items():
-        env_key = f"CAIRN_{name}"
+        env_key = info["env_var"]
         info["is_overridden"] = env_key in overrides
         if info["is_overridden"]:
             info["override"] = overrides[env_key]
@@ -935,8 +949,17 @@ def api_config_update(body):
                 if line and not line.startswith("#") and "=" in line:
                     key, val = line.split("=", 1)
                     existing[key.strip()] = val.strip()
+    env_keys = getattr(config, "CONFIG_ENV_KEYS", {})
+    skipped = []
     for name, value in data["updates"].items():
-        env_key = f"CAIRN_{name}"
+        # Only settings config actually reads from the environment are
+        # overridable (CONFIG_ENV_KEYS is derived from its environ.get calls).
+        # Writing a bare attr-name key for a non-overridable setting would
+        # persist a .env line config never reads — skip rather than mislead.
+        if name not in env_keys:
+            skipped.append(name)
+            continue
+        env_key = env_keys[name]
         if value is None:
             existing.pop(env_key, None)
         else:
@@ -946,7 +969,7 @@ def api_config_update(body):
         f.write("# These override defaults in cairn/config.py\n")
         for key, val in sorted(existing.items()):
             f.write(f"{key}={val}\n")
-    return {"status": "saved", "overrides": existing}, 200
+    return {"status": "saved", "overrides": existing, "skipped": skipped}, 200
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1718,6 +1741,37 @@ def _generate_graph_viz(repo):
 # Management surface for the Sync dashboard tab: identity, discovered peers,
 # pairing-request queue (approve/deny), paired peers (revoke), outbound pairing.
 
+def _sync_enabled_flag() -> bool:
+    """Live CAIRN_SYNC_ENABLED — read from os.environ (config loads .env into it
+    at import and set_sync_enabled updates it on toggle), not the stale module
+    constant captured at config import time."""
+    return os.environ.get("CAIRN_SYNC_ENABLED", "").lower() in ("1", "true", "yes")
+
+
+def _sync_running() -> bool:
+    """Ask the running daemon whether sync services are actually up."""
+    try:
+        from cairn import daemon
+        if daemon.is_running():
+            r = daemon.send_request({"action": "sync_status"})
+            return bool(r and r.get("running"))
+    except Exception:
+        pass
+    return False
+
+
+def _auto_enable_sync() -> None:
+    """Pairing implies intent to sync — enable it (persisted) if currently off.
+    Embodies "auto-enable on pairing": approving or initiating a pairing turns
+    sync on so the periodic pull actually runs, without a separate toggle step."""
+    try:
+        if not _sync_enabled_flag():
+            from cairn.sync.service import set_sync_enabled
+            set_sync_enabled(True)
+    except Exception:
+        pass
+
+
 def api_sync_identity(params):
     from cairn.sync import identity, SCHEMA_VERSION
     return {
@@ -1725,7 +1779,17 @@ def api_sync_identity(params):
         "user_id": identity.get_user_id(),
         "public_key": identity.get_public_key_b64(),
         "schema_version": SCHEMA_VERSION,
+        "enabled": _sync_enabled_flag(),
+        "running": _sync_running(),
     }, 200
+
+
+def api_sync_set_enabled(body, enabled: bool):
+    """Toggle sync on/off from the dashboard. Persists to .env (unless
+    session_only) and signals the daemon to start/stop services live."""
+    from cairn.sync.service import set_sync_enabled
+    session_only = bool((body or {}).get("session_only"))
+    return set_sync_enabled(enabled, session_only=session_only), 200
 
 
 def api_sync_pairing_requests(params):
@@ -1760,6 +1824,8 @@ def api_sync_approve(params, request_id):
     conn = get_conn()
     try:
         res = pairing.approve_pairing(conn, int(request_id))
+        if res.get("ok"):
+            _auto_enable_sync()  # pairing implies intent to sync
         return res, (200 if res.get("ok") else 404)
     finally:
         conn.close()
@@ -1847,6 +1913,8 @@ def api_sync_pair(body):
     conn = get_conn()
     try:
         resp = client.send_pairing_request(url, my_url=my_url, conn=conn)
+        if resp.get("ok"):
+            _auto_enable_sync()  # pairing implies intent to sync
         return resp, (200 if resp.get("ok") else 502)
     finally:
         conn.close()
@@ -1856,6 +1924,27 @@ def api_sync_pair(body):
 
 # Route table: (method, pattern) -> handler
 # Patterns use {name} for path params, converted to regex groups
+def _looks_like_timestamp(v: str) -> bool:
+    """A stored UTC datetime like '2026-06-25 21:04:34' (not a date-only bucket)."""
+    return (len(v) >= 16 and v[4] == "-" and v[7] == "-"
+            and v[10] in " T" and ":" in v[11:16])
+
+
+def _localize_timestamps(obj):
+    """Recursively convert any '*_at' UTC timestamp field to a local-time display
+    string so the dashboard shows local time everywhere. Storage is untouched —
+    presentation only (cairn/timeutil; single source of truth). Date-only chart
+    buckets are left alone (handled by DATE(...,'localtime') in their queries)."""
+    from cairn import timeutil
+    if isinstance(obj, dict):
+        return {k: (timeutil.fmt_local(v) if isinstance(v, str) and k.endswith("_at")
+                    and _looks_like_timestamp(v) else _localize_timestamps(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_localize_timestamps(x) for x in obj]
+    return obj
+
+
 _ROUTES: list[tuple[str, str, callable]] = [
     ("GET", "/api/stats", lambda p, **kw: api_stats(p)),
     ("GET", "/api/memories", lambda p, **kw: api_memories(p)),
@@ -1908,7 +1997,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass  # Suppress request logging
 
     def _send_json(self, data, status=200):
-        body = json.dumps(data, default=str).encode("utf-8")
+        body = json.dumps(_localize_timestamps(data), default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", len(body))
@@ -2016,6 +2105,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(content_length)) if content_length else {}
             try:
                 data, status = api_sync_pair(body)
+                self._send_json(data, status)
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+            return
+        if path in ("/api/sync/enable", "/api/sync/disable"):
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(content_length)) if content_length else {}
+            try:
+                data, status = api_sync_set_enabled(body, path.endswith("/enable"))
                 self._send_json(data, status)
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)

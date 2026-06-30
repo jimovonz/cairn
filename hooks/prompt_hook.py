@@ -56,7 +56,8 @@ Rules:
 - One line per entry — no multi-line values. Pack what/why/context into that single line.
 - Never fabricate. If you don't understand something, omit it rather than invent.
 - On ANY new topic or question you have not received cairn context on this session: set ctx:i with cn:"specific terms from the question". The hook auto-searches and re-prompts you with relevant memories.
-- Confidence feedback on retrieved entries you were shown: cu:["42:+"] (corroborates), ["17:-"] (irrelevant), ["17:-! reason"] (memory is wrong, annotate)."""
+- Confidence feedback on retrieved entries you were shown: cu:["42:+"] (corroborates), ["17:-"] (irrelevant), ["17:-! reason"] (memory is wrong, annotate).
+- Relevance grade of entries you actually used: rg:["42:3","8:0"] (0=noise..3=load-bearing; append ! if misleading). Grade only what you drew on; omit the rest."""
 
 
 def log(msg: str) -> None:
@@ -508,6 +509,20 @@ def main() -> None:
 
     context_parts: list[str] = []
 
+    # Write-side A/B: assign this prompt to arm A (control) or B (control + one
+    # speculative variable) and record it so the Stop hook can stamp this turn's
+    # memories with the arm. Arm B gets its extra generation instruction injected now.
+    try:
+        from cairn import config as _abcfg
+        if getattr(_abcfg, "AB_TEST_ENABLED", False) and not is_subagent and session_id:
+            import random as _rnd
+            _arm = "B" if _rnd.random() < 0.5 else "A"
+            save_hook_state(session_id, "ab_arm", _arm)
+            if _arm == "B":
+                context_parts.append(_abcfg.AB_B_INSTRUCTION)
+    except Exception:
+        pass
+
     # Layer 1: First-prompt push (+ bootstrap)
     if is_first_prompt(session_id):
         mark_first_prompt_done(session_id)
@@ -848,9 +863,28 @@ def main() -> None:
     record_metric(session_id, "retrieval_query", user_message[:200])
     record_metric(session_id, "retrieval_tokens_est", None, len(combined) // 4)
 
+    # Just-in-time relevance-grading nudge. The static rg rule lives in
+    # memory-system.md, but that scrolls out of attention mid-session — which is
+    # why agent rg coverage (~6%) lags mechanical engagement (~50%) despite cu
+    # (confidence) being nudged every prompt. Echo the concrete injected ids so
+    # grading is cheap (no scraping the XML for ids). Gated on non-empty ids so
+    # it never fires on context that carries no gradable entries. Worded to lift
+    # HONEST coverage only: grade what you used, omit the rest — a padded grade
+    # is worse than a missing one for the cross-encoder it trains.
+    grading_nudge = ""
+    if injected_ids:
+        id_list = ",".join(str(i) for i in sorted(set(injected_ids)))
+        grading_nudge = (
+            f"\n\n[relevance grading] Memory ids shown above: {id_list}. In your [cm] "
+            f"block add rg:[\"id:grade\"] for ONLY the ids you actually drew on "
+            f"(0=noise, 1=weak, 2=relevant, 3=load-bearing; append ! if actively "
+            f"misleading). Omit ids you didn't use — a missing grade means \"no "
+            f"signal\", not zero. These train the cross-encoder gate, so grade honestly."
+        )
+
     deliver_additional_context(
         session_id, "UserPromptSubmit",
-        f"CAIRN CONTEXT (proactive retrieval — interpret per .claude/rules/memory-system.md):\n\n{combined}",
+        f"CAIRN CONTEXT (proactive retrieval — interpret per .claude/rules/memory-system.md):\n\n{combined}{grading_nudge}",
     )
     sys.exit(0)
 

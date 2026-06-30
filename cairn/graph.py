@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
 """Query layer over .code-review-graph/graph.db — joins code graph with cairn memories."""
 
-import sqlite3
+try:
+    import pysqlite3 as sqlite3  # type: ignore[import-untyped]
+except ImportError as _pysqlite_err:  # pragma: no cover
+    import os as _os
+    if _os.environ.get("CAIRN_ALLOW_STDLIB_SQLITE") == "1":
+        import sqlite3  # opt-in; stdlib may corrupt WAL DBs under concurrent multi-version access
+    else:
+        raise ImportError(
+            "cairn requires pysqlite3 (stdlib sqlite3 can corrupt WAL DBs under "
+            "concurrent multi-version access). graph.py reads the WAL cairn.db. "
+            "Install pysqlite3-binary, or set CAIRN_ALLOW_STDLIB_SQLITE=1 to override."
+        ) from _pysqlite_err
 import sys
 import os
 import json
