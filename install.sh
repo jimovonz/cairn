@@ -396,8 +396,14 @@ fi
 # probe is a one-pair rerank and a no-op on the happy path.
 CRON_DAEMON_HEALTH="*/15 * * * * ${CRON_PATH_PREFIX}$VENV_PYTHON $CAIRN_HOME/cairn/daemon.py healthcheck >> $CAIRN_HOME/logs/daemon-health.log 2>&1 $CRON_MARKER"
 
+# Capture watchdog — a held cairn.db write lock (e.g. a sync writer stuck in a
+# transaction) silently stalls memory capture into pending_writes. This alerts on
+# a held lock / queue backlog / capture staleness so it surfaces in minutes, not
+# days. Hourly; non-mutating probe, no-op on the happy path.
+CRON_CAPTURE_WATCHDOG="41 * * * * ${CRON_PATH_PREFIX}$VENV_PYTHON $CAIRN_HOME/cairn/capture_watchdog.py >> $CAIRN_HOME/logs/capture-watchdog.log 2>&1 $CRON_MARKER"
+
 # Remove any existing cairn cron entries (including legacy contradiction_scan.py and calibration variants)
-EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.analyser\|cairn.calibration_selfmod\|cairn.graph_fleet\|cairn.proxy.server" || true)
+EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.analyser\|cairn.calibration_selfmod\|cairn.graph_fleet\|cairn.proxy.server\|cairn/capture_watchdog" || true)
 
 # Install fresh entries
 echo "$EXISTING_CRON
@@ -407,8 +413,9 @@ $CRON_ANALYSER
 $CRON_SELFMOD
 $CRON_GRAPH_FLEET
 $CRON_PROXY
-$CRON_DAEMON_HEALTH" | sed '/^$/d' | crontab -
-echo "Installed cron: consolidation (3:00 AM), contradiction scan (3:30 AM), calibration analyser (00:00), calibration selfmod (00:30), graph fleet sweep (hourly :17), daemon rerank health (every 15 min)."
+$CRON_DAEMON_HEALTH
+$CRON_CAPTURE_WATCHDOG" | sed '/^$/d' | crontab -
+echo "Installed cron: consolidation (3:00 AM), contradiction scan (3:30 AM), calibration analyser (00:00), calibration selfmod (00:30), graph fleet sweep (hourly :17), daemon rerank health (every 15 min), capture watchdog (hourly :41)."
 
 # --- Code-graph fleet bootstrap ---
 # Build graphs for all local repos so every repo is graph-ready for first contact.
