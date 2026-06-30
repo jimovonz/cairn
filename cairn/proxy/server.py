@@ -301,9 +301,31 @@ def cmd_serve(args):
         _remove_pid(args.port)
 
 
+def _port_in_use(port: int) -> bool:
+    """True if ``port`` is already bound (a daemon is up even if its pid file was lost).
+
+    Probes without SO_REUSEADDR so an existing LISTEN socket reliably fails the bind.
+    Guards against a duplicate start spawning a doomed grandchild that EADDRINUSE-crashes
+    and, in its ``finally``, deletes the healthy daemon's pid file — orphaning it.
+    """
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((config.PROXY_HOST, port))
+            return False
+        except OSError:
+            return True
+
+
 def cmd_start(args):
     if is_running(args.port):
         print(f"cairn-proxy already running (PID {_read_pid(args.port)})")
+        return
+    # Pid file can be lost while the daemon lives (e.g. a prior failed start removed
+    # it). Probe the port too so we never spawn a doomed grandchild that would clobber
+    # the live daemon's pid file on its EADDRINUSE exit.
+    if _port_in_use(args.port):
+        print(f"cairn-proxy port {args.port} already in use — a daemon is up (pid file missing)")
         return
     try:
         import aiohttp  # noqa: F401
@@ -367,10 +389,60 @@ def cmd_restart(args):
     cmd_start(args)
 
 
+def _proxy_code_mtime() -> float:
+    """Newest mtime among the proxy package's ``.py`` files (0.0 if none found).
+
+    Proxy fixes land in this directory (e.g. request_inject.sanitize_empty_text_blocks),
+    so a daemon older than this timestamp is running stale code.
+    """
+    d = os.path.dirname(os.path.abspath(__file__))
+    newest = 0.0
+    try:
+        for name in os.listdir(d):
+            if name.endswith(".py"):
+                m = os.path.getmtime(os.path.join(d, name))
+                if m > newest:
+                    newest = m
+    except OSError:
+        pass
+    return newest
+
+
+def _daemon_start_mtime(port: int) -> float:
+    """Daemon (re)start time, proxied by the pid-file mtime.
+
+    ``_write_pid`` runs exactly once per (re)start, so the pid file's mtime tracks
+    when the live daemon began — no extra bookkeeping file needed.
+    """
+    try:
+        return os.path.getmtime(_pid_file(port))
+    except OSError:
+        return 0.0
+
+
+def cmd_start_fresh(args):
+    """Idempotent keep-alive that ALSO self-heals stale code.
+
+    Start if the daemon is down; restart if the running daemon predates the newest
+    proxy source file (a pulled fix that the long-lived daemon never loaded); else
+    no-op. This is what the ``*/5`` keep-alive cron runs, so a shipped proxy fix
+    reaches the live daemon within the cron interval without a manual restart —
+    plain ``start`` would no-op a running-but-stale daemon and leave the fix dark.
+    """
+    if not is_running(args.port):
+        cmd_start(args)
+        return
+    if _daemon_start_mtime(args.port) < _proxy_code_mtime():
+        print("cairn-proxy stale (proxy code newer than daemon) — restarting")
+        cmd_restart(args)
+    else:
+        print(f"cairn-proxy running (PID {_read_pid(args.port)}) — up to date")
+
+
 def main():
     p = argparse.ArgumentParser(description="cairn-proxy")
     sub = p.add_subparsers(dest="command")
-    for name, fn in (("serve", cmd_serve), ("start", cmd_start), ("restart", cmd_restart)):
+    for name, fn in (("serve", cmd_serve), ("start", cmd_start), ("restart", cmd_restart), ("start-fresh", cmd_start_fresh)):
         sp = sub.add_parser(name)
         sp.add_argument("--port", type=int, default=config.PROXY_PORT)
         sp.add_argument("--debug", action="store_true")

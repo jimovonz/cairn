@@ -25,6 +25,7 @@ except ImportError:
     import sqlite3
 import shutil
 import subprocess
+import sys
 import tempfile
 
 import pytest
@@ -63,7 +64,7 @@ class TestDatabaseInit:
         """init_db.py should create all required tables."""
         db_path = str(tmp_path / "test.db")
         result = subprocess.run(
-            ["python3", "-c", f"""
+            [sys.executable, "-c", f"""
 import sys, os
 sys.path.insert(0, '{os.path.join(CAIRN_HOME, "cairn")}')
 os.chdir('{tmp_path}')
@@ -91,7 +92,7 @@ init_db.init()
         """init_db.py should create required indexes."""
         db_path = str(tmp_path / "test.db")
         subprocess.run(
-            ["python3", "-c", f"""
+            [sys.executable, "-c", f"""
 import sys, os
 sys.path.insert(0, '{os.path.join(CAIRN_HOME, "cairn")}')
 os.chdir('{tmp_path}')
@@ -118,7 +119,7 @@ init_db.init()
         """init_db.py should create FTS5 virtual table."""
         db_path = str(tmp_path / "test.db")
         subprocess.run(
-            ["python3", "-c", f"""
+            [sys.executable, "-c", f"""
 import sys, os
 sys.path.insert(0, '{os.path.join(CAIRN_HOME, "cairn")}')
 os.chdir('{tmp_path}')
@@ -142,7 +143,7 @@ init_db.init()
         """init_db.py should enable WAL journal mode."""
         db_path = str(tmp_path / "test.db")
         subprocess.run(
-            ["python3", "-c", f"""
+            [sys.executable, "-c", f"""
 import sys, os
 sys.path.insert(0, '{os.path.join(CAIRN_HOME, "cairn")}')
 os.chdir('{tmp_path}')
@@ -164,7 +165,7 @@ init_db.init()
         """init_db.py should create FTS sync triggers and version trigger."""
         db_path = str(tmp_path / "test.db")
         subprocess.run(
-            ["python3", "-c", f"""
+            [sys.executable, "-c", f"""
 import sys, os
 sys.path.insert(0, '{os.path.join(CAIRN_HOME, "cairn")}')
 os.chdir('{tmp_path}')
@@ -197,10 +198,10 @@ import init_db
 init_db.DB_PATH = '{db_path}'
 init_db.init()
 """
-        r1 = subprocess.run(["python3", "-c", init_code], capture_output=True, text=True, timeout=30)
+        r1 = subprocess.run([sys.executable, "-c", init_code], capture_output=True, text=True, timeout=30)
         assert r1.returncode == 0, f"First init failed: {r1.stderr}"
 
-        r2 = subprocess.run(["python3", "-c", init_code], capture_output=True, text=True, timeout=30)
+        r2 = subprocess.run([sys.executable, "-c", init_code], capture_output=True, text=True, timeout=30)
         assert r2.returncode == 0, f"Second init failed: {r2.stderr}"
 
         # Verify DB is intact
@@ -238,7 +239,7 @@ init_db.init()
 
         # Run init_db — should migrate
         subprocess.run(
-            ["python3", "-c", f"""
+            [sys.executable, "-c", f"""
 import sys, os
 sys.path.insert(0, '{os.path.join(CAIRN_HOME, "cairn")}')
 os.chdir('{tmp_path}')
@@ -360,7 +361,7 @@ for event, groups in cairn_hooks.get('hooks', {{}}).items():
 with open('{settings_path}', 'w') as f:
     json.dump(settings, f, indent=2)
 """
-        result = subprocess.run(["python3", "-c", merge_code],
+        result = subprocess.run([sys.executable, "-c", merge_code],
                                 capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, f"Merge failed: {result.stderr}"
 
@@ -402,7 +403,7 @@ for event, groups in cairn_hooks.get('hooks', {{}}).items():
 with open('{settings_path}', 'w') as f:
     json.dump(settings, f, indent=2)
 """
-        subprocess.run(["python3", "-c", merge_code],
+        subprocess.run([sys.executable, "-c", merge_code],
                         capture_output=True, text=True, timeout=10)
 
         with open(settings_path) as f:
@@ -460,7 +461,7 @@ if not hooks:
 with open('{settings_path}', 'w') as f:
     json.dump(settings, f, indent=2)
 """
-        subprocess.run(["python3", "-c", remove_code],
+        subprocess.run([sys.executable, "-c", remove_code],
                         capture_output=True, text=True, timeout=10)
 
         with open(settings_path) as f:
@@ -517,7 +518,7 @@ class TestHealthCheck:
     def test_check_on_valid_install(self):
         """query.py --check should run without crashing."""
         result = subprocess.run(
-            ["python3", os.path.join(CAIRN_HOME, "cairn", "query.py"), "--check"],
+            [sys.executable, os.path.join(CAIRN_HOME, "cairn", "query.py"), "--check"],
             capture_output=True, text=True, timeout=30,
         )
         # --check may return non-zero in CI (daemon not running, model not loaded)
@@ -537,7 +538,7 @@ class TestConfigValidation:
     def test_config_loads(self):
         """config.py should be importable without errors."""
         result = subprocess.run(
-            ["python3", "-c", f"""
+            [sys.executable, "-c", f"""
 import sys
 sys.path.insert(0, '{os.path.join(CAIRN_HOME, "cairn")}')
 import config
@@ -560,7 +561,7 @@ print('OK')
         env["CAIRN_L1_5_ENABLED"] = "false"
 
         result = subprocess.run(
-            ["python3", "-c", f"""
+            [sys.executable, "-c", f"""
 import sys
 sys.path.insert(0, '{os.path.join(CAIRN_HOME, "cairn")}')
 import config

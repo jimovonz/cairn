@@ -543,8 +543,17 @@ def format_entry(r: dict[str, Any]) -> str:
             f'  <entry id="{r["id"]}" superseded="true" reason="{reason}" days="{days}">'
             f'{content}</entry>'
         )
+    # Annotate live org-index location status (DRIFT/MISSING). Imported lazily:
+    # retrieval imports hook_helpers at module load, so a top-level import here
+    # would be circular. Best-effort — falls back to no annotation on any error.
+    loc = ""
+    try:
+        from hooks.retrieval import _loc_attr
+        loc = _loc_attr(r["id"])
+    except Exception:
+        loc = ""
     return (
-        f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}">'
+        f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}"{loc}>'
         f'{content}</entry>'
     )
 
@@ -656,10 +665,23 @@ def build_context_xml(query: str, project: Optional[str], layer: str,
             from cairn import config
             if getattr(config, "RELEVANCE_LOGGING_ENABLED", True):
                 from cairn.relevance import log_memory_deliveries
+                cv = context_vec
+                if cv is None and (context_text or query):
+                    # Record the context embedding (the join key for empirical
+                    # context-targeting). Daemon-only (allow_slow=False) so the hot
+                    # prompt path stays fast; stays None if the daemon is down.
+                    try:
+                        emb = get_embedder()
+                        if emb is not None:
+                            _vec = emb.embed(context_text or query, allow_slow=False)
+                            if _vec is not None:
+                                cv = emb.to_blob(_vec)
+                    except Exception:
+                        pass
                 log_memory_deliveries(project_results + global_results,
                                       session_id=session_id,
                                       context_text=context_text or query,
-                                      context_vec=context_vec,
+                                      context_vec=cv,
                                       layer=layer, project=project)
         except Exception:
             pass

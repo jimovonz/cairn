@@ -31,10 +31,97 @@ from cairn.config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
                      L3_GLOBAL_SIM_WITHOUT_PROJECT, L3_PROJECT_QUALITY_FLOOR,
                      L3_MAX_PROJECT_RESULTS, L3_MAX_GLOBAL_RESULTS,
                      WEAK_ENTRY_SCORE_FLOOR, RRF_K, GLOBAL_HARD_FLOOR,
-                     REFERENCE_MIN_SIMILARITY)
+                     REFERENCE_MIN_SIMILARITY, ORG_INDEX_ENABLED)
 
 
 CONTEXT_CACHE_SIM_THRESHOLD: float = 0.9
+
+
+# --------------------------------------------------------------------------
+# Dynamic injection #1: annotate location-claim memories with live org-index
+# status. A memory's file:/repo: facts are a claim about where a file lived
+# WHEN WRITTEN; the org-index (org_index.py) knows where it is now. We stamp
+# each injected location claim with DRIFT (file moved to an unmerged branch) /
+# MISSING (gone) so a stale claim is visible at the point of injection. Only
+# the actionable cases are surfaced — OK/UNKNOWN are suppressed to keep the
+# block tight. Everything here is best-effort and must NEVER break retrieval:
+# any failure (no index, locked db, parse error) yields no annotation.
+_LOC_IDX: Any = None
+_LOC_IDX_TRIED: bool = False
+_FACTS_CONN: Any = None
+
+
+def _loc_index() -> Any:
+    """Cached read-only org-index handle, or None if not built yet."""
+    global _LOC_IDX, _LOC_IDX_TRIED
+    if _LOC_IDX_TRIED:
+        return _LOC_IDX
+    _LOC_IDX_TRIED = True
+    try:
+        import os
+        import cairn
+        from cairn.cairn_verify import Index
+        p = os.path.join(os.path.dirname(cairn.__file__), "org_index.db")
+        _LOC_IDX = Index(p) if os.path.exists(p) else None  # Index() exits if absent
+    except (Exception, SystemExit):  # Index.__init__ sys.exit()s on a TOCTOU-deleted db
+        _LOC_IDX = None
+    return _LOC_IDX
+
+
+def _facts_for(mem_id: int) -> Optional[str]:
+    """Fetch a memory's facts column via a cached read-only cairn.db handle.
+    Read-only (mode=ro) via the module-level pysqlite3 alias — single-library, no WAL checkpoint."""
+    global _FACTS_CONN
+    try:
+        if _FACTS_CONN is None:
+            import os
+            import cairn
+            p = os.path.join(os.path.dirname(cairn.__file__), "cairn.db")
+            _FACTS_CONN = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+        row = _FACTS_CONN.execute(
+            "SELECT facts FROM memories WHERE id=?", (mem_id,)).fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def location_annotation(mem_id: int) -> Optional[str]:
+    """Live org-index status for a memory's file:/repo: claims, or None.
+    Returns a short label only for DRIFT/MISSING (actionable staleness)."""
+    try:
+        if not ORG_INDEX_ENABLED:
+            return None
+        idx = _loc_index()
+        if idx is None:
+            return None
+        facts_str = _facts_for(mem_id)
+        if not facts_str:
+            return None
+        from cairn.cairn_verify import (parse_facts, file_path_from_fact,
+                                        repo_name_from_fact, FILE_RE, REPO_RE)
+        facts = parse_facts(facts_str)
+        repos = [repo_name_from_fact(f) for f in facts if REPO_RE.match(f)]
+        files = [file_path_from_fact(f) for f in facts if FILE_RE.match(f)]
+        if not repos or not files:
+            return None
+        repo = repos[0]
+        for path in files:
+            if "/" not in path and "." not in path:
+                continue
+            status, branches = idx.locate(repo, path)
+            if status == "DRIFT":
+                return f"stale (org-index): {repo}/{path} only on unmerged {', '.join(branches[:2])}"
+            if status == "MISSING":
+                return f"stale (org-index): {repo}/{path} not found in org"
+        return None
+    except Exception:
+        return None
+
+
+def _loc_attr(mem_id: int) -> str:
+    """' loc=\"...\"' attribute for an entry tag, or '' when nothing to flag."""
+    label = location_annotation(mem_id)
+    return f' loc="{html.escape(label, quote=True)}"' if label else ""
 
 
 def hybrid_search(
@@ -387,7 +474,7 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
                 f'{content}</entry>'
             )
         return (
-            f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}">'
+            f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}"{_loc_attr(r["id"])}>'
             f'{content}</entry>'
         )
 

@@ -4,41 +4,42 @@ This is the Cairn project — a persistent AI memory system using SQLite, Claude
 
 ## Cairn Database
 
-The memory database is at `./cairn/cairn.db`. Use `python3 ./cairn/query.py` to search it.
+The memory database is at `./cairn/cairn.db`. Use `.venv/bin/python ./cairn/query.py` to search it (all commands below require the venv interpreter — system `python3` lacks pysqlite3, which cairn now requires).
 
 Query commands:
-- `python3 ./cairn/query.py <search>` — full-text search
-- `python3 ./cairn/query.py --semantic <query>` — semantic similarity search
-- `python3 ./cairn/query.py --recent` — list recent memories
-- `python3 ./cairn/query.py --today` — memories from today
-- `python3 ./cairn/query.py --since <date>` — memories from date onward (ISO, today, yesterday, 3d, 2w, 1m)
-- `python3 ./cairn/query.py --since <date> --until <date>` — memories in a date range
-- `python3 ./cairn/query.py --type <type>` — filter by type
-- `python3 ./cairn/query.py --session <id>` — filter by session
-- `python3 ./cairn/query.py --chain <id>` — show session chain
-- `python3 ./cairn/query.py --project <name>` — list memories for a project
-- `python3 ./cairn/query.py --projects` — list all projects
-- `python3 ./cairn/query.py --label <session_id> <name>` — label a session chain
-- `python3 ./cairn/query.py --context <id>` — show conversation context for a memory
-- `python3 ./cairn/query.py --history <id>` — show version history
-- `python3 ./cairn/query.py --delete <id>` — delete a memory
-- `python3 ./cairn/query.py --compact [project]` — dense cairn dump for LLM ingestion
-- `python3 ./cairn/query.py --review` — surface low-confidence memories
-- `python3 ./cairn/query.py --verify-sources` — analyse source_messages accuracy
-- `python3 ./cairn/query.py --backfill` — generate missing embeddings
-- `python3 ./cairn/query.py --stats` — database statistics
+- `.venv/bin/python ./cairn/query.py <search>` — full-text search
+- `.venv/bin/python ./cairn/query.py --semantic <query>` — semantic similarity search
+- `.venv/bin/python ./cairn/query.py --recent` — list recent memories
+- `.venv/bin/python ./cairn/query.py --today` — memories from today
+- `.venv/bin/python ./cairn/query.py --since <date>` — memories from date onward (ISO, today, yesterday, 3d, 2w, 1m)
+- `.venv/bin/python ./cairn/query.py --since <date> --until <date>` — memories in a date range
+- `.venv/bin/python ./cairn/query.py --type <type>` — filter by type
+- `.venv/bin/python ./cairn/query.py --session <id>` — filter by session
+- `.venv/bin/python ./cairn/query.py --chain <id>` — show session chain
+- `.venv/bin/python ./cairn/query.py --project <name>` — list memories for a project
+- `.venv/bin/python ./cairn/query.py --projects` — list all projects
+- `.venv/bin/python ./cairn/query.py --label <session_id> <name>` — label a session chain
+- `.venv/bin/python ./cairn/query.py --context <id>` — show conversation context for a memory
+- `.venv/bin/python ./cairn/query.py --history <id>` — show version history
+- `.venv/bin/python ./cairn/query.py --delete <id>` — delete a memory
+- `.venv/bin/python ./cairn/query.py --compact [project]` — dense cairn dump for LLM ingestion
+- `.venv/bin/python ./cairn/query.py --review` — surface low-confidence memories
+- `.venv/bin/python ./cairn/query.py --verify-sources` — analyse source_messages accuracy
+- `.venv/bin/python ./cairn/query.py --backfill` — generate missing embeddings
+- `.venv/bin/python ./cairn/query.py --heal-vec` — index embedded rows missing from the `memories_vec` ANN index (heals the silent vec0-write gap; `--stats` reports the gap)
+- `.venv/bin/python ./cairn/query.py --stats` — database statistics
 
 ## Repo Ingestion
 
 Ingest a git repository into Cairn as portable knowledge entries:
 
-- `python3 ./cairn/ingest.py /path/to/repo` — extract, distill, and store (incremental if previously ingested)
-- `python3 ./cairn/ingest.py /path/to/repo --dry-run` — preview without storing
-- `python3 ./cairn/ingest.py /path/to/repo --project name` — override project name
-- `python3 ./cairn/ingest.py /path/to/repo --full` — force full re-ingestion (skip incremental diff)
-- `python3 ./cairn/ingest.py /path/to/repo --verbose` — show extraction details
+- `.venv/bin/python ./cairn/ingest.py /path/to/repo` — extract, distill, and store (incremental if previously ingested)
+- `.venv/bin/python ./cairn/ingest.py /path/to/repo --dry-run` — preview without storing
+- `.venv/bin/python ./cairn/ingest.py /path/to/repo --project name` — override project name
+- `.venv/bin/python ./cairn/ingest.py /path/to/repo --full` — force full re-ingestion (skip incremental diff)
+- `.venv/bin/python ./cairn/ingest.py /path/to/repo --verbose` — show extraction details
 
-24 extractors: docs, deps, tree, config, schemas, entrypoints, HTTP routes, CLI args, exports, comments, TODOs, env vars, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI, tree-sitter AST (Python, JS, TS, TSX, Go, Rust, C, C++), dependency graph. Graph edges queryable via `python3 ./cairn/query.py --deps <project>`.
+24 extractors: docs, deps, tree, config, schemas, entrypoints, HTTP routes, CLI args, exports, comments, TODOs, env vars, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI, tree-sitter AST (Python, JS, TS, TSX, Go, Rust, C, C++), dependency graph. Graph edges queryable via `.venv/bin/python ./cairn/query.py --deps <project>`.
 
 ## Subagent & review memory capture
 
@@ -94,13 +95,17 @@ So every repo is graph-ready before first contact, independent of whether cairn 
 
 The daemon exposes a **TCP listener on port 47390** alongside its Unix socket so container shims can dial the host daemon via `cairn_recall` / `cairn_remember` opcodes. `cairn/container_injector.py` injects context inside the container, with an extension auto-installer and VSIX staging, so a containerised session reaches the same host cairn as the native session.
 
+## Multi-node sync (v2)
+
+`cairn/sync/` is opt-in peer-to-peer LAN replication, **off by default** — set `CAIRN_SYNC_ENABLED=1` per node to opt in (wired into `install.sh`). When enabled the daemon runs the HTTPS sync server, UDP-broadcasts a LAN discovery beacon, and pulls from approved peers. Identity is an Ed25519 keypair; pairing is dashboard-authorized by public key; transport is signed + cert-pinned; replication is changeset-based with Lamport-clock last-write-wins. **Only a node's own memories are shared**, and raw session transcripts are never synced (a node may opt in to serving them behind its memories to approved peers via `CAIRN_SYNC_SHARE_SESSIONS=1`). Ports: HTTPS `CAIRN_SYNC_PORT=8787`, discovery `CAIRN_SYNC_DISCOVERY_PORT=47391`. See the Multi-User Architecture section of `ARCHITECTURE.md`.
+
 ## Calibration system (Phases 1–7)
 
 Phase 1 shipped scaffolding (schema, extractor, stubbed CLI). Phase 2 ships the analyser: a single LLM pass per session over a cleaned transcript produces sectioned JSON across 13 bounded dimensions, writing 8 dimensions to `calibration_rows` and 5 to the existing `memories` table with `source_ref="analyser-session-arc"`. A post-pass scores effectiveness on prior `calibration_deliveries`. See `docs/spec-calibration-system.md` (especially Amendment 1) for the dimension list and design rationale.
 
 Phase 2 commands:
 - `cairn-calibration-analyser analyse <jsonl> [--dry-run]` — analyse a single session
-- `cairn-calibration-analyser cron [--idle-minutes N] [--limit K]` — one cron pass: walks `~/.claude/projects/*/*.jsonl`, picks idle un-analysed sessions, runs the analyser on up to K of them (oldest first), per-session try/except so one failure doesn't block the rest
+- `cairn-calibration-analyser cron [--idle-minutes N] [--limit K]` — one cron pass: walks `~/.claude/projects/*/*.jsonl`, picks idle un-analysed sessions (idle ≥ `--idle-minutes`, default 15, so active sessions are left alone), runs the analyser on up to K of them (oldest first), per-session try/except so one failure doesn't block the rest
 - `cairn-calibration-analyser list-idle` — print idle un-analysed session paths
 
 The analyser invokes `claude -p` with `CAIRN_MODE=read-only` so the analyser pass doesn't itself trigger the Stop hook capture path. Defaults to `claude-sonnet-4-6` — the 13-dim sectioned output benefits from a mode-switching-capable model (per cairn entry 2087), and per-call cost is amortised across many future retrievals. Override via `--model` flag or `CAIRN_ANALYSER_MODEL` env var.
@@ -139,15 +144,15 @@ Effectiveness scoring updates `calibration_deliveries.outcome` AND bumps the cor
 
 **Phase 7 — CLAUDE.md import** (`cairn-calibration-import-claude-md [path]`): one-shot scanner for first-person preference statements ("I prefer X", "Always/Never Y", "Stop Z"). Idempotent via SHA tracking in `hook_state`. Seeds rows as pinned `explicit` with confidence 0.90.
 
-Phase 1 scaffolding (still applies):
+Foundation (Phase 1, still current):
 
-Calibration captures *how to interact with this user* (level, style, preferences) — complementing Cairn knowledge which captures *what is known*. Phase 1 lands foundation only: schema, transcript extractor, and stubbed CLI. The analyser, injector, and dashboard come in later phases. See `docs/spec-calibration-system.md` for the full design.
+Calibration captures *how to interact with this user* (level, style, preferences) — complementing Cairn knowledge which captures *what is known*. Phase 1 laid the foundation — schema, transcript extractor, CLI — and the analyser, injector, self-modification, and dashboard are all now shipped (Phases 2–7 above). See `docs/spec-calibration-system.md` for the full design.
 
 Schema (created by `init_db.init` / `init_db.init_ephemeral`):
 - `calibration_rows` (durable DB) — id, content, kw, qf, source, confidence, pinned, layer, session_scope, supersession, archived_at, effectiveness counters, embedding
 - `calibration_deliveries` (ephemeral DB) — turn-indexed log of which rows were injected into which session/turn, with outcome scoring fields
 
-Phase 1 commands (stubs return exit 2 — wiring is verified, no behaviour yet):
+CLI commands (all implemented; agent-invoked from natural-language intent, never user-typed):
 - `python3 ./cairn/session_extract.py <jsonl>` — clean a session JSONL to user/assistant text only, dropping tool blocks, thinking, `<cairn_context>`, `<system-reminder>`, and `[cm]` link-defs. Flags: `--with-tools`, `--corrections-only`, `--turn-range A-B`, `--last-N-minutes N`, `--json`.
 - `cairn-calibration --show-profile [subject]` — show calibration profile
 - `cairn-calibration --review` — Tier 2 review queue
@@ -160,6 +165,55 @@ Phase 1 commands (stubs return exit 2 — wiring is verified, no behaviour yet):
 
 The CLI is **agent-invoked from natural-language intent**, never user-typed.
 
+## Read-side relevance grading & write-side A/B (docs/spec-memory-relevance-grading.md)
+
+**Read side — what gets injected, graded, and measured.** Every injected memory is logged to `memory_deliveries` (ephemeral DB) keyed by a cleaned recent-context window (`cairn/relevance.py:build_context_window`), with ranking provenance (`reranker_model`, `score_components`, `layer`, `scope`). Two labels accumulate per delivery:
+- **Agent-as-teacher grades** — the `rg` field in the `[cm]` block (`"id:grade"`, 0–3 + trailing `!` for hard-negative) is written back by `apply_relevance_grades`. (Behaviour already specified in the memory rules.)
+- **Behavioural engagement** (the PRIMARY, non-circular label) — at Stop time `apply_engagement` mechanically detects whether the response actually USED each delivered memory (distinctive-term overlap minus prompt terms) → `engaged` / `engaged_score`. Agent `rg` supplements it.
+
+A mechanical **bucket-4 prefilter** (`is_self_referential_meta`) can drop self-referential meta-memories (gated by `RELEVANCE_PREFILTER_ENABLED`, default off; corrections exempt). The cross-encoder reranker is device-aware (`config.resolve_reranker`): `BAAI/bge-reranker-base` (floor 0.0005) on CUDA when `RERANKER_BGE_ENABLED`, else `cross-encoder/ms-marco-MiniLM-L-6-v2` (floor −3.0); the daemon owns the model and scores the recent-context window, so the hot hook path never imports torch. Phases 1–2 (instrument + agent labels) are live; the trained cross-encoder student and teacher-demotion (Phases 3–4) are future work.
+
+**Write side — generation quality.** Each agent-written memory is stamped with `config.GENERATION_PROMPT_VERSION` (`genA-v3`) in `memories.source_ref` (the provenance join key; precedence `entry["source_ref"] > call param > NULL`). The live generation rules carry a dual-altitude **transferability** lever (generalised principle + specific anchor) and an **in-session duplicate-suppression** rule. Memory keywords **union** (not overwrite) on dedup, so re-encounters enrich findability.
+
+**Two A/B paths exist — do not conflate them:**
+- **LIVE per-prompt A/B** (`config.AB_TEST_ENABLED`, ON) — the real experiment. Each user prompt is randomly assigned **arm A** (control = current live rules) or **arm B** (control + one speculative variable from `config.AB_B_INSTRUCTION`, injected that turn). The prompt hook records the arm in `hook_state`; the Stop hook stamps that turn's memories with the arm's `source_ref` version (`config.AB_ARM_VERSIONS`: A=`genA-v3`, B=`genB-v1`). Subagents excluded; arm-B injection is post-cache (no cache disturbance). Compare arms with `.venv/bin/python cairn/query.py --delivery-stats` (engagement/grade grouped by generation version + reranker). To stop it: `AB_TEST_ENABLED=False`. To change what B tests: edit `AB_B_INSTRUCTION`.
+- **OFFLINE replay harness** (`cairn/ab_writeside.py`) — an analysis tool (not the live experiment, never run on the corpus yet): replays transcripts through prompt-A vs prompt-B → Opus 4.8 judge, BLIND + position-swapped + pairwise (findability / self-sufficiency / fitness), A/B unit = session cohort; metrics dedup rate / findability backtest / self-sufficiency cold-read. CLI: `.venv/bin/python cairn/ab_writeside.py replay|ab --limit N [--dry-run]`.
+
+## Time handling (UTC storage, local display)
+
+Storage is **always UTC** (SQLite `CURRENT_TIMESTAMP` / `datetime('now')`); display
+and day-bucketing are **always local**. `cairn/timeutil.py` is the single source of
+truth (`fmt_local`, `since_bound_utc` / `until_bound_utc`, `now_local`); the local
+zone is `CAIRN_TZ` (IANA name) or the auto-detected system zone.
+
+- **Never** read a stored timestamp as local — a `created_at` of `2026-06-25
+  21:04:34` is UTC (e.g. `2026-06-26 09:04:34 NZST`). `query.py` already renders
+  local and `--today/--since/--until` already bucket by the local day; the
+  dashboard localises every `*_at` field. So trust those outputs as local.
+- When querying the DB directly, compare against UTC: use
+  `created_at >= datetime('now','-N minutes')` (UTC-relative) or
+  `timeutil.since_bound_utc(...)`, **not** a hand-typed local time. (This is the
+  exact trap behind the false "no memories today" outage.)
+
+## SQLite library discipline (corruption prevention)
+
+ALL processes that open a cairn DB (`cairn.db`, `cairn-ephemeral.db`) MUST use a
+single SQLite library — **pysqlite3** — via the guard at the top of
+`cairn/ingest.py` (`try: import pysqlite3 as sqlite3` / `except ImportError`,
+falling back to stdlib only under explicit `CAIRN_ALLOW_STDLIB_SQLITE=1`). Mixing
+the system stdlib `sqlite3` (an older SQLite) with pysqlite3 on the same WAL file
+is a documented cause of `database disk image is malformed` corruption (commit
+be91366). Enforced by `tests/test_sqlite_guard.py` (no exemptions — every `cairn/`
+and `hooks/` module) and an `install.sh` post-install assertion that cairn actually
+resolves `sqlite3 -> pysqlite3`.
+
+- **External writers in OTHER repos** (e.g. `jira/confluence_ingest.py`) that
+  import cairn and write `cairn.db` are NOT covered by the in-repo test — copy the
+  guard into them manually.
+- **Never inspect a live cairn WAL DB with stdlib `sqlite3`** (including a bare
+  `import sqlite3` in a throwaway script while the daemon is running) — use
+  pysqlite3 or `query.py`. Concurrent stdlib access can corrupt the WAL.
+
 ## Git workflow
 
 All changes MUST be made on feature branches, not main. Branch naming: `feature/<short-description>` or `fix/<short-description>`. Merge to main only after testing.
@@ -167,7 +221,7 @@ All changes MUST be made on feature branches, not main. Branch naming: `feature/
 Before tagging a release on main:
 1. Docs are up to date (README.md, ARCHITECTURE.md)
 2. `install.sh` and `uninstall.sh` are verified (syntax check + review for unintended changes)
-3. All tests pass (`python3 -m pytest tests/`)
+3. All tests pass (`.venv/bin/python -m pytest tests/`)
 4. Tag with semver: `git tag -a v0.X.Y -m "description"`
 
 ## Memory system instructions

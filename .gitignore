@@ -50,3 +50,10 @@ cairn/.proxy-*.pid
 cairn/cairn.db.pre-*
 # Local machine config (written by install.sh + dashboard; loaded by cairn.config)
 cairn/.env
+
+# org-index generated databases / reports (org_index.py, interface_registry.py)
+cairn/org_index.db
+cairn/org_index.db-shm
+cairn/org_index.db-wal
+cairn/interface_registry.db
+cairn/reports/

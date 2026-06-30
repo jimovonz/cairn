@@ -37,7 +37,19 @@ def test_context_window_caps_long_prior_response(tmp_path):
     # The capped prior response must not let the long response dominate.
     assert "X" * 100 in win
     assert "X" * 200 not in win
-    assert win.endswith("[user] follow up")
+    # Current prompt now leads the window (truncation-safety), prior context trails.
+    assert win.startswith("[user] follow up")
+
+
+def test_context_window_leads_with_current_prompt(tmp_path):
+    # Regression: the current prompt MUST be first so it survives the cross-encoder
+    # 512-token right-truncation. A long prior turn must not push it past the cut.
+    t = tmp_path / "s.jsonl"
+    _write_transcript(t, [("user", "old q " * 500), ("assistant", "old a " * 500)])
+    win = relevance.build_context_window("THE CURRENT QUESTION", str(t))
+    assert win.startswith("[user] THE CURRENT QUESTION")
+    # current prompt appears before any prior-context marker
+    assert win.index("[user]") < win.index("[prev user]")
 
 
 def test_context_window_dedupes_current_prompt_if_already_tail(tmp_path):
@@ -113,6 +125,34 @@ def test_log_and_grade_roundtrip(eph):
         "SELECT memory_id, hard_negative FROM memory_deliveries WHERE session_id='sess1'").fetchall())
     assert g[42] == 3 and g[17] == 0
     assert hn[42] == 0 and hn[17] == 1
+
+
+def test_grade_drop_records_metric(eph):
+    """A grade for a memory with no matching delivery matches 0 rows and must be
+    surfaced as an rg_grade_dropped metric (compaction-chained-session signal
+    loss), not silently swallowed."""
+    relevance.log_memory_deliveries([{"id": 1, "score": 0.9}], session_id="s",
+                                    context_text="t", eph_path=eph)
+    # Grade id 1 (exists) and id 999 (no delivery -> drop).
+    upd = relevance.apply_relevance_grades([(1, 3, False), (999, 2, False)],
+                                           session_id="s", eph_path=eph)
+    assert upd == 1  # only the real delivery updated
+    conn = sqlite3.connect(eph)
+    m = conn.execute(
+        "SELECT session_id, detail, value FROM metrics WHERE event='rg_grade_dropped'"
+    ).fetchone()
+    assert m is not None and m[0] == "s"
+    assert m[2] == 1 and "999" in m[1]
+
+
+def test_grade_no_drop_metric_when_all_match(eph):
+    """No rg_grade_dropped metric when every grade lands."""
+    relevance.log_memory_deliveries([{"id": 5, "score": 0.9}], session_id="s",
+                                    context_text="t", eph_path=eph)
+    relevance.apply_relevance_grades([(5, 2, False)], session_id="s", eph_path=eph)
+    conn = sqlite3.connect(eph)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM metrics WHERE event='rg_grade_dropped'").fetchone()[0] == 0
 
 
 def test_grade_updates_most_recent_delivery_only(eph):
@@ -290,6 +330,30 @@ def test_build_context_xml_logs_deliveries(tmp_path, monkeypatch):
     assert rows == [(1, "[user] q")]
 
 
+def test_build_context_xml_records_context_vec(tmp_path, monkeypatch):
+    # context_vec (the empirical-context join key) is embedded from context_text at
+    # delivery time when an embedder is available.
+    p = str(tmp_path / "eph.db")
+    init_db.init_ephemeral(p)
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", p)
+    import hooks.hook_helpers as hh
+
+    class _Emb:
+        def embed(self, text, allow_slow=True):
+            return [0.1, 0.2, 0.3]
+        def to_blob(self, vec):
+            return b"\x01\x02\x03\x04"
+    monkeypatch.setattr(hh, "get_embedder", lambda: _Emb())
+    pr = [{"id": 1, "type": "fact", "topic": "t", "content": "c", "project": "x",
+           "updated_at": "now", "confidence": 0.9, "score": 0.9, "similarity": 0.7,
+           "archived_reason": None}]
+    hh.build_context_xml("q", "x", "per-prompt", pr, [], session_id="sess",
+                         context_text="[user] q")
+    cv = sqlite3.connect(p).execute(
+        "SELECT context_vec FROM memory_deliveries WHERE session_id='sess'").fetchone()[0]
+    assert cv == b"\x01\x02\x03\x04"
+
+
 def _entry(i, typ, content):
     return {"id": i, "type": typ, "topic": "t", "content": content, "project": "x",
             "updated_at": "now", "confidence": 0.9, "score": 0.9, "similarity": 0.7,
@@ -349,15 +413,29 @@ def test_resolve_reranker_ms_marco_default_even_on_cuda(monkeypatch):
     assert f == config.CROSS_ENCODER_SCORE_FLOOR
 
 
+def _fake_vram(monkeypatch, gb):
+    """Make torch report a GPU of `gb` GiB so the VRAM capability gate is testable."""
+    import torch
+    class _Props:
+        total_memory = int(gb * 1e9)
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda i=0: _Props())
+
+
 def test_resolve_reranker_bge_when_flag_on_and_cuda(monkeypatch):
-    # The dormant bge path the step-1b A/B will validate: flag on + CUDA -> bge.
+    # bge requires flag on + CUDA + a FAST GPU (VRAM >= RERANKER_MIN_VRAM_GB).
     import torch
     from cairn import config
     monkeypatch.setattr(config, "RERANKER_BGE_ENABLED", True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    # Big discrete GPU (e.g. 8GB 4070) -> bge.
+    _fake_vram(monkeypatch, 8.0)
     m, f = config.resolve_reranker()
     assert m == config.CROSS_ENCODER_MODEL_CUDA
     assert f == config.CROSS_ENCODER_SCORE_FLOOR_CUDA
+    # Small laptop GPU (e.g. 3.9GB T2000) fits bge in VRAM but is too slow -> ms-marco.
+    _fake_vram(monkeypatch, 3.9)
+    m, f = config.resolve_reranker()
+    assert m == config.CROSS_ENCODER_MODEL
     # flag on but no CUDA -> still ms-marco
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     m, f = config.resolve_reranker()
@@ -415,3 +493,22 @@ def test_superseded_dropped_across_scopes(tmp_path, monkeypatch):
                             [_superseded(10, 11)], [_entry(11, "fact", "new")],
                             session_id="s", context_text="t")
     assert 'id="10"' not in xml and 'id="11"' in xml
+
+
+# ---- write-side live A/B: arm-stamped source_ref --------------------------------
+def test_arm_source_ref(eph, monkeypatch):
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", eph)
+    from hooks import stop_hook
+    from hooks.hook_helpers import save_hook_state
+    from cairn import config
+    monkeypatch.setattr(config, "AB_TEST_ENABLED", True)
+    # no arm assigned yet -> falls back to the plain generation version
+    assert stop_hook._arm_source_ref("s") == config.GENERATION_PROMPT_VERSION
+    save_hook_state("s", "ab_arm", "B")
+    assert stop_hook._arm_source_ref("s") == config.AB_ARM_VERSIONS["B"]
+    save_hook_state("s", "ab_arm", "A")
+    assert stop_hook._arm_source_ref("s") == config.AB_ARM_VERSIONS["A"]
+    # experiment off -> default version regardless of a stale arm
+    monkeypatch.setattr(config, "AB_TEST_ENABLED", False)
+    save_hook_state("s", "ab_arm", "B")
+    assert stop_hook._arm_source_ref("s") == config.GENERATION_PROMPT_VERSION

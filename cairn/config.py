@@ -24,6 +24,36 @@ except FileNotFoundError:
     pass
 del _os_env
 
+
+def set_env_kv(key: str, value: str) -> None:
+    """Idempotently upsert KEY=value in cairn/.env and the live process env.
+
+    Mirrors install.sh's set_env_kv so the dashboard / pairing can persist
+    toggles (e.g. CAIRN_SYNC_ENABLED) that survive a daemon restart. Atomic
+    (temp + rename). Also sets os.environ[key] so the current process sees it."""
+    import os
+    path = os.path.join(os.path.dirname(__file__), ".env")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        lines = []
+    out, found = [], False
+    for ln in lines:
+        s = ln.strip()
+        if s and not s.startswith("#") and "=" in s and s.split("=", 1)[0].strip() == key:
+            out.append(f"{key}={value}")
+            found = True
+        else:
+            out.append(ln)
+    if not found:
+        out.append(f"{key}={value}")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+    os.replace(tmp, path)
+    os.environ[key] = value
+
 # === Deduplication ===
 DEDUP_THRESHOLD = 0.95          # Cosine similarity above which entries are considered near-identical
 
@@ -141,6 +171,23 @@ CAIRN_SYNC_ONLINE_WINDOW = int(_os.environ.get("CAIRN_SYNC_ONLINE_WINDOW", "90")
 # serving the raw session behind its own memories to approved peers on demand.
 CAIRN_SYNC_SHARE_SESSIONS = _os.environ.get("CAIRN_SYNC_SHARE_SESSIONS", "").lower() in ("1", "true", "yes")
 del _os
+
+# === Org-wide git index (org_index.py / interface_registry.py / cairn_verify.py) ===
+# Locatability + cross-repo index over one or more GitHub orgs, plus the
+# location-claim annotation injected into retrieved memories. OPT-IN: a memory
+# tool making scheduled `gh` API calls is a real side effect, so it stays OFF
+# until ORG_INDEX_ENABLED is set. When disabled, the nightly build, its cron and
+# the CLAUDE.md routing all no-op, and the injection annotation degrades to
+# nothing (location_annotation simply finds no org_index.db).
+import os as _os_oi
+ORG_INDEX_ENABLED = _os_oi.environ.get("ORG_INDEX_ENABLED", "").lower() in ("1", "true", "yes")
+# Comma-separated GitHub orgs to index, e.g. "robotics-plus,YamahaAg".
+ORG_INDEX_ORGS = [_o.strip() for _o in _os_oi.environ.get("ORG_INDEX_ORGS", "").split(",") if _o.strip()]
+ORG_INDEX_GH_HOST = _os_oi.environ.get("ORG_INDEX_GH_HOST") or None        # set for GitHub Enterprise
+ORG_INDEX_GH_ACCOUNT = _os_oi.environ.get("ORG_INDEX_GH_ACCOUNT") or None  # gh account (multi-account); used by the nightly wrapper
+ORG_INDEX_PUSHED_WITHIN_MONTHS = float(_os_oi.environ.get("ORG_INDEX_PUSHED_WITHIN_MONTHS", "12"))
+ORG_INDEX_MIN_RATE = int(_os_oi.environ.get("ORG_INDEX_MIN_RATE", "200"))
+del _os_oi
 # When enabled, the container injector also docker cp's the shim and hook
 # config into every new dev container, so cairn works with zero per-project
 # devcontainer.json edits.
@@ -294,6 +341,13 @@ CROSS_ENCODER_SCORE_FLOOR_CUDA = 0.0005  # eyeball-initial: drops only bge~0 noi
 # is present (sentence-transformers auto-selects the device) — i.e. ms-marco-on-GPU,
 # still ~12x faster than CPU, but with the floor we actually trust.
 RERANKER_BGE_ENABLED = True   # enabled: CUDA available; floor loose (0.0005) pending rg calibration
+# bge needs a FAST discrete GPU, not just any CUDA device. Measured: bge-reranker-base
+# is 444ms on a 3.9GB Quadro T2000 (Turing laptop) vs 62ms on an RTX 4070 — and fp16
+# is WORSE on the T2000 (1885ms, poor Turing fp16 throughput). ms-marco is 72ms there.
+# So gate bge on VRAM as a capability proxy: a 4GB laptop GPU fits bge but is too slow
+# for it. <threshold -> ms-marco (fast everywhere). The T2000 (3.9GB) stays ms-marco;
+# the 4070 (8GB) gets bge.
+RERANKER_MIN_VRAM_GB = 6.0
 
 
 def resolve_reranker():
@@ -308,7 +362,12 @@ def resolve_reranker():
         try:
             import torch
             if torch.cuda.is_available():
-                return CROSS_ENCODER_MODEL_CUDA, CROSS_ENCODER_SCORE_FLOOR_CUDA
+                vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+                # VRAM as a capability proxy: bge fits a 4GB laptop GPU but is too
+                # slow on it (444ms T2000 vs 62ms 4070). Only a fast discrete GPU
+                # (>= RERANKER_MIN_VRAM_GB) gets bge; everything else gets ms-marco.
+                if vram_gb >= RERANKER_MIN_VRAM_GB:
+                    return CROSS_ENCODER_MODEL_CUDA, CROSS_ENCODER_SCORE_FLOOR_CUDA
         except Exception:
             pass
     return CROSS_ENCODER_MODEL, CROSS_ENCODER_SCORE_FLOOR
@@ -321,9 +380,35 @@ def resolve_reranker():
 # generation rules change materially. Stored in memories.source_ref for agent
 # writes (analyser/ingest set their own source_ref and are unaffected).
 #   genA-v1 -> genA-v2: added the dual-altitude transferability lever to the live
-#   rules (capture the generalised, cross-project form with the specific instance
-#   as anchor), so usefulness of genA-v2 memories is attributable to the change.
-GENERATION_PROMPT_VERSION = "genA-v2"
+#   rules (capture the generalised, cross-project form with the specific instance).
+#   genA-v2 -> genA-v3: added the in-session duplicate-suppression rule (do not
+#   re-emit a knowledge bite already written this session; the agent sees its own
+#   prior [cm] blocks in context).
+GENERATION_PROMPT_VERSION = "genA-v3"
+
+# === Write-side A/B (live, per-prompt) ===
+# When enabled, each user prompt is randomly assigned arm A (control = current live
+# rules) or arm B (control + ONE speculative variable injected this turn). The Stop
+# hook stamps each arm's memories with AB_ARM_VERSIONS[arm] in source_ref, so
+# outcomes compare by arm via `query.py --delivery-stats`. Per-prompt randomisation;
+# subagents are excluded. Flip AB_TEST_ENABLED off to stop the experiment.
+AB_TEST_ENABLED = True
+AB_ARM_VERSIONS = {"A": GENERATION_PROMPT_VERSION, "B": "genB-v1"}
+# The single speculative variable for arm B (swap this to test a different aspect):
+AB_B_INSTRUCTION = (
+    "[cairn A/B — arm B] For each memory you write THIS turn, additionally seed its "
+    "keywords (kw) with 2-3 QUESTION-FORM phrasings — the literal questions a future "
+    "session would type to find it (e.g. \"how do I X\", \"why does Y fail\", \"what "
+    "sets Z\") — alongside the normal keywords."
+)
+
+# === Time display (cairn/timeutil.py) ===
+# Storage is ALWAYS UTC (SQLite CURRENT_TIMESTAMP). This is the local timezone used
+# for DISPLAY and for "today/since/until" day-bucketing only. IANA name (e.g.
+# "Pacific/Auckland"); None = auto-detect the system zone. cairn.timeutil is the
+# single source of truth — never render or compare stored timestamps without it.
+import os as _os_tz
+CAIRN_TZ = _os_tz.environ.get("CAIRN_TZ")
 
 # === Read-side memory relevance grading (docs/spec-memory-relevance-grading.md) ===
 RELEVANCE_LOGGING_ENABLED = True    # Log injected memories to memory_deliveries (instrument; T0)
@@ -423,3 +508,22 @@ PROXY_HOST = _os_proxy.environ.get("CAIRN_PROXY_HOST", "127.0.0.1")
 PROXY_PORT = int(_os_proxy.environ.get("CAIRN_PROXY_PORT", "8789"))  # 8787 is sync server default
 PROXY_UPSTREAM = _os_proxy.environ.get("CAIRN_PROXY_UPSTREAM", "https://api.anthropic.com")
 PROXY_REWRITE = _os_proxy.environ.get("CAIRN_PROXY_REWRITE", "1").lower() in ("1", "true", "yes")
+
+# === Dashboard override key map ===
+# The config editor must write/read each setting under the EXACT env var that
+# the setting actually reads — and those diverge: most read their own name
+# (ORG_INDEX_*, CAIRN_SYNC_*), but the PROXY_* group reads CAIRN_PROXY_*. We
+# derive attr -> env-key by parsing this file's own `environ.get("…")` calls, so
+# the dashboard round-trips saves instead of guessing a blanket CAIRN_ prefix.
+# Presence in this map also marks a setting as genuinely env-overridable (vs a
+# literal constant the dashboard can show but not actually override).
+def _build_env_key_map():
+    import re as _re, pathlib as _pl
+    try:
+        _src = _pl.Path(__file__).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    return {m.group(1): m.group(2) for m in _re.finditer(
+        r'^([A-Z][A-Z0-9_]*)\s*=\s*[^\n]*?environ\.get\(\s*"([^"]+)"', _src, _re.M)}
+
+CONFIG_ENV_KEYS = _build_env_key_map()
