@@ -349,7 +349,12 @@ def _load_vec(conn: sqlite3.Connection) -> bool:
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
         return True
-    except (ImportError, OSError):
+    except Exception:
+        # Best-effort: any load failure (missing module, OSError, or a
+        # sqlite3 OperationalError like "error during initialization" when the
+        # extension is re-loaded in a long-lived process such as the test
+        # runner) means the vec index is unavailable on this conn — degrade to
+        # False so callers (connect_db, upsert_vec_index) never crash on it.
         return False
 
 

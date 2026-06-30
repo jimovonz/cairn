@@ -554,8 +554,15 @@ def delete_memory(memory_id):
 
 def add_memory(mem_type, topic, content, project=None, session_id=None):
     """Manually add a memory entry with proper attribution and embedding."""
-    from cairn import embeddings as emb
-    conn = emb.connect_db(DB_PATH)
+    try:
+        from cairn import embeddings as emb
+    except (ImportError, ModuleNotFoundError):
+        emb = None  # degrade gracefully — store the row without an embedding
+    if emb is not None:
+        conn = emb.connect_db(DB_PATH)
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("PRAGMA busy_timeout=5000")
 
     # Generate embedding for semantic search
     embedding_blob = None
@@ -579,7 +586,7 @@ def add_memory(mem_type, topic, content, project=None, session_id=None):
     # failure at the call site rather than swallowing it (the silent-failure
     # bug that left 1587 rows embedded-but-unindexed).
     indexed = False
-    if embedding_blob:
+    if embedding_blob and emb is not None:
         indexed = emb.upsert_vec_index(conn, new_id, embedding_blob)
 
     conn.commit()
