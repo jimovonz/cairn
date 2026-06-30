@@ -478,7 +478,7 @@ def test_backfill_embeddings_behavioural(backfill_env, capsys):
     import sys as _sys
     import cairn as _cairn_pkg
     with patch.dict(_sys.modules, {"cairn.embeddings": mock_emb}), \
-         patch.object(_cairn_pkg, "embeddings", mock_emb):
+         patch.object(_cairn_pkg, "embeddings", mock_emb, create=True):
         query.backfill_embeddings()
 
     # All 3 should have been processed
@@ -513,7 +513,7 @@ def test_backfill_embeddings_edge_all_have_embeddings(backfill_env, capsys):
     import sys as _sys
     import cairn as _cairn_pkg
     with patch.dict(_sys.modules, {"cairn.embeddings": mock_emb}), \
-         patch.object(_cairn_pkg, "embeddings", mock_emb):
+         patch.object(_cairn_pkg, "embeddings", mock_emb, create=True):
         query.backfill_embeddings()
 
     # embed should never be called — nothing to backfill
@@ -577,7 +577,7 @@ def test_backfill_embeddings_adversarial_partial_failure(backfill_env):
     import sys as _sys
     import cairn as _cairn_pkg
     with patch.dict(_sys.modules, {"cairn.embeddings": mock_emb}), \
-         patch.object(_cairn_pkg, "embeddings", mock_emb):
+         patch.object(_cairn_pkg, "embeddings", mock_emb, create=True):
         with pytest.raises(RuntimeError, match="model crashed"):
             query.backfill_embeddings()
 
@@ -605,7 +605,7 @@ def test_backfill_embeddings_project_prefix_included(backfill_env, capsys):
     import sys as _sys
     import cairn as _cairn_pkg
     with patch.dict(_sys.modules, {"cairn.embeddings": mock_emb}), \
-         patch.object(_cairn_pkg, "embeddings", mock_emb):
+         patch.object(_cairn_pkg, "embeddings", mock_emb, create=True):
         query.backfill_embeddings()
 
     # Check the search_text passed to embed has project prefix and correct structure
@@ -629,7 +629,7 @@ def test_backfill_embeddings_no_project_prefix(backfill_env, capsys):
     import sys as _sys
     import cairn as _cairn_pkg
     with patch.dict(_sys.modules, {"cairn.embeddings": mock_emb}), \
-         patch.object(_cairn_pkg, "embeddings", mock_emb):
+         patch.object(_cairn_pkg, "embeddings", mock_emb, create=True):
         query.backfill_embeddings()
 
     embed_arg = mock_emb.embed.call_args[0][0]
