@@ -161,7 +161,10 @@ def start_sync_services(force: bool = False):
 
     # 3. Listener + periodic outbound-approval promotion
     def _listen():
-        conn = sqlite3.connect(db)
+        # Autocommit (isolation_level=None): beacon upserts and refresh_outbound
+        # commit immediately, so this long-lived listener connection never holds
+        # an idle write transaction that would lock out memory-capture writes.
+        conn = sqlite3.connect(db, isolation_level=None)
         conn.execute("PRAGMA busy_timeout=5000")
         def _store(beacon, addr):
             try:
@@ -189,8 +192,6 @@ def start_sync_services(force: bool = False):
     # pairing with each source directly. pull_all presence-gates so an offline
     # peer is skipped, never dialled.
     def _pull():
-        conn = sqlite3.connect(db)
-        conn.execute("PRAGMA busy_timeout=5000")
         try:
             from cairn import embeddings as _emb
         except Exception:
@@ -199,8 +200,17 @@ def start_sync_services(force: bool = False):
             stop.wait(config.CAIRN_SYNC_PULL_INTERVAL)
             if stop.is_set():
                 break
+            # Open the cairn.db connection only for the active pull and close it
+            # after — so during the (long) idle interval no handle is held. Default
+            # isolation is kept so apply_changeset stays atomic per peer; bounding
+            # the connection's life to the pull releases the write lock between runs.
             try:
-                sync_client.pull_all(conn, embedder=_emb)
+                conn = sqlite3.connect(db)
+                conn.execute("PRAGMA busy_timeout=5000")
+                try:
+                    sync_client.pull_all(conn, embedder=_emb)
+                finally:
+                    conn.close()
             except Exception:
                 pass
     threading.Thread(target=_pull, daemon=True).start()
