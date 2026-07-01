@@ -620,6 +620,39 @@ def _suppress_superseded_pairs(project_results, global_results, session_id=None)
     return pr, gr
 
 
+def _push_suppression_filter(project_results, global_results, session_id=None):
+    """Drop memories flagged push_suppressed (utility-prior suppression: delivered
+    many times, never engaged, never graded positive — see cairn/memory_selfmod.py).
+    Applies to PUSH injection only; pull paths (query.py search) are unaffected, so
+    a suppressed memory remains fully findable on demand. Fail-open."""
+    all_rows = project_results + global_results
+    ids = sorted({r.get("id") for r in all_rows if r.get("id")})
+    if not ids:
+        return project_results, global_results
+    try:
+        conn = get_conn()
+        try:
+            qmarks = ",".join("?" * len(ids))
+            suppressed = {row[0] for row in conn.execute(
+                f"SELECT id FROM memories WHERE id IN ({qmarks}) "
+                f"AND push_suppressed = 1", ids)}
+        finally:
+            conn.close()
+    except Exception:
+        return project_results, global_results
+    if not suppressed:
+        return project_results, global_results
+    if session_id:
+        try:
+            record_metric(session_id, "push_suppressed_filtered",
+                          ",".join(str(i) for i in sorted(suppressed)[:20]),
+                          len(suppressed))
+        except Exception:
+            pass
+    return ([r for r in project_results if r.get("id") not in suppressed],
+            [r for r in global_results if r.get("id") not in suppressed])
+
+
 def build_context_xml(query: str, project: Optional[str], layer: str,
                       project_results: list[dict[str, Any]],
                       global_results: list[dict[str, Any]],
@@ -629,14 +662,17 @@ def build_context_xml(query: str, project: Optional[str], layer: str,
                       context_vec: Optional[bytes] = None) -> str:
     """Build a complete <cairn_context> XML block.
 
-    When `session_id` is given (the semantic-match layers L1/L1.5), this also
-    runs the read-side relevance machinery on the injected set: the bucket-4
-    prefilter (gated) and a memory_deliveries log keyed by `context_text` (the
-    cleaned recent-context window). Bootstrap/correction layers omit session_id
-    so they stay ungated and unlogged."""
+    When `session_id` is given, this also runs the read-side relevance machinery
+    on the injected set: the bucket-4 prefilter (gated; corrections always kept)
+    and a memory_deliveries log keyed by `context_text` (the cleaned recent-context
+    window). All layers now pass session_id — including project/correction
+    bootstrap (2026-07-02: they were the highest-volume path yet invisible to the
+    engagement/grading loop)."""
     # Correctness dedup (all layers): drop a superseded entry when its superseder
     # is already in the same result set — see _suppress_superseded_pairs.
     project_results, global_results = _suppress_superseded_pairs(
+        project_results, global_results, session_id)
+    project_results, global_results = _push_suppression_filter(
         project_results, global_results, session_id)
     if session_id:
         project_results, global_results = _relevance_prefilter(
