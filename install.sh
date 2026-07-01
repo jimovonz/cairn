@@ -366,9 +366,12 @@ NVM_NODE_BIN=""
 if [ -d "$HOME/.nvm/versions/node" ]; then
     NVM_NODE_BIN="$(ls -1d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -1)"
 fi
-CRON_PATH_PREFIX=""
+# claude migrated from nvm to ~/.local/bin (native installer); include it so cron
+# jobs that shell out to `claude` (the calibration analyser) resolve it — a stale
+# PATH here silently zeroed calibration_rows (every session: claude not found).
+CRON_PATH_PREFIX="PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin "
 if [ -n "$NVM_NODE_BIN" ]; then
-    CRON_PATH_PREFIX="PATH=$NVM_NODE_BIN:/usr/local/bin:/usr/bin:/bin "
+    CRON_PATH_PREFIX="PATH=$HOME/.local/bin:$NVM_NODE_BIN:/usr/local/bin:/usr/bin:/bin "
 fi
 CRON_CONSOLIDATION="0 3 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON $CAIRN_HOME/cairn/daemon.py start >/dev/null 2>&1; $VENV_PYTHON $CAIRN_HOME/cairn/consolidate.py --execute >> $CAIRN_HOME/logs/consolidation.log 2>&1 $CRON_MARKER"
 CRON_CONTRADICTION="30 3 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON $CAIRN_HOME/cairn/consolidate.py --contradictions --execute >> $CAIRN_HOME/logs/contradiction.log 2>&1 $CRON_MARKER"
