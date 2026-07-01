@@ -52,6 +52,12 @@ if __name__ == "__main__":
 
 PENDING_WARN = int(os.environ.get("CAIRN_CAPTURE_PENDING_WARN", "25"))
 STALE_HOURS = float(os.environ.get("CAIRN_CAPTURE_STALE_HOURS", "12"))
+# Confluence->Cairn sync health (external; skipped if its log is absent). The
+# 6-hourly ingest writes cairn.db, so it was a silent co-victim of the write-lock
+# stall — surface it here too. Health = last run reached "=== end ===" with no
+# traceback (distinguishes a real failure from "no upstream pages changed").
+CONFLUENCE_LOG = os.environ.get("CAIRN_CONFLUENCE_SYNC_LOG", os.path.expanduser("~/.config/confluence_sync.log"))
+CONFLUENCE_STALE_HOURS = float(os.environ.get("CAIRN_CONFLUENCE_STALE_HOURS", "8"))
 
 
 def _durable_db():
@@ -109,6 +115,48 @@ def _capture_age_hours(db_path):
         return None
 
 
+def _confluence_health():
+    """('skip'|'ok'|'warn'|'crit', message) for the external Confluence->Cairn
+    sync. Skips silently if the log is absent (not every host runs it). The last
+    run is healthy when its '=== start ===' is followed by '=== end ===' with no
+    Traceback in between; failed if a traceback/lock error or no end; stale if no
+    run within CONFLUENCE_STALE_HOURS (cron may be down)."""
+    import datetime as _dt
+    import re as _re
+    if not os.path.exists(CONFLUENCE_LOG):
+        return "skip", "not configured here"
+    try:
+        with open(CONFLUENCE_LOG, encoding="utf-8", errors="ignore") as f:
+            tail = f.read()[-8000:]
+    except OSError as e:
+        return "warn", f"log unreadable: {e}"
+    marks = list(_re.finditer(r"=== (\S+) (start|end) ===", tail))
+    if not marks:
+        return "warn", "no run markers in log"
+    last_start = None
+    for m in marks:
+        if m.group(2) == "start":
+            last_start = m
+    last_is_end = marks[-1].group(2) == "end"
+    seg = tail[last_start.end():] if last_start else ""
+    if "database is locked" in seg:
+        return "crit", "last run FAILED (database is locked)"
+    if "Traceback" in seg or "Error" in seg:
+        return "crit", "last run FAILED (traceback/error)"
+    if last_start and not last_is_end:
+        return "crit", "last run did not complete"
+    age_h = None
+    try:
+        ts = _dt.datetime.fromisoformat(marks[-1].group(1))
+        now = _dt.datetime.now(ts.tzinfo) if ts.tzinfo else _dt.datetime.now()
+        age_h = (now - ts).total_seconds() / 3600
+    except ValueError:
+        pass
+    if age_h is not None and age_h > CONFLUENCE_STALE_HOURS:
+        return "warn", f"last run {age_h:.1f}h ago (> {CONFLUENCE_STALE_HOURS}h) - cron may be down"
+    return "ok", (f"last run {age_h:.1f}h ago, clean" if age_h is not None else "last run clean")
+
+
 def check():
     db, eph = _durable_db(), _ephemeral_db()
     locked, detail = _lock_held(db)
@@ -141,6 +189,16 @@ def check():
         print(f"  [{flag}] last capture {age:.1f}h ago (> {STALE_HOURS}h){suffix}")
     else:
         print(f"  [ok]   last capture {age:.1f}h ago")
+
+    cstate, cmsg = _confluence_health()
+    if cstate == "crit":
+        print(f"  [CRIT] confluence sync: {cmsg}")
+        unhealthy = True
+    elif cstate == "warn":
+        print(f"  [warn] confluence sync: {cmsg}")
+    elif cstate == "ok":
+        print(f"  [ok]   confluence sync: {cmsg}")
+    # 'skip' -> not configured on this host; stay silent
 
     print("STATUS:", "UNHEALTHY" if unhealthy else "healthy")
     return 1 if unhealthy else 0
