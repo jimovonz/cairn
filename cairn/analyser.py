@@ -353,6 +353,30 @@ def _load_prior_rows_for_session(session_id: str,
         conn.close()
 
 
+def _resolve_claude_bin() -> str:
+    """Locate the `claude` CLI robustly. The cron PATH frequently omits its
+    install dir (it migrated from nvm to ~/.local/bin), which silently zeroed the
+    analyser — every session failed 'No such file or directory: claude' and no
+    calibration_rows were ever written. Order: explicit env override, PATH, then
+    known install locations; fall back to the bare name so a genuine absence is
+    still a clear error rather than a wrong path."""
+    import glob
+    import shutil
+    override = os.environ.get("CAIRN_ANALYSER_CLAUDE_BIN")
+    if override and os.path.exists(override):
+        return override
+    found = shutil.which("claude")
+    if found:
+        return found
+    candidates = [os.path.expanduser("~/.local/bin/claude")]
+    candidates += sorted(glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin/claude")), reverse=True)
+    candidates.append("/usr/local/bin/claude")
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return "claude"
+
+
 def call_llm(prompt: str, timeout: int = DEFAULT_TIMEOUT_S,
              model: Optional[str] = None) -> str:
     """Invoke `claude -p` with CAIRN_MODE=read-only so the analyser doesn't
@@ -371,7 +395,11 @@ def call_llm(prompt: str, timeout: int = DEFAULT_TIMEOUT_S,
     # Pass the prompt via stdin — large session transcripts blow past
     # Linux ARG_MAX (~128KB) when passed as a positional argument.
     # `claude -p` reads from stdin when no prompt arg is supplied.
-    cmd = ["claude", "-p",
+    claude_bin = _resolve_claude_bin()
+    _bindir = os.path.dirname(claude_bin)
+    if _bindir and _bindir not in env.get("PATH", "").split(os.pathsep):
+        env["PATH"] = _bindir + os.pathsep + env.get("PATH", "")
+    cmd = [claude_bin, "-p",
            "--allowedTools", "",
            "--output-format", "text",
            "--input-format", "text"]
