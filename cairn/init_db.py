@@ -43,7 +43,7 @@ def init():
         )
     """)
     # Migration: add columns to existing DB
-    for col, coltype in [("embedding", "BLOB"), ("session_id", "TEXT"), ("project", "TEXT"), ("confidence", "REAL DEFAULT 0.7"), ("source_start", "INTEGER"), ("source_end", "INTEGER"), ("archived_reason", "TEXT"), ("anchor_line", "INTEGER"), ("depth", "INTEGER"), ("associated_files", "TEXT"), ("keywords", "TEXT"), ("facts", "TEXT"), ("origin_id", "TEXT"), ("user_id", "TEXT"), ("updated_by", "TEXT"), ("team_id", "TEXT"), ("source_ref", "TEXT"), ("deleted_at", "TIMESTAMP"), ("synced_at", "TIMESTAMP")]:
+    for col, coltype in [("embedding", "BLOB"), ("session_id", "TEXT"), ("project", "TEXT"), ("confidence", "REAL DEFAULT 0.7"), ("source_start", "INTEGER"), ("source_end", "INTEGER"), ("archived_reason", "TEXT"), ("anchor_line", "INTEGER"), ("depth", "INTEGER"), ("associated_files", "TEXT"), ("keywords", "TEXT"), ("facts", "TEXT"), ("origin_id", "TEXT"), ("user_id", "TEXT"), ("updated_by", "TEXT"), ("team_id", "TEXT"), ("source_ref", "TEXT"), ("deleted_at", "TIMESTAMP"), ("synced_at", "TIMESTAMP"), ("push_suppressed", "INTEGER DEFAULT 0")]:
         try:
             conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {coltype}")
         except sqlite3.OperationalError:
@@ -588,6 +588,27 @@ def init():
     if not conn.execute("SELECT 1 FROM schema_version WHERE version = 13").fetchone():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (13, 'drop legacy sync_peers.bearer_token; Ed25519-signature auth only')"
+        )
+    # v14 — memory_qf_embeddings sidecar: per-question-form keyword embeddings for
+    # memories, the port of calibration's schema-v7 per-qf symmetric retrieval.
+    # genA-v4 seeds keywords with question-form phrasings ("how do I X"); embedding
+    # each separately puts them in the same prompt-shaped vector region as incoming
+    # queries, so retrieval scores max(content, topic, qf_i) per memory. Rows without
+    # sidecar entries fall back to content+topic scoring — graceful, no flag day.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS memory_qf_embeddings (
+            memory_id INTEGER NOT NULL,
+            qf_index INTEGER NOT NULL,
+            qf_text TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            PRIMARY KEY (memory_id, qf_index),
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        )
+    ''')
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_qf_memory ON memory_qf_embeddings(memory_id)")
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 14").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (14, 'memory_qf_embeddings sidecar — per-qf symmetric retrieval for memories (calibration v7 port)')"
         )
     conn.commit()
     conn.close()

@@ -133,6 +133,11 @@ def _ensure_search_cache() -> dict:
         "SELECT COUNT(*), COALESCE(MAX(id),0), COALESCE(MAX(updated_at),'') "
         "FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
     ).fetchone())
+    try:
+        stamp = stamp + tuple(conn.execute(
+            "SELECT COUNT(*) FROM memory_qf_embeddings").fetchone())
+    except Exception:
+        stamp = stamp + (0,)  # pre-v14 DB — no sidecar
     if _search_cache["stamp"] == stamp:
         conn.close()
         return _search_cache
@@ -142,6 +147,12 @@ def _ensure_search_cache() -> dict:
         "depth, archived_reason, session_id, keywords, topic_embedding "
         "FROM memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
     ).fetchall()
+    # qf sidecar (schema v14): one row per question-form keyword embedding.
+    try:
+        qf_rows = conn.execute(
+            "SELECT memory_id, embedding FROM memory_qf_embeddings").fetchall()
+    except Exception:
+        qf_rows = []
     conn.close()
 
     metas: list = []
@@ -175,7 +186,24 @@ def _ensure_search_cache() -> dict:
                 t_pos.append(idx)
                 t_vecs.append(tv)
 
-    M = T = tp = None
+    # qf matrix: rows map many-to-one onto memory indices via q_pos (a memory can
+    # have several question-form keywords; each is its own row).
+    id_to_idx = {m["id"]: i for i, m in enumerate(metas)}
+    q_pos: list = []
+    q_vecs: list = []
+    for mem_id, qblob in qf_rows:
+        idx = id_to_idx.get(mem_id)
+        if idx is None:
+            continue
+        try:
+            qv = np.frombuffer(qblob, dtype=np.float32)
+        except (ValueError, TypeError):
+            continue
+        if dim is not None and qv.shape[0] == dim:
+            q_pos.append(idx)
+            q_vecs.append(qv)
+
+    M = T = tp = Q = qp = None
     if vecs:
         M = np.stack(vecs)
         n = np.linalg.norm(M, axis=1, keepdims=True)
@@ -187,7 +215,14 @@ def _ensure_search_cache() -> dict:
             tn[tn == 0] = 1.0
             T = T / tn
             tp = np.array(t_pos)
-    _search_cache.update({"stamp": stamp, "meta": metas, "M": M, "T": T, "t_pos": tp})
+        if q_vecs:
+            Q = np.stack(q_vecs)
+            qn = np.linalg.norm(Q, axis=1, keepdims=True)
+            qn[qn == 0] = 1.0
+            Q = Q / qn
+            qp = np.array(q_pos)
+    _search_cache.update({"stamp": stamp, "meta": metas, "M": M, "T": T, "t_pos": tp,
+                          "Q": Q, "q_pos": qp})
     return _search_cache
 
 
@@ -220,6 +255,13 @@ def _vector_search(emb, texts, n_base, min_sim, top_k):
         t_best = TS.max(axis=1)
         tp = cache["t_pos"]
         best[tp] = np.maximum(best[tp], t_best)
+    if cache.get("Q") is not None:
+        # Per-qf symmetric supplement (schema v14): a memory scores as its best
+        # question-form keyword match. maximum.at handles the many-to-one qf->memory
+        # mapping (plain fancy-index assignment would keep only the LAST qf row).
+        QS = cache["Q"] @ V[:max(1, n_base)].T
+        q_best = QS.max(axis=1)
+        np.maximum.at(best, cache["q_pos"], q_best)
 
     order = np.argsort(-best)
     out = []

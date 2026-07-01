@@ -377,11 +377,23 @@ def test_build_context_xml_prefilter_gated_and_correction_exempt(tmp_path, monke
     assert 'id="3"' in xml       # normal kept
 
 
-def test_build_context_xml_prefilter_off_by_default(tmp_path, monkeypatch):
+def test_build_context_xml_prefilter_on_by_default(tmp_path, monkeypatch):
     p = str(tmp_path / "eph.db")
     init_db.init_ephemeral(p)
     monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", p)
-    # default RELEVANCE_PREFILTER_ENABLED is False -> meta NOT dropped
+    # default RELEVANCE_PREFILTER_ENABLED is True since the 2026-07-02 review
+    # (session-arc meta spam engaged at 0%) -> meta IS dropped by default
+    from hooks.hook_helpers import build_context_xml
+    pr = [_entry(1, "fact", "No memory of the user's brother exists yet")]
+    xml = build_context_xml("q", "x", "per-prompt", pr, [], session_id="s", context_text="t")
+    assert 'id="1"' not in xml
+
+
+def test_build_context_xml_prefilter_respects_disable(tmp_path, monkeypatch):
+    p = str(tmp_path / "eph.db")
+    init_db.init_ephemeral(p)
+    monkeypatch.setattr("cairn.config.EPHEMERAL_DB_PATH", p)
+    monkeypatch.setattr("cairn.config.RELEVANCE_PREFILTER_ENABLED", False)
     from hooks.hook_helpers import build_context_xml
     pr = [_entry(1, "fact", "No memory of the user's brother exists yet")]
     xml = build_context_xml("q", "x", "per-prompt", pr, [], session_id="s", context_text="t")
