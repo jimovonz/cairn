@@ -435,6 +435,22 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                     (content, embedding_blob, session_id, project, keywords_csv, facts_csv, mem_id)
                 )
 
+    def _store_qf(mem_id: int) -> None:
+        """Refresh the question-form keyword sidecar (schema v14) for a memory.
+        Reads the FINAL keywords from the DB (updates union keywords, so the
+        entry's own list may be a subset). Fail-soft — a missing sidecar row
+        only means the memory falls back to content+topic scoring."""
+        if emb is None:
+            return
+        try:
+            from cairn.relevance import store_qf_embeddings
+            row = conn.execute("SELECT keywords FROM memories WHERE id = ?", (mem_id,)).fetchone()
+            kws = [k.strip() for k in (row[0] or "").split(",") if k.strip()] if row else []
+            if kws:
+                store_qf_embeddings(conn, mem_id, kws, emb)
+        except Exception:
+            pass
+
     def _annotate_archived(mem_id, reason) -> None:
         if sync_on:
             lam = _next_lamport()
@@ -531,6 +547,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
+                    _store_qf(new_id)
             else:
                 if old_content and old_content != content:
                     _annotate_archived(same_topic[0], f"superseded: {content[:200]}")
@@ -545,6 +562,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                                         keywords_csv, confidence=CONFIDENCE_DEFAULT, facts_csv=facts_csv)
                 if embedding_blob and emb:
                     emb.upsert_vec_index(conn, same_topic[0], embedding_blob)
+                    _store_qf(same_topic[0])
         else:
             # Step 2: No type+topic match — check for semantic near-duplicates and
             # cross-topic negation via embedding similarity
@@ -561,6 +579,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                         else:
                             _update_memory_full(match["id"], content, embedding_blob, session_id, project, keywords_csv, facts_csv=facts_csv)
                             emb.upsert_vec_index(conn, match["id"], embedding_blob)
+                            _store_qf(match["id"])
                         deduped = True
                     elif nearest and nearest[0]["similarity"] >= NEGATION_SIM_FLOOR:
                         match = nearest[0]
@@ -576,6 +595,7 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
                 if embedding_blob and emb:
                     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     emb.upsert_vec_index(conn, new_id, embedding_blob)
+                    _store_qf(new_id)
         inserted += 1
 
         # Associate file paths. Precedence: an explicit per-entry associated_files

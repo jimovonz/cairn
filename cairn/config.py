@@ -235,9 +235,14 @@ BOOTSTRAP_MAX_PER_SCOPE = 3        # Cap bootstrap retrieval results per scope (
 # Independent of prompt content — gives Claude project awareness from CWD alone.
 PROJECT_BOOTSTRAP_ENABLED = True
 PROJECT_BOOTSTRAP_MAX = 5           # Cap for project(non-handoff) + preference entries
-PROJECT_BOOTSTRAP_KNOWLEDGE_MAX = 80  # Cap for facts+decisions (confidence-filtered)
+PROJECT_BOOTSTRAP_KNOWLEDGE_MAX = 15  # Cap for facts+decisions (confidence-filtered).
+                                      # Was 80: delivery data (2026-07-02) showed the recency dump engaged
+                                      # at ~1-3% — volume without ranking is noise, not context.
 PROJECT_BOOTSTRAP_CONFIDENCE_FLOOR = 0.7  # Min confidence for facts+decisions in bootstrap
 CORRECTION_BOOTSTRAP_MAX = 5        # Max behavioural corrections to inject per session
+CORRECTION_BOOTSTRAP_SIM_FLOOR = 0.35  # Min cosine(first prompt, correction) — below this a
+                                       # correction is off-topic for the session (2026-07-02
+                                       # review: unconditional correction push engaged at ~3%)
 
 # === Code-graph injection (code-review-graph / .code-review-graph/graph.db) ===
 # Deterministic, zero-LLM surfacing of mechanistic repo structure into sessions.
@@ -334,7 +339,9 @@ CROSS_ENCODER_MAX_ARCHIVED = 6     # Cap archived (negative-knowledge) pairs in 
 # beats ms-marco. Constants kept so the A/B can flip the flag, not rewrite code.
 # bge outputs SIGMOID 0-1 scores (not ms-marco logits), so it carries its own floor.
 CROSS_ENCODER_MODEL_CUDA = "BAAI/bge-reranker-base"
-CROSS_ENCODER_SCORE_FLOOR_CUDA = 0.0005  # eyeball-initial: drops only bge~0 noise; recalibrate from rg labels
+CROSS_ENCODER_SCORE_FLOOR_CUDA = 0.10  # calibrated 2026-07-02 from 9k memory_deliveries: engaged med CE 0.103/p75 0.42
+                                        # vs non-engaged med 0.070/p75 0.111; floor 0.10 keeps 51% of engaged
+                                        # while dropping 67% of non-engaged deliveries (0.0005 filtered nothing)
 
 # Off until validated. When False, resolve_reranker returns the calibrated ms-marco
 # model + its -3.0 floor on EVERY device. ms-marco still loads on the GPU when CUDA
@@ -384,7 +391,10 @@ def resolve_reranker():
 #   genA-v2 -> genA-v3: added the in-session duplicate-suppression rule (do not
 #   re-emit a knowledge bite already written this session; the agent sees its own
 #   prior [cm] blocks in context).
-GENERATION_PROMPT_VERSION = "genA-v3"
+#   genA-v3 -> genA-v4: promoted the arm-B question-form keyword seeding into the
+#   base rules (live A/B 2026-07-02: genB-v1 engaged 50.8% n=65 vs genA-v3 15.9%
+#   n=195 — mild measurement confound acknowledged, gap too large to be artifact).
+GENERATION_PROMPT_VERSION = "genA-v4"
 
 # === Write-side A/B (live, per-prompt) ===
 # When enabled, each user prompt is randomly assigned arm A (control = current live
@@ -393,13 +403,23 @@ GENERATION_PROMPT_VERSION = "genA-v3"
 # outcomes compare by arm via `query.py --delivery-stats`. Per-prompt randomisation;
 # subagents are excluded. Flip AB_TEST_ENABLED off to stop the experiment.
 AB_TEST_ENABLED = True
-AB_ARM_VERSIONS = {"A": GENERATION_PROMPT_VERSION, "B": "genB-v1"}
-# The single speculative variable for arm B (swap this to test a different aspect):
+AB_ARM_VERSIONS = {"A": GENERATION_PROMPT_VERSION, "B": "genB-v2"}
+# The single speculative variable for arm B (swap this to test a different aspect).
+# genB-v1 (question-form keywords) WON — promoted into the base rules as genA-v4.
+# genB-v2 tests write-side meta suppression: session-arc/meta entries about cairn's
+# own memory bookkeeping engaged at ~0% and dominate the dead-weight pool; the
+# read-side bucket-4 prefilter catches them at injection, this tests prevention
+# at the source. Mirrors is_self_referential_meta's careful scope: statements
+# about what cairn remembers/captured are meta; domain content about the cairn
+# CODEBASE is fine.
 AB_B_INSTRUCTION = (
-    "[cairn A/B — arm B] For each memory you write THIS turn, additionally seed its "
-    "keywords (kw) with 2-3 QUESTION-FORM phrasings — the literal questions a future "
-    "session would type to find it (e.g. \"how do I X\", \"why does Y fail\", \"what "
-    "sets Z\") — alongside the normal keywords."
+    "[cairn A/B — arm B] For each memory you write THIS turn, do NOT write entries "
+    "whose content is about the memory system's own bookkeeping — what cairn/memory "
+    "does or doesn't remember, what was or will be captured, session-arc summaries "
+    "of the conversation itself. Capture only domain knowledge: the code, system, "
+    "decision, or user fact the turn was actually about. (Domain work ON the cairn "
+    "codebase is NOT meta — this only excludes self-referential memory-coverage "
+    "statements.)"
 )
 
 # === Time display (cairn/timeutil.py) ===
@@ -412,9 +432,9 @@ CAIRN_TZ = _os_tz.environ.get("CAIRN_TZ")
 
 # === Read-side memory relevance grading (docs/spec-memory-relevance-grading.md) ===
 RELEVANCE_LOGGING_ENABLED = True    # Log injected memories to memory_deliveries (instrument; T0)
-RELEVANCE_PREFILTER_ENABLED = False # Bucket-4 self-referential-meta prefilter — OFF by default
-                                    # (behaviour change: drops injected memories). Correction-exempt,
-                                    # drop-audited via the relevance_prefilter_drop metric when on.
+RELEVANCE_PREFILTER_ENABLED = True  # Bucket-4 self-referential-meta prefilter — ON since 2026-07-02 review
+                                    # (session-arc meta spam engaged at 0%). Correction-exempt,
+                                    # drop-audited via the relevance_prefilter_drop metric.
 
 # === NLI (Natural Language Inference) for consolidation ===
 # Used by the consolidation pipeline to detect entailment between memory pairs.

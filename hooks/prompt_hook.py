@@ -345,12 +345,15 @@ def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> O
             LIMIT 1
         """, (project_name,)).fetchall()
         # Facts + decisions: confidence-floored, recency-sorted, count-capped.
-        # confidence IS NULL passes — old entries without a score are included.
+        # confidence IS NULL no longer passes (2026-07-02): unscored entries were
+        # flooding the dump past the floor. Analyser session-arc writes are excluded
+        # outright — 1094 deliveries, 0% engagement (their value is calibration rows).
         knowledge_rows = conn.execute("""
             SELECT id, type, topic, content, updated_at, project, confidence, archived_reason
             FROM memories
             WHERE project = ? AND type IN ('fact', 'decision')
-            AND (confidence IS NULL OR confidence >= ?)
+            AND confidence >= ?
+            AND (source_ref IS NULL OR source_ref != 'analyser-session-arc')
             AND (archived_reason IS NULL OR archived_reason = '')
             AND deleted_at IS NULL
             ORDER BY updated_at DESC
@@ -397,60 +400,89 @@ def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> O
 
     # No <instruction> chrome (v0.14 §9) — layer="project-bootstrap" plus the
     # rules-file layer legend carries the same meaning at zero per-session cost.
+    # session_id: run the bucket-4 prefilter AND log to memory_deliveries (2026-07-02
+    # review — this was the highest-volume injection path yet invisible to the
+    # engagement/grading loop).
     return build_context_xml("project standing context", project_name, "project-bootstrap",
-                             results, [])
+                             results, [], session_id=session_id)
 
 
-def correction_bootstrap(session_id: str) -> Optional[str]:
-    """Inject top behavioural corrections into every session.
+def correction_bootstrap(session_id: str, user_message: str = "") -> Optional[str]:
+    """Inject behavioural corrections RELEVANT to this session's first prompt.
 
-    Corrections are about patterns of behaviour — they don't match specific queries
-    semantically. Without unconditional injection, 96% of corrections never surface
-    cross-session. This ensures the highest-value corrections are always present.
+    Originally designed as unconditional top-by-confidence injection but never
+    wired into main() (dead from birth — found in the 2026-07-02 relevance
+    review). Delivery data shows corrections pushed by the semantic layers
+    engage at ~3%, so unconditional injection would be pure noise. Instead:
+    rank ALL corrections by cosine similarity against the first-prompt
+    embedding and inject the top CORRECTION_BOOTSTRAP_MAX at or above
+    CORRECTION_BOOTSTRAP_SIM_FLOOR. Embedder down or empty prompt -> inject
+    nothing (noise-safe default).
     """
-    from cairn.config import CORRECTION_BOOTSTRAP_MAX
-    from hooks.hook_helpers import recency_days, reliability_label
+    from cairn.config import CORRECTION_BOOTSTRAP_MAX, CORRECTION_BOOTSTRAP_SIM_FLOOR
+    from hooks.hook_helpers import get_embedder
+
+    if not user_message:
+        return None
+    emb = get_embedder()
+    if emb is None:
+        return None
+    try:
+        qvec = emb.embed(user_message, allow_slow=False)
+    except Exception:
+        qvec = None
+    if qvec is None:
+        return None
 
     try:
         conn = get_conn()
-        # Pull top corrections by confidence (most corroborated = most validated)
-        # then recency as tiebreaker. Exclude archived.
         rows = conn.execute("""
-            SELECT id, type, topic, content, updated_at, project, confidence, archived_reason
+            SELECT id, type, topic, content, updated_at, project, confidence,
+                   archived_reason, embedding
             FROM memories
             WHERE type = 'correction'
+            AND embedding IS NOT NULL
             AND (archived_reason IS NULL OR archived_reason = '')
+            AND COALESCE(push_suppressed, 0) = 0
             AND deleted_at IS NULL
-            ORDER BY confidence DESC, updated_at DESC
-            LIMIT ?
-        """, (CORRECTION_BOOTSTRAP_MAX,)).fetchall()
+        """).fetchall()
         conn.close()
     except Exception as e:
         log(f"Correction bootstrap error: {e}")
         return None
 
-    if not rows:
+    scored = []
+    for r in rows:
+        try:
+            sim = emb.cosine_similarity(qvec, emb.from_blob(r[8]))
+        except Exception:
+            continue
+        if sim >= CORRECTION_BOOTSTRAP_SIM_FLOOR:
+            scored.append((sim, r))
+    if not scored:
         return None
+    scored.sort(key=lambda t: t[0], reverse=True)
 
     results = []
-    for r in rows:
-        mem_id, mem_type, topic, content, updated_at, project, confidence, archived_reason = r
+    for sim, r in scored[:CORRECTION_BOOTSTRAP_MAX]:
+        mem_id, mem_type, topic, content, updated_at, project, confidence, archived_reason, _ = r
         results.append({
             "id": mem_id, "type": mem_type, "topic": topic, "content": content,
             "updated_at": updated_at, "project": project or "",
             "confidence": confidence if confidence is not None else 0.7,
-            "score": confidence if confidence is not None else 0.7,
-            "similarity": 0, "archived_reason": archived_reason,
+            "score": sim, "similarity": sim, "archived_reason": archived_reason,
         })
-
     result_ids = [r["id"] for r in results]
-    record_metric(session_id, "correction_bootstrap_injected", None, len(rows))
+    record_metric(session_id, "correction_bootstrap_injected", None, len(results))
     record_layer_delivery(session_id, "correction-bootstrap", result_ids)
-    log(f"Correction bootstrap: injected {len(rows)} corrections")
+    log(f"Correction bootstrap: injected {len(results)} corrections")
 
     # No <instruction> chrome (v0.14 §9) — layer legend lives in the rules file.
+    # session_id: log to memory_deliveries so correction follow-through becomes
+    # measurable (corrections engage at ~3% — we need the per-row data). The
+    # bucket-4 prefilter never drops corrections, so injection is unchanged.
     return build_context_xml("behavioural corrections", None, "correction-bootstrap",
-                             [], results)
+                             [], results, session_id=session_id)
 
 
 def layer1_search(user_message: str, session_id: str) -> Optional[str]:
@@ -545,6 +577,13 @@ def main() -> None:
         pb_context = project_bootstrap(session_id, cwd, transcript_path)
         if pb_context:
             context_parts.append(pb_context)
+
+        # Correction bootstrap: behavioural corrections gated by cosine similarity
+        # to the first prompt (2026-07-02 review — the function existed since April
+        # but was never called; wired in WITH gating, not unconditionally).
+        cb_context = correction_bootstrap(session_id, user_message)
+        if cb_context:
+            context_parts.append(cb_context)
 
         # Repo auto-discovery — first-prompt only, gated by env vars. Tier 1
         # kicks a background graph build for new git repos (free); Tier 2

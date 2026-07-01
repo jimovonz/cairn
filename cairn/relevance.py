@@ -108,12 +108,67 @@ _META_PATTERNS = [
 _META_RE = re.compile("|".join(_META_PATTERNS), re.IGNORECASE)
 
 
+# --- Question-form keyword sidecar (schema v14, calibration v7 port) -----------
+# genA-v4 seeds memory keywords with question-form phrasings ("how do I X").
+# Embedding each qf separately places it in the prompt-shaped vector region, so
+# retrieval can score max over {content, topic, qf_i} — the fix calibration
+# shipped for third-person-content vs first-person-prompt similarity clustering.
+_QF_LEAD_RE = re.compile(
+    r"^(how|why|what|when|where|which|who|can|does|do|is|are|should|will|did)\b",
+    re.IGNORECASE,
+)
+
+
+def extract_question_forms(keywords) -> list[str]:
+    """Question-form phrasings from a keyword list: ends with '?' or starts with
+    an interrogative/auxiliary and has >=3 words (so bare topics like 'what sets'
+    noise-keywords don't qualify but 'what sets Z' does)."""
+    out: list[str] = []
+    for kw in keywords or []:
+        k = (kw or "").strip()
+        if not k:
+            continue
+        if k.endswith("?") or (_QF_LEAD_RE.match(k) and len(k.split()) >= 3):
+            out.append(k)
+    return out
+
+
+def store_qf_embeddings(conn, memory_id: int, keywords, embedder) -> int:
+    """(Re)write the memory_qf_embeddings sidecar rows for one memory.
+
+    Fail-soft: returns rows written, 0 on any error (a missing sidecar row only
+    means the memory falls back to content+topic scoring). Caller owns commit.
+    Caps at 8 qf strings per memory — beyond that keywords are spam, not intents."""
+    try:
+        qfs = extract_question_forms(keywords)[:8]
+        if not qfs or embedder is None:
+            return 0
+        vecs = embedder.embed_batch(qfs, allow_slow=False)
+        if not vecs:
+            return 0
+        conn.execute("DELETE FROM memory_qf_embeddings WHERE memory_id = ?", (memory_id,))
+        n = 0
+        for i, (qf, vec) in enumerate(zip(qfs, vecs)):
+            if vec is None:
+                continue
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_qf_embeddings "
+                "(memory_id, qf_index, qf_text, embedding) VALUES (?, ?, ?, ?)",
+                (memory_id, i, qf, embedder.to_blob(vec)),
+            )
+            n += 1
+        return n
+    except Exception:
+        return 0
+
+
 def is_self_referential_meta(entry: dict[str, Any]) -> bool:
     """True if a memory is a bucket-4 self-referential meta-memory.
 
     Conservative: matches statements about what cairn does/doesn't remember, not
-    domain content that merely mentions cairn. Never call on corrections/bootstrap
-    (the spec keeps those ungated) — that gating is the caller's responsibility.
+    domain content that merely mentions cairn. Never call on corrections (the spec
+    keeps those ungated) — that gating is the caller's responsibility. Bootstrap
+    layers ARE gated since 2026-07-02 (session-arc meta spam engaged at 0%).
     """
     text = entry.get("content") or entry.get("c") or ""
     return bool(text) and _META_RE.search(text) is not None

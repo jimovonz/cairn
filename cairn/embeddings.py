@@ -829,6 +829,36 @@ def find_similar(
                 keep_arr = _np.array(t_keep)
                 best_sim[keep_arr] = _np.maximum(best_sim[keep_arr], t_best)
 
+        # Per-qf supplement (schema v14): max in each memory's best question-form
+        # keyword similarity. Many-to-one qf->memory mapping, so maximum.at (plain
+        # fancy-index assignment would keep only the last qf row per memory).
+        try:
+            qf_rows = conn.execute(
+                "SELECT memory_id, embedding FROM memory_qf_embeddings").fetchall()
+        except Exception:
+            qf_rows = []  # pre-v14 DB
+        if qf_rows:
+            id_to_idx = {r[0]: i for i, r in enumerate(valid_rows)}
+            q_pos: list[int] = []
+            q_vecs: list[_np.ndarray] = []
+            for mem_id, qblob in qf_rows:
+                i = id_to_idx.get(mem_id)
+                if i is None:
+                    continue
+                try:
+                    qv = _np.frombuffer(qblob, dtype=_np.float32)
+                except (ValueError, TypeError):
+                    continue
+                if qv.shape[0] == dim:
+                    q_pos.append(i)
+                    q_vecs.append(qv)
+            if q_vecs:
+                Q = _np.stack(q_vecs)
+                q_norms = _np.linalg.norm(Q, axis=1, keepdims=True)
+                q_norms[q_norms == 0] = 1.0
+                QS = (Q / q_norms) @ V[:n_base].T
+                _np.maximum.at(best_sim, _np.array(q_pos), QS.max(axis=1))
+
         _record_embed_metric("search_matrix_ms", (_time.perf_counter() - t_search) * 1000)
 
         for i, row in enumerate(valid_rows):
