@@ -422,6 +422,19 @@ AB_B_INSTRUCTION = (
     "statements.)"
 )
 
+# === rg-grading periodic nudge ===
+# rg (agent-as-teacher relevance grades, docs/spec-memory-relevance-grading.md) is
+# deliberately voluntary — "non-engagement = unlabelled, NOT zero" guards against
+# fabricated grades poisoning the cross-encoder training signal. A hard Stop-hook
+# block (like the disabled inline contradiction enforcement) would trade honest
+# sparse labels for confidently-wrong ones under pressure. Instead: track how many
+# consecutive turns delivered memories with zero rg grades; after RG_NUDGE_STREAK
+# such turns, stage ONE non-blocking reminder for the next prompt (not a re-prompt
+# of the current turn) and reset the streak. Any turn with at least one grade
+# resets the streak regardless of threshold — voluntary compliance is rewarded.
+RG_NUDGE_ENABLED = True
+RG_NUDGE_STREAK = 10
+
 # === Time display (cairn/timeutil.py) ===
 # Storage is ALWAYS UTC (SQLite CURRENT_TIMESTAMP). This is the local timezone used
 # for DISPLAY and for "today/since/until" day-bucketing only. IANA name (e.g.

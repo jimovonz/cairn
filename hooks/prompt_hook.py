@@ -867,6 +867,19 @@ def main() -> None:
         except Exception as e:
             log(f"Failed to load question-before-cairn reminder: {e}")
 
+    # rg-grading nudge (deferred from previous stop hook — soft, periodic, non-blocking)
+    rg_nudge_file = os.path.join(staged_dir, f"{session_id}_rg_nudge.txt")
+    if os.path.exists(rg_nudge_file):
+        try:
+            with open(rg_nudge_file, "r") as f:
+                rg_nudge_text = f.read().strip()
+            os.remove(rg_nudge_file)
+            if rg_nudge_text:
+                context_parts.append(rg_nudge_text)
+                log(f"rg-grading nudge injected (deferred)")
+        except Exception as e:
+            log(f"Failed to load rg-grading nudge: {e}")
+
     # Phase 3 — calibration_profile injection. Distinct from cairn_context
     # (priming, not facts). Independent of L1/L1.5 layering — fires every
     # prompt with a session-dedup filter against calibration_deliveries.
