@@ -61,6 +61,67 @@ def _looks_like_code_search(command: str) -> Optional[str]:
     return None
 
 
+def _edit_intent_symbol(tool_name: str, tool_input: dict, edited_files: list) -> Optional[str]:
+    """A symbol name whose DEFINITION lives in a file being edited this call,
+    or None. Ties served callers to the symbol actually under edit rather than
+    any identifier that merely appears in the command. Native Edit exposes
+    old_string directly; Bash cch-edit is parsed from the command string."""
+    if tool_name in ("Edit", "MultiEdit", "Write"):
+        haystack = tool_input.get("old_string") or tool_input.get("oldString") or ""
+    elif tool_name == "Bash":
+        cmd = tool_input.get("command") or ""
+        if "cch-edit" not in cmd and "cch-write" not in cmd:
+            return None
+        haystack = cmd
+    else:
+        return None
+    if not haystack or not edited_files:
+        return None
+    from cairn.graph import location
+    edited_norm = {os.path.abspath(f) for f in edited_files}
+    seen_idents: set = set()
+    for ident in re.findall(r'\b([A-Za-z_][A-Za-z0-9_]{2,})\b', haystack):
+        if ident in seen_idents:
+            continue
+        seen_idents.add(ident)
+        if len(seen_idents) > 25:  # bounded scan — first identifiers dominate
+            break
+        try:
+            loc = location(ident)  # "path:line-line" or "Symbol not found: X"
+        except Exception:
+            continue
+        if loc.startswith("Symbol not found"):
+            continue
+        loc_file = loc.split(":", 1)[0]
+        if os.path.abspath(loc_file) in edited_norm:
+            return ident
+    return None
+
+
+def symbol_context_block(symbol: str, max_callers: int = 8) -> Optional[str]:
+    """Served (not reminded) structural context for a resolved symbol: its
+    blast radius plus the caller list, capped. Returns None if the symbol is
+    not in the graph, so callers can fall back cleanly."""
+    from cairn.graph import impact, callers
+    imp = impact(symbol)
+    if imp.startswith("Symbol not found"):
+        return None
+    call = callers(symbol)
+    if call.startswith(("No callers", "Symbol not found")):
+        caller_lines: list = []
+    else:
+        caller_lines = call.splitlines()
+    shown = caller_lines[:max_callers]
+    more = len(caller_lines) - len(shown)
+    body = "\n".join(f"    {ln}" for ln in shown) if shown else "    (none)"
+    out = (f"CODE GRAPH — {symbol}  [{imp}]\n"
+           f"  callers:\n{body}")
+    if more > 0:
+        out += f"\n    … +{more} more — cairn-graph --callers {symbol}"
+    out += f"\n  full body+tests: cairn-graph --context-pack {symbol}"
+    return out
+
+
 def find_memories_for_file(
     file_path: str,
     corrections_only: bool = False,
@@ -374,25 +435,56 @@ def main() -> None:
         save_injected_ids(session_id, new_served)
         record_layer_delivery(session_id, "per-file", new_served)
 
-    # Grep hint: when the model searches for a code symbol, remind it about cairn-graph
-    # (once per session, only when a graph is present for this repo).
-    if tool_name == "Bash" and not load_hook_state(session_id, "graph_grep_hint_shown"):
+    # Symbol context: SERVE the resolved symbol's blast radius + caller list
+    # (not a menu of commands the model must then remember to run — that
+    # reminder tier is the one that empirically fails). Fires on a symbol grep
+    # OR an edit whose target symbol is defined in the file being changed.
+    # Deduped per-symbol via a session ledger, so every distinct symbol is
+    # served once (the old once-per-session flag served only the first).
+    try:
+        from cairn.config import (
+            GRAPH_SYMBOL_CONTEXT_ENABLED, GRAPH_SYMBOL_CONTEXT_MAX_CALLERS,
+        )
+    except Exception:
+        GRAPH_SYMBOL_CONTEXT_ENABLED, GRAPH_SYMBOL_CONTEXT_MAX_CALLERS = False, 8
+    if GRAPH_SYMBOL_CONTEXT_ENABLED and tool_name in ("Bash", "Edit", "MultiEdit", "Write"):
         command = tool_input.get("command") or ""
-        symbol = _looks_like_code_search(command)
-        if symbol:
-            gdb = os.path.join(cwd, ".code-review-graph", "graph.db")
-            if os.path.exists(gdb):
-                save_hook_state(session_id, "graph_grep_hint_shown", "1")
-                sections.append(
-                    f"CODE GRAPH AVAILABLE — prefer cairn-graph over grep for structural queries:\n"
-                    f"  cairn-graph --location {symbol}      # where it is defined\n"
-                    f"  cairn-graph --callers {symbol}       # who calls it\n"
-                    f"  cairn-graph --callees {symbol}       # what it calls\n"
-                    f"  cairn-graph --impact {symbol}        # one-line blast radius\n"
-                    f"  cairn-graph --context-pack {symbol}  # body + callers + tests"
-                )
-                log(f"graph grep hint injected for symbol: {symbol}")
-                record_metric(session_id, "graph_grep_hint_injected", symbol)
+        gdb = os.path.join(cwd, ".code-review-graph", "graph.db")
+        graph_present = os.path.exists(gdb)
+        symbol = (_looks_like_code_search(command) if tool_name == "Bash" else None)
+        origin = "grep" if symbol else None
+        # Is this call a code edit at all? (Native edit tool, or a Bash cch-edit/
+        # cch-write.) Used both to resolve the edit-target symbol and to count
+        # uncovered edits as the utilisation denominator.
+        is_edit = tool_name in ("Edit", "MultiEdit", "Write") or (
+            tool_name == "Bash" and ("cch-edit" in command or "cch-write" in command))
+        if not symbol and is_edit:
+            symbol = _edit_intent_symbol(tool_name, tool_input, file_paths)
+            origin = "edit"
+        served_symbol = False
+        if symbol and graph_present:
+            sym_seen_raw = load_hook_state(session_id, "graph_symbols_seen") or ""
+            sym_seen = set(sym_seen_raw.split("\n")) if sym_seen_raw else set()
+            if symbol not in sym_seen:
+                block = None
+                try:
+                    block = symbol_context_block(
+                        symbol, max_callers=GRAPH_SYMBOL_CONTEXT_MAX_CALLERS)
+                except Exception as _e:
+                    log(f"symbol_context_block failed open: {type(_e).__name__}: {_e}")
+                if block:
+                    sections.append(block)
+                    sym_seen.add(symbol)
+                    save_hook_state(session_id, "graph_symbols_seen", "\n".join(sym_seen))
+                    log(f"graph symbol context served ({origin}): {symbol}")
+                    record_metric(session_id, "graph_symbol_context_served", symbol)
+                    served_symbol = True
+            else:
+                served_symbol = True  # already served this session — still "covered"
+        # Utilisation denominator: an edit on a graphed repo where no symbol
+        # context was served makes "maximally utilised" measurable, not a vibe.
+        if is_edit and graph_present and not served_symbol:
+            record_metric(session_id, "graph_symbol_edit_uncovered", symbol or "")
 
     if not sections:
         sys.exit(0)
