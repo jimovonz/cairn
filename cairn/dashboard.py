@@ -592,7 +592,8 @@ def api_metrics(params):
     """, embed_events).fetchall())
     # Graph-injection metrics surfaced explicitly so the frontend can render them
     # alongside gotcha_injected / file_context_injected without scanning `summary`.
-    graph_events = ("graph_orientation_injected", "graph_file_context_injected")
+    graph_events = ("graph_orientation_injected", "graph_file_context_injected",
+                    "graph_symbol_context_served", "graph_symbol_edit_uncovered")
     gph = ",".join("?" * len(graph_events))
     graph_injection = rows_to_list(conn.execute(f"""
         SELECT event, COUNT(*) as count
