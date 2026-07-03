@@ -1138,6 +1138,32 @@ def delivery_stats():
     _table("by injection layer:", by_layer)
 
 
+def ab_history():
+    """List ab_experiments rows — the write-side A/B assessment history
+    (cairn/ab_selfmod.py): running/promoted/rejected/inconclusive verdicts
+    with each arm's delivery count and engaged%."""
+    from cairn import timeutil
+    d = sqlite3.connect(DB_PATH)
+    d.row_factory = sqlite3.Row
+    rows = d.execute(
+        "SELECT id, instruction_b, base_version, candidate_version, status, "
+        "n_a, n_b, engaged_pct_a, engaged_pct_b, decision_reason, "
+        "started_at, ended_at FROM ab_experiments ORDER BY id DESC"
+    ).fetchall()
+    if not rows:
+        print("No A/B experiments recorded yet.")
+        return
+    for r in rows:
+        ended = timeutil.fmt_local(r["ended_at"]) if r["ended_at"] else "-"
+        print(f"[{r['id']}] {r['status']}  {r['base_version']} (A) vs {r['candidate_version']} (B)")
+        print(f"    n_a={r['n_a']} engaged_pct_a={r['engaged_pct_a']}  "
+              f"n_b={r['n_b']} engaged_pct_b={r['engaged_pct_b']}")
+        print(f"    started={timeutil.fmt_local(r['started_at'])}  ended={ended}")
+        if r["decision_reason"]:
+            print(f"    reason: {r['decision_reason']}")
+        print(f"    instruction_b: {r['instruction_b'][:100]}")
+
+
 def format_rows(rows):
     if not rows:
         print("No results.")
@@ -1168,6 +1194,7 @@ Commands:
   --until <date>         Memories updated on or before date
   --today                Shorthand for --since today
   --delivery-stats       Injected-memory outcome (engagement/grade) by generation version + reranker
+  --ab-history           Write-side A/B experiment history (status, arm stats, decision reason)
   --semantic <query>     Semantic similarity search
   --session <id>         List memories from a session
   --chain <id>           Show session chain (parent/child links)
@@ -1670,6 +1697,8 @@ def main_entry():
     cmd = sys.argv[1]
     if cmd == "--delivery-stats":
         delivery_stats()
+    elif cmd == "--ab-history":
+        ab_history()
     elif cmd == "--today":
         format_rows(list_by_date(since="today"))
     elif cmd == "--since" and len(sys.argv) > 2:

@@ -381,6 +381,12 @@ CRON_ANALYSER="0 0 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON -m cairn.analyser cron 
 CRON_SELFMOD="30 0 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON -m cairn.calibration_selfmod >> $CAIRN_HOME/logs/calibration-selfmod.log 2>&1 $CRON_MARKER"
 # Memory-side utility-prior suppression — push_suppressed dead-weight memories (delivered often, never engaged/graded). Reversible; pull paths unaffected.
 CRON_MEMORY_SELFMOD="45 0 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON -m cairn.memory_selfmod >> $CAIRN_HOME/logs/memory-selfmod.log 2>&1 $CRON_MARKER"
+# Write-side A/B assessment + changeover — assesses the live per-prompt A/B test
+# (cairn/config.py AB_TEST_ENABLED) against a min-N + gap-threshold rule and, on a
+# clear verdict, mechanically bumps GENERATION_PROMPT_VERSION (promote) or disables
+# testing (reject) in config.py. Runs 35 minutes after analyser, alongside the other
+# selfmod passes. No-op while AB_TEST_ENABLED is False.
+CRON_AB_SELFMOD="35 0 * * * ${CRON_PATH_PREFIX}$VENV_PYTHON -m cairn.ab_selfmod assess >> $CAIRN_HOME/logs/ab-selfmod.log 2>&1 $CRON_MARKER"
 # Code-graph fleet sweep — discover new repos, build missing graphs, register with
 # the watch daemon, and self-heal the daemon if it died. Hourly so new repos become
 # graph-ready quickly without waiting for a session. The daemon keeps existing repos
@@ -408,7 +414,7 @@ CRON_DAEMON_HEALTH="*/15 * * * * ${CRON_PATH_PREFIX}$VENV_PYTHON $CAIRN_HOME/cai
 CRON_CAPTURE_WATCHDOG="41 * * * * ${CRON_PATH_PREFIX}$VENV_PYTHON $CAIRN_HOME/cairn/capture_watchdog.py >> $CAIRN_HOME/logs/capture-watchdog.log 2>&1 $CRON_MARKER"
 
 # Remove any existing cairn cron entries (including legacy contradiction_scan.py and calibration variants)
-EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.analyser\|cairn.calibration_selfmod\|cairn.memory_selfmod\|cairn.graph_fleet\|cairn.proxy.server\|cairn/capture_watchdog" || true)
+EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.analyser\|cairn.calibration_selfmod\|cairn.memory_selfmod\|cairn.ab_selfmod\|cairn.graph_fleet\|cairn.proxy.server\|cairn/capture_watchdog" || true)
 
 # Install fresh entries
 echo "$EXISTING_CRON
@@ -417,11 +423,12 @@ $CRON_CONTRADICTION
 $CRON_ANALYSER
 $CRON_SELFMOD
 $CRON_MEMORY_SELFMOD
+$CRON_AB_SELFMOD
 $CRON_GRAPH_FLEET
 $CRON_PROXY
 $CRON_DAEMON_HEALTH
 $CRON_CAPTURE_WATCHDOG" | sed '/^$/d' | crontab -
-echo "Installed cron: consolidation + heal-vec (3:00 AM), contradiction scan (3:30 AM), calibration analyser (00:00), calibration selfmod (00:30), memory selfmod (00:45), graph fleet sweep (hourly :17), daemon rerank health (every 15 min), capture watchdog (hourly :41)."
+echo "Installed cron: consolidation + heal-vec (3:00 AM), contradiction scan (3:30 AM), calibration analyser (00:00), calibration selfmod (00:30), memory selfmod (00:45), ab selfmod (00:35), graph fleet sweep (hourly :17), daemon rerank health (every 15 min), capture watchdog (hourly :41)."
 
 # --- Code-graph fleet bootstrap ---
 # Build graphs for all local repos so every repo is graph-ready for first contact.
