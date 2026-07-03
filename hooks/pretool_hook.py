@@ -61,11 +61,12 @@ def _looks_like_code_search(command: str) -> Optional[str]:
     return None
 
 
-def _edit_intent_symbol(tool_name: str, tool_input: dict, edited_files: list) -> Optional[str]:
-    """A symbol name whose DEFINITION lives in a file being edited this call,
-    or None. Ties served callers to the symbol actually under edit rather than
-    any identifier that merely appears in the command. Native Edit exposes
-    old_string directly; Bash cch-edit is parsed from the command string."""
+def _edit_intent_symbol(tool_name: str, tool_input: dict, edited_files: list):
+    """(symbol, def_file_abspath) for a symbol whose DEFINITION lives in a file
+    being edited this call, or None. Ties served callers to the symbol actually
+    under edit rather than any identifier that merely appears in the command;
+    generic hubs are skipped. Native Edit exposes old_string directly; Bash
+    cch-edit is parsed from the command string."""
     if tool_name in ("Edit", "MultiEdit", "Write"):
         haystack = tool_input.get("old_string") or tool_input.get("oldString") or ""
     elif tool_name == "Bash":
@@ -77,45 +78,61 @@ def _edit_intent_symbol(tool_name: str, tool_input: dict, edited_files: list) ->
         return None
     if not haystack or not edited_files:
         return None
-    from cairn.graph import location
+    from cairn.graph import location, _GENERIC_HUBS
     edited_norm = {os.path.abspath(f) for f in edited_files}
     seen_idents: set = set()
     for ident in re.findall(r'\b([A-Za-z_][A-Za-z0-9_]{2,})\b', haystack):
-        if ident in seen_idents:
-            continue
+        if ident in seen_idents or ident.lower() in _GENERIC_HUBS:
+            continue  # skip generic hubs (path/get/object/...) — noise, high fan-in
         seen_idents.add(ident)
         if len(seen_idents) > 25:  # bounded scan — first identifiers dominate
             break
         try:
-            loc = location(ident)  # "path:line-line" or "Symbol not found: X"
+            loc = location(ident)  # "file:line-line" or "Symbol not found: X"
         except Exception:
             continue
         if loc.startswith("Symbol not found"):
             continue
         loc_file = loc.split(":", 1)[0]
-        if os.path.abspath(loc_file) in edited_norm:
-            return ident
+        loc_abs = os.path.abspath(loc_file)
+        if loc_abs in edited_norm:
+            return ident, loc_abs
     return None
 
 
-def symbol_context_block(symbol: str, max_callers: int = 8) -> Optional[str]:
-    """Served (not reminded) structural context for a resolved symbol: its
-    blast radius plus the caller list, capped. Returns None if the symbol is
-    not in the graph, so callers can fall back cleanly."""
+def symbol_context_block(symbol: str, max_callers: int = 8,
+                          include_impact: bool = True,
+                          include_callers: bool = True) -> Optional[str]:
+    """Served (not reminded) structural context for a resolved symbol, scoped
+    to keep token overhead low and avoid duplicating Tier-2 file context:
+
+    - include_impact: prepend the one-line blast radius. Dropped on the edit
+      path when the file's Tier-2 map (which already prints per-symbol
+      callers:N) was served in the SAME hook call — no point restating it.
+    - include_callers: append the capped caller call-site list. Off on the grep
+      path (location + impact is enough; the list is one --callers away), on for
+      edit-intent where the pre-change blast radius is the whole point.
+
+    Returns None if the symbol is not in the graph."""
     from cairn.graph import impact, callers
-    imp = impact(symbol)
-    if imp.startswith("Symbol not found"):
-        return None
+    imp = None
+    if include_impact:
+        imp = impact(symbol)
+        if imp.startswith("Symbol not found"):
+            return None
+    header = f"CODE GRAPH — {symbol}" + (f"  [{imp}]" if imp else "")
+    if not include_callers:
+        # Grep path: impact + a pointer to expand on demand. No caller query.
+        return header + f"\n  expand: cairn-graph --callers {symbol} · --context-pack {symbol}"
     call = callers(symbol)
-    if call.startswith(("No callers", "Symbol not found")):
-        caller_lines: list = []
-    else:
-        caller_lines = call.splitlines()
+    if call.startswith("Symbol not found"):
+        # Only reachable when include_impact was False (existence unverified).
+        return header + "\n  callers:\n    (none)" if include_impact else None
+    caller_lines = [] if call.startswith("No callers") else call.splitlines()
     shown = caller_lines[:max_callers]
     more = len(caller_lines) - len(shown)
     body = "\n".join(f"    {ln}" for ln in shown) if shown else "    (none)"
-    out = (f"CODE GRAPH — {symbol}  [{imp}]\n"
-           f"  callers:\n{body}")
+    out = f"{header}\n  callers:\n{body}"
     if more > 0:
         out += f"\n    … +{more} more — cairn-graph --callers {symbol}"
     out += f"\n  full body+tests: cairn-graph --context-pack {symbol}"
@@ -396,6 +413,7 @@ def main() -> None:
     seen_raw = load_hook_state(session_id, "graph_files_seen") or ""
     seen = set(seen_raw.split("\n")) if seen_raw else set()
     seen_before = len(seen)
+    seen_at_start = set(seen)  # snapshot: files Tier-2 serves THIS call = seen - seen_at_start
 
     # Session-wide served-memory ledger — same retrieved_ids key the prompt and
     # stop layers use, so a memory injected by ANY layer is never injected again
@@ -448,28 +466,47 @@ def main() -> None:
     except Exception:
         GRAPH_SYMBOL_CONTEXT_ENABLED, GRAPH_SYMBOL_CONTEXT_MAX_CALLERS = False, 8
     if GRAPH_SYMBOL_CONTEXT_ENABLED and tool_name in ("Bash", "Edit", "MultiEdit", "Write"):
+        from cairn.graph import _GENERIC_HUBS
         command = tool_input.get("command") or ""
         gdb = os.path.join(cwd, ".code-review-graph", "graph.db")
         graph_present = os.path.exists(gdb)
         symbol = (_looks_like_code_search(command) if tool_name == "Bash" else None)
         origin = "grep" if symbol else None
+        sym_def_file = None
         # Is this call a code edit at all? (Native edit tool, or a Bash cch-edit/
         # cch-write.) Used both to resolve the edit-target symbol and to count
         # uncovered edits as the utilisation denominator.
         is_edit = tool_name in ("Edit", "MultiEdit", "Write") or (
             tool_name == "Bash" and ("cch-edit" in command or "cch-write" in command))
         if not symbol and is_edit:
-            symbol = _edit_intent_symbol(tool_name, tool_input, file_paths)
-            origin = "edit"
+            hit = _edit_intent_symbol(tool_name, tool_input, file_paths)
+            if hit:
+                symbol, sym_def_file = hit
+                origin = "edit"
+        # Generic hubs (path/get/object/...) resolve in the graph but are pure
+        # noise — drop them before serving (covers the grep path; the edit path
+        # already filtered inside _edit_intent_symbol).
+        if symbol and symbol.lower() in _GENERIC_HUBS:
+            symbol = None
         served_symbol = False
         if symbol and graph_present:
             sym_seen_raw = load_hook_state(session_id, "graph_symbols_seen") or ""
             sym_seen = set(sym_seen_raw.split("\n")) if sym_seen_raw else set()
             if symbol not in sym_seen:
+                # Scope the block to cut overhead and avoid duplicating Tier-2:
+                #  - grep -> impact one-liner only (list is one --callers away);
+                #  - edit -> caller list, with the impact line dropped when
+                #    Tier-2 covered this file THIS call (it already prints the
+                #    symbol's callers:N in the file map).
+                tier2_served = seen - seen_at_start
+                tier2_covered = bool(
+                    sym_def_file and os.path.realpath(sym_def_file) in tier2_served)
                 block = None
                 try:
                     block = symbol_context_block(
-                        symbol, max_callers=GRAPH_SYMBOL_CONTEXT_MAX_CALLERS)
+                        symbol, max_callers=GRAPH_SYMBOL_CONTEXT_MAX_CALLERS,
+                        include_impact=not tier2_covered,
+                        include_callers=(origin == "edit"))
                 except Exception as _e:
                     log(f"symbol_context_block failed open: {type(_e).__name__}: {_e}")
                 if block:
