@@ -474,6 +474,7 @@ def test_backfill_embeddings_behavioural(backfill_env, capsys):
     mock_emb = MagicMock()
     mock_emb.embed.side_effect = lambda text: (call_order.append(text), [0.1])[1]
     mock_emb.to_blob.side_effect = lambda v: blob_map[len(call_order)]
+    mock_emb.connect_db.side_effect = lambda path, load_vec=True: sqlite3.connect(path)
 
     import sys as _sys
     import cairn as _cairn_pkg
@@ -510,6 +511,7 @@ def test_backfill_embeddings_edge_all_have_embeddings(backfill_env, capsys):
     ])
 
     mock_emb = MagicMock()
+    mock_emb.connect_db.side_effect = lambda path, load_vec=True: sqlite3.connect(path)
     import sys as _sys
     import cairn as _cairn_pkg
     with patch.dict(_sys.modules, {"cairn.embeddings": mock_emb}), \
@@ -573,6 +575,7 @@ def test_backfill_embeddings_adversarial_partial_failure(backfill_env):
     mock_emb = MagicMock()
     mock_emb.embed.side_effect = embed_then_crash
     mock_emb.to_blob.return_value = b"\xBB"
+    mock_emb.connect_db.side_effect = lambda path, load_vec=True: sqlite3.connect(path)
 
     import sys as _sys
     import cairn as _cairn_pkg
@@ -601,6 +604,7 @@ def test_backfill_embeddings_project_prefix_included(backfill_env, capsys):
     mock_emb = MagicMock()
     mock_emb.embed.return_value = [0.1]
     mock_emb.to_blob.return_value = b"\xDD"
+    mock_emb.connect_db.side_effect = lambda path, load_vec=True: sqlite3.connect(path)
 
     import sys as _sys
     import cairn as _cairn_pkg
@@ -625,6 +629,7 @@ def test_backfill_embeddings_no_project_prefix(backfill_env, capsys):
     mock_emb = MagicMock()
     mock_emb.embed.return_value = [0.1]
     mock_emb.to_blob.return_value = b"\xDD"
+    mock_emb.connect_db.side_effect = lambda path, load_vec=True: sqlite3.connect(path)
 
     import sys as _sys
     import cairn as _cairn_pkg
