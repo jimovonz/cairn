@@ -632,6 +632,17 @@ def init():
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ab_experiments_status ON ab_experiments(status)")
+    # Migration: compliance-gate columns (mechanical meta-content check,
+    # independent of engaged_pct — see cairn/ab_selfmod.py:_compliance_gate)
+    for col, coltype in [("meta_n_a", "INTEGER"), ("meta_n_b", "INTEGER"), ("meta_pct_a", "REAL"), ("meta_pct_b", "REAL"), ("meta_p_value", "REAL"), ("compliance_blocked", "INTEGER DEFAULT 0")]:
+        try:
+            conn.execute(f"ALTER TABLE ab_experiments ADD COLUMN {col} {coltype}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 16").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (16, 'ab_experiments compliance-gate columns — mechanical meta-content check vs engaged_pct proxy')"
+        )
     if not conn.execute("SELECT 1 FROM schema_version WHERE version = 15").fetchone():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (15, 'ab_experiments table — automated write-side A/B assessment + changeover tracking')"
