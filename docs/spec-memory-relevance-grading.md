@@ -24,6 +24,11 @@ ad-hoc threshold tuning as the primary lever on injected-memory quality.
   (floor 0.0005) on CUDA when `RERANKER_BGE_ENABLED`, else `ms-marco-MiniLM-L-6-v2`
   (floor −3.0); the daemon owns the model and the hot hook path never imports
   torch. bge-vs-ms-marco on real retrieval quality is not yet A/B-validated.
+  As of 2026-07-03 the personal-laptop Quadro T2000 (the machine A.7 was
+  originally measured on) also has CUDA configured — no known deployment target
+  is CPU-only anymore, so A.7's async/offline-only hedge for generative
+  grading no longer applies unconditionally; re-check VRAM/latency per box
+  (`RERANKER_MIN_VRAM_GB` gate) rather than assuming CPU-bound.
 - **Done (write side, Part B):** generation-prompt-version provenance
   (`config.GENERATION_PROMPT_VERSION` → `memories.source_ref`); the dual-altitude
   transferability lever promoted into the live generation rules; the offline A/B
@@ -33,6 +38,16 @@ ad-hoc threshold tuning as the primary lever on injected-memory quality.
 - **Not yet built:** Phase 3 (trained cross-encoder student) and Phase 4 (demote
   teacher) await label volume; the A/B harness has not been run on the full corpus
   (an Opus-cost batch job).
+- **Intended automation (once Phase 3 has a manually-validated training recipe):**
+  retrain/eval/swap of the cross-encoder student should reuse the self-mod cron
+  pattern already shipped twice (`cairn/calibration_selfmod.py`,
+  `cairn/ab_selfmod.py`) — a periodic job gated on label-volume threshold,
+  fine-tune, then a promotion gate on held-out student-vs-teacher agreement
+  (A.8 step 4, target >~90%) before the new model file replaces the deployed
+  one. No known deployment box is CPU-only as of 2026-07-03 (see hardware note
+  above), so cadence can be daily like the other selfmod jobs rather than
+  weekly. Not yet scoped or built — do this only after a human has run at least
+  one manual training pass to prove out the fine-tuning recipe.
 
 ## Problem
 

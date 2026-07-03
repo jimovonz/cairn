@@ -610,6 +610,32 @@ def init():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (14, 'memory_qf_embeddings sidecar — per-qf symmetric retrieval for memories (calibration v7 port)')"
         )
+    # Automated write-side A/B assessment (cairn/ab_selfmod.py) needs a durable
+    # record of each live experiment (config.AB_B_INSTRUCTION under test) and
+    # its verdict, so the periodic job can resume/idempotently track state
+    # across runs and query.py --ab-history can show experiment history.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ab_experiments (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            instruction_b      TEXT NOT NULL,
+            base_version       TEXT NOT NULL,
+            candidate_version  TEXT NOT NULL,
+            status             TEXT NOT NULL DEFAULT 'running',
+            n_a                INTEGER NOT NULL DEFAULT 0,
+            n_b                INTEGER NOT NULL DEFAULT 0,
+            engaged_pct_a      REAL,
+            engaged_pct_b      REAL,
+            decision_reason    TEXT,
+            started_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            ended_at           TIMESTAMP,
+            updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ab_experiments_status ON ab_experiments(status)")
+    if not conn.execute("SELECT 1 FROM schema_version WHERE version = 15").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (15, 'ab_experiments table — automated write-side A/B assessment + changeover tracking')"
+        )
     conn.commit()
     conn.close()
     print(f"Database initialized at {DB_PATH}")
