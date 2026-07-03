@@ -325,6 +325,40 @@ def apply_relevance_grades(grades: list[tuple[int, int, bool]], *, session_id: s
         conn.close()
 
 
+def turn_rg_compliance(session_id: str, eph_path: Optional[str] = None) -> Optional[tuple[int, int]]:
+    """(delivered_count, graded_count) for the most recent turn_index that had any
+    deliveries in this session. Returns None if the session has no deliveries yet.
+    Used by the Stop hook to track a periodic, non-blocking rg-grading nudge —
+    never to gate/block, since forcing a grade produces fabricated labels (see
+    the disabled inline-contradiction-enforcement precedent above)."""
+    if not session_id:
+        return None
+    try:
+        conn = sqlite3.connect(_eph_path(eph_path))
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT MAX(turn_index) FROM memory_deliveries WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if not row or row[0] is None:
+            return None
+        turn_index = row[0]
+        counts = conn.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN grade IS NOT NULL THEN 1 ELSE 0 END) "
+            "FROM memory_deliveries WHERE session_id = ? AND turn_index = ?",
+            (session_id, turn_index),
+        ).fetchone()
+        delivered = counts[0] or 0
+        graded = counts[1] or 0
+        return (delivered, graded)
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
 # --- Step 2: behavioural engagement signal ------------------------------------
 # The cleaner, non-circular training spine (spec A.6 anti-Goodhart): rather than
 # trust the agent's self-report, mechanically detect whether the response actually

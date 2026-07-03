@@ -440,6 +440,46 @@ def main() -> None:
         except Exception as e:
             log(f"relevance grade write-back failed: {e}")
 
+    # rg-grading periodic nudge — soft, non-blocking (see cairn/config.py RG_NUDGE_*).
+    # Main session only: subagents skip enforcement entirely, and a continuation
+    # turn is a re-prompt of THIS turn, not a fresh turn to count toward the streak.
+    if not is_subagent and not is_continuation:
+        try:
+            from cairn.config import RG_NUDGE_ENABLED, RG_NUDGE_STREAK
+            if RG_NUDGE_ENABLED:
+                from cairn.relevance import turn_rg_compliance
+                from hooks.hook_helpers import load_hook_state, save_hook_state
+                status = turn_rg_compliance(session_id)
+                if status is not None:
+                    delivered, graded = status
+                    if delivered > 0:
+                        if graded > 0:
+                            save_hook_state(session_id, "rg_nudge_streak", "0")
+                        else:
+                            streak = int(load_hook_state(session_id, "rg_nudge_streak") or "0") + 1
+                            if streak >= RG_NUDGE_STREAK:
+                                save_hook_state(session_id, "rg_nudge_streak", "0")
+                                try:
+                                    staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+                                    os.makedirs(staged_dir, exist_ok=True)
+                                    staged_file = os.path.join(staged_dir, f"{session_id}_rg_nudge.txt")
+                                    with open(staged_file, "w") as f:
+                                        f.write(
+                                            f"Reminder: the last {RG_NUDGE_STREAK} turns delivered cairn_context "
+                                            "memories with zero rg relevance grades. If any were clearly load-bearing "
+                                            "(3) or noise (0), grade them in your memory block's rg array — only when "
+                                            "you're confident, per the memory-system rules. This is informational, "
+                                            "not a requirement to grade every delivery."
+                                        )
+                                    record_metric(session_id, "rg_nudge_staged", None, streak)
+                                    log(f"rg-grading nudge staged after {streak}-turn ungraded streak")
+                                except Exception as e:
+                                    log(f"Failed to stage rg nudge: {e}")
+                            else:
+                                save_hook_state(session_id, "rg_nudge_streak", str(streak))
+        except Exception as e:
+            log(f"rg nudge check failed: {e}")
+
     # Step 2: behavioural engagement — mechanically detect whether THIS response
     # actually used each memory delivered for the current turn (distinctive-term
     # overlap), the PRIMARY non-circular label beside the agent grade. Main session
