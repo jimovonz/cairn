@@ -343,18 +343,34 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _load_vec(conn: sqlite3.Connection) -> bool:
-    """Try to load sqlite-vec extension. Returns True if available."""
+    """Return True if the vec extension is available on this connection.
+
+    Probe before loading: if vec_version() already answers, the extension is
+    active (e.g. hook_helpers.get_conn loaded it) and we must NOT load again —
+    re-loading while the vec0 module is in use raises "OperationalError: error
+    during initialization" even though the index is fully usable. Treating that
+    re-load failure as unavailable was the root cause of the silent vec0-write
+    gap: every live upsert_vec_index call skipped, nightly heal-vec was the
+    only indexer."""
+    try:
+        conn.execute("SELECT vec_version()")
+        return True
+    except Exception:
+        pass
     try:
         import sqlite_vec
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
         return True
-    except Exception:
+    except Exception as e:
         # Best-effort: any load failure (missing module, OSError, or a
         # sqlite3 OperationalError like "error during initialization" when the
         # extension is re-loaded in a long-lived process such as the test
         # runner) means the vec index is unavailable on this conn — degrade to
         # False so callers (connect_db, upsert_vec_index) never crash on it.
+        # Log the cause: a silent False here cost weeks of "silent vec0-write
+        # gap" hunting — the failure reason must be visible in hook.log.
+        _log_embed(f"_load_vec failed: {type(e).__name__}: {e}", "warning")
         return False
 
 
