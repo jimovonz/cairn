@@ -404,3 +404,216 @@ def test_main_adversarial():
     assert lines3[2] == "Sources: 8"
     third_ids = {int(s) for s in lines3[2].removeprefix("Sources: ").split(", ")}
     assert first_ids.isdisjoint(third_ids), "Same memory ID delivered twice in one session"
+
+
+# ============================================================
+# Symbol context serving (serve-not-remind) — 6 tests
+# ============================================================
+
+def _graphed_cwd():
+    """A temp cwd containing a .code-review-graph/graph.db marker file so the
+    hook's graph-presence check passes without a real graph build."""
+    d = tempfile.mkdtemp()
+    gdir = os.path.join(d, ".code-review-graph")
+    os.makedirs(gdir, exist_ok=True)
+    open(os.path.join(gdir, "graph.db"), "w").close()
+    return d
+
+
+def _run_main_capture_metrics(hook_input_dict, db_path):
+    """Like run_main but exposes the record_metric mock for assertions."""
+    stdin_data = json.dumps(hook_input_dict)
+    captured = []
+    metric_mock = MagicMock()
+
+    def fake_print(*args, **kwargs):
+        captured.append(" ".join(str(a) for a in args))
+
+    exit_code = None
+    with patch("sys.stdin", io.StringIO(stdin_data)), \
+         patch.object(hook_helpers, "DB_PATH", db_path), \
+         patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
+         patch("hooks.pretool_hook.record_metric", metric_mock), \
+         patch("hooks.pretool_hook.log"), \
+         patch("builtins.print", side_effect=fake_print):
+        try:
+            pretool_hook.main()
+        except SystemExit as e:
+            exit_code = e.code
+    return "\n".join(captured), exit_code, metric_mock
+
+
+def test_symbol_context_served_on_grep():
+    # A symbol grep on a graphed repo SERVES the block (not a command menu).
+    db_path, conn = fresh_db()
+    conn.close()
+    cwd = _graphed_cwd()
+    block = "CODE GRAPH — my_func  [callers:3 tests:1 files:2]\n  callers:\n    a.py:10  caller_one"
+    hook_input = {
+        "tool_name": "Bash",
+        "session_id": "symsess",
+        "cwd": cwd,
+        "tool_input": {"command": "grep -n 'my_func' src/mod.py"},
+    }
+    with patch("hooks.pretool_hook.symbol_context_block", return_value=block):
+        output_text, exit_code = run_main(hook_input, db_path)
+    assert exit_code == 0
+    parsed = json.loads(output_text)
+    additional = parsed["hookSpecificOutput"]["additionalContext"]
+    lines = additional.split("\n")
+    assert lines[0] == "CODE GRAPH — my_func  [callers:3 tests:1 files:2]"
+    assert lines[1] == "  callers:"
+    assert lines[2] == "    a.py:10  caller_one"
+
+
+def test_symbol_context_deduped_per_symbol():
+    # Same symbol twice in a session -> served once; a DIFFERENT symbol still serves.
+    db_path, conn = fresh_db()
+    conn.close()
+    cwd = _graphed_cwd()
+    hook_a = {"tool_name": "Bash", "session_id": "s", "cwd": cwd,
+              "tool_input": {"command": "grep 'alpha' x.py"}}
+    with patch("hooks.pretool_hook.symbol_context_block", return_value="CODE GRAPH — alpha  [callers:0 tests:0 files:0]\n  callers:\n    (none)"):
+        out1, ec1 = run_main(hook_a, db_path)
+        out2, ec2 = run_main(hook_a, db_path)
+    assert out1 != ""
+    assert out2 == "", f"Second grep of same symbol must dedup, got: {out2!r}"
+    hook_b = {"tool_name": "Bash", "session_id": "s", "cwd": cwd,
+              "tool_input": {"command": "grep 'beta' y.py"}}
+    with patch("hooks.pretool_hook.symbol_context_block", return_value="CODE GRAPH — beta  [callers:1 tests:0 files:1]\n  callers:\n    z.py:4  q"):
+        out3, ec3 = run_main(hook_b, db_path)
+    lines3 = json.loads(out3)["hookSpecificOutput"]["additionalContext"].split("\n")
+    assert lines3[0] == "CODE GRAPH — beta  [callers:1 tests:0 files:1]"
+
+
+def test_symbol_context_skipped_without_graph():
+    # No .code-review-graph/graph.db under cwd -> nothing served.
+    db_path, conn = fresh_db()
+    conn.close()
+    cwd = tempfile.mkdtemp()  # no graph marker
+    hook_input = {"tool_name": "Bash", "session_id": "s", "cwd": cwd,
+                  "tool_input": {"command": "grep 'my_func' src/mod.py"}}
+    with patch("hooks.pretool_hook.symbol_context_block", return_value="SHOULD NOT APPEAR"):
+        output_text, exit_code = run_main(hook_input, db_path)
+    assert exit_code == 0
+    assert output_text == "", f"No graph present must serve nothing, got: {output_text!r}"
+
+
+def test_symbol_context_served_on_edit_intent():
+    # An edit whose target symbol is defined in the edited file serves its callers,
+    # and does NOT count as an uncovered edit.
+    db_path, conn = fresh_db()
+    conn.close()
+    cwd = _graphed_cwd()
+    hook_input = {"tool_name": "Bash", "session_id": "s", "cwd": cwd,
+                  "tool_input": {"command": "cch-edit.py src/mod.py 'old code' 'new code'"}}
+    block = "CODE GRAPH — target_fn  [callers:5 tests:2 files:3]\n  callers:\n    q.py:1  r"
+    with patch("hooks.pretool_hook._edit_intent_symbol", return_value=("target_fn", "/abs/src/mod.py")), \
+         patch("hooks.pretool_hook.symbol_context_block", return_value=block):
+        output_text, exit_code, metrics = _run_main_capture_metrics(hook_input, db_path)
+    lines = json.loads(output_text)["hookSpecificOutput"]["additionalContext"].split("\n")
+    assert lines[0] == "CODE GRAPH — target_fn  [callers:5 tests:2 files:3]"
+    served_events = [c.args[1] for c in metrics.call_args_list if len(c.args) > 1]
+    assert "graph_symbol_context_served" in served_events
+    assert "graph_symbol_edit_uncovered" not in served_events
+
+
+def test_uncovered_edit_records_denominator_metric():
+    # An edit on a graphed repo where no symbol resolves records the
+    # uncovered-edit metric (the utilisation denominator).
+    db_path, conn = fresh_db()
+    conn.close()
+    cwd = _graphed_cwd()
+    hook_input = {"tool_name": "Bash", "session_id": "s", "cwd": cwd,
+                  "tool_input": {"command": "cch-edit.py src/mod.py 'a' 'b'"}}
+    with patch("hooks.pretool_hook._edit_intent_symbol", return_value=None):
+        output_text, exit_code, metrics = _run_main_capture_metrics(hook_input, db_path)
+    assert exit_code == 0
+    events = [c.args[1] for c in metrics.call_args_list if len(c.args) > 1]
+    assert "graph_symbol_edit_uncovered" in events
+    assert "graph_symbol_context_served" not in events
+
+
+def test_non_edit_bash_does_not_record_uncovered():
+    # A plain non-edit, non-grep Bash command on a graphed repo is neither
+    # served nor counted as an uncovered edit (denominator stays clean).
+    db_path, conn = fresh_db()
+    conn.close()
+    cwd = _graphed_cwd()
+    hook_input = {"tool_name": "Bash", "session_id": "s", "cwd": cwd,
+                  "tool_input": {"command": "ls -la"}}
+    output_text, exit_code, metrics = _run_main_capture_metrics(hook_input, db_path)
+    assert exit_code == 0
+    assert output_text == ""
+    events = [c.args[1] for c in metrics.call_args_list if len(c.args) > 1]
+    assert "graph_symbol_edit_uncovered" not in events
+    assert "graph_symbol_context_served" not in events
+
+
+# ============================================================
+# Symbol context scoping (#1 grep=impact, #2/#4 edit=list, generic filter)
+# ============================================================
+
+def test_symbol_context_block_grep_mode_impact_only():
+    # include_callers=False (grep path): impact one-liner + expand pointer, and
+    # callers() is never queried.
+    with patch("cairn.graph.impact", return_value="callers:3 tests:1 files:2") as imp, \
+         patch("cairn.graph.callers") as call:
+        block = pretool_hook.symbol_context_block("foo", include_callers=False)
+    lines = block.split("\n")
+    assert lines[0] == "CODE GRAPH — foo  [callers:3 tests:1 files:2]"
+    assert lines[1].startswith("  expand: cairn-graph --callers foo")
+    assert len(lines) == 2, f"grep mode must be 2 lines, got {lines!r}"
+    imp.assert_called_once()
+    call.assert_not_called()
+
+
+def test_symbol_context_block_edit_mode_drops_impact_line():
+    # include_impact=False (Tier-2 already covered the file): no [impact] header,
+    # caller list only, and impact() is never queried.
+    with patch("cairn.graph.impact") as imp, \
+         patch("cairn.graph.callers", return_value="a.py:10  one\nb.py:20  two"):
+        block = pretool_hook.symbol_context_block("foo", include_impact=False)
+    lines = block.split("\n")
+    assert lines[0] == "CODE GRAPH — foo", f"no impact bracket expected, got {lines[0]!r}"
+    assert lines[1] == "  callers:"
+    assert lines[2] == "    a.py:10  one"
+    imp.assert_not_called()
+
+
+def test_symbol_context_block_full_mode():
+    with patch("cairn.graph.impact", return_value="callers:2 tests:0 files:1"), \
+         patch("cairn.graph.callers", return_value="a.py:10  one"):
+        block = pretool_hook.symbol_context_block("foo")
+    lines = block.split("\n")
+    assert lines[0] == "CODE GRAPH — foo  [callers:2 tests:0 files:1]"
+    assert lines[1] == "  callers:"
+    assert lines[2] == "    a.py:10  one"
+
+
+def test_edit_intent_symbol_returns_tuple_and_skips_generics():
+    # Generic hub 'path' is skipped; the real symbol resolves to (name, def_file).
+    def fake_location(ident):
+        if ident == "my_func":
+            return "/repo/src/mod.py:5-9"
+        if ident == "get":
+            return "/repo/src/mod.py:1-3"  # would match & comes first, but 'get' is a hub
+        return f"Symbol not found: {ident}"
+    # 'get' appears before 'my_func' — the generic filter must skip it and fall through.
+    ti = {"command": "cch-edit.py src/mod.py 'get(my_func)' 'get2(my_func)'"}
+    with patch("cairn.graph.location", side_effect=fake_location):
+        result = pretool_hook._edit_intent_symbol("Bash", ti, ["/repo/src/mod.py"])
+    assert result == ("my_func", "/repo/src/mod.py")
+
+
+def test_grep_of_generic_hub_not_served():
+    # A grep for a generic hub (e.g. 'get', in graph._GENERIC_HUBS) must not serve.
+    db_path, conn = fresh_db()
+    conn.close()
+    cwd = _graphed_cwd()
+    hook_input = {"tool_name": "Bash", "session_id": "s", "cwd": cwd,
+                  "tool_input": {"command": "grep -n 'get' src/mod.py"}}
+    with patch("hooks.pretool_hook.symbol_context_block", return_value="SHOULD NOT APPEAR"):
+        output_text, exit_code = run_main(hook_input, db_path)
+    assert exit_code == 0
+    assert "SHOULD NOT APPEAR" not in output_text

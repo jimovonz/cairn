@@ -253,6 +253,8 @@ GRAPH_ORIENTATION_ENABLED = True       # Tier 1 — repo orientation block at se
 GRAPH_FILE_CONTEXT_ENABLED = True      # Tier 2 — per-file structural context on tool use
 GRAPH_FILE_CONTEXT_MAX_SYMBOLS = 12    # Cap symbols listed per file (token discipline)
 GRAPH_RISK_TAIL_THRESHOLD = 0.55       # risk_score above which a symbol is flagged high-risk
+GRAPH_SYMBOL_CONTEXT_ENABLED = True    # Serve impact+callers for a resolved symbol on grep/edit-intent — serves DATA, not a reminder menu (the tier that failed)
+GRAPH_SYMBOL_CONTEXT_MAX_CALLERS = 8   # Cap caller lines served per symbol (token discipline)
 
 # === Per-file injection scoping (pretool hook) ===
 # Generic basenames are weak retrieval keys — hundreds of unrelated memories
@@ -421,6 +423,82 @@ AB_B_INSTRUCTION = (
     "codebase is NOT meta — this only excludes self-referential memory-coverage "
     "statements.)"
 )
+
+# === Write-side A/B — future hypothesis queue ===
+# Auto-advanced by ab_selfmod.py on promote/reject: the first entry whose
+# `version` has never appeared in ab_experiments.candidate_version becomes
+# the new AB_B_INSTRUCTION/AB_ARM_VERSIONS["B"], AB_TEST_ENABLED stays True.
+# Tried in list order. Queue exhausted -> AB_TEST_ENABLED set False (as
+# today, same as the pre-queue behavior). Edit freely; never reuse a
+# `version` string once it has been tried (ab_selfmod checks history, not
+# list position, so a reused version would be silently skipped as "tried").
+AB_B_QUEUE = [
+    {
+        "version": "genB-v3",
+        "label": "staleness self-check on volatile facts",
+        "instruction": (
+            "[cairn A/B — arm B] For each memory you write THIS turn, if the "
+            "content cites a count, version, or number that drifts over time "
+            "(test counts, tags, line numbers, file counts), do not freeze the "
+            "bare number in the memory. Either omit it and point at the command "
+            "that reproduces it, or explicitly flag the entry as time-sensitive "
+            "so a future reader knows to re-verify before citing it."
+        ),
+    },
+    {
+        "version": "genB-v4",
+        "label": "structured rejected-alternatives field for decisions",
+        "instruction": (
+            "[cairn A/B — arm B] For each `decision` entry you write THIS turn, "
+            "state the rejected alternative(s) as an explicit clause — "
+            "\"rejected: X because Y\" — rather than folding them into general "
+            "prose. The rejected path must be as recoverable as the chosen one."
+        ),
+    },
+    {
+        "version": "genB-v5",
+        "label": "explicit retrieval-scenario framing",
+        "instruction": (
+            "[cairn A/B — arm B] For each memory you write THIS turn, include "
+            "one clause naming the concrete future situation this entry answers "
+            "(e.g. \"relevant when X is asked or attempted\"), in addition to "
+            "keywords — reasoning about fit, not just indexing for match."
+        ),
+    },
+    {
+        "version": "genB-v6",
+        "label": "hard 2-entry/turn cap",
+        "instruction": (
+            "[cairn A/B — arm B] Write at most 2 entries THIS turn, even if more "
+            "than 2 novel facts emerged. Pick the 2 most durably useful and drop "
+            "the rest — forces editorial triage instead of the current soft "
+            "\"unless several genuinely novel facts emerged\" guidance."
+        ),
+    },
+    {
+        "version": "genB-v7",
+        "label": "explicit supersession cross-referencing by memory id",
+        "instruction": (
+            "[cairn A/B — arm B] When a memory you write THIS turn updates, "
+            "corrects, or supersedes a specific prior memory shown to you in "
+            "`<cairn_context>`, add an `f` fact citing it explicitly, e.g. "
+            "\"supersedes:1842\" — in addition to any `cu` confidence_update — "
+            "so the correction chain is explicit rather than relying only on "
+            "cosine dedup."
+        ),
+    },
+]
+
+# Opt-in compliance checks for A/B candidates whose hypothesis is about HOW
+# memories are WRITTEN (not just their downstream engagement). Maps a candidate
+# version -> a check name in cairn/ab_selfmod.py:_COMPLIANCE_PATTERNS. A
+# candidate that is NOT listed here (and carries no "compliance" key in its
+# AB_B_QUEUE entry) is never gated — its engagement verdict stands alone, so an
+# unrelated candidate (entry-cap, supersession, etc.) can never be false-vetoed
+# by a chance meta-content difference. The current live genB-v2 tests
+# meta-suppression, so it registers the "meta" check; none of the queued v3-v7
+# hypotheses target writing style, so none register one.
+AB_COMPLIANCE_CHECKS = {"genB-v2": "meta"}
 
 # === rg-grading periodic nudge ===
 # rg (agent-as-teacher relevance grades, docs/spec-memory-relevance-grading.md) is

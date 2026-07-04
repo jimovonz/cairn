@@ -155,7 +155,8 @@ def test_assess_promotes_on_large_positive_gap():
     _seed_arm(durable, eph, "genB-v2", n=40, engaged_count=20)  # 50%
     row = _insert_row(durable, _row())
     config_path = _fresh_config(td)
-    with patch.object(sm, "CONFIG_PATH", config_path):
+    with patch.object(sm, "CONFIG_PATH", config_path), \
+         patch("cairn.config.AB_B_QUEUE", []):
         result = sm.assess_experiment(row, db_path=durable, eph_path=eph, dry_run=False)
     assert result["status"] == "promoted"
     with open(config_path) as f:
@@ -170,7 +171,8 @@ def test_assess_rejects_on_large_negative_gap():
     _seed_arm(durable, eph, "genB-v2", n=40, engaged_count=8)   # 20%
     row = _insert_row(durable, _row())
     config_path = _fresh_config(td)
-    with patch.object(sm, "CONFIG_PATH", config_path):
+    with patch.object(sm, "CONFIG_PATH", config_path), \
+         patch("cairn.config.AB_B_QUEUE", []):
         result = sm.assess_experiment(row, db_path=durable, eph_path=eph, dry_run=False)
     assert result["status"] == "rejected"
     with open(config_path) as f:
@@ -214,3 +216,288 @@ def test_dry_run_never_touches_config():
     with open(config_path) as f:
         after = f.read()
     assert before == after
+
+
+# ---------------------------------------------------------------------------
+# AB_B_QUEUE auto-advance
+# ---------------------------------------------------------------------------
+
+_QUEUE = [
+    {"version": "genB-v3", "label": "first candidate", "instruction": "try hypothesis 1"},
+    {"version": "genB-v4", "label": "second candidate", "instruction": "try hypothesis 2"},
+]
+
+
+def test_next_untried_candidate_skips_tried():
+    durable, eph, td = _fresh_dbs()
+    _insert_row(durable, _row(cand="genB-v3"))
+    with patch("cairn.config.AB_B_QUEUE", _QUEUE):
+        candidate = sm._next_untried_candidate(durable)
+    assert candidate["version"] == "genB-v4"
+
+
+def test_next_untried_candidate_none_when_queue_empty():
+    durable, eph, td = _fresh_dbs()
+    with patch("cairn.config.AB_B_QUEUE", []):
+        assert sm._next_untried_candidate(durable) is None
+
+
+def test_promote_advances_to_next_queue_candidate():
+    durable, eph, td = _fresh_dbs()
+    _seed_arm(durable, eph, "genA-v4", n=40, engaged_count=8)   # 20%
+    _seed_arm(durable, eph, "genB-v2", n=40, engaged_count=20)  # 50%
+    row = _insert_row(durable, _row())
+    config_path = _fresh_config(td)
+    with patch.object(sm, "CONFIG_PATH", config_path), \
+         patch("cairn.config.AB_B_QUEUE", _QUEUE):
+        result = sm.assess_experiment(row, db_path=durable, eph_path=eph, dry_run=False)
+    assert result["status"] == "promoted"
+    with open(config_path) as f:
+        text = f.read()
+    assert 'GENERATION_PROMPT_VERSION = "genA-v5"' in text
+    assert "AB_TEST_ENABLED = True" in text
+    assert "AB_TEST_ENABLED = False" not in text
+    assert 'AB_ARM_VERSIONS = {"A": GENERATION_PROMPT_VERSION, "B": "genB-v3"}' in text
+    assert "try hypothesis 1" in text
+
+
+def test_reject_advances_to_next_queue_candidate():
+    durable, eph, td = _fresh_dbs()
+    _seed_arm(durable, eph, "genA-v4", n=40, engaged_count=20)  # 50%
+    _seed_arm(durable, eph, "genB-v2", n=40, engaged_count=8)   # 20%
+    row = _insert_row(durable, _row())
+    config_path = _fresh_config(td)
+    with patch.object(sm, "CONFIG_PATH", config_path), \
+         patch("cairn.config.AB_B_QUEUE", _QUEUE):
+        result = sm.assess_experiment(row, db_path=durable, eph_path=eph, dry_run=False)
+    assert result["status"] == "rejected"
+    with open(config_path) as f:
+        text = f.read()
+    assert 'GENERATION_PROMPT_VERSION = "genA-v4"' in text  # base untouched on reject
+    assert "AB_TEST_ENABLED = True" in text
+    assert 'AB_ARM_VERSIONS = {"A": GENERATION_PROMPT_VERSION, "B": "genB-v3"}' in text
+    assert "try hypothesis 1" in text
+
+
+def test_disables_when_queue_exhausted():
+    durable, eph, td = _fresh_dbs()
+    _seed_arm(durable, eph, "genA-v4", n=40, engaged_count=8)
+    _seed_arm(durable, eph, "genB-v2", n=40, engaged_count=20)
+    row = _insert_row(durable, _row())
+    config_path = _fresh_config(td)
+    # Both queue versions already tried -> nothing left to advance to.
+    _insert_row(durable, _row(cand="genB-v3"))
+    _insert_row(durable, _row(cand="genB-v4"))
+    with patch.object(sm, "CONFIG_PATH", config_path), \
+         patch("cairn.config.AB_B_QUEUE", _QUEUE):
+        result = sm.assess_experiment(row, db_path=durable, eph_path=eph, dry_run=False)
+    assert result["status"] == "promoted"
+    with open(config_path) as f:
+        text = f.read()
+    assert "AB_TEST_ENABLED = False" in text
+    assert "queue exhausted" in text
+
+
+def test_show_queue_reports_status_per_candidate():
+    durable, eph, td = _fresh_dbs()
+    row = _insert_row(durable, _row(cand="genB-v3"))
+    conn = sqlite3.connect(durable)
+    conn.execute("UPDATE ab_experiments SET status = ? WHERE id = ?", ("rejected", row["id"]))
+    conn.commit()
+    conn.close()
+    with patch.object(sm, "DB_PATH", durable), \
+         patch("cairn.config.AB_B_QUEUE", _QUEUE):
+        report = sm.show_queue()
+    by_version = {r["version"]: r for r in report}
+    assert by_version["genB-v3"]["status"] == "rejected"
+    assert by_version["genB-v4"]["status"] == "untried"
+
+
+# ---------------------------------------------------------------------------
+# Compliance gate (mechanical meta-content check vs engaged_pct proxy)
+# ---------------------------------------------------------------------------
+
+_META_CHECK = {"genB-v2": "meta"}
+
+
+def _seed_memories_with_content(durable, version, contents, created_at=None):
+    conn = sqlite3.connect(durable)
+    for content in contents:
+        if created_at is not None:
+            conn.execute(
+                "INSERT INTO memories (type, topic, content, source_ref, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("fact", "t", content, version, created_at),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO memories (type, topic, content, source_ref) VALUES (?, ?, ?, ?)",
+                ("fact", "t", content, version),
+            )
+    conn.commit()
+    conn.close()
+
+
+def test_is_meta_flagged_matches_target_patterns():
+    assert sm._is_meta_flagged("session handoff", "Branch: main")
+    assert sm._is_meta_flagged("t", "In progress: refactor the parser")
+    assert sm._is_meta_flagged("t", "captured what was discussed this conversation")
+    assert not sm._is_meta_flagged("cairn schema v14", "added memory_qf_embeddings sidecar table")
+    # Unknown check name -> no patterns -> never flagged.
+    assert not sm._is_meta_flagged("session handoff", "Branch: main", check="nonexistent")
+
+
+def test_meta_stats_computes_flagged_rate():
+    durable, eph, td = _fresh_dbs()
+    _seed_memories_with_content(durable, "v1", [
+        "session handoff: in progress on X",
+        "ordinary fact about the codebase",
+        "another ordinary fact",
+    ])
+    n, pct, flagged = sm._meta_stats(durable, "v1")
+    assert n == 3
+    assert flagged == 1
+    assert abs(pct - (100.0 / 3)) < 0.01
+
+
+def test_meta_stats_empty_version_returns_none():
+    durable, eph, td = _fresh_dbs()
+    n, pct, flagged = sm._meta_stats(durable, "nonexistent")
+    assert (n, pct, flagged) == (0, None, 0)
+
+
+def test_meta_stats_since_excludes_pre_window():
+    durable, eph, td = _fresh_dbs()
+    _seed_memories_with_content(durable, "v1", ["session handoff old"] * 5,
+                                created_at="2020-01-01 00:00:00")
+    _seed_memories_with_content(durable, "v1", ["ordinary fact new"] * 5,
+                                created_at="2026-07-01 00:00:00")
+    # Whole pool: 10 rows, 5 flagged.
+    assert sm._meta_stats(durable, "v1") == (10, 50.0, 5)
+    # In-window only: the 5 pre-2026 meta rows are excluded.
+    n, pct, flagged = sm._meta_stats(durable, "v1", "meta", "2026-01-01 00:00:00")
+    assert (n, pct, flagged) == (5, 0.0, 0)
+
+
+def test_fisher_exact_two_sided_bounded_and_symmetric():
+    # Identical rates -> p close to 1 (no evidence of a difference).
+    p_same = sm._fisher_exact_two_sided(5, 15, 5, 15)
+    assert 0.9 <= p_same <= 1.0
+    # Starkly different rates at reasonable N -> small p.
+    p_diff = sm._fisher_exact_two_sided(0, 30, 20, 10)
+    assert 0.0 <= p_diff < 0.001
+    # Table transposed (a<->c, b<->d) should give the same p-value.
+    assert abs(sm._fisher_exact_two_sided(0, 30, 20, 10)
+               - sm._fisher_exact_two_sided(20, 10, 0, 30)) < 1e-9
+
+
+def test_compliance_gate_skipped_for_unregistered_candidate():
+    # A candidate with no registered check is never gated, even if its
+    # content is dominated by meta-bookkeeping — its engagement verdict stands.
+    durable, eph, td = _fresh_dbs()
+    _seed_memories_with_content(durable, "genA-v4", ["ordinary fact"] * 30,
+                                created_at="2026-07-01 00:00:00")
+    _seed_memories_with_content(durable, "genB-v9", ["session handoff"] * 30,
+                                created_at="2026-07-01 00:00:00")
+    with patch("cairn.config.AB_COMPLIANCE_CHECKS", _META_CHECK), \
+         patch("cairn.config.AB_B_QUEUE", []):
+        gate = sm._compliance_gate(durable, "genA-v4", "genB-v9")
+    assert gate["compliance_blocked"] is False
+    assert gate["meta_n_a"] is None
+    assert gate["meta_p_value"] is None
+
+
+def test_compliance_gate_blocks_significant_regression():
+    durable, eph, td = _fresh_dbs()
+    _seed_memories_with_content(durable, "genA-v4", ["ordinary fact"] * 30,
+                                created_at="2026-07-01 00:00:00")
+    _seed_memories_with_content(
+        durable, "genB-v2",
+        ["session handoff: in progress"] * 20 + ["ordinary fact"] * 10,
+        created_at="2026-07-01 00:00:00",
+    )
+    with patch("cairn.config.AB_COMPLIANCE_CHECKS", _META_CHECK), \
+         patch("cairn.config.AB_B_QUEUE", []):
+        gate = sm._compliance_gate(durable, "genA-v4", "genB-v2")
+    assert gate["meta_pct_a"] == 0.0
+    assert abs(gate["meta_pct_b"] - (200.0 / 3)) < 0.01
+    assert gate["compliance_blocked"] is True
+    assert gate["meta_p_value"] < 0.05
+
+
+def test_compliance_gate_excludes_pre_experiment_history():
+    # Arm A carries a long PRE-experiment tail of meta content under the same
+    # base_version; only its in-window rows must count, so the candidate's
+    # in-window meta content is NOT falsely compared against stale history.
+    durable, eph, td = _fresh_dbs()
+    _seed_memories_with_content(durable, "genA-v4", ["session handoff old"] * 40,
+                                created_at="2020-01-01 00:00:00")
+    _seed_memories_with_content(durable, "genA-v4", ["ordinary fact"] * 30,
+                                created_at="2026-07-01 00:00:00")
+    _seed_memories_with_content(durable, "genB-v2", ["session handoff"] * 20 + ["ordinary fact"] * 10,
+                                created_at="2026-07-01 00:00:00")
+    with patch("cairn.config.AB_COMPLIANCE_CHECKS", _META_CHECK), \
+         patch("cairn.config.AB_B_QUEUE", []):
+        gate = sm._compliance_gate(durable, "genA-v4", "genB-v2")
+    # Arm A's counted pool is the 30 in-window rows only (pre-2026 excluded).
+    assert gate["meta_n_a"] == 30
+    assert gate["meta_pct_a"] == 0.0
+    assert gate["compliance_blocked"] is True
+
+
+def test_compliance_gate_does_not_block_similar_rates():
+    durable, eph, td = _fresh_dbs()
+    _seed_memories_with_content(durable, "genA-v4",
+                                ["session handoff"] * 3 + ["ordinary fact"] * 27,
+                                created_at="2026-07-01 00:00:00")
+    _seed_memories_with_content(durable, "genB-v2",
+                                ["session handoff"] * 4 + ["ordinary fact"] * 26,
+                                created_at="2026-07-01 00:00:00")
+    with patch("cairn.config.AB_COMPLIANCE_CHECKS", _META_CHECK), \
+         patch("cairn.config.AB_B_QUEUE", []):
+        gate = sm._compliance_gate(durable, "genA-v4", "genB-v2")
+    assert gate["compliance_blocked"] is False
+
+
+def test_promote_blocked_by_compliance_rejects_and_advances():
+    durable, eph, td = _fresh_dbs()
+    # Engagement gap alone would promote B (20% -> 50%)...
+    _seed_arm(durable, eph, "genA-v4", n=40, engaged_count=8)
+    _seed_arm(durable, eph, "genB-v2", n=40, engaged_count=20)
+    # ...but B's memory content is dominated by the exact meta-bookkeeping
+    # pattern its hypothesis was meant to suppress; stamp both arms to the same
+    # in-window timestamp so the go-live bound includes them.
+    conn = sqlite3.connect(durable)
+    conn.execute(
+        "UPDATE memories SET content = 'session handoff: in progress this session', "
+        "created_at = '2026-07-01 00:00:00' WHERE source_ref = 'genB-v2'"
+    )
+    conn.execute(
+        "UPDATE memories SET created_at = '2026-07-01 00:00:00' WHERE source_ref = 'genA-v4'"
+    )
+    conn.commit()
+    conn.close()
+    row = _insert_row(durable, _row())
+    config_path = _fresh_config(td)
+    queue = [{"version": "genB-v3", "label": "next up", "instruction": "hypothesis 3"}]
+    with patch.object(sm, "CONFIG_PATH", config_path), \
+         patch("cairn.config.AB_COMPLIANCE_CHECKS", _META_CHECK), \
+         patch("cairn.config.AB_B_QUEUE", queue):
+        result = sm.assess_experiment(row, db_path=durable, eph_path=eph, dry_run=False)
+    # Spurious engagement win -> rejected, and the queue advanced to genB-v3.
+    assert result["status"] == "rejected"
+    assert result["compliance_blocked"] is True
+    assert "PROMOTION BLOCKED" in result["decision_reason"]
+    with open(config_path) as f:
+        text = f.read()
+    assert 'GENERATION_PROMPT_VERSION = "genA-v4"' in text  # not bumped (B lost)
+    assert "AB_TEST_ENABLED = True" in text                 # still testing
+    assert 'B": "genB-v3"' in text                          # advanced to next
+    conn = sqlite3.connect(durable)
+    stored = conn.execute(
+        "SELECT status, compliance_blocked FROM ab_experiments WHERE id = ?",
+        (row["id"],),
+    ).fetchone()
+    conn.close()
+    assert stored[0] == "rejected"
+    assert stored[1] == 1
