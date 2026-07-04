@@ -138,7 +138,7 @@ class TestCooldownGating:
         }
         result, exit_code = run_hook(db_path, payload)
         assert result is not None
-        assert "MEMORY CHECKPOINT" in result["hookSpecificOutput"]["additionalContext"]
+        assert "CAIRN CHECKPOINT" in result["hookSpecificOutput"]["additionalContext"]
 
     def test_cooldown_suppresses_immediate_repeat(self):
         db_path, conn = fresh_db()
@@ -182,7 +182,7 @@ class TestCooldownGating:
         # Now another high-signal call should fire
         result, _ = run_hook(db_path, payload)
         assert result is not None
-        assert "MEMORY CHECKPOINT" in result["hookSpecificOutput"]["additionalContext"]
+        assert "CAIRN CHECKPOINT" in result["hookSpecificOutput"]["additionalContext"]
 
     def test_nudge_stops_at_note_budget(self):
         """Once nudges reach the per-session note cap, further high-signal calls
@@ -239,7 +239,7 @@ class TestCooldownGating:
         }
         result, _ = run_hook(db_path, payload)
         assert result is not None
-        assert "MEMORY CHECKPOINT" in result["hookSpecificOutput"]["additionalContext"]
+        assert "CAIRN CHECKPOINT" in result["hookSpecificOutput"]["additionalContext"]
 
     def test_string_tool_output_handled(self):
         db_path, _ = fresh_db()
