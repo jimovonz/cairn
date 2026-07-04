@@ -391,6 +391,7 @@ def call_llm(prompt: str, timeout: int = DEFAULT_TIMEOUT_S,
     """
     env = os.environ.copy()
     env["CAIRN_MODE"] = "read-only"
+    env["CAIRN_NO_INJECT"] = "1"   # analysis pass — suppress prompt-hook context injection
     chosen_model = model or DEFAULT_MODEL
     # Pass the prompt via stdin — large session transcripts blow past
     # Linux ARG_MAX (~128KB) when passed as a positional argument.

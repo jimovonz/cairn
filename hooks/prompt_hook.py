@@ -539,6 +539,21 @@ def main() -> None:
             log(f"No user message found in hook input. Keys: {list(hook_input.keys())}")
         sys.exit(0)
 
+    # Cairn's own internal analysis passes (calibration analyser, audit agent, offline
+    # A/B, relevance labeller) invoke `claude -p` to ANALYSE provided content and never
+    # draw on recalled memories — injection is pure token cost + noise for them, and
+    # they dominate first-prompt volume (~98% of first-prompt sessions). They set
+    # CAIRN_NO_INJECT=1 to opt out of injection here.
+    #
+    # This is deliberately NOT keyed on CAIRN_MODE=read-only: read-only means "don't
+    # WRITE memories" (enforced in the Stop hook) and is ALSO used by scheduled task
+    # runs (e.g. claude-assist --skip-cairn) that DO want recall context — those keep
+    # getting injection; only their writes are suppressed. Coupling the two would
+    # silently blind every scheduled task to cairn.
+    if os.environ.get("CAIRN_NO_INJECT", "").strip().lower() in ("1", "true", "yes", "on"):
+        log("CAIRN_NO_INJECT set — skipping context injection (internal analysis pass)")
+        sys.exit(0)
+
     context_parts: list[str] = []
 
     # Write-side A/B: assign this prompt to arm A (control) or B (control + one

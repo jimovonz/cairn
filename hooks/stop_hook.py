@@ -416,8 +416,11 @@ def main() -> None:
         log("Headless mode — skipping enforcement")
         sys.exit(0)
 
-    # Read-only mode: context injection (prompt hook) runs, but no memory writes or enforcement.
-    # Set CAIRN_MODE=read-only for scheduled tasks that need context but shouldn't accumulate memories.
+    # Read-only mode: no memory writes, no enforcement — used both by scheduled task
+    # runs that want recall context but must not accumulate memories, and by cairn's
+    # internal analysis passes (which additionally set CAIRN_NO_INJECT=1 to also skip
+    # prompt-hook injection). Injection is gated separately in the prompt hook, so
+    # read-only alone still delivers context.
     if os.environ.get("CAIRN_MODE", "").lower() == "read-only":
         log("Read-only mode — skipping memory storage and enforcement")
         sys.exit(0)
