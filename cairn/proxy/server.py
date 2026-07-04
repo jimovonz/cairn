@@ -135,8 +135,9 @@ def _rewrite_request(body: bytes, session_id: str) -> bytes:
         # (CAIRN_PARE_CM): a fixed validity marker replaces the verbatim block
         # — byte-stable from first appearance, ~1,150 chars saved per turn per
         # request (docs/spec-context-paring.md).
+        pare_stats = {} if config.PARE_CM_ENABLED else None
         if config.PARE_CM_ENABLED:
-            inject_cm_markers(data, sidecar.load_cm_map(session_id))
+            inject_cm_markers(data, sidecar.load_cm_map(session_id), stats=pare_stats)
         else:
             reinject_cm(data, sidecar.load_cm_map(session_id))
         # Cairn context must land on the REAL agentic turn, not on Claude Code's
@@ -169,7 +170,12 @@ def _rewrite_request(body: bytes, session_id: str) -> bytes:
             if config.PARE_CM_ENABLED:
                 # Dedup signal displaced from the (now-markered) [cm] blocks:
                 # one consolidated topic digest on the volatile tail.
-                inject_cm_digest(data, sidecar.load_topic_digest(session_id))
+                inject_cm_digest(data, sidecar.load_topic_digest(session_id), stats=pare_stats)
+        # Phase 1.5: fold this request's paring deltas into the session totals
+        # (best-effort; record_pare_savings swallows any error). Runs for every
+        # paring request, not just tool requests — markers apply on all of them.
+        if pare_stats:
+            sidecar.record_pare_savings(session_id, pare_stats)
         return json.dumps(data).encode("utf-8")
     except Exception as exc:  # fail-open
         logger.warning("request rewrite failed, passing through: %s", exc)

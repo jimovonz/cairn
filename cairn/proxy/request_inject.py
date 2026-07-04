@@ -68,7 +68,7 @@ def _cm_marker_for(cm: str) -> str:
     return CM_MARKER_CAPTURED if isinstance(parsed, dict) else CM_MARKER_INVALID
 
 
-def inject_cm_markers(data: dict, sha_to_cm: dict) -> dict:
+def inject_cm_markers(data: dict, sha_to_cm: dict, stats: dict = None) -> dict:
     """Context-paring Phase 1: append a fixed validity marker instead of the
     verbatim [cm] block (docs/spec-context-paring.md).
 
@@ -91,6 +91,11 @@ def inject_cm_markers(data: dict, sha_to_cm: dict) -> dict:
         if cm is None:
             continue
         marker = _cm_marker_for(cm)
+        if stats is not None:
+            # Token-instances this turn's marker removes from the resubmission:
+            # the verbatim block would have been reinjected; the marker replaces it.
+            stats["blocks_replaced_chars"] = stats.get("blocks_replaced_chars", 0) + len(cm)
+            stats["marker_chars"] = stats.get("marker_chars", 0) + len(marker)
         if isinstance(content, str):
             msg["content"] = content + marker
         elif isinstance(content, list):
@@ -106,13 +111,17 @@ def inject_cm_markers(data: dict, sha_to_cm: dict) -> dict:
 _DIGEST_SENTINEL = "<!--cairn-cm-digest-->"
 
 
-def inject_cm_digest(data: dict, digest_text: str) -> dict:
+def inject_cm_digest(data: dict, digest_text: str, stats: dict = None) -> dict:
     """Append the session captured-topic digest to the last user message.
 
     Replaces the in-session dedup signal that verbatim [cm] blocks carried:
     one consolidated list beats topic residue scattered through history. Lands
     after every cache breakpoint (volatile tail) so it never invalidates the
-    cached prefix even though it grows as the session captures more."""
+    cached prefix even though it grows as the session captures more.
+
+    When ``stats`` is provided, records the digest's char cost (a cost paring
+    adds back, netted against the blocks it removes) — but only on the request
+    that actually injects it, not when the sentinel is already present."""
     if not digest_text:
         return data
     payload = _DIGEST_SENTINEL + "\nMemory topics already captured this session (do not re-emit): " + digest_text
@@ -129,6 +138,8 @@ def inject_cm_digest(data: dict, digest_text: str) -> dict:
                        for b in content):
                     return data
                 content.append({"type": "text", "text": payload})
+            if stats is not None:
+                stats["digest_chars"] = stats.get("digest_chars", 0) + len(payload)
             return data
     return data
 

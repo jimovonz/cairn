@@ -235,3 +235,74 @@ def write_prefix_state(session_id: str, sha: str, unstable: bool) -> None:
     with open(prefix_state_path(session_id), "w", encoding="utf-8") as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         json.dump({"sha": sha, "unstable": unstable}, fh)
+
+
+# -- proxy write / reporting read: context-paring savings (Phase 1.5) ----------
+# <session>_pare_stats.json — cumulative token-instances removed by paring, so
+# the otherwise-invisible benefit is measurable and the digest-bloat regression
+# (net savings shrinking as the topic digest grows) is observable. Chars, not
+# tokens: the proxy hot path must not run a tokeniser — convert at report time.
+def pare_stats_path(session_id: str) -> str:
+    return _path(session_id, "_pare_stats.json")
+
+
+def record_pare_savings(session_id: str, stats: dict) -> None:
+    """Fold one request's paring deltas into the per-session cumulative totals.
+
+    ``stats`` carries this request's ``blocks_replaced_chars`` (verbatim [cm]
+    lengths that would have been reinjected), ``marker_chars`` and
+    ``digest_chars`` (the costs paring adds back). Net saved for the request is
+    blocks_replaced − markers − digest. Best-effort: any failure is swallowed so
+    a stats write never breaks a request (fail-open, like the rest of the proxy).
+    """
+    try:
+        blocks = int(stats.get("blocks_replaced_chars", 0) or 0)
+        markers = int(stats.get("marker_chars", 0) or 0)
+        digest = int(stats.get("digest_chars", 0) or 0)
+        if blocks == 0 and markers == 0 and digest == 0:
+            return
+        net = blocks - markers - digest
+        path = pare_stats_path(session_id)
+        with open(path, "a+", encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            fh.seek(0)
+            raw = fh.read().strip()
+            cur = json.loads(raw) if raw else {}
+            cur["requests"] = int(cur.get("requests", 0)) + 1
+            cur["blocks_replaced_chars"] = int(cur.get("blocks_replaced_chars", 0)) + blocks
+            cur["marker_chars"] = int(cur.get("marker_chars", 0)) + markers
+            cur["digest_chars"] = int(cur.get("digest_chars", 0)) + digest
+            cur["net_saved_chars"] = int(cur.get("net_saved_chars", 0)) + net
+            # Track the largest single-request digest seen — the bloat signal.
+            cur["max_digest_chars"] = max(int(cur.get("max_digest_chars", 0)), digest)
+            fh.seek(0)
+            fh.truncate()
+            json.dump(cur, fh)
+    except Exception:
+        return
+
+
+def load_pare_stats(session_id: str) -> Optional[dict]:
+    try:
+        with open(pare_stats_path(session_id), encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+            raw = fh.read().strip()
+        return json.loads(raw) if raw else None
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def load_all_pare_stats() -> list:
+    """Every session's pare-stats record, each tagged with its session id."""
+    out = []
+    try:
+        for name in os.listdir(staged_dir()):
+            if name.endswith("_pare_stats.json"):
+                sid = name[: -len("_pare_stats.json")]
+                rec = load_pare_stats(sid)
+                if rec:
+                    rec = dict(rec, session=sid)
+                    out.append(rec)
+    except FileNotFoundError:
+        pass
+    return out
