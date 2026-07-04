@@ -399,7 +399,8 @@ Notable subsystem toggles (all `CAIRN_<NAME>` env overrides; defaults from `cair
 | `CONTAINER_AUTO_INSTALL_ENABLED` | on | Push staged VSIX extensions into dev containers (`CONTAINER_AUTO_INSTALL_VSIX_DIR`); `CONTAINER_AUTO_DEPLOY_HOOKS` deploys hook shims |
 | `CAIRN_GRAPH_ROOTS` | parent of cairn checkout | Colon-separated roots the graph fleet keeps graph-ready |
 | `CAIRN_GRAPH_WATCH` | off | Real-time `crg` watch daemon on top of the hourly sweep; opt in with `=1` |
-| `CAIRN_MODE` | unset | `read-only` runs context injection but skips memory writes/enforcement (for scheduled tasks) |
+| `CAIRN_MODE` | unset | `read-only` skips memory writes/enforcement; recall/injection still runs — for scheduled tasks that want context but must not accumulate memories |
+| `CAIRN_NO_INJECT` | unset | truthy skips prompt-hook context injection — set by cairn's internal analysis passes (analyser/audit/offline-A-B/labeller) |
 | `AB_TEST_ENABLED` | on | Live per-prompt write-side A/B experiment |
 | `CAIRN_TZ` | system tz | Override local timezone for date stamping |
 | `CAIRN_ALLOW_STDLIB_SQLITE` | off | Override the pysqlite3 requirement with stdlib `sqlite3` (`=1`; unsafe under concurrent WAL access) |

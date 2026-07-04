@@ -239,7 +239,7 @@ Report: reviewed, confirmed, enriched, archived, gaps filled (with details of wh
         capture_output=True,
         text=True,
         timeout=120,
-        env={**os.environ, "CAIRN_MODE": "read-only"},
+        env={**os.environ, "CAIRN_MODE": "read-only", "CAIRN_NO_INJECT": "1"},
     )
 
     if result.stdout:
