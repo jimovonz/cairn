@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from cairn import config
 from cairn.proxy.response_filter import CairnResponseFilter
-from cairn.proxy.request_inject import (reinject_cm, inject_cm_markers, inject_cm_digest,
+from cairn.proxy.request_inject import (reinject_cm, inject_cm_markers,
                                          inject_bootstrap, inject_prompt_context,
                                          sanitize_empty_text_blocks)
 from cairn.proxy import sidecar
@@ -167,10 +167,6 @@ def _rewrite_request(body: bytes, session_id: str) -> bytes:
                 if cur_sha != prev_sha or unstable != prev_unstable:
                     sidecar.write_prefix_state(session_id, cur_sha, unstable)
             inject_prompt_context(data, sidecar.consume_prompt_context(session_id))
-            if config.PARE_CM_ENABLED:
-                # Dedup signal displaced from the (now-markered) [cm] blocks:
-                # one consolidated topic digest on the volatile tail.
-                inject_cm_digest(data, sidecar.load_topic_digest(session_id), stats=pare_stats)
         # Phase 1.5: fold this request's paring deltas into the session totals
         # (best-effort; record_pare_savings swallows any error). Runs for every
         # paring request, not just tool requests — markers apply on all of them.

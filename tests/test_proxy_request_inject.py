@@ -116,11 +116,11 @@ def test_bootstrap_move_breakpoint_true_is_default_behaviour():
     assert sysblocks[-1]["text"].startswith("<!--cairn-bootstrap-->")
 
 
-# --- Context-paring Phase 1: markers + digest -----------------------------
+# --- Context-paring Phase 1: markers -----------------------------
 
 from cairn.proxy.request_inject import (
-    inject_cm_markers, inject_cm_digest, _cm_marker_for,
-    CM_MARKER_CAPTURED, CM_MARKER_INVALID, _DIGEST_SENTINEL,
+    inject_cm_markers, _cm_marker_for,
+    CM_MARKER_CAPTURED, CM_MARKER_INVALID,
 )
 
 VALID_CM = "\n\n[cm]: # '{\"e\":[{\"t\":\"fact\",\"to\":\"topic\",\"c\":\"x\"}],\"ok\":true}'"
@@ -188,39 +188,3 @@ def test_marker_empty_map_noop():
     data = {"messages": [{"role": "assistant", "content": "x"}]}
     inject_cm_markers(data, {})
     assert data["messages"][0]["content"] == "x"
-
-
-def test_digest_appended_to_last_user():
-    data = {"messages": [
-        {"role": "user", "content": "first"},
-        {"role": "assistant", "content": "reply"},
-        {"role": "user", "content": "latest"},
-    ]}
-    inject_cm_digest(data, "topicA; topicB")
-    last = data["messages"][2]["content"]
-    assert _DIGEST_SENTINEL in last
-    assert "topicA; topicB" in last
-    # earlier user turn untouched (volatile-tail injection only)
-    assert data["messages"][0]["content"] == "first"
-
-
-def test_digest_block_list_content():
-    data = {"messages": [
-        {"role": "user", "content": [{"type": "text", "text": "latest"}]},
-    ]}
-    inject_cm_digest(data, "topicA")
-    blocks = data["messages"][0]["content"]
-    assert any(_DIGEST_SENTINEL in b.get("text", "") for b in blocks)
-
-
-def test_digest_idempotent():
-    data = {"messages": [{"role": "user", "content": "latest"}]}
-    inject_cm_digest(data, "topicA")
-    inject_cm_digest(data, "topicA")
-    assert data["messages"][0]["content"].count(_DIGEST_SENTINEL) == 1
-
-
-def test_digest_empty_noop():
-    data = {"messages": [{"role": "user", "content": "latest"}]}
-    inject_cm_digest(data, "")
-    assert data["messages"][0]["content"] == "latest"

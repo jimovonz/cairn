@@ -66,15 +66,20 @@ zero-to-positive fidelity impact. Measured motivation (2026-07-05, real sessions
   cache impact) explaining: prior blocks are parsed, archived, and replaced with
   markers; a full block is still required every turn; the marker is confirmation,
   not an example.
-- In-session dedup signal moves from per-turn blocks to ONE consolidated topic digest:
-  proxy derives a running `captured this session: t1, t2, ...` line from the
-  `_cm_capture.jsonl` sidecar and injects it once per request near the volatile tail.
+- In-session dedup does NOT need a replacement signal. A superseded design injected
+  a growing `captured this session: t1, t2, ...` topic digest on the volatile tail;
+  it was dropped because (a) sitting uncached it erodes a disproportionate share of
+  the *billed* saving (the markered history reads at 0.1x, the digest is fresh 1x
+  every turn), and (b) it duplicated two guards already present: the static rule
+  "emit only for knowledge new to the current turn" (judged from the still-present
+  conversation prose) plus the cosine-0.85 write-side dedup backstop. The rules were
+  retightened to that new-this-turn framing instead.
 - Marker from a turn's FIRST resubmission (K=0), not just aged turns. A verbatim
   block that later flips to a marker would be a mid-history byte change on the
   frozen prefix, invalidating cache every turn; applying the marker from first
   appearance keeps each turn's wire bytes stable forever. The current turn being
   generated has no marker (its block hasn't been captured yet), so nothing is lost
-  — the topic digest, not any retained block, carries in-session dedup.
+  — the new-this-turn rule + cosine dedup, not any retained block, handle dedup.
 - Derivation is pure function of captured block → no new state beyond the existing
   sidecar; avoid extending the sha-map (known fragility).
 - Expected: ~99% of the cm pot; zero fidelity loss; zero behavioural risk.
@@ -83,15 +88,14 @@ zero-to-positive fidelity impact. Measured motivation (2026-07-05, real sessions
 - The proxy accumulates per-request paring deltas into a per-session sidecar
   (`_pare_stats.json`, mirroring `_cm_capture.jsonl`): `blocks_replaced_chars`
   (verbatim [cm] lengths that would have been reinjected) minus `marker_chars`
-  and `digest_chars` = net token-instances removed from that resubmission.
+  = net token-instances removed from that resubmission. (`digest_chars` remains a
+  generic term in `record_pare_savings` but is always 0 now the digest is gone.)
 - Char-based (the hot path must not run a tokeniser); chars→tokens is a ~4
   char/token estimate applied only at report time. Best-effort / fail-open —
   a stats-write error never breaks a request.
-- `inject_cm_markers` / `inject_cm_digest` take an optional `stats` dict they
-  populate; `server` folds it via `sidecar.record_pare_savings`. Reporting:
-  `query.py --pare-stats` aggregates all session sidecars.
-- Tracks `max_digest_chars` (peak, not sum) as the bloat watch — the one
-  regression that silently erodes the win as the topic digest grows.
+- `inject_cm_markers` takes an optional `stats` dict it populates; `server` folds
+  it via `sidecar.record_pare_savings`. Reporting: `query.py --pare-stats`
+  aggregates all session sidecars.
 - Honest headline: RAW resubmission token-instances removed, NOT billed-dollar
   savings (cached prefix reads at 0.1x; the dollar win concentrates on
   cache-write turns). Decides whether Phases 2-5 are worth building.
