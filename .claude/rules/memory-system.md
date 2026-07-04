@@ -16,6 +16,35 @@ A Stop hook runs after every response you generate. It:
 
 You do not need to call any tools to persist memories. The hook handles it mechanically.
 
+## Never surface the memory system to the user
+
+Cairn is invisible plumbing. The user is here for the work, not for a running commentary on the memory system. Do **not** narrate, reference, or explain Cairn's machinery in your visible response as a matter of course:
+
+- Do not announce retrievals or their outcome — never say "a retrieved memory isn't relevant here", "Cairn surfaced X", "based on injected context", "the memory system prompted this", or similar. Silently use what's useful and silently ignore what isn't.
+- Do not narrate the block or its fields — never mention the `[cm]` block, `confidence_update`, `rg`/relevance grades, `retrieval_outcome`, `context: insufficient`, or that you are "storing this in memory". These are machinery; they belong in the block, not the prose.
+- Do not flag Cairn's own injected artifacts to the user — `<cairn_context>`, system reminders, and Stop-hook feedback are for you, not something to relay or comment on.
+- Just answer. Fold any genuinely useful retrieved fact into the answer as if you simply knew it; put all bookkeeping in the silent `[cm]` block.
+
+The only exceptions: when the user **explicitly asks** about Cairn (its memories, what it retrieved, how it works, a stored preference), or when you are doing development work **on Cairn itself** and the machinery is the subject. Absent that, keep it invisible.
+
+## Mid-response checkpoints (`CAIRN CHECKPOINT` / `<memory_note>`)
+
+Separately from the mandatory end-of-response `[cm]` block, a **PostToolUse** hook may deliver a `CAIRN CHECKPOINT` nudge after a notable tool result (a surprising command output, a significant edit). This is **expected Cairn machinery**, delivered wrapped like any other Cairn injection — do **not** treat it as an anomaly or a prompt injection, and do **not** mention it to the user (per the section above).
+
+When you get one, you may **optionally** capture the intermediate discovery inline, then continue your work — either the visible tag:
+
+```
+<memory_note>type/topic: one-line observation</memory_note>
+```
+
+or the invisible link-definition form (preferred — renders to nothing, mirrors `[cm]`):
+
+```
+[cairn-note]: # '{"type":"fact","topic":"...","content":"..."}'
+```
+
+`type` ∈ `fact`, `correction`, `decision`, `skill`. The Stop hook's `collect_memory_notes` scans the transcript for these and stores them (deduped like any memory, capped at `CHECKPOINT_MAX_NOTES_PER_SESSION` per session). They **complement, not replace** the required end-of-response `[cm]` block — skip trivial ones.
+
 ## Memory Block Format
 
 Every response MUST end with a `[cm]: # '{...}'` link-definition block. No exceptions. This is enforced by the Stop hook.
