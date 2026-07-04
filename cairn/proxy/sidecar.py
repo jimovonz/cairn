@@ -25,6 +25,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 from typing import Optional
 
 # repo_root/.staged_context — matches hooks' own resolution.
@@ -106,6 +107,44 @@ def load_all_notes(session_id: str) -> list:
     except FileNotFoundError:
         pass
     return notes
+
+
+def load_topic_digest(session_id: str) -> str:
+    """Semicolon-joined list of entry topics captured this session.
+
+    Context-paring Phase 1: with [cm] blocks replaced by markers upstream, this
+    digest is the in-session duplicate-suppression signal — injected once per
+    request on the volatile tail (request_inject.inject_cm_digest). Derived
+    purely from the capture sidecar; parse failures are skipped (best-effort:
+    a missing topic only weakens dedup, never breaks the request)."""
+    topics: list = []
+    seen = set()
+    path = capture_path(session_id)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+            lines = [l.strip() for l in fh if l.strip()]
+    except FileNotFoundError:
+        return ""
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        cm = rec.get("cm") or ""
+        m = re.search(r"\[cm\]: # \x27(.*)\x27", cm, re.DOTALL)
+        if not m:
+            continue
+        try:
+            block = json.loads(m.group(1))
+        except (json.JSONDecodeError, ValueError):
+            continue
+        for entry in block.get("e") or []:
+            topic = (entry.get("to") or "").strip() if isinstance(entry, dict) else ""
+            if topic and topic not in seen:
+                seen.add(topic)
+                topics.append(topic)
+    return "; ".join(topics)
 
 
 def lookup_capture_by_sha(session_id: str, emitted_sha: str) -> Optional[dict]:

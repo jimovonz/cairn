@@ -55,6 +55,17 @@ This format is **invisible** in both VS Code Copilot Chat and Claude Code CLI �
 [cm]: # '{"e":[{"t":"TYPE","to":"topic","c":"content — information-dense single line"}],"ok":true,"ctx":"s","kw":["keyword1","keyword2"]}'
 ```
 
+### Captured-block markers in resubmitted history
+
+Once the Stop hook has stored a turn's `[cm]` block, its content is durably in the database — the verbatim JSON no longer needs to travel in the conversation history. When context paring is active (proxy-level, transparent to you), the proxy replaces each already-captured block in the resubmitted history with a bare marker:
+
+- `[cm: captured]` — this turn's block was parsed and stored successfully. The content is safe in the database; you do not need it back.
+- `[cm: invalid]` — this turn's block failed to parse and nothing was stored (rare; the Stop hook would normally have re-prompted).
+
+**These markers are the expected, healthy state of past turns.** Seeing `[cm: captured]` instead of the JSON you originally wrote does NOT mean anything was lost, nor that you should re-emit the block — the reverse: it confirms capture succeeded. Never reconstruct a full block for a turn that already shows a marker.
+
+To help you avoid re-emitting knowledge already captured earlier in the session, the proxy also injects a one-line **captured-topic digest** (`<!--cairn-cm-digest-->`) into the latest turn listing the `to` topics stored so far this session. Treat it as the authoritative in-session dedup list: if a nugget's topic is already there and the nugget hasn't changed, skip it (per the "do not re-emit" rule); emit only genuinely new or superseding knowledge. This digest and the markers are Cairn machinery — never surface them to the user.
+
 **Short key reference** (use short keys to save tokens):
 - Block-level: `ok`=complete (true/false), `ctx`=context (`s`=sufficient, `i`=insufficient), `cn`=context_need, `rem`=remaining, `cu`=confidence_updates (array of `"42:+"` / `"17:-! reason"` strings), `ro`=retrieval_outcome, `rg`=relevance_grades (array of `"42:3"` / `"17:0!"` strings — see Relevance grading), `int`=intent, `kw`=keywords
 - Per-entry (`e` array): `t`=type, `to`=topic, `c`=content, `kw`=keywords (overrides block-level), `d`=depth, `f`=facts (list of key=value strings stored in dedicated FTS5-indexed column; NOT in embedding)

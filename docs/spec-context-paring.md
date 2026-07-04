@@ -42,7 +42,9 @@ zero-to-positive fidelity impact. Measured motivation (2026-07-05, real sessions
    on every subsequent request. The proxy prompt-cache integrity guard is extended to
    verify the *pared* prefix; on any ledger miss/drift it fails open to unpared.
 6. **Structural safety.** tool_use/tool_result pairing preserved (content replaced,
-   never removed); tools/system tier never touched; last 2 turns always verbatim;
+   never removed); tools/system tier never touched; semantic/prose paring (Phases
+   3+) keeps the last 2 turns verbatim, but [cm] markers (Phase 1) apply from a
+   turn's first resubmission since capture already happened (see Phase 1, K=0);
    mind the 20-block cache lookback when choosing pare points.
 
 ## Identifiability taxonomy (what may be pruned, by proof strength)
@@ -67,7 +69,12 @@ zero-to-positive fidelity impact. Measured motivation (2026-07-05, real sessions
 - In-session dedup signal moves from per-turn blocks to ONE consolidated topic digest:
   proxy derives a running `captured this session: t1, t2, ...` line from the
   `_cm_capture.jsonl` sidecar and injects it once per request near the volatile tail.
-- Keep the last 1-2 turns' blocks intact (likeliest dedup collisions).
+- Marker from a turn's FIRST resubmission (K=0), not just aged turns. A verbatim
+  block that later flips to a marker would be a mid-history byte change on the
+  frozen prefix, invalidating cache every turn; applying the marker from first
+  appearance keeps each turn's wire bytes stable forever. The current turn being
+  generated has no marker (its block hasn't been captured yet), so nothing is lost
+  — the topic digest, not any retained block, carries in-session dedup.
 - Derivation is pure function of captured block → no new state beyond the existing
   sidecar; avoid extending the sha-map (known fragility).
 - Expected: ~99% of the cm pot; zero fidelity loss; zero behavioural risk.

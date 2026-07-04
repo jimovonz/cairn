@@ -620,6 +620,14 @@ PROXY_PORT = int(_os_proxy.environ.get("CAIRN_PROXY_PORT", "8789"))  # 8787 is s
 PROXY_UPSTREAM = _os_proxy.environ.get("CAIRN_PROXY_UPSTREAM", "https://api.anthropic.com")
 PROXY_REWRITE = _os_proxy.environ.get("CAIRN_PROXY_REWRITE", "1").lower() in ("1", "true", "yes")
 
+# Context-paring Phase 1 (docs/spec-context-paring.md): replace captured [cm]
+# blocks in resubmitted assistant turns with a fixed validity marker instead of
+# the verbatim block, and inject a per-session captured-topic digest for
+# in-session dedup. Marker from FIRST appearance (never verbatim->marker
+# transitions — those would break the frozen cache prefix mid-history).
+# Default OFF; flipping mid-session costs one cache rebuild (deliberate event).
+PARE_CM_ENABLED = _os_proxy.environ.get("CAIRN_PARE_CM", "").lower() in ("1", "true", "yes")
+
 # === Dashboard override key map ===
 # The config editor must write/read each setting under the EXACT env var that
 # the setting actually reads — and those diverge: most read their own name

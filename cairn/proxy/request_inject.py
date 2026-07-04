@@ -21,6 +21,8 @@ same payload does not duplicate it), which keeps the per-turn wire bytes stable.
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 
 
 def _as_block_list(value):
@@ -41,6 +43,94 @@ def _assistant_text(content) -> str:
             if isinstance(b, dict) and b.get("type") == "text"
         )
     return ""
+
+
+CM_MARKER_CAPTURED = "\n\n[cm: captured]"
+CM_MARKER_INVALID = "\n\n[cm: invalid]"
+_CM_MARKERS = (CM_MARKER_CAPTURED, CM_MARKER_INVALID)
+_CM_JSON_RE = re.compile(r"\[cm\]: # '(.*)'", re.DOTALL)
+
+
+def _cm_marker_for(cm: str) -> str:
+    """Pick the validity marker for a captured [cm] block.
+
+    Deterministic in the stored block bytes, so a given turn's marker is stable
+    across every request (cache-safe). A block that does not parse to a JSON
+    object gets [cm: invalid] — signalling to the model that that turn's memory
+    did not persist — otherwise [cm: captured]."""
+    m = _CM_JSON_RE.search(cm or "")
+    if not m:
+        return CM_MARKER_INVALID
+    try:
+        parsed = json.loads(m.group(1))
+    except (ValueError, TypeError):
+        return CM_MARKER_INVALID
+    return CM_MARKER_CAPTURED if isinstance(parsed, dict) else CM_MARKER_INVALID
+
+
+def inject_cm_markers(data: dict, sha_to_cm: dict) -> dict:
+    """Context-paring Phase 1: append a fixed validity marker instead of the
+    verbatim [cm] block (docs/spec-context-paring.md).
+
+    The marker is applied from the turn's FIRST appearance in history and never
+    changes, so the wire bytes of every assistant turn are stable across requests
+    (no verbatim->marker transition to break the frozen cache prefix). The marker
+    is deliberately NOT a valid [cm] block: history examples set emission norms,
+    and a minimal-valid block in every old turn would teach zero-capture. The
+    mechanism is explained to the model in the static memory-system rules."""
+    if not sha_to_cm:
+        return data
+    for msg in data.get("messages", []):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        text = _assistant_text(content)
+        if not text or text.endswith(_CM_MARKERS):
+            continue
+        cm = sha_to_cm.get(hashlib.sha256(text.encode("utf-8")).hexdigest())
+        if cm is None:
+            continue
+        marker = _cm_marker_for(cm)
+        if isinstance(content, str):
+            msg["content"] = content + marker
+        elif isinstance(content, list):
+            for b in reversed(content):
+                if isinstance(b, dict) and b.get("type") == "text":
+                    b["text"] = b.get("text", "") + marker
+                    break
+            else:
+                content.append({"type": "text", "text": marker})
+    return data
+
+
+_DIGEST_SENTINEL = "<!--cairn-cm-digest-->"
+
+
+def inject_cm_digest(data: dict, digest_text: str) -> dict:
+    """Append the session captured-topic digest to the last user message.
+
+    Replaces the in-session dedup signal that verbatim [cm] blocks carried:
+    one consolidated list beats topic residue scattered through history. Lands
+    after every cache breakpoint (volatile tail) so it never invalidates the
+    cached prefix even though it grows as the session captures more."""
+    if not digest_text:
+        return data
+    payload = _DIGEST_SENTINEL + "\nMemory topics already captured this session (do not re-emit): " + digest_text
+    messages = data.get("messages", [])
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, str):
+                if _DIGEST_SENTINEL in content:
+                    return data
+                msg["content"] = content + "\n\n" + payload
+            elif isinstance(content, list):
+                if any(isinstance(b, dict) and _DIGEST_SENTINEL in b.get("text", "")
+                       for b in content):
+                    return data
+                content.append({"type": "text", "text": payload})
+            return data
+    return data
 
 
 def reinject_cm(data: dict, sha_to_cm: dict) -> dict:
