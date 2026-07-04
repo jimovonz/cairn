@@ -18,7 +18,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import signal
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -453,16 +455,62 @@ def _daemon_start_mtime(port: int) -> float:
         return 0.0
 
 
+def _pid_on_port(port: int):
+    """PID of the process LISTENing on ``port``, or None.
+
+    Recovers a WEDGED daemon: when the pid file is lost, ``is_running`` returns
+    False yet the orphaned daemon still holds the port, so ``cmd_start`` no-ops on
+    "port in use" and the stale daemon runs forever. This finds it by port so
+    ``start-fresh`` can reclaim it. Linux-only (``ss``); returns None if ss is
+    absent or unparseable (falls back to the old no-op behaviour, never worse)."""
+    try:
+        out = subprocess.run(
+            ["ss", "-H", "-ltnp", f"sport = :{port}"],
+            capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"pid=(\d+)", out)
+    return int(m.group(1)) if m else None
+
+
+def _reclaim_wedged(port: int) -> bool:
+    """SIGTERM (then SIGKILL) an orphaned daemon holding ``port`` with no pid file,
+    and wait for the port to free. Returns True if the port is free afterward."""
+    import time
+    pid = _pid_on_port(port)
+    if not pid or pid == os.getpid():
+        return not _port_in_use(port)
+    logger.warning("cairn-proxy: reclaiming wedged daemon pid=%s on port %s "
+                   "(pid file lost — start-fresh would otherwise no-op forever)", pid, port)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            break
+        for _ in range(20):  # up to ~2s per signal
+            if not _port_in_use(port):
+                return True
+            time.sleep(0.1)
+    return not _port_in_use(port)
+
+
 def cmd_start_fresh(args):
-    """Idempotent keep-alive that ALSO self-heals stale code.
+    """Idempotent keep-alive that ALSO self-heals stale code AND a lost pid file.
 
     Start if the daemon is down; restart if the running daemon predates the newest
-    proxy source file (a pulled fix that the long-lived daemon never loaded); else
+    proxy source file (a pulled fix the long-lived daemon never loaded); else
     no-op. This is what the ``*/5`` keep-alive cron runs, so a shipped proxy fix
     reaches the live daemon within the cron interval without a manual restart —
     plain ``start`` would no-op a running-but-stale daemon and leave the fix dark.
-    """
+
+    Wedge case: if the pid file was lost, ``is_running`` is False but the orphaned
+    daemon still holds the port on STALE code. Plain ``cmd_start`` no-ops on "port
+    in use", so the fix stays dark indefinitely. Detect that (port in use while not
+    running) and reclaim the orphan before starting fresh."""
     if not is_running(args.port):
+        if _port_in_use(args.port):
+            # Wedged orphan: reclaim it so a lost pid file can't pin stale code.
+            _reclaim_wedged(args.port)
         cmd_start(args)
         return
     if _daemon_start_mtime(args.port) < _proxy_code_mtime():
