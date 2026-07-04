@@ -1051,13 +1051,16 @@ def _aggregate_outcomes(records):
     {key, engaged, engaged_score, grade}. engaged_score == -1.0 means
     evaluated-but-undecidable and is excluded from the score average."""
     from collections import defaultdict
-    g = defaultdict(lambda: {"n": 0, "engaged": 0, "scored": 0, "score_sum": 0.0,
-                             "graded": 0, "grade_sum": 0})
+    g = defaultdict(lambda: {"n": 0, "engaged": 0, "decided": 0, "scored": 0,
+                             "score_sum": 0.0, "graded": 0, "grade_sum": 0})
     for r in records:
         b = g[r["key"]]
         b["n"] += 1
-        if r.get("engaged") == 1:
-            b["engaged"] += 1
+        eng = r.get("engaged")
+        if eng is not None:            # reached a decisive verdict (engaged 0 or 1)
+            b["decided"] += 1
+            if eng == 1:
+                b["engaged"] += 1
         sc = r.get("engaged_score")
         if sc is not None and sc >= 0:
             b["scored"] += 1
@@ -1070,7 +1073,16 @@ def _aggregate_outcomes(records):
     for k, b in g.items():
         out[k] = {
             "n": b["n"],
-            "engaged_pct": round(b["engaged"] / b["n"] * 100, 1) if b["n"] else 0.0,
+            "decided": b["decided"],
+            # Coverage: fraction of deliveries that reached a DECISIVE engagement
+            # verdict (engaged in {0,1}). Low coverage means the engaged% below is over
+            # a small, self-selected subset — read-only / one-shot sessions never run
+            # apply_engagement, so their deliveries stay NULL (undecided) forever.
+            "coverage_pct": round(b["decided"] / b["n"] * 100, 1) if b["n"] else 0.0,
+            # engaged% is over DECIDED deliveries, NOT total: dividing by n conflates
+            # "measured, not engaged" with "never measured" and silently understates
+            # every layer whose sessions are mostly non-interactive (e.g. first-prompt).
+            "engaged_pct": round(b["engaged"] / b["decided"] * 100, 1) if b["decided"] else None,
             "avg_score": round(b["score_sum"] / b["scored"], 3) if b["scored"] else None,
             "graded": b["graded"],
             "avg_grade": round(b["grade_sum"] / b["graded"], 2) if b["graded"] else None,
@@ -1125,10 +1137,13 @@ def delivery_stats():
 
     def _table(title, agg):
         print(f"\n{title}")
-        print(f"  {'group':<22} {'n':>6} {'engaged%':>9} {'avgScore':>9} {'graded':>7} {'avgGrade':>9}")
+        print(f"  {'group':<22} {'n':>6} {'decided':>8} {'eng%(dec)':>10} {'avgScore':>9} {'graded':>7} {'avgGrade':>9}")
         for k in sorted(agg, key=lambda x: -agg[x]["n"]):
             a = agg[k]
-            print(f"  {k[:22]:<22} {a['n']:>6} {a['engaged_pct']:>8.1f}% "
+            # engaged% is over DECIDED (measured) deliveries; '-' when nothing was
+            # measured (e.g. a layer whose sessions were all read-only/one-shot).
+            eng = f"{a['engaged_pct']:.1f}%" if a['engaged_pct'] is not None else "-"
+            print(f"  {k[:22]:<22} {a['n']:>6} {a['decided']:>8} {eng:>10} "
                   f"{(a['avg_score'] if a['avg_score'] is not None else '-'):>9} "
                   f"{a['graded']:>7} "
                   f"{(a['avg_grade'] if a['avg_grade'] is not None else '-'):>9}")
