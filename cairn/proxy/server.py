@@ -99,6 +99,22 @@ class UsageTracker:
 
 def _rewrite_request(body: bytes, session_id: str) -> bytes:
     """Apply Cairn request injection. Fail-open: return original body on any error."""
+    # On-demand prompt capture. `touch <proxy>/.dump_next` and the NEXT /v1/messages
+    # body is written verbatim to <proxy>/captures/<session>.json, then the marker is
+    # consumed (one-shot) so it never grows unbounded. Off unless the marker exists.
+    if body:
+        _mark = os.path.join(_PROXY_DIR, ".dump_next")
+        if os.path.exists(_mark):
+            try:
+                _cdir = os.path.join(_PROXY_DIR, "captures")
+                os.makedirs(_cdir, exist_ok=True)
+                _sid = (session_id or "unknown")[:8]
+                _out = os.path.join(_cdir, _sid + ".json")
+                with open(_out, "wb") as _fh:
+                    _fh.write(body)
+                os.unlink(_mark)  # one-shot: consume the request marker
+            except Exception:
+                pass
     if not (body and session_id and config.PROXY_REWRITE):
         return body
     try:
@@ -304,12 +320,15 @@ def cmd_serve(args):
 def _port_in_use(port: int) -> bool:
     """True if ``port`` is already bound (a daemon is up even if its pid file was lost).
 
-    Probes without SO_REUSEADDR so an existing LISTEN socket reliably fails the bind.
+    Probes WITH SO_REUSEADDR: an active LISTEN socket still fails the bind (a live
+    daemon is correctly detected), but client sockets lingering in TIME_WAIT no longer
+    do — those previously caused a false "in use" that refused legitimate restarts.
     Guards against a duplicate start spawning a doomed grandchild that EADDRINUSE-crashes
     and, in its ``finally``, deletes the healthy daemon's pid file — orphaning it.
     """
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((config.PROXY_HOST, port))
             return False
