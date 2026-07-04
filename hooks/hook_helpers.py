@@ -699,7 +699,13 @@ def build_context_xml(query: str, project: Optional[str], layer: str,
     if session_id:
         try:
             from cairn import config
-            if getattr(config, "RELEVANCE_LOGGING_ENABLED", True):
+            # Skip logging in read-only sessions (analyser / cron / scheduled
+            # `claude -p` with CAIRN_MODE=read-only): the Stop hook sys.exit(0)s
+            # before apply_engagement, so these deliveries can NEVER be engagement-
+            # scored. Logging them only accrues permanently-undecided rows that skew
+            # any engaged% computed over the total (the first-prompt coverage trap).
+            if (getattr(config, "RELEVANCE_LOGGING_ENABLED", True)
+                    and os.environ.get("CAIRN_MODE", "").lower() != "read-only"):
                 from cairn.relevance import log_memory_deliveries
                 cv = context_vec
                 if cv is None and (context_text or query):

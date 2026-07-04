@@ -652,7 +652,9 @@ def test_aggregate_outcomes_and_version_label():
     agg = _aggregate_outcomes(recs)
     a = agg["A"]
     assert a["n"] == 3
-    assert a["engaged_pct"] == round(1 / 3 * 100, 1)
+    assert a["decided"] == 2                  # engaged in {0,1}; the -1.0 undecidable is not a verdict
+    assert a["coverage_pct"] == round(2 / 3 * 100, 1)
+    assert a["engaged_pct"] == round(1 / 2 * 100, 1)   # engaged / DECIDED, not / n
     assert a["avg_score"] == 0.25            # (0.5 + 0.0)/2, the -1.0 excluded
     assert a["graded"] == 1 and a["avg_grade"] == 3
     assert agg["B"]["avg_score"] == 0.8 and agg["B"]["graded"] == 0 and agg["B"]["avg_grade"] is None
