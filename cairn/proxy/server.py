@@ -25,7 +25,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from cairn import config
 from cairn.proxy.response_filter import CairnResponseFilter
-from cairn.proxy.request_inject import reinject_cm, inject_bootstrap, inject_prompt_context, sanitize_empty_text_blocks
+from cairn.proxy.request_inject import (reinject_cm, inject_cm_markers, inject_cm_digest,
+                                         inject_bootstrap, inject_prompt_context,
+                                         sanitize_empty_text_blocks)
 from cairn.proxy import sidecar
 
 UPSTREAM = config.PROXY_UPSTREAM
@@ -128,9 +130,15 @@ def _rewrite_request(body: bytes, session_id: str) -> bytes:
         # empty text + tool_use) can't wedge the session in a 400 loop the
         # on-disk transcript can't clear. Normalizes content before reinjection.
         sanitize_empty_text_blocks(data)
-        # Re-injecting verbatim [cm] into assistant turns is harmless on any
-        # request (it only matches turns this session generated).
-        reinject_cm(data, sidecar.load_cm_map(session_id))
+        # Re-injecting [cm] into assistant turns is harmless on any request
+        # (it only matches turns this session generated). Phase 1 paring
+        # (CAIRN_PARE_CM): a fixed validity marker replaces the verbatim block
+        # — byte-stable from first appearance, ~1,150 chars saved per turn per
+        # request (docs/spec-context-paring.md).
+        if config.PARE_CM_ENABLED:
+            inject_cm_markers(data, sidecar.load_cm_map(session_id))
+        else:
+            reinject_cm(data, sidecar.load_cm_map(session_id))
         # Cairn context must land on the REAL agentic turn, not on Claude Code's
         # auxiliary calls (title/topic generation), which also hit /v1/messages
         # but carry no tool set. Gating on `tools` stops an auxiliary request
@@ -158,6 +166,10 @@ def _rewrite_request(body: bytes, session_id: str) -> bytes:
                 if cur_sha != prev_sha or unstable != prev_unstable:
                     sidecar.write_prefix_state(session_id, cur_sha, unstable)
             inject_prompt_context(data, sidecar.consume_prompt_context(session_id))
+            if config.PARE_CM_ENABLED:
+                # Dedup signal displaced from the (now-markered) [cm] blocks:
+                # one consolidated topic digest on the volatile tail.
+                inject_cm_digest(data, sidecar.load_topic_digest(session_id))
         return json.dumps(data).encode("utf-8")
     except Exception as exc:  # fail-open
         logger.warning("request rewrite failed, passing through: %s", exc)
