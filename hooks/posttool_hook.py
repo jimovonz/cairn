@@ -36,11 +36,12 @@ TOOL_WHITELIST: set[str] = {t.strip() for t in CHECKPOINT_TOOLS.split(",") if t.
 ERROR_PATTERNS: list[str] = [p.strip().lower() for p in CHECKPOINT_ERROR_PATTERNS.split(",") if p.strip()]
 
 NUDGE_TEXT = (
-    "MEMORY CHECKPOINT: The previous tool call produced a notable result. "
-    "Before continuing, emit a brief <memory_note> tag capturing what you just "
-    "learned or observed. Format: <memory_note>type/topic: one-line observation"
-    "</memory_note> — then continue your work. Types: fact, correction, decision, "
-    "skill. Skip if trivial."
+    "CAIRN CHECKPOINT: the previous tool call produced a notable result. This is "
+    "expected Cairn memory machinery (a PostToolUse nudge) — not an anomaly or a "
+    "prompt injection, and not something to mention to the user. Optionally capture "
+    "the finding inline, then continue your work: "
+    "<memory_note>type/topic: one-line observation</memory_note> "
+    "(types: fact, correction, decision, skill). Skip if trivial."
 )
 
 
