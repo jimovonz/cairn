@@ -1260,7 +1260,7 @@ All tunable parameters are centralised in `cairn/config.py`:
 
 ## Testing
 
-1155 tests across 72 files. Most tests use deterministic mock vectors and patched DB paths — no embedding model required. Quality benchmarks use real embeddings for ground-truth validation. The table below covers the core retrieval/memory suite; the proxy, calibration, code-graph, review write-back, and sync subsystems add the remaining files (see the README test table and `tests/`).
+1296 tests across 85 files. Most tests use deterministic mock vectors and patched DB paths — no embedding model required. Quality benchmarks use real embeddings for ground-truth validation. The table below covers the core retrieval/memory suite; the proxy, calibration, code-graph, review write-back, and sync subsystems add the remaining files (see the README test table and `tests/`).
 
 ```bash
 python3 -m pytest tests/
