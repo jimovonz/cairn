@@ -79,6 +79,23 @@ zero-to-positive fidelity impact. Measured motivation (2026-07-05, real sessions
   sidecar; avoid extending the sha-map (known fragility).
 - Expected: ~99% of the cm pot; zero fidelity loss; zero behavioural risk.
 
+### Phase 1.5 — savings metric (measure before scaling)
+- The proxy accumulates per-request paring deltas into a per-session sidecar
+  (`_pare_stats.json`, mirroring `_cm_capture.jsonl`): `blocks_replaced_chars`
+  (verbatim [cm] lengths that would have been reinjected) minus `marker_chars`
+  and `digest_chars` = net token-instances removed from that resubmission.
+- Char-based (the hot path must not run a tokeniser); chars→tokens is a ~4
+  char/token estimate applied only at report time. Best-effort / fail-open —
+  a stats-write error never breaks a request.
+- `inject_cm_markers` / `inject_cm_digest` take an optional `stats` dict they
+  populate; `server` folds it via `sidecar.record_pare_savings`. Reporting:
+  `query.py --pare-stats` aggregates all session sidecars.
+- Tracks `max_digest_chars` (peak, not sum) as the bloat watch — the one
+  regression that silently erodes the win as the topic digest grows.
+- Honest headline: RAW resubmission token-instances removed, NOT billed-dollar
+  savings (cached prefix reads at 0.1x; the dollar win concentrates on
+  cache-write turns). Decides whether Phases 2-5 are worth building.
+
 ### Phase 2 — event-provable cold-gap pare (best proof-coverage per LoC)
 At each cold boundary (>300s), one free full-history rewrite driven by joins over the
 session's own tool log:

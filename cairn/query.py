@@ -1153,6 +1153,46 @@ def delivery_stats():
     _table("by injection layer:", by_layer)
 
 
+def pare_stats():
+    """Context-paring savings readout (Phase 1.5). Aggregates the per-session
+    _pare_stats.json sidecars the proxy writes, reporting cumulative
+    token-instances removed from resubmission by [cm]-block paring.
+
+    Honest framing: these are raw resubmission token-instances removed, NOT
+    billed-dollar savings — a cached prefix reads at 0.1x, so the dollar win
+    concentrates on cache-write turns. Chars->tokens is a ~4 char/token estimate.
+    max_digest_chars is the bloat watch: if it approaches the per-request blocks
+    it displaces, the digest is eroding the win."""
+    from cairn.proxy import sidecar
+    CH_PER_TOK = 4.0
+    rows = sidecar.load_all_pare_stats()
+    if not rows:
+        print("No paring stats yet (CAIRN_PARE_CM off, or no paring requests recorded).")
+        return
+    tot = {"requests": 0, "blocks_replaced_chars": 0, "marker_chars": 0,
+           "digest_chars": 0, "net_saved_chars": 0, "max_digest_chars": 0}
+    for r in rows:
+        for k in tot:
+            if k == "max_digest_chars":
+                tot[k] = max(tot[k], int(r.get(k, 0)))
+            else:
+                tot[k] += int(r.get(k, 0))
+    print(f"Context-paring savings — {len(rows)} session(s), {tot['requests']} paring request(s)\n")
+    net_tok = tot["net_saved_chars"] / CH_PER_TOK
+    gross_tok = tot["blocks_replaced_chars"] / CH_PER_TOK
+    cost_tok = (tot["marker_chars"] + tot["digest_chars"]) / CH_PER_TOK
+    print(f"  blocks removed : {tot['blocks_replaced_chars']:>10,} chars  (~{gross_tok:,.0f} tok-inst)")
+    print(f"  marker cost    : {tot['marker_chars']:>10,} chars")
+    print(f"  digest cost    : {tot['digest_chars']:>10,} chars")
+    print(f"  paring overhead: {'':>10}         (~{cost_tok:,.0f} tok-inst added back)")
+    print(f"  NET removed    : {tot['net_saved_chars']:>10,} chars  (~{net_tok:,.0f} tok-inst)")
+    if tot["requests"]:
+        print(f"  per request    : ~{tot['net_saved_chars'] / tot['requests']:,.0f} chars net")
+    print(f"  max digest seen: {tot['max_digest_chars']:>10,} chars  (bloat watch)")
+    print("\n  Note: raw resubmission token-instances removed, not billed-dollar "
+          "savings (cached prefix reads at 0.1x). Tokens are a ~4 char/token estimate.")
+
+
 def ab_history():
     """List ab_experiments rows — the write-side A/B assessment history
     (cairn/ab_selfmod.py): running/promoted/rejected/inconclusive verdicts
@@ -1209,6 +1249,7 @@ Commands:
   --until <date>         Memories updated on or before date
   --today                Shorthand for --since today
   --delivery-stats       Injected-memory outcome (engagement/grade) by generation version + reranker
+  --pare-stats           Context-paring savings — token-instances removed from resubmission by [cm] paring
   --ab-history           Write-side A/B experiment history (status, arm stats, decision reason)
   --semantic <query>     Semantic similarity search
   --session <id>         List memories from a session
@@ -1712,6 +1753,8 @@ def main_entry():
     cmd = sys.argv[1]
     if cmd == "--delivery-stats":
         delivery_stats()
+    elif cmd == "--pare-stats":
+        pare_stats()
     elif cmd == "--ab-history":
         ab_history()
     elif cmd == "--today":
