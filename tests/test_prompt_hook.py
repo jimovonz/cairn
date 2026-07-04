@@ -571,3 +571,65 @@ def test_refresh_graph_on_head_change_error():
          patch.object(prompt_hook, "save_hook_state") as mock_save:
         prompt_hook.refresh_graph_on_head_change("sess1", "/repo/x")  # must not raise
     assert mock_save.call_count == 0
+
+
+# ============================================================
+# Injection volume gate (v0.16.4): cairn's internal analysis passes set
+# CAIRN_NO_INJECT=1 and must skip ALL context injection (recall is noise for an
+# analysis pass; they dominated first-prompt volume). Crucially this is decoupled
+# from CAIRN_MODE=read-only, which scheduled tasks use and which MUST keep recall.
+# ============================================================
+
+def _spy_builders(monkeypatch):
+    import hooks.prompt_hook as prompt_hook
+    called = []
+    monkeypatch.setattr(prompt_hook, "layer1_search", lambda *a, **k: called.append("l1"))
+    monkeypatch.setattr(prompt_hook, "project_bootstrap", lambda *a, **k: called.append("pb"))
+    monkeypatch.setattr(prompt_hook, "correction_bootstrap", lambda *a, **k: called.append("cb"))
+    return called
+
+
+def test_main_no_inject_skips_all_injection_builders(monkeypatch):
+    db_path, conn = fresh_env()
+    conn.close()
+    called = _spy_builders(monkeypatch)
+    monkeypatch.setenv("CAIRN_NO_INJECT", "1")
+    out = run_prompt_hook(db_path, {
+        "session_id": "noinject-sess", "cwd": TEST_DIR,
+        "prompt": "tell me about the retrieval engagement metric",
+        "transcript_path": "",
+    })
+    assert out is None            # nothing injected when CAIRN_NO_INJECT set
+    assert called == []           # no injection builder ran at all
+
+
+def test_main_read_only_still_injects(monkeypatch):
+    """Regression guard: CAIRN_MODE=read-only alone (scheduled tasks, e.g.
+    claude-assist --skip-cairn) must STILL inject recall context — read-only only
+    suppresses writes. Only CAIRN_NO_INJECT skips injection."""
+    db_path, conn = fresh_env()
+    conn.close()
+    called = _spy_builders(monkeypatch)
+    monkeypatch.setenv("CAIRN_MODE", "read-only")
+    monkeypatch.delenv("CAIRN_NO_INJECT", raising=False)
+    run_prompt_hook(db_path, {
+        "session_id": "ro-sess", "cwd": TEST_DIR,
+        "prompt": "tell me about the retrieval engagement metric",
+        "transcript_path": "",
+    })
+    assert "l1" in called          # first-prompt search STILL invoked under read-only
+
+
+def test_main_normal_mode_invokes_first_prompt_builders(monkeypatch):
+    """Control: with neither flag set, the first-prompt search runs."""
+    db_path, conn = fresh_env()
+    conn.close()
+    called = _spy_builders(monkeypatch)
+    monkeypatch.delenv("CAIRN_MODE", raising=False)
+    monkeypatch.delenv("CAIRN_NO_INJECT", raising=False)
+    run_prompt_hook(db_path, {
+        "session_id": "norm-sess", "cwd": TEST_DIR,
+        "prompt": "tell me about the retrieval engagement metric",
+        "transcript_path": "",
+    })
+    assert "l1" in called
