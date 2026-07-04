@@ -21,17 +21,6 @@ def test_inject_populates_stats():
     assert stats["marker_chars"] > 0
 
 
-def test_digest_stats_only_on_actual_injection():
-    data = {"messages": [{"role": "user", "content": "latest"}]}
-    stats = {}
-    ri.inject_cm_digest(data, "topicA", stats=stats)
-    assert stats["digest_chars"] > 0
-    # second call is idempotent (sentinel present) — must NOT add cost again
-    stats2 = {}
-    ri.inject_cm_digest(data, "topicA", stats=stats2)
-    assert "digest_chars" not in stats2 or stats2.get("digest_chars", 0) == 0
-
-
 def test_record_accumulates_across_requests():
     sid = "paretest-accum"
     _cleanup(sid)

@@ -108,42 +108,6 @@ def inject_cm_markers(data: dict, sha_to_cm: dict, stats: dict = None) -> dict:
     return data
 
 
-_DIGEST_SENTINEL = "<!--cairn-cm-digest-->"
-
-
-def inject_cm_digest(data: dict, digest_text: str, stats: dict = None) -> dict:
-    """Append the session captured-topic digest to the last user message.
-
-    Replaces the in-session dedup signal that verbatim [cm] blocks carried:
-    one consolidated list beats topic residue scattered through history. Lands
-    after every cache breakpoint (volatile tail) so it never invalidates the
-    cached prefix even though it grows as the session captures more.
-
-    When ``stats`` is provided, records the digest's char cost (a cost paring
-    adds back, netted against the blocks it removes) — but only on the request
-    that actually injects it, not when the sentinel is already present."""
-    if not digest_text:
-        return data
-    payload = _DIGEST_SENTINEL + "\nMemory topics already captured this session (do not re-emit): " + digest_text
-    messages = data.get("messages", [])
-    for msg in reversed(messages):
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            content = msg.get("content")
-            if isinstance(content, str):
-                if _DIGEST_SENTINEL in content:
-                    return data
-                msg["content"] = content + "\n\n" + payload
-            elif isinstance(content, list):
-                if any(isinstance(b, dict) and _DIGEST_SENTINEL in b.get("text", "")
-                       for b in content):
-                    return data
-                content.append({"type": "text", "text": payload})
-            if stats is not None:
-                stats["digest_chars"] = stats.get("digest_chars", 0) + len(payload)
-            return data
-    return data
-
-
 def reinject_cm(data: dict, sha_to_cm: dict) -> dict:
     """Append verbatim [cm] to each assistant turn keyed by stripped-text SHA."""
     if not sha_to_cm:

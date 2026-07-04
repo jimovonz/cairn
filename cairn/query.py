@@ -1180,15 +1180,11 @@ def pare_stats():
     print(f"Context-paring savings — {len(rows)} session(s), {tot['requests']} paring request(s)\n")
     net_tok = tot["net_saved_chars"] / CH_PER_TOK
     gross_tok = tot["blocks_replaced_chars"] / CH_PER_TOK
-    cost_tok = (tot["marker_chars"] + tot["digest_chars"]) / CH_PER_TOK
     print(f"  blocks removed : {tot['blocks_replaced_chars']:>10,} chars  (~{gross_tok:,.0f} tok-inst)")
     print(f"  marker cost    : {tot['marker_chars']:>10,} chars")
-    print(f"  digest cost    : {tot['digest_chars']:>10,} chars")
-    print(f"  paring overhead: {'':>10}         (~{cost_tok:,.0f} tok-inst added back)")
     print(f"  NET removed    : {tot['net_saved_chars']:>10,} chars  (~{net_tok:,.0f} tok-inst)")
     if tot["requests"]:
         print(f"  per request    : ~{tot['net_saved_chars'] / tot['requests']:,.0f} chars net")
-    print(f"  max digest seen: {tot['max_digest_chars']:>10,} chars  (bloat watch)")
     print("\n  Note: raw resubmission token-instances removed, not billed-dollar "
           "savings (cached prefix reads at 0.1x). Tokens are a ~4 char/token estimate.")
 
