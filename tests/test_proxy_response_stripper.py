@@ -50,7 +50,10 @@ def test_no_artifacts_passthrough():
 
 
 def test_char_by_char_all_artifacts():
-    full = "Lead. " + NOTE_TAG + " mid " + NOTE_LINE + "\n tail" + CM
+    # NOTE_LINE is a link-def artifact: emitted on its own line (line-start),
+    # never mid-prose. Inline mentions are deliberately preserved (see
+    # test_cm_filter_inline.py); place it realistically at line start here.
+    full = "Lead. " + NOTE_TAG + " mid\n" + NOTE_LINE + "\n tail" + CM
     emitted, s = run(list(full))
     assert s.original == full
     assert "[cm]" not in emitted
