@@ -123,17 +123,52 @@ class ResponseTextStripper:
         self.cm_block = ""   # the trailing [cm]/[cairn-memory] block, verbatim
 
     # -- helpers --
+    def _char_before_buf(self) -> str:
+        """The stream character immediately preceding the current _buf, or ""
+        at the start of the message. Read from the byte-exact ``original`` so it
+        is correct across feed boundaries (the preceding newline may have been
+        emitted in an earlier feed)."""
+        consumed = len(self.original) - len(self._buf)
+        return self.original[consumed - 1] if consumed > 0 else ""
+
+    def _at_line_start(self, idx: int) -> bool:
+        """Whether _buf[idx] begins a line — preceded by a newline or nothing.
+        A genuine [cm]/[cairn-*]/[cn] link-definition block is always emitted on
+        its own line; an INLINE mention in prose or a code span (e.g. the literal
+        ``[cm]: # '...'`` shown while documenting the format) is preceded by a
+        backtick/space/word char and must NOT be treated as a block opener — else
+        the stripper suppresses everything to end-of-message and truncates the
+        visible reply. See tests/test_cm_filter_inline.py."""
+        prev = self._buf[idx - 1] if idx > 0 else self._char_before_buf()
+        return prev in ("", "\n")
+
+    def _find_line_start(self, marker: str):
+        """First occurrence of ``marker`` in _buf that begins a line, skipping
+        inline occurrences. Returns index or -1."""
+        start = 0
+        while True:
+            i = self._buf.find(marker, start)
+            if i < 0:
+                return -1
+            if self._at_line_start(i):
+                return i
+            start = i + 1
+
     def _earliest_opener(self):
         """Return (idx, marker, kind) for the earliest complete opener in _buf,
-        or (None, None, None). kind in {'cm','noteline','memnote'}."""
+        or (None, None, None). kind in {'cm','noteline','memnote'}.
+
+        Link-definition openers (cm/noteline) are only recognised at line start;
+        inline mentions are left in the visible stream. MEMNOTE_OPEN is a paired
+        tag (self-limiting via its close tag) so it is matched anywhere."""
         best_idx = None
         best = (None, None)
         for m in CM_MARKERS:
-            i = self._buf.find(m)
+            i = self._find_line_start(m)
             if i >= 0 and (best_idx is None or i < best_idx):
                 best_idx, best = i, (m, "cm")
         for m in NOTE_LINE_MARKERS:
-            i = self._buf.find(m)
+            i = self._find_line_start(m)
             if i >= 0 and (best_idx is None or i < best_idx):
                 best_idx, best = i, (m, "noteline")
         i = self._buf.find(MEMNOTE_OPEN)
