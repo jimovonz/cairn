@@ -648,6 +648,26 @@ PROXY_REWRITE = _os_proxy.environ.get("CAIRN_PROXY_REWRITE", "1").lower() in ("1
 # Default ON (opt out with CAIRN_PARE_CM=0); flipping mid-session costs one cache rebuild (deliberate event).
 PARE_CM_ENABLED = _os_proxy.environ.get("CAIRN_PARE_CM", "1").lower() in ("1", "true", "yes")
 
+# Context-paring PREFIX tier (docs/spec-context-paring.md): statically strip
+# never-used tool definitions from the outbound tools array. Unlike the CM/tail
+# tiers this touches the cacheable PREFIX, but it is safe because the strip is
+# static + deterministic — byte-identical every request, so the pared tools
+# array simply becomes the stable cached prefix (changes once, hit forever),
+# never a per-request churn. Strips all mcp__* tools plus the cch-denied
+# builtins (Edit/Write/NotebookEdit are routed to Bash / denied at the hook
+# layer, never callable). server.pare_tools additionally never strips a name
+# that appears as a tool_use in message history, so a dangling reference can
+# never 400. Enabling it is an assertion that you do not use the stripped tools.
+# Default OFF (opt in with CAIRN_PARE_TOOLS=1); flipping mid-session costs one
+# cache rebuild (deliberate event, same as CAIRN_PARE_CM).
+PARE_TOOLS_ENABLED = _os_proxy.environ.get("CAIRN_PARE_TOOLS", "0").lower() in ("1", "true", "yes")
+# Builtin tools rendered non-callable by the claude-context-hooks layer.
+# Comma-override via CAIRN_PARE_TOOLS_DENIED (empty string disables builtin
+# stripping, leaving only mcp__* paring).
+PARE_TOOLS_CCH_DENIED = frozenset(
+    _t.strip() for _t in _os_proxy.environ.get(
+        "CAIRN_PARE_TOOLS_DENIED", "Edit,Write,NotebookEdit").split(",") if _t.strip())
+
 # === Dashboard override key map ===
 # The config editor must write/read each setting under the EXACT env var that
 # the setting actually reads — and those diverge: most read their own name

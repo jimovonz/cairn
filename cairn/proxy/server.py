@@ -101,6 +101,47 @@ class UsageTracker:
                 self.output_tokens = data.get("usage", {}).get("output_tokens", self.output_tokens)
 
 
+def _collect_used_tool_names(data: dict) -> set:
+    """Tool names that appear as a tool_use block anywhere in message history.
+    Stripping a def whose name is still referenced by a tool_use would make the
+    request 400 on a dangling reference, so pare_tools never touches these."""
+    used = set()
+    for msg in data.get("messages", []):
+        content = msg.get("content")
+        if isinstance(content, list):
+            for blk in content:
+                if isinstance(blk, dict) and blk.get("type") == "tool_use":
+                    name = blk.get("name")
+                    if name:
+                        used.add(name)
+    return used
+
+
+def pare_tools(data: dict) -> int:
+    """PREFIX-tier context pare (docs/spec-context-paring.md): drop never-used
+    tool definitions (mcp__* + cch-denied builtins) from the outbound tools
+    array. Static + deterministic → the pared array is byte-identical every
+    request → it just becomes the stable cached prefix (one rebuild, then hit
+    forever). Never strips a name still referenced by a tool_use in history
+    (would 400). Returns the count removed. Caller wraps in try/except (fail-open)."""
+    tools = data.get("tools")
+    if not isinstance(tools, list) or not tools:
+        return 0
+    used = _collect_used_tool_names(data)
+    kept, removed = [], 0
+    for t in tools:
+        name = t.get("name", "") if isinstance(t, dict) else ""
+        strip = bool(name) and name not in used and (
+            name.startswith("mcp__") or name in config.PARE_TOOLS_CCH_DENIED)
+        if strip:
+            removed += 1
+        else:
+            kept.append(t)
+    if removed:
+        data["tools"] = kept
+    return removed
+
+
 def _rewrite_request(body: bytes, session_id: str) -> bytes:
     """Apply Cairn request injection. Fail-open: return original body on any error."""
     # On-demand prompt capture. `touch <proxy>/.dump_next` and the NEXT /v1/messages
@@ -132,6 +173,16 @@ def _rewrite_request(body: bytes, session_id: str) -> bytes:
         # empty text + tool_use) can't wedge the session in a 400 loop the
         # on-disk transcript can't clear. Normalizes content before reinjection.
         sanitize_empty_text_blocks(data)
+        # Prefix-tier pare (CAIRN_PARE_TOOLS, default off): strip never-used tool
+        # defs (mcp__* + cch-denied builtins) so they never reach the API. Static
+        # strip → byte-stable prefix; the history guard keeps a stripped name that
+        # is somehow still referenced (deploy boundary) from 400-ing. Fail-open:
+        # a raise here is caught by the outer except and passes the body through.
+        if config.PARE_TOOLS_ENABLED:
+            _removed = pare_tools(data)
+            if _removed:
+                logger.debug("cairn-proxy: pared %d tool def(s) from request. session=%s",
+                             _removed, (session_id or "")[:8])
         # Re-injecting [cm] into assistant turns is harmless on any request
         # (it only matches turns this session generated). Phase 1 paring
         # (CAIRN_PARE_CM): a fixed validity marker replaces the verbatim block
