@@ -861,8 +861,10 @@ def main() -> None:
 
     # Context bootstrapping — force a context: insufficient declaration if the LLM
     # hasn't used layer 3 in CONTEXT_BOOTSTRAP_INTERVAL turns. Builds the habit
-    # through demonstrated value rather than rules alone.
-    if not is_continuation and context != "insufficient" and CONTEXT_BOOTSTRAP_INTERVAL > 0:
+    # through demonstrated value rather than rules alone. Off by default
+    # (CONTEXT_BOOTSTRAP_ENABLED); read at call-time so config toggles apply live.
+    from cairn.config import CONTEXT_BOOTSTRAP_ENABLED
+    if CONTEXT_BOOTSTRAP_ENABLED and not is_continuation and context != "insufficient" and CONTEXT_BOOTSTRAP_INTERVAL > 0:
         eph = get_ephemeral_conn()
         # Count hook firings since last context_requested
         last_request = eph.execute(
@@ -902,26 +904,20 @@ def main() -> None:
                 "the memory block only, not in place of your response."
             )
 
-            # Check response length — block immediately if short, defer if substantive
-            response_stripped = strip_memory_block(text)
-            if len(response_stripped) < 200:
-                # Short/empty response — safe to block now
-                log(f"Context bootstrap: {turns_since} turns without layer 3 — blocking (response {len(response_stripped)} chars)")
-                increment_continuation(session_id)
-                print(json.dumps({"decision": "block", "reason": bootstrap_reminder}))
-                sys.exit(0)
-            else:
-                # Substantive response — defer to next turn to avoid eating it
-                log(f"Context bootstrap: {turns_since} turns without layer 3 — deferring (response {len(response_stripped)} chars)")
-                try:
-                    staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
-                    os.makedirs(staged_dir, exist_ok=True)
-                    staged_file = os.path.join(staged_dir, f"{session_id}_bootstrap.txt")
-                    with open(staged_file, "w") as f:
-                        f.write(bootstrap_reminder)
-                    log(f"Bootstrap reminder staged for next prompt")
-                except Exception as e:
-                    log(f"Failed to stage bootstrap reminder: {e}")
+            # Always defer to a next-prompt reminder — never a stop-hook block.
+            # The reminder is injected as CAIRN CONTEXT on the next prompt (invisible
+            # to the user) and asks for a memory-block-only declaration, so nothing
+            # leaks into the returned response regardless of this turn's length.
+            log(f"Context bootstrap: {turns_since} turns without layer 3 — staging next-prompt reminder")
+            try:
+                staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+                os.makedirs(staged_dir, exist_ok=True)
+                staged_file = os.path.join(staged_dir, f"{session_id}_bootstrap.txt")
+                with open(staged_file, "w") as f:
+                    f.write(bootstrap_reminder)
+                log(f"Bootstrap reminder staged for next prompt")
+            except Exception as e:
+                log(f"Failed to stage bootstrap reminder: {e}")
 
     # Question-before-cairn enforcement — if the LLM is asking the user a question
     # but hasn't declared context: insufficient, it should check cairn first.

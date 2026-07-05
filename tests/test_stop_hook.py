@@ -968,30 +968,38 @@ def test_main_trailing_intent_blocks():
 
 
 #TAG: [0787] 2026-04-05
-# Verifies: context bootstrap triggers block when turns exceed interval and response is short (<200 chars)
+# Verifies: context bootstrap ALWAYS defers — triggers + stages a next-prompt reminder,
+# never blocks, even on a short (<200 char) response.
 @pytest.mark.adversarial
-def test_main_context_bootstrap_short_response_blocks():
+def test_main_context_bootstrap_always_defers():
     db_path, conn = fresh_db()
     sid = "sess-bootstrap-adv"
-    for i in range(12):
-        conn.execute(
-            "INSERT INTO metrics (event, session_id) VALUES ('hook_fired', ?)", (sid,)
+    staged_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context", f"{sid}_bootstrap.txt")
+    try:
+        for i in range(12):
+            conn.execute(
+                "INSERT INTO metrics (event, session_id) VALUES ('hook_fired', ?)", (sid,)
+            )
+        conn.commit()
+
+        msg = "Ok.\n" + valid_block(
+            "- type: fact\n- topic: bootstrap-test\n- content: Testing context bootstrap trigger mechanism in stop hook"
         )
-    conn.commit()
+        payload = make_payload(session_id=sid, message=msg)
+        with patch("cairn.config.CONTEXT_BOOTSTRAP_ENABLED", True):
+            result, code = run_hook(db_path, payload)
 
-    msg = "Ok.\n" + valid_block(
-        "- type: fact\n- topic: bootstrap-test\n- content: Testing context bootstrap trigger mechanism in stop hook"
-    )
-    payload = make_payload(session_id=sid, message=msg)
-    result, code = run_hook(db_path, payload)
-
-    bootstrap = conn.execute(
-        "SELECT COUNT(*) FROM metrics WHERE event = 'context_bootstrap_triggered' AND session_id = ?",
-        (sid,)
-    ).fetchone()[0]
-    assert bootstrap >= 1
-    assert result["decision"] == "block"
-    conn.close()
+        bootstrap = conn.execute(
+            "SELECT COUNT(*) FROM metrics WHERE event = 'context_bootstrap_triggered' AND session_id = ?",
+            (sid,)
+        ).fetchone()[0]
+        assert bootstrap >= 1
+        assert result is None or result.get("decision") != "block"  # never blocks — always defers
+        assert os.path.exists(staged_file)  # next-prompt reminder staged
+    finally:
+        if os.path.exists(staged_file):
+            os.remove(staged_file)
+        conn.close()
 
 
 #TAG: [7D34] 2026-04-05
