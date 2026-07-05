@@ -11,13 +11,19 @@ def _cleanup(sid):
 
 
 def test_inject_populates_stats():
-    stripped = "Answer."
+    # The anchor (first captured turn) stays verbatim and does NOT count as a
+    # saving; only markered (non-anchor) turns populate stats.
+    anchor, stripped = "Anchor.", "Answer."
     cm = "\n\n[cm]: # '{\"ok\":true}'"
-    sha = hashlib.sha256(stripped.encode()).hexdigest()
-    data = {"messages": [{"role": "assistant", "content": stripped}]}
+    sha_a = hashlib.sha256(anchor.encode()).hexdigest()
+    sha_s = hashlib.sha256(stripped.encode()).hexdigest()
+    data = {"messages": [
+        {"role": "assistant", "content": anchor},
+        {"role": "assistant", "content": stripped},
+    ]}
     stats = {}
-    ri.inject_cm_markers(data, {sha: cm}, stats=stats)
-    assert stats["blocks_replaced_chars"] == len(cm)
+    ri.inject_cm_markers(data, {sha_a: cm, sha_s: cm}, stats=stats)
+    assert stats["blocks_replaced_chars"] == len(cm)   # only the 2nd (markered) turn
     assert stats["marker_chars"] > 0
 
 
