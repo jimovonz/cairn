@@ -822,19 +822,57 @@ def test_main_adversarial_nested_memory_tags():
 
 
 #TAG: [4EC4] 2026-04-05
-# Verifies: >1000 char response body with empty memory block triggers density enforcement
+# Non-blocking default: a single substantive no-entries turn does NOT block (the
+# >300 length proxy is dropped in non-blocking mode) and records no density_failed.
 @pytest.mark.adversarial
-def test_main_adversarial_huge_response_no_entries():
+def test_main_density_nonblocking_single_turn_no_block():
     db_path, conn = fresh_db()
     huge_text = "A" * 2000 + "\n<memory>\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
-    payload = make_payload(message=huge_text)
-    result, code = run_hook(db_path, payload)
+    result, code = run_hook(db_path, make_payload(message=huge_text))
+
+    assert result is None or result.get("decision") != "block"
+    failed = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'content_density_failed'").fetchone()[0]
+    staged = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'content_density_reminder_staged'").fetchone()[0]
+    assert failed == 0
+    assert staged == 0  # streak is 1, below the 3-turn threshold
+    conn.close()
+
+
+#TAG: [4ED5] 2026-07-05
+# Non-blocking default: after 3 consecutive no-entry turns, ONE reminder is staged
+# (not blocked) and the streak resets. Mirrors rg_nudge cadence.
+def test_main_density_nonblocking_streak_stages_reminder():
+    db_path, conn = fresh_db()
+    huge_text = "A" * 2000 + "\n<memory>\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
+    staged_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context", "test-sess_density_reminder.txt")
+    try:
+        for _ in range(3):
+            result, code = run_hook(db_path, make_payload(message=huge_text))
+            assert result is None or result.get("decision") != "block"
+        staged = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'content_density_reminder_staged'").fetchone()[0]
+        failed = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'content_density_failed'").fetchone()[0]
+        assert staged == 1
+        assert failed == 0
+        assert os.path.exists(staged_file)
+    finally:
+        if os.path.exists(staged_file):
+            os.remove(staged_file)
+        conn.close()
+
+
+#TAG: [4EE6] 2026-07-05
+# Legacy blocking mode (flag False): a >300 no-entries turn still blocks + records
+# content_density_failed — preserves the pre-non-blocking behaviour for A/B.
+@pytest.mark.adversarial
+def test_main_density_legacy_blocking_mode():
+    db_path, conn = fresh_db()
+    huge_text = "A" * 2000 + "\n<memory>\n- complete: true\n- context: sufficient\n- keywords: test\n</memory>"
+    with patch("cairn.config.CONTENT_DENSITY_REMINDER_NONBLOCKING", False):
+        result, code = run_hook(db_path, make_payload(message=huge_text))
 
     assert result["decision"] == "block"
-    density_metric = conn.execute(
-        "SELECT COUNT(*) FROM metrics WHERE event = 'content_density_failed'"
-    ).fetchone()[0]
-    assert density_metric == 1
+    failed = conn.execute("SELECT COUNT(*) FROM metrics WHERE event = 'content_density_failed'").fetchone()[0]
+    assert failed == 1
     conn.close()
 
 

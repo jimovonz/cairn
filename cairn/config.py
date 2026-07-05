@@ -513,6 +513,16 @@ AB_COMPLIANCE_CHECKS = {"genB-v2": "meta"}
 RG_NUDGE_ENABLED = True
 RG_NUDGE_STREAK = 10
 
+# Content-density reminder — a substantive response (>300 chars) with no [cm]
+# entries, or 3 consecutive no-entry turns, historically BLOCKED the stop to force
+# a capture (visible re-prompt + round-trip) on a low-value, unproven-fruit signal
+# (~1% of sessions). When True, stage ONE non-blocking reminder for the NEXT prompt
+# instead (mirrors RG_NUDGE, streak-gated, at most once per 3-turn window). The >300
+# single-turn nag — a length proxy that false-fires on verification turns — is dropped
+# entirely in non-blocking mode. Behavioural blocks (complete:false, trailing intent)
+# are unaffected — they stay blocking. Set False for the legacy blocking behaviour (A/B).
+CONTENT_DENSITY_REMINDER_NONBLOCKING = True
+
 # === Time display (cairn/timeutil.py) ===
 # Storage is ALWAYS UTC (SQLite CURRENT_TIMESTAMP). This is the local timezone used
 # for DISPLAY and for "today/since/until" day-bucketing only. IANA name (e.g.

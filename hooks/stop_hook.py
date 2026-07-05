@@ -652,23 +652,51 @@ def main() -> None:
             if len(content) < 20:
                 density_issues.append(f"entry {i+1} content too short ({len(content)} chars) — be more specific")
     else:
-        # No entries — check if the response was substantive enough to warrant a memory
+        # No [cm] entries this turn. Mode-gated by config.CONTENT_DENSITY_REMINDER_NONBLOCKING:
+        #   non-blocking (default) — stage ONE deferred reminder for the NEXT prompt on a
+        #     genuine disengagement signal (3 consecutive no-entry turns), then reset. No
+        #     per-turn >300 nag: that length proxy false-fires on pure verification turns,
+        #     and a deferred reminder rides the next prompt at ~zero cost (mirrors rg_nudge).
+        #   legacy blocking — original behaviour, preserved for A/B (>300 single-turn OR
+        #     3-consecutive → block + force a re-prompt).
         stripped = strip_memory_block(text)
-        if len(stripped) > 300 and not is_continuation:
-            density_issues.append(
-                "Substantive response (>300 chars) with no memory entries. "
-                "Capture what was discussed, decided, or learned."
-            )
-        else:
-            # Track consecutive no-entry turns; block after 3 regardless of length
-            from hooks.hook_helpers import load_hook_state, save_hook_state
-            try:
-                no_entry_count = int(load_hook_state(session_id, "consecutive_no_entry_turns") or "0")
-            except (ValueError, TypeError):
-                no_entry_count = 0
-            no_entry_count += 1
-            save_hook_state(session_id, "consecutive_no_entry_turns", str(no_entry_count))
+        from hooks.hook_helpers import load_hook_state, save_hook_state
+        try:
+            no_entry_count = int(load_hook_state(session_id, "consecutive_no_entry_turns") or "0")
+        except (ValueError, TypeError):
+            no_entry_count = 0
+        no_entry_count += 1
+        save_hook_state(session_id, "consecutive_no_entry_turns", str(no_entry_count))
+        try:
+            from cairn.config import CONTENT_DENSITY_REMINDER_NONBLOCKING
+        except Exception:
+            CONTENT_DENSITY_REMINDER_NONBLOCKING = True
+
+        if CONTENT_DENSITY_REMINDER_NONBLOCKING:
             if no_entry_count >= 3 and not is_continuation:
+                # Reset so we nudge at most once per 3-turn window (rg_nudge cadence).
+                save_hook_state(session_id, "consecutive_no_entry_turns", "0")
+                try:
+                    staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+                    os.makedirs(staged_dir, exist_ok=True)
+                    with open(os.path.join(staged_dir, f"{session_id}_density_reminder.txt"), "w") as f:
+                        f.write(
+                            f"Reminder (non-blocking): {no_entry_count} recent turns recorded no cairn "
+                            "memory. If any held a durable bite — a decision, correction, or fact — add a "
+                            "[cm] entry now; if they were genuinely routine, carry on. This is a nudge, "
+                            "not a requirement."
+                        )
+                    record_metric(session_id, "content_density_reminder_staged", None, no_entry_count)
+                    log("content-density reminder staged (non-blocking)")
+                except Exception as e:
+                    log(f"Failed to stage content-density reminder: {e}")
+        else:
+            if len(stripped) > 300 and not is_continuation:
+                density_issues.append(
+                    "Substantive response (>300 chars) with no memory entries. "
+                    "Capture what was discussed, decided, or learned."
+                )
+            elif no_entry_count >= 3 and not is_continuation:
                 density_issues.append(
                     f"{no_entry_count} consecutive turns with no memory entries. "
                     "Capture at least one observation from this conversation."
