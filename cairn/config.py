@@ -221,6 +221,12 @@ STAGED_CONTEXT_RETENTION_DAYS = 7   # Days to keep staged cross-project context 
 # This builds the habit through demonstrated value rather than rules alone.
 CONTEXT_BOOTSTRAP_INTERVAL = 20    # Turns without a layer 3 request before forcing one
 CONTEXT_BOOTSTRAP_FIRST_INTERVAL = 10  # First bootstrap fires earlier to seed context sooner
+# Master switch for the periodic "you have not checked cairn context in N turns"
+# bootstrap. When enabled it NEVER blocks — it always stages a next-prompt reminder
+# injected as CAIRN CONTEXT (invisible to the user), asking for a memory-block-only
+# context: insufficient declaration, so nothing leaks into the returned response.
+# Set False to disable the periodic nudge entirely (voluntary layer-3 still works).
+CONTEXT_BOOTSTRAP_ENABLED = True
 
 # === Session handoff digest ===
 # Every N turns, prompt the LLM to emit a session-summary project memory (topic="session handoff")
@@ -639,8 +645,8 @@ PROXY_REWRITE = _os_proxy.environ.get("CAIRN_PROXY_REWRITE", "1").lower() in ("1
 # the verbatim block, and inject a per-session captured-topic digest for
 # in-session dedup. Marker from FIRST appearance (never verbatim->marker
 # transitions — those would break the frozen cache prefix mid-history).
-# Default OFF; flipping mid-session costs one cache rebuild (deliberate event).
-PARE_CM_ENABLED = _os_proxy.environ.get("CAIRN_PARE_CM", "").lower() in ("1", "true", "yes")
+# Default ON (opt out with CAIRN_PARE_CM=0); flipping mid-session costs one cache rebuild (deliberate event).
+PARE_CM_ENABLED = _os_proxy.environ.get("CAIRN_PARE_CM", "1").lower() in ("1", "true", "yes")
 
 # === Dashboard override key map ===
 # The config editor must write/read each setting under the EXACT env var that

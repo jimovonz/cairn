@@ -220,9 +220,15 @@ All changes MUST be made on feature branches, not main. Branch naming: `feature/
 
 Before tagging a release on main:
 1. Docs are up to date (README.md, ARCHITECTURE.md)
-2. `install.sh` and `uninstall.sh` are verified (syntax check + review for unintended changes)
-3. All tests pass (`.venv/bin/python -m pytest tests/`)
-4. Tag with semver: `git tag -a v0.X.Y -m "description"`
+2. **Bump the version files to the new version** — they do NOT auto-update and drift silently: `pyproject.toml` (`version = "..."`) and `cairn/__init__.py` (`__version__ = "..."`). Both must match the tag.
+3. `install.sh` and `uninstall.sh` are verified (syntax check + review for unintended changes)
+4. All tests pass (`.venv/bin/python -m pytest tests/`)
+5. Tag with semver, writing a substantive annotation body (it becomes the release notes): `git tag -a v0.X.Y -m "description"`
+
+**After tagging, the "release file" is GitHub Releases** (not a local CHANGELOG) — publish each tag as a release so the page stays complete:
+6. `git push origin v0.X.Y` then `gh release create v0.X.Y --verify-tag --title "<tag subject>" --notes-from-tag` (add `--latest` for the newest; `--latest=false` when backfilling older tags).
+7. Reconcile periodically — every tag should have a release. This should print nothing:
+   `comm -23 <(git tag --sort=version:refname | grep '^v' | sort) <(gh release list --limit 100 --json tagName -q '.[].tagName' | sort)`
 
 ## Memory system instructions
 

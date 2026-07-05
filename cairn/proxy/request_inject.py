@@ -91,7 +91,13 @@ def inject_cm_markers(data: dict, sha_to_cm: dict, stats: dict = None) -> dict:
             continue
         content = msg.get("content")
         text = _assistant_text(content)
-        if not text or text.endswith(_CM_MARKERS):
+        if not text:
+            # tool_use-only assistant message: says nothing about the anchor.
+            # (Setting anchored here disabled the anchor in every agentic
+            # session — a tool cycle almost always precedes the first
+            # captured turn.)
+            continue
+        if text.endswith(_CM_MARKERS):
             anchored = True  # a marker means the anchor is already behind us
             continue
         cm = sha_to_cm.get(hashlib.sha256(text.encode("utf-8")).hexdigest())

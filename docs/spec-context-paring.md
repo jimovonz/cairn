@@ -145,5 +145,5 @@ session's own tool log:
 - Verify per session via `usage`: cache_read_input_tokens must stay high across pared
   requests (partial-prefix hits at breakpoints); input_tokens delta = realised saving.
 - Flags: `CAIRN_PARE_CM`, `CAIRN_PARE_EVENTS`, `CAIRN_PARE_DEMOTE`, `CAIRN_PARE_PROSE`,
-  `CAIRN_PARE_MINIFY` — each default off; enable in order after measuring the prior.
+  `CAIRN_PARE_MINIFY` — `CAIRN_PARE_CM` defaults ON (enabled by default; opt out with `CAIRN_PARE_CM=0`); the rest default off, enabled in order after measuring the prior.
 - Failure posture: any ledger inconsistency → send unpared (correctness over savings).

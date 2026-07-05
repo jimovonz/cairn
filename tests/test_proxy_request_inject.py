@@ -208,3 +208,27 @@ def test_marker_empty_map_noop():
     data = {"messages": [{"role": "assistant", "content": "x"}]}
     inject_cm_markers(data, {})
     assert data["messages"][0]["content"] == "x"
+
+
+def test_marker_anchor_survives_tool_use_only_assistant_message():
+    # Regression: a tool_use-only assistant message (no text blocks) precedes
+    # the first captured turn in virtually every agentic session. It must NOT
+    # count as "anchor already behind us" — the first captured turn still keeps
+    # its verbatim block as the live template.
+    anchor, stripped = "Answer one.", "Answer two."
+    data = {"messages": [
+        {"role": "user", "content": "do a thing"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+        {"role": "assistant", "content": anchor},
+        {"role": "user", "content": "next"},
+        {"role": "assistant", "content": stripped},
+    ]}
+    inject_cm_markers(data, {sha(anchor): VALID_CM, sha(stripped): VALID_CM})
+    assert data["messages"][3]["content"] == anchor + VALID_CM           # anchor verbatim
+    assert data["messages"][5]["content"] == stripped + CM_MARKER_CAPTURED
+    # tool_use-only message untouched
+    assert data["messages"][1]["content"] == [
+        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]
