@@ -42,7 +42,9 @@ zero-to-positive fidelity impact. Measured motivation (2026-07-05, real sessions
    on every subsequent request. The proxy prompt-cache integrity guard is extended to
    verify the *pared* prefix; on any ledger miss/drift it fails open to unpared.
 6. **Structural safety.** tool_use/tool_result pairing preserved (content replaced,
-   never removed); tools/system tier never touched; semantic/prose paring (Phases
+   never removed); system tier never touched, and the tools tier only by the static
+   tool-def strip (Prefix tier below — a one-time deterministic change, never a
+   per-request churn); semantic/prose paring (Phases
    3+) keeps the last 2 turns verbatim, but [cm] markers (Phase 1) apply from a
    turn's first resubmission since capture already happened (see Phase 1, K=0);
    mind the 20-block cache lookback when choosing pare points.
@@ -99,6 +101,23 @@ zero-to-positive fidelity impact. Measured motivation (2026-07-05, real sessions
 - Honest headline: RAW resubmission token-instances removed, NOT billed-dollar
   savings (cached prefix reads at 0.1x; the dollar win concentrates on
   cache-write turns). Decides whether Phases 2-5 are worth building.
+
+### Prefix tier — static tool-def strip (`CAIRN_PARE_TOOLS`, default off)
+Unlike every other tier (which pares the message *tail*), this strips never-used
+tool **definitions** from the outbound `tools` array — the one pare that touches
+the cacheable prefix. Safe because the strip is **static + deterministic**:
+byte-identical every request, so the pared `tools` array simply *becomes* the
+stable cached prefix (changes once at first submission, hits forever) rather than
+aging per-turn like a tail transform would. Scope: all `mcp__*` tools + the
+cch-denied builtins (`Edit`/`Write`/`NotebookEdit` — routed to Bash / denied at
+the hook layer, never callable) — ~15.2K tokens / ~38% of a 60-tool block for a
+user with no MCPs. `server.pare_tools` never strips a name that appears as a
+`tool_use` in message history, so a dangling reference can never 400 (the only
+correctness hazard). Consistency is the entire cost model: a session pared
+throughout has zero cache cost (proxy owns the wire → Anthropic caches only the
+pared bytes it receives); the only penalty is *mixing* pared+unpared traffic in
+one session (flag flip mid-session, or interleaving `c` with bare `claude`), which
+thrashes the front-of-prefix tools array. Hence: all-or-nothing per cache scope.
 
 ### Phase 2 — event-provable cold-gap pare (best proof-coverage per LoC)
 At each cold boundary (>300s), one free full-history rewrite driven by joins over the
