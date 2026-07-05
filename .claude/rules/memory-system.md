@@ -57,12 +57,9 @@ This format is **invisible** in both VS Code Copilot Chat and Claude Code CLI �
 
 ### Captured-block markers in resubmitted history
 
-Once the Stop hook has stored a turn's `[cm]` block, its content is durably in the database — the verbatim JSON no longer needs to travel in the conversation history. When context paring is active (proxy-level, transparent to you), the proxy replaces each already-captured block in the resubmitted history with a bare marker:
+Once the Stop hook has stored a turn's `[cm]` block, its content is durably in the database — the verbatim JSON no longer needs to travel in the conversation history. When context paring is active (proxy-level, transparent to you), the proxy replaces each already-captured block in the resubmitted history with a short placeholder marker (`[cm: stored — placeholder …]` or `[cm: NOT stored …]`). The session's FIRST captured turn keeps its real block verbatim as a live template, so a correct example is always in view.
 
-- `[cm: captured]` — this turn's block was parsed and stored successfully. The content is safe in the database; you do not need it back.
-- `[cm: invalid]` — this turn's block failed to parse and nothing was stored (rare; the Stop hook would normally have re-prompted).
-
-**These markers are the expected, healthy state of past turns.** Seeing `[cm: captured]` instead of the JSON you originally wrote does NOT mean anything was lost, nor that you should re-emit the block — the reverse: it confirms capture succeeded. Never reconstruct a full block for a turn that already shows a marker.
+**These markers are the expected, healthy state of past turns, and are NEVER something you emit.** A marker in the history is a placeholder for a block already saved — it is not a format to copy. Your own turn must always end with a real `[cm]: # '{...}'` block (see format below), never with a `[cm: …]` marker. Do not reconstruct a full block for a past turn that shows a marker.
 
 Because the verbatim blocks are gone from history, you can no longer scan them to see what you already captured — and you do not need to. **Emit a `[cm]` entry only for a knowledge bite that was introduced by, or first became inferrable as a result of, the CURRENT turn.** Knowledge established in an earlier turn was already captured then; do not re-derive it now. Judge "is this new *this turn*?" from the conversation prose (still fully in your context — only the blocks were stripped), not from any injected list. The cosine-0.85 write-side dedup is the mechanical backstop for accidental repeats. The markers are Cairn machinery — never surface them to the user.
 

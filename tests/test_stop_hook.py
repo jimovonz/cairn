@@ -393,6 +393,28 @@ def test_main_missing_block_instructed_session_blocks():
     conn.close()
 
 
+def test_main_emitted_marker_not_block_gets_targeted_reprompt():
+    # Emitting the injected "[cm: ...]" history marker instead of a block must
+    # get the targeted message (naming the mistake), not the generic one.
+    db_path, conn = fresh_db()
+    sid = "sess-marker"
+    conn.execute("INSERT INTO metrics (event, session_id) VALUES ('hook_fired', ?)", (sid,))
+    conn.execute("INSERT INTO metrics (event, session_id) VALUES ('hook_fired', ?)", (sid,))
+    conn.commit()
+    payload = make_payload(
+        session_id=sid,
+        message="Done.\n\n[cm: stored — placeholder; write your own new block, do not copy this]")
+    result, code = run_hook(db_path, payload)
+    assert result["decision"] == "block"
+    assert "history placeholder" in result["reason"]
+    assert "[cm]: #" in result["reason"]          # shows the real format
+    hit = conn.execute(
+        "SELECT COUNT(*) FROM metrics WHERE event = 'emitted_cm_marker_not_block' AND session_id = ?",
+        (sid,)).fetchone()[0]
+    assert hit == 1
+    conn.close()
+
+
 #TAG: [BBB0] 2026-04-05
 # Verifies: complete: false with remaining field produces block with remaining text in reason
 @pytest.mark.behavioural

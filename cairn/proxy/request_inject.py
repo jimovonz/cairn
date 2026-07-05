@@ -45,8 +45,8 @@ def _assistant_text(content) -> str:
     return ""
 
 
-CM_MARKER_CAPTURED = "\n\n[cm: captured]"
-CM_MARKER_INVALID = "\n\n[cm: invalid]"
+CM_MARKER_CAPTURED = "\n\n[cm: stored — placeholder; write your own new block, do not copy this]"
+CM_MARKER_INVALID = "\n\n[cm: NOT stored — write a full block, do not copy this]"
 _CM_MARKERS = (CM_MARKER_CAPTURED, CM_MARKER_INVALID)
 _CM_JSON_RE = re.compile(r"\[cm\]: # '(.*)'", re.DOTALL)
 
@@ -75,36 +75,45 @@ def inject_cm_markers(data: dict, sha_to_cm: dict, stats: dict = None) -> dict:
     The marker is applied from the turn's FIRST appearance in history and never
     changes, so the wire bytes of every assistant turn are stable across requests
     (no verbatim->marker transition to break the frozen cache prefix). The marker
-    is deliberately NOT a valid [cm] block: history examples set emission norms,
-    and a minimal-valid block in every old turn would teach zero-capture. The
-    mechanism is explained to the model in the static memory-system rules."""
+    is deliberately NOT a valid [cm] block, but is self-documenting so imitating it
+    still points at emitting a real block.
+
+    ANCHOR: the FIRST captured turn in the window keeps its verbatim block (not a
+    marker), so one complete, correct [cm] block is always visible as a live
+    template. This defeats the degeneracy where every history turn ends in a marker
+    and the model imitates the marker instead of a block. The anchor is the earliest
+    captured turn (stable position) so it stays byte-stable and cache-safe."""
     if not sha_to_cm:
         return data
+    anchored = False
     for msg in data.get("messages", []):
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
         content = msg.get("content")
         text = _assistant_text(content)
         if not text or text.endswith(_CM_MARKERS):
+            anchored = True  # a marker means the anchor is already behind us
             continue
         cm = sha_to_cm.get(hashlib.sha256(text.encode("utf-8")).hexdigest())
         if cm is None:
             continue
-        marker = _cm_marker_for(cm)
-        if stats is not None:
-            # Token-instances this turn's marker removes from the resubmission:
-            # the verbatim block would have been reinjected; the marker replaces it.
-            stats["blocks_replaced_chars"] = stats.get("blocks_replaced_chars", 0) + len(cm)
-            stats["marker_chars"] = stats.get("marker_chars", 0) + len(marker)
+        if not anchored:
+            addition = cm            # anchor: keep the real block as a live template
+            anchored = True
+        else:
+            addition = _cm_marker_for(cm)
+            if stats is not None:
+                stats["blocks_replaced_chars"] = stats.get("blocks_replaced_chars", 0) + len(cm)
+                stats["marker_chars"] = stats.get("marker_chars", 0) + len(addition)
         if isinstance(content, str):
-            msg["content"] = content + marker
+            msg["content"] = content + addition
         elif isinstance(content, list):
             for b in reversed(content):
                 if isinstance(b, dict) and b.get("type") == "text":
-                    b["text"] = b.get("text", "") + marker
+                    b["text"] = b.get("text", "") + addition
                     break
             else:
-                content.append({"type": "text", "text": marker})
+                content.append({"type": "text", "text": addition})
     return data
 
 

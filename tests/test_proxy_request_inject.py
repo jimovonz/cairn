@@ -126,40 +126,58 @@ from cairn.proxy.request_inject import (
 VALID_CM = "\n\n[cm]: # '{\"e\":[{\"t\":\"fact\",\"to\":\"topic\",\"c\":\"x\"}],\"ok\":true}'"
 
 
-def test_marker_captured_string_content():
-    stripped = "The answer."
+def test_marker_anchor_first_captured_stays_verbatim():
+    # The single captured turn is the anchor: it keeps its real block as a live
+    # template so a correct [cm] block is always visible.
+    stripped = "Only captured turn."
+    data = {"messages": [{"role": "assistant", "content": stripped}]}
+    inject_cm_markers(data, {sha(stripped): VALID_CM})
+    assert data["messages"][0]["content"] == stripped + VALID_CM
+
+
+def test_marker_second_captured_turn_gets_marker():
+    anchor, stripped = "Anchor turn.", "The answer."
     data = {"messages": [
+        {"role": "assistant", "content": anchor},
         {"role": "user", "content": "Q"},
         {"role": "assistant", "content": stripped},
     ]}
-    inject_cm_markers(data, {sha(stripped): VALID_CM})
-    assert data["messages"][1]["content"] == stripped + CM_MARKER_CAPTURED
+    inject_cm_markers(data, {sha(anchor): VALID_CM, sha(stripped): VALID_CM})
+    assert data["messages"][0]["content"] == anchor + VALID_CM          # anchor verbatim
+    assert data["messages"][2]["content"] == stripped + CM_MARKER_CAPTURED
 
 
-def test_marker_captured_block_list():
-    stripped = "Block answer."
+def test_marker_block_list_second_turn():
+    anchor, stripped = "Anchor.", "Block answer."
     data = {"messages": [
+        {"role": "assistant", "content": anchor},
         {"role": "assistant", "content": [{"type": "text", "text": stripped}]},
     ]}
-    inject_cm_markers(data, {sha(stripped): VALID_CM})
-    assert data["messages"][0]["content"][0]["text"] == stripped + CM_MARKER_CAPTURED
+    inject_cm_markers(data, {sha(anchor): VALID_CM, sha(stripped): VALID_CM})
+    assert data["messages"][1]["content"][0]["text"] == stripped + CM_MARKER_CAPTURED
 
 
 def test_marker_invalid_for_unparseable_block():
-    stripped = "Bad block turn."
+    anchor, stripped = "Anchor.", "Bad block turn."
     bad = "\n\n[cm]: # '{not valid json'"
-    data = {"messages": [{"role": "assistant", "content": stripped}]}
-    inject_cm_markers(data, {sha(stripped): bad})
-    assert data["messages"][0]["content"] == stripped + CM_MARKER_INVALID
+    data = {"messages": [
+        {"role": "assistant", "content": anchor},
+        {"role": "assistant", "content": stripped},
+    ]}
+    inject_cm_markers(data, {sha(anchor): VALID_CM, sha(stripped): bad})
+    assert data["messages"][1]["content"] == stripped + CM_MARKER_INVALID
 
 
 def test_marker_idempotent():
-    stripped = "Hi."
-    data = {"messages": [{"role": "assistant", "content": stripped}]}
-    m = {sha(stripped): VALID_CM}
+    anchor, stripped = "Anchor.", "Hi."
+    data = {"messages": [
+        {"role": "assistant", "content": anchor},
+        {"role": "assistant", "content": stripped},
+    ]}
+    m = {sha(anchor): VALID_CM, sha(stripped): VALID_CM}
     inject_cm_markers(data, m)
     inject_cm_markers(data, m)
-    assert data["messages"][0]["content"].count("[cm:") == 1
+    assert data["messages"][1]["content"].count("[cm:") == 1
 
 
 def test_marker_no_match_untouched():
@@ -168,13 +186,15 @@ def test_marker_no_match_untouched():
     assert data["messages"][0]["content"] == "Other text"
 
 
-def test_marker_never_emits_verbatim_block():
-    # A pared history must not contain a valid-looking [cm] block that would
-    # teach the model emission norms — only the bare marker.
-    stripped = "Answer."
-    data = {"messages": [{"role": "assistant", "content": stripped}]}
-    inject_cm_markers(data, {sha(stripped): VALID_CM})
-    assert "[cm]: #" not in data["messages"][0]["content"]
+def test_non_anchor_turns_have_no_verbatim_block():
+    anchor, stripped = "Anchor.", "Answer."
+    data = {"messages": [
+        {"role": "assistant", "content": anchor},
+        {"role": "assistant", "content": stripped},
+    ]}
+    inject_cm_markers(data, {sha(anchor): VALID_CM, sha(stripped): VALID_CM})
+    assert "[cm]: #" not in data["messages"][1]["content"]   # non-anchor = marker only
+    assert "[cm]: #" in data["messages"][0]["content"]       # anchor keeps the real block
 
 
 def test_cm_marker_for_helper():
