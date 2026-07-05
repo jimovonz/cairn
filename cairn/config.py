@@ -522,6 +522,10 @@ RG_NUDGE_STREAK = 10
 # entirely in non-blocking mode. Behavioural blocks (complete:false, trailing intent)
 # are unaffected — they stay blocking. Set False for the legacy blocking behaviour (A/B).
 CONTENT_DENSITY_REMINDER_NONBLOCKING = True
+# Streak that triggers the reminder: N consecutive no-entry turns (both modes —
+# stages the deferred nudge when non-blocking, blocks when legacy). Analogous to
+# RG_NUDGE_STREAK. Also the minimum gap between nudges (streak resets after firing).
+CONTENT_DENSITY_STREAK = 3
 
 # === Time display (cairn/timeutil.py) ===
 # Storage is ALWAYS UTC (SQLite CURRENT_TIMESTAMP). This is the local timezone used
