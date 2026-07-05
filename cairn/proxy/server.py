@@ -173,12 +173,26 @@ def _rewrite_request(body: bytes, session_id: str) -> bytes:
         # empty text + tool_use) can't wedge the session in a 400 loop the
         # on-disk transcript can't clear. Normalizes content before reinjection.
         sanitize_empty_text_blocks(data)
-        # Prefix-tier pare (CAIRN_PARE_TOOLS, default off): strip never-used tool
+        # Prefix-tier pare (CAIRN_PARE_TOOLS, default on): strip never-used tool
         # defs (mcp__* + cch-denied builtins) so they never reach the API. Static
         # strip → byte-stable prefix; the history guard keeps a stripped name that
         # is somehow still referenced (deploy boundary) from 400-ing. Fail-open:
         # a raise here is caught by the outer except and passes the body through.
-        if config.PARE_TOOLS_ENABLED:
+        #
+        # Session-start locking: the decision is frozen at the session's first
+        # tool-bearing request and held for its life. Because this pare touches
+        # the cached prefix, flipping it mid-session (config change / proxy
+        # restart — the */5 keep-alive makes restarts routine) would rebuild the
+        # whole cached prefix. Freezing per session makes in-flight sessions
+        # immune; only new sessions pick up the live config.
+        pare_tools_active = config.PARE_TOOLS_ENABLED
+        if data.get("tools"):
+            _locked = sidecar.read_pare_lock(session_id)
+            if _locked is None:
+                sidecar.write_pare_lock(session_id, pare_tools_active)
+            else:
+                pare_tools_active = _locked
+        if pare_tools_active:
             _removed = pare_tools(data)
             if _removed:
                 logger.debug("cairn-proxy: pared %d tool def(s) from request. session=%s",
