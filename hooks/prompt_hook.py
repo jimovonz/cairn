@@ -895,6 +895,20 @@ def main() -> None:
         except Exception as e:
             log(f"Failed to load rg-grading nudge: {e}")
 
+    # Content-density reminder (deferred from previous stop hook — non-blocking).
+    # Consume-once: remove after injecting so it never re-serves on later prompts.
+    density_reminder_file = os.path.join(staged_dir, f"{session_id}_density_reminder.txt")
+    if os.path.exists(density_reminder_file):
+        try:
+            with open(density_reminder_file, "r") as f:
+                density_reminder_text = f.read().strip()
+            os.remove(density_reminder_file)
+            if density_reminder_text:
+                context_parts.append(density_reminder_text)
+                log(f"Content-density reminder injected (deferred)")
+        except Exception as e:
+            log(f"Failed to load content-density reminder: {e}")
+
     # Phase 3 — calibration_profile injection. Distinct from cairn_context
     # (priming, not facts). Independent of L1/L1.5 layering — fires every
     # prompt with a session-dedup filter against calibration_deliveries.
