@@ -519,6 +519,34 @@ def test_main_behavioural_format_spec_kept_for_copilot():
     assert ctx.count("MEMORY BLOCK (REQUIRED)") == 1
 
 
+#TAG: [DR01] 2026-07-05
+# Verifies: a content-density reminder staged by the stop hook is injected into
+# the next prompt's additionalContext and consumed (file deleted) so it never
+# re-serves on later prompts. Closes the loop on the stop-hook staging tests
+# ([4ED5] in test_stop_hook.py), which only assert the file is written.
+def test_main_behavioural_density_reminder_consumed():
+    db_path, conn = fresh_env()
+    conn.close()
+    staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+    os.makedirs(staged_dir, exist_ok=True)
+    staged_file = os.path.join(staged_dir, "density-sess-1_density_reminder.txt")
+    reminder = "Reminder (non-blocking): 3 recent turns recorded no cairn memory."
+    with open(staged_file, "w") as f:
+        f.write(reminder)
+    try:
+        result = run_prompt_hook(db_path, {
+            "session_id": "density-sess-1",
+            "prompt": "tell me about the architecture of this project",
+            "transcript_path": "/home/user/.claude/projects/-home-user-proj/abc.jsonl",
+        })
+        assert result is not None
+        assert reminder in result["hookSpecificOutput"]["additionalContext"]
+        assert not os.path.exists(staged_file)
+    finally:
+        if os.path.exists(staged_file):
+            os.remove(staged_file)
+
+
 # ---------- refresh_graph_on_head_change (branch-switch freshness) ----------
 
 def test_refresh_graph_on_head_change_behavioural():
