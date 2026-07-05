@@ -102,7 +102,7 @@ zero-to-positive fidelity impact. Measured motivation (2026-07-05, real sessions
   savings (cached prefix reads at 0.1x; the dollar win concentrates on
   cache-write turns). Decides whether Phases 2-5 are worth building.
 
-### Prefix tier — static tool-def strip (`CAIRN_PARE_TOOLS`, default off)
+### Prefix tier — static tool-def strip (`CAIRN_PARE_TOOLS`, default on)
 Unlike every other tier (which pares the message *tail*), this strips never-used
 tool **definitions** from the outbound `tools` array — the one pare that touches
 the cacheable prefix. Safe because the strip is **static + deterministic**:

@@ -1,6 +1,22 @@
-import sys, os, json, importlib
+import sys, os, json, importlib, glob
+import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from cairn.proxy import server
+from cairn.proxy import server, sidecar
+
+
+@pytest.fixture(autouse=True)
+def _clean_pare_locks():
+    """Session-start pare locks persist to .staged_context; clear the test
+    sessions' locks before and after each test so order-independence holds."""
+    def _rm():
+        for f in glob.glob(os.path.join(sidecar.staged_dir(), "pytest-*_pare_lock.json")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+    _rm()
+    yield
+    _rm()
 
 
 def _tools():
@@ -64,7 +80,7 @@ def test_flag_gate_off_passes_tools_through(monkeypatch):
         "tools": _tools(),
         "messages": [{"role": "user", "content": "hi"}],
     }).encode()
-    out = json.loads(server._rewrite_request(body, "pytest-tool-pare"))
+    out = json.loads(server._rewrite_request(body, "pytest-tp-off"))
     assert len(out["tools"]) == len(_tools())
 
 
@@ -77,6 +93,56 @@ def test_flag_gate_on_pares(monkeypatch):
         "tools": _tools(),
         "messages": [{"role": "user", "content": "hi"}],
     }).encode()
-    out = json.loads(server._rewrite_request(body, "pytest-tool-pare"))
+    out = json.loads(server._rewrite_request(body, "pytest-tp-on"))
     names = [t["name"] for t in out["tools"]]
     assert names == ["Bash", "Read"]
+
+
+def _body():
+    return json.dumps({
+        "system": [{"type": "text", "text": "S", "cache_control": {"type": "ephemeral"}}],
+        "tools": _tools(),
+        "messages": [{"role": "user", "content": "hi"}],
+    }).encode()
+
+
+def test_session_lock_freezes_on_decision(monkeypatch):
+    # First tool-bearing request with the flag ON freezes ON; a mid-session flip
+    # to OFF must NOT un-pare that session (would rebuild the cached prefix).
+    from cairn import config
+    monkeypatch.setattr(config, "PARE_TOOLS_CCH_DENIED", frozenset({"Edit", "Write", "NotebookEdit"}))
+    sid = "pytest-lock-on"
+    monkeypatch.setattr(config, "PARE_TOOLS_ENABLED", True)
+    out1 = json.loads(server._rewrite_request(_body(), sid))
+    assert [t["name"] for t in out1["tools"]] == ["Bash", "Read"]   # pared
+    assert sidecar.read_pare_lock(sid) is True                       # recorded
+    monkeypatch.setattr(config, "PARE_TOOLS_ENABLED", False)         # mid-session flip
+    out2 = json.loads(server._rewrite_request(_body(), sid))
+    assert [t["name"] for t in out2["tools"]] == ["Bash", "Read"]   # still pared (frozen)
+
+
+def test_session_lock_freezes_off_decision(monkeypatch):
+    # First request with the flag OFF freezes OFF; a mid-session flip to ON must
+    # NOT start paring that session.
+    from cairn import config
+    monkeypatch.setattr(config, "PARE_TOOLS_CCH_DENIED", frozenset({"Edit", "Write", "NotebookEdit"}))
+    sid = "pytest-lock-off"
+    monkeypatch.setattr(config, "PARE_TOOLS_ENABLED", False)
+    out1 = json.loads(server._rewrite_request(_body(), sid))
+    assert len(out1["tools"]) == len(_tools())                       # untouched
+    assert sidecar.read_pare_lock(sid) is False                      # recorded
+    monkeypatch.setattr(config, "PARE_TOOLS_ENABLED", True)          # mid-session flip
+    out2 = json.loads(server._rewrite_request(_body(), sid))
+    assert len(out2["tools"]) == len(_tools())                       # still untouched (frozen)
+
+
+def test_new_session_reads_live_config(monkeypatch):
+    # A session locked OFF must not affect a *different* new session, which
+    # reads the current live config at its own first request.
+    from cairn import config
+    monkeypatch.setattr(config, "PARE_TOOLS_CCH_DENIED", frozenset({"Edit", "Write", "NotebookEdit"}))
+    monkeypatch.setattr(config, "PARE_TOOLS_ENABLED", False)
+    json.loads(server._rewrite_request(_body(), "pytest-newsess-a"))       # locks A OFF
+    monkeypatch.setattr(config, "PARE_TOOLS_ENABLED", True)
+    out = json.loads(server._rewrite_request(_body(), "pytest-newsess-b"))  # B reads live ON
+    assert [t["name"] for t in out["tools"]] == ["Bash", "Read"]

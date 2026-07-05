@@ -198,6 +198,38 @@ def write_prefix_state(session_id: str, sha: str, unstable: bool) -> None:
         json.dump({"sha": sha, "unstable": unstable}, fh)
 
 
+# -- proxy read/write: session-start pare lock --------------------------------
+# <session>_pare_lock.json — freezes the PARE_TOOLS (prefix-tier) decision at a
+# session's first tool-bearing request. The tool pare touches the *cached
+# prefix*, so flipping it mid-session (a config change or proxy restart) would
+# rebuild the whole cached prefix — a silent re-bill. Freezing per session makes
+# in-flight sessions immune; only new sessions read the live config.
+def pare_lock_path(session_id: str) -> str:
+    return _path(session_id, "_pare_lock.json")
+
+
+def read_pare_lock(session_id: str) -> Optional[bool]:
+    """Return the PARE_TOOLS decision recorded for the session, or None if not
+    yet recorded (first tool-bearing request)."""
+    try:
+        with open(pare_lock_path(session_id), encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+            d = json.load(fh)
+        v = d.get("pare_tools")
+        return bool(v) if v is not None else None
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def write_pare_lock(session_id: str, pare_tools: bool) -> None:
+    """Record the session's PARE_TOOLS decision. Written once, at the first
+    tool-bearing request; a concurrent first request writes the same live-config
+    value, so last-write-wins is idempotent."""
+    with open(pare_lock_path(session_id), "w", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        json.dump({"pare_tools": bool(pare_tools)}, fh)
+
+
 # -- proxy write / reporting read: context-paring savings (Phase 1.5) ----------
 # <session>_pare_stats.json — cumulative token-instances removed by paring, so
 # the otherwise-invisible benefit is measurable and the digest-bloat regression

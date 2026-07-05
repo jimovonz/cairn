@@ -658,9 +658,9 @@ PARE_CM_ENABLED = _os_proxy.environ.get("CAIRN_PARE_CM", "1").lower() in ("1", "
 # layer, never callable). server.pare_tools additionally never strips a name
 # that appears as a tool_use in message history, so a dangling reference can
 # never 400. Enabling it is an assertion that you do not use the stripped tools.
-# Default OFF (opt in with CAIRN_PARE_TOOLS=1); flipping mid-session costs one
+# Default ON (opt out with CAIRN_PARE_TOOLS=0); flipping mid-session costs one
 # cache rebuild (deliberate event, same as CAIRN_PARE_CM).
-PARE_TOOLS_ENABLED = _os_proxy.environ.get("CAIRN_PARE_TOOLS", "0").lower() in ("1", "true", "yes")
+PARE_TOOLS_ENABLED = _os_proxy.environ.get("CAIRN_PARE_TOOLS", "1").lower() in ("1", "true", "yes")
 # Builtin tools rendered non-callable by the claude-context-hooks layer.
 # Comma-override via CAIRN_PARE_TOOLS_DENIED (empty string disables builtin
 # stripping, leaving only mcp__* paring).
