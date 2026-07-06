@@ -164,14 +164,28 @@ for event, groups in cairn_hooks.get('hooks', {}).items():
         hooks[event] = groups
         changed = True
     else:
-        # Check if each cairn hook command is already present
+        # Check if each cairn hook command is already present. Compare by
+        # realpath-canonicalized command, not the raw string: CAIRN_HOME may
+        # resolve to a symlink alias (e.g. ~/Projects/cairn -> /mnt/ssd/...)
+        # depending on which path this script was invoked from, and a naive
+        # string comparison lets the same script get registered twice under
+        # two different path spellings, doubling
+        # every hook-driven event (already observed and hand-fixed 3x today).
+        import os, re
+
+        def canonicalize(cmd):
+            def resolve_tok(m):
+                tok = m.group(0)
+                return os.path.realpath(tok) if os.path.exists(tok) else tok
+            return re.sub(r'/\S+', resolve_tok, cmd)
+
         existing_cmds = set()
         for g in hooks[event]:
             for h in g.get('hooks', []):
-                existing_cmds.add(h.get('command', ''))
+                existing_cmds.add(canonicalize(h.get('command', '')))
         for g in groups:
             for h in g.get('hooks', []):
-                if h.get('command', '') not in existing_cmds:
+                if canonicalize(h.get('command', '')) not in existing_cmds:
                     hooks[event].append(g)
                     changed = True
                     break

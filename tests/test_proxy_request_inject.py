@@ -80,7 +80,8 @@ def test_prompt_context_appended_to_last_user():
     ]}
     inject_prompt_context(data, "RETRIEVED MEMORIES")
     last = data["messages"][-1]["content"]
-    assert last[-1]["text"].endswith("RETRIEVED MEMORIES")
+    assert "RETRIEVED MEMORIES" in last[-1]["text"]
+    assert last[-1]["text"].endswith("</system-reminder>")
     # earlier user message untouched
     assert data["messages"][0]["content"] == "first"
 
@@ -177,7 +178,7 @@ def test_marker_idempotent():
     m = {sha(anchor): VALID_CM, sha(stripped): VALID_CM}
     inject_cm_markers(data, m)
     inject_cm_markers(data, m)
-    assert data["messages"][1]["content"].count("[cm:") == 1
+    assert data["messages"][1]["content"].count(CM_MARKER_CAPTURED) == 1
 
 
 def test_marker_no_match_untouched():
