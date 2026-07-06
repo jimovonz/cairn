@@ -160,13 +160,18 @@ def append_prompt_context(session_id: str, text: str) -> None:
     if not text:
         return
     path = prompt_inject_path(session_id)
+    entry = text.rstrip("\n")
     with open(path, "a+", encoding="utf-8") as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         fh.seek(0)
         existing = fh.read()
-        if text.rstrip("\n") in existing:
+        # Boundary-anchored, not raw substring: a queued entry always occupies
+        # start-of-file-or-newline .. newline, so match only whole entries. Raw
+        # containment could silently drop a genuinely new, shorter payload that
+        # happens to appear mid-line inside an earlier queued block.
+        if existing.startswith(entry + "\n") or ("\n" + entry + "\n") in existing:
             return
-        fh.write(text.rstrip("\n") + "\n")
+        fh.write(entry + "\n")
 
 
 def consume_prompt_context(session_id: str) -> str:
