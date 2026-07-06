@@ -84,3 +84,17 @@ def test_agentic_request_with_tools_consumes(tmp_session="pytest-aux-2"):
     assert "PROMPT-CTX-Y" in json.dumps(json.loads(out))
     assert sidecar.consume_prompt_context(tmp_session) == ""  # consumed
     _clean(tmp_session)
+
+
+def test_append_prompt_context_dedup_whole_entries_only(tmp_session="pytest-dedup-1"):
+    _clean(tmp_session)
+    # byte-identical repeats of queued entries are dropped, even non-adjacent
+    # (a Stop-block/retry double-fire replays the whole append sequence)
+    sidecar.append_prompt_context(tmp_session, "CTX-A\nline2")
+    sidecar.append_prompt_context(tmp_session, "CTX-B")
+    sidecar.append_prompt_context(tmp_session, "CTX-A\nline2")
+    sidecar.append_prompt_context(tmp_session, "CTX-B")
+    # a novel payload that appears only mid-line inside a queued block survives
+    sidecar.append_prompt_context(tmp_session, "ine2")
+    assert sidecar.consume_prompt_context(tmp_session) == "CTX-A\nline2\nCTX-B\nine2"
+    _clean(tmp_session)
