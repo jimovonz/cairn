@@ -146,10 +146,26 @@ def read_bootstrap(session_id: str) -> str:
 
 
 def append_prompt_context(session_id: str, text: str) -> None:
+    """Append pending per-prompt context, skipping an exact repeat of content
+    already queued and not yet consumed.
+
+    Guards against the harness re-firing UserPromptSubmit for what is
+    logically the same prompt (observed: a Stop-hook block/retry cycle causes
+    prompt_hook.py's full retrieval-and-injection sequence to run twice for
+    identical input within the same second) — without this, two byte-identical
+    blocks stack up in the sidecar and both land in the next request, doubling
+    the "CAIRN CONTEXT" header the model sees. Open under the same exclusive
+    lock as the write so a concurrent consume can't race the read.
+    """
     if not text:
         return
-    with open(prompt_inject_path(session_id), "a", encoding="utf-8") as fh:
+    path = prompt_inject_path(session_id)
+    with open(path, "a+", encoding="utf-8") as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        fh.seek(0)
+        existing = fh.read()
+        if text.rstrip("\n") in existing:
+            return
         fh.write(text.rstrip("\n") + "\n")
 
 

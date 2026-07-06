@@ -68,6 +68,8 @@ class UsageTracker:
         self.output_tokens = 0
         self.cache_read = 0
         self.cache_create = 0
+        self.cache_create_5m = 0
+        self.cache_create_1h = 0
         self.buffer = b""
 
     def process_chunk(self, chunk: bytes) -> None:
@@ -96,6 +98,9 @@ class UsageTracker:
                 u = data.get("message", {}).get("usage", {})
                 self.cache_read = u.get("cache_read_input_tokens", 0)
                 self.cache_create = u.get("cache_creation_input_tokens", 0)
+                breakdown = u.get("cache_creation") or {}
+                self.cache_create_5m = breakdown.get("ephemeral_5m_input_tokens", 0)
+                self.cache_create_1h = breakdown.get("ephemeral_1h_input_tokens", 0)
                 self.input_tokens = u.get("input_tokens", 0) + self.cache_read + self.cache_create
             elif data.get("type") == "message_delta":
                 self.output_tokens = data.get("usage", {}).get("output_tokens", self.output_tokens)
@@ -333,9 +338,12 @@ def run_proxy(port: int, debug: bool) -> None:
                     usage.flush()
                     await response.write_eof()
                     if usage.input_tokens:
-                        logger.info("usage session=%s input=%d cache_read=%d cache_create=%d output=%d",
+                        logger.info("usage session=%s input=%d cache_read=%d cache_create=%d "
+                                    "(5m=%d 1h=%d) output=%d total=%d",
                                     session_id[:8], usage.input_tokens, usage.cache_read,
-                                    usage.cache_create, usage.output_tokens)
+                                    usage.cache_create, usage.cache_create_5m,
+                                    usage.cache_create_1h, usage.output_tokens,
+                                    usage.input_tokens + usage.output_tokens)
                     return response
 
             except aiohttp.ClientError as exc:
