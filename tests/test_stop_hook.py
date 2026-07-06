@@ -406,8 +406,31 @@ def test_main_emitted_marker_not_block_gets_targeted_reprompt():
         message="Done.\n\n[cm: stored — placeholder; write your own new block, do not copy this]")
     result, code = run_hook(db_path, payload)
     assert result["decision"] == "block"
-    assert "history placeholder" in result["reason"]
+    assert "REWRITE" in result["reason"]
     assert "[cm]: #" in result["reason"]          # shows the real format
+    hit = conn.execute(
+        "SELECT COUNT(*) FROM metrics WHERE event = 'emitted_cm_marker_not_block' AND session_id = ?",
+        (sid,)).fetchone()[0]
+    assert hit == 1
+    conn.close()
+
+
+def test_main_emitted_current_marker_not_block_gets_targeted_reprompt():
+    # Same as above but for the current parenthetical marker format
+    # (replaced the old bracket form specifically because it collided
+    # visually with the real "[cm]: # ..." block format).
+    db_path, conn = fresh_db()
+    sid = "sess-marker-2"
+    conn.execute("INSERT INTO metrics (event, session_id) VALUES ('hook_fired', ?)", (sid,))
+    conn.execute("INSERT INTO metrics (event, session_id) VALUES ('hook_fired', ?)", (sid,))
+    conn.commit()
+    payload = make_payload(
+        session_id=sid,
+        message="Done.\n\n(cairn: memory captured for this turn — this note is not a template, do not reproduce it)")
+    result, code = run_hook(db_path, payload)
+    assert result["decision"] == "block"
+    assert "REWRITE" in result["reason"]
+    assert "[cm]: #" in result["reason"]
     hit = conn.execute(
         "SELECT COUNT(*) FROM metrics WHERE event = 'emitted_cm_marker_not_block' AND session_id = ?",
         (sid,)).fetchone()[0]

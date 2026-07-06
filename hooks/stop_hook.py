@@ -567,15 +567,21 @@ def main() -> None:
                 hint += locus + " "
             hint += 'Use this format:\n[cm]: # \'{"e":[{"t":"fact","to":"short key","c":"one line"}],"ok":true,"ctx":"s","kw":["relevant","words"]}\''
             result: dict = {"decision": "block", "reason": hint + AMEND_ONLY_SUFFIX}
-        elif re.search(r'\[cm:\s', text):
-            # Emitted the injected history marker ("[cm: ...]") instead of a block.
-            # Name the exact mistake — the generic "add a block" text does not break
-            # this loop (the model keeps copying the marker it sees on past turns).
+        elif re.search(r'\[cm:\s', text) or re.search(r'\(cairn: memory (?:captured|NOT captured) for this turn', text):
+            # Emitted the injected history marker (old "[cm: ...]" bracket form, or
+            # the current "(cairn: memory captured/NOT captured...)" parenthetical
+            # form) instead of a block. Name the exact mistake — the generic "add a
+            # block" text does not break this loop (the model keeps copying the
+            # marker it sees on past turns).
             record_metric(session_id, "emitted_cm_marker_not_block")
             result = {
                 "decision": "block",
-                "reason": "You emitted a [cm: ...] marker — that is a history placeholder, "
-                    "NEVER your output. Write a real block instead:\n"
+                "reason": "You emitted the injected history marker — that is NOT something to copy. It "
+                    "is a REWRITE: the proxy only replaces a turn's block with this marker AFTER you "
+                    "already emitted a real, correctly-parsed [cm]: # '{...}' block on that turn and "
+                    "the hook stored it. Its presence in your history is proof you already know the "
+                    "right format — it is not itself content to reproduce. Write a NEW real block for "
+                    "THIS turn instead:\n"
                     '[cm]: # \'{"e":[{"t":"fact","to":"key","c":"one line"}],"ok":true,"ctx":"s","kw":["words"]}\''
                     "\n\nEmit the full [cm]: # '{...}' line; do not repeat your prior prose, do not copy the marker."
             }
