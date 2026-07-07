@@ -347,7 +347,7 @@ CROSS_ENCODER_MAX_ARCHIVED = 6     # Cap archived (negative-knowledge) pairs in 
 # beats ms-marco. Constants kept so the A/B can flip the flag, not rewrite code.
 # bge outputs SIGMOID 0-1 scores (not ms-marco logits), so it carries its own floor.
 CROSS_ENCODER_MODEL_CUDA = "BAAI/bge-reranker-base"
-CROSS_ENCODER_SCORE_FLOOR_CUDA = 0.10  # calibrated 2026-07-02 from 9k memory_deliveries: engaged med CE 0.103/p75 0.42
+CROSS_ENCODER_SCORE_FLOOR_CUDA = 0.015  # recalibrated 2026-07-07 from 3733 Opus rg-labels: old 0.10 dropped 56% of grade-3 (load-bearing); 0.015 (youden-opt) keeps 87% grade-3 / drops 38% noise. bge under-discriminates on cairn jargon corpus — trained student is the real gate.
                                         # vs non-engaged med 0.070/p75 0.111; floor 0.10 keeps 51% of engaged
                                         # while dropping 67% of non-engaged deliveries (0.0005 filtered nothing)
 
@@ -364,6 +364,20 @@ RERANKER_BGE_ENABLED = True   # enabled: CUDA available; floor loose (0.0005) pe
 # the 4070 (8GB) gets bge.
 RERANKER_MIN_VRAM_GB = 6.0
 
+# A locally-trained student (saved dir) overrides the pretrained base when present — it
+# ranks better on the cairn corpus (66% vs 39.6% held-out pairwise agreement, 2026-07-07).
+# Loaded from a LOCAL path, so HF_HUB_OFFLINE=1 is a non-issue. Empty string => disabled
+# (falls back to the device-appropriate pretrained reranker below).
+import os as _os_ce
+CROSS_ENCODER_STUDENT_PATH = _os_ce.path.join(_os_ce.path.dirname(__file__), "training_data", "reranker-student")
+del _os_ce
+# The student is PAIRWISE-trained: good ordering, but compressed/uncalibrated ABSOLUTE
+# scores (its logits sit ~[-11,-8]). The blend min-max-normalises per call so ordering is
+# what matters there; but the raw-score FLOOR would drop everything at ms-marco's -3.0.
+# So the student floor is set OFF (well below its range) — it re-ranks without hard
+# suppression. TODO: calibrate a real student floor from the rg labels.
+CROSS_ENCODER_STUDENT_FLOOR = -100.0
+
 
 def resolve_reranker():
     """Return (model_name, score_floor) for the active device.
@@ -373,6 +387,10 @@ def resolve_reranker():
     When the flag is True AND a CUDA GPU is present: the dormant bge model + its 0-1
     floor (the path the step-1b A/B will validate). Imports torch lazily; only ever
     called inside the daemon (torch already loaded)."""
+    import os as _os_rr
+    # A trained student (local dir) wins over any pretrained base — better cairn ranking.
+    if CROSS_ENCODER_STUDENT_PATH and _os_rr.path.isdir(CROSS_ENCODER_STUDENT_PATH):
+        return CROSS_ENCODER_STUDENT_PATH, CROSS_ENCODER_STUDENT_FLOOR
     if RERANKER_BGE_ENABLED:
         try:
             import torch
