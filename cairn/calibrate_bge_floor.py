@@ -50,6 +50,19 @@ def evaluate_floor(scores, grades, t):
     return keep_pos, drop_neg, keep_lb
 
 
+def recommend_floor(scores, grades, lb_retain=0.95):
+    """Return (recommended, youden) rows, each (floor, keep_rel, drop_noise, keep_lb).
+    Recommended = highest floor still retaining >= lb_retain of grade-3 (don't drop hits);
+    youden = unconstrained best separation. Works for sigmoid (0-1) or logit-scale models."""
+    lo, hi = min(scores), max(scores)
+    cand = [lo + (hi - lo) * i / 200 for i in range(0, 201)]
+    rows = [(t, *evaluate_floor(scores, grades, t)) for t in cand]
+    feasible = [r for r in rows if r[3] >= lb_retain]
+    rec = max(feasible, key=lambda r: r[2]) if feasible else rows[0]
+    youden = max(rows, key=lambda r: r[1] + r[2] - 1)
+    return rec, youden
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--labels", default=DEFAULT_LABELS)
@@ -72,17 +85,7 @@ def main():
         pairs, grades = pairs[:args.limit], grades[:args.limit]
     scores = bge_scores(pairs, args.device, model=args.model)
 
-    # sweep candidate floors across the model's actual score range (sigmoid 0-1 OR raw logits)
-    lo, hi = min(scores), max(scores)
-    cand = [lo + (hi - lo) * i / 200 for i in range(0, 201)]
-    rows = [(t, *evaluate_floor(scores, grades, t)) for t in cand]
-
-    # recommended: highest floor that still retains >= lb-retain of grade-3,
-    # i.e. maximise noise rejection subject to not dropping load-bearing hits.
-    feasible = [r for r in rows if r[3] >= args.lb_retain]
-    rec = max(feasible, key=lambda r: r[2]) if feasible else rows[0]
-    # youden-optimal (unconstrained) for reference
-    youden = max(rows, key=lambda r: r[1] + r[2] - 1)
+    rec, youden = recommend_floor(scores, grades, args.lb_retain)
 
     from cairn.config import CROSS_ENCODER_SCORE_FLOOR_CUDA as cur
     cur_eval = evaluate_floor(scores, grades, cur)

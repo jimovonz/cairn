@@ -478,6 +478,10 @@ def test_resolve_reranker_student_wins_when_present(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "CROSS_ENCODER_STUDENT_FLOOR", -100.0)
     m, f = config.resolve_reranker()
     assert m == str(tmp_path) and f == -100.0
+    # a floor.txt in the model dir overrides the config-constant fallback
+    (tmp_path / "floor.txt").write_text("-7.5\n")
+    m, f = config.resolve_reranker()
+    assert m == str(tmp_path) and f == -7.5
     # empty path disables it -> falls through to the pretrained default
     monkeypatch.setattr(config, "CROSS_ENCODER_STUDENT_PATH", "")
     monkeypatch.setattr(config, "RERANKER_BGE_ENABLED", False)
