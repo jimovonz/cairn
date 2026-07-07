@@ -32,9 +32,9 @@ def load_labels(path):
     return pairs, grades
 
 
-def bge_scores(pairs, device, batch=64):
+def bge_scores(pairs, device, batch=64, model="BAAI/bge-reranker-base"):
     from sentence_transformers import CrossEncoder
-    ce = CrossEncoder("BAAI/bge-reranker-base", device=device)
+    ce = CrossEncoder(model, device=device)
     return list(ce.predict(pairs, batch_size=batch, show_progress_bar=True))
 
 
@@ -54,6 +54,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--labels", default=DEFAULT_LABELS)
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--model", default="BAAI/bge-reranker-base")
+    ap.add_argument("--limit", type=int, default=0, help="sample first N labels (0=all)")
     ap.add_argument("--lb-retain", type=float, default=0.97,
                     help="min fraction of grade-3 to retain (suppression floor must not drop hits)")
     ap.add_argument("--write-config", action="store_true")
@@ -66,10 +68,13 @@ def main():
     print(f"labels: {len(pairs)}  (grade0={n0} grade3={n3} rel>=2={sum(g>=2 for g in grades)})",
           file=sys.stderr)
 
-    scores = bge_scores(pairs, args.device)
+    if args.limit:
+        pairs, grades = pairs[:args.limit], grades[:args.limit]
+    scores = bge_scores(pairs, args.device, model=args.model)
 
-    # sweep candidate floors
-    cand = [i / 200 for i in range(0, 200)]  # 0.000 .. 0.995 step 0.005
+    # sweep candidate floors across the model's actual score range (sigmoid 0-1 OR raw logits)
+    lo, hi = min(scores), max(scores)
+    cand = [lo + (hi - lo) * i / 200 for i in range(0, 201)]
     rows = [(t, *evaluate_floor(scores, grades, t)) for t in cand]
 
     # recommended: highest floor that still retains >= lb-retain of grade-3,
