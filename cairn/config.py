@@ -371,14 +371,12 @@ RERANKER_MIN_VRAM_GB = 6.0
 import os as _os_ce
 CROSS_ENCODER_STUDENT_PATH = _os_ce.path.join(_os_ce.path.dirname(__file__), "training_data", "reranker-student")
 del _os_ce
-# The student is PAIRWISE-trained: good ordering, compressed ABSOLUTE scores (logits
-# ~[-11,+0.2]). The blend min-max-normalises per call so ordering carries the value; a
-# global floor is a WEAK gate (relevant/noise overlap on the absolute scale). Calibrated
-# 2026-07-07 (calibrate_bge_floor.py --model <student>, 800-pair sample) to the conservative
-# "keep >=95% load-bearing" point: -10.84 drops ~22% of noise for ~5% load-bearing loss.
-# STALE after any retrain (score scale shifts) — RECOMPUTE this whenever the student is
-# retrained: `python -m cairn.calibrate_bge_floor --model cairn/training_data/reranker-student`.
-CROSS_ENCODER_STUDENT_FLOOR = -10.84
+# The live student floor ships PER-MODEL in <student_dir>/floor.txt, auto-calibrated by
+# train_reranker on save (recommend_floor: conservative "keep >=95% load-bearing"), so it
+# tracks each retrain's score scale and never goes stale. This constant is only the
+# FAIL-SAFE fallback when a model dir has no floor.txt: -100 = suppression OFF (don't apply
+# an arbitrary threshold to an uncalibrated model — the pairwise student's value is ordering).
+CROSS_ENCODER_STUDENT_FLOOR = -100.0
 
 
 def resolve_reranker():
@@ -392,7 +390,16 @@ def resolve_reranker():
     import os as _os_rr
     # A trained student (local dir) wins over any pretrained base — better cairn ranking.
     if CROSS_ENCODER_STUDENT_PATH and _os_rr.path.isdir(CROSS_ENCODER_STUDENT_PATH):
-        return CROSS_ENCODER_STUDENT_PATH, CROSS_ENCODER_STUDENT_FLOOR
+        # Floor ships WITH the model (floor.txt, written by train_reranker on save) so it
+        # can't go stale on retrain; fall back to the config constant if absent/unreadable.
+        floor = CROSS_ENCODER_STUDENT_FLOOR
+        _ff = _os_rr.path.join(CROSS_ENCODER_STUDENT_PATH, "floor.txt")
+        if _os_rr.path.exists(_ff):
+            try:
+                floor = float(open(_ff).read().strip())
+            except Exception:
+                pass
+        return CROSS_ENCODER_STUDENT_PATH, floor
     if RERANKER_BGE_ENABLED:
         try:
             import torch

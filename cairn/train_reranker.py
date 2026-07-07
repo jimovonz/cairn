@@ -107,6 +107,7 @@ def main():
     ap.add_argument("--deploy-margin", type=float, default=0.02, help="student must beat incumbent by this (noise guard)")
     ap.add_argument("--out", default=OUT_DIR)
     ap.add_argument("--eval-cap", type=int, default=2000, help="max held-out pairs scored")
+    ap.add_argument("--floor-sample", type=int, default=800, help="labels sampled to calibrate the shipped floor")
     ap.add_argument("--min-gap", type=int, default=2, help="min grade gap for a pair (2=extremes only)")
     ap.add_argument("--smoke", action="store_true", help="tiny run to verify wiring")
     args = ap.parse_args()
@@ -179,6 +180,21 @@ def main():
         os.makedirs(args.out, exist_ok=True)
         model.save_pretrained(args.out); tok.save_pretrained(args.out)
         print(f"saved -> {args.out}")
+        # Calibrate + SHIP the suppression floor with the model (floor.txt in the model
+        # dir, read by resolve_reranker) so it never goes stale on retrain — the score
+        # scale shifts each retrain, so a hand-set config constant would silently mis-gate.
+        try:
+            from cairn.calibrate_bge_floor import load_labels, bge_scores, recommend_floor
+            cp, cg = load_labels(args.labels)
+            k = list(range(len(cp))); random.Random(0).shuffle(k); k = k[:args.floor_sample]
+            cp, cg = [cp[i] for i in k], [cg[i] for i in k]
+            (fl, kr, dn, klb), _ = recommend_floor(bge_scores(cp, args.device, model=args.out), cg, 0.95)
+            with open(os.path.join(args.out, "floor.txt"), "w") as fh:
+                fh.write(f"{fl:.4f}\n")
+            print(f"calibrated floor -> {fl:.3f} (keep_rel {kr*100:.0f}% / drop_noise {dn*100:.0f}% "
+                  f"/ keep_LB {klb*100:.0f}%) -> {args.out}/floor.txt")
+        except Exception as e:
+            print(f"floor calibration skipped ({e}); resolve_reranker falls back to config default")
     else:
         print("NOT saved — student does not beat the incumbent on the test set.")
 
