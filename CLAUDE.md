@@ -179,7 +179,32 @@ A mechanical **bucket-4 prefilter** (`is_self_referential_meta`) can drop self-r
 - **LIVE per-prompt A/B** (`config.AB_TEST_ENABLED`, ON) — the real experiment. Each user prompt is randomly assigned **arm A** (control = current live rules) or **arm B** (control + one speculative variable from `config.AB_B_INSTRUCTION`, injected that turn). The prompt hook records the arm in `hook_state`; the Stop hook stamps that turn's memories with the arm's `source_ref` version (`config.AB_ARM_VERSIONS`: A=`genA-v4`, B=`genB-v2` — write-side meta suppression). Subagents excluded; arm-B injection is post-cache (no cache disturbance). Compare arms with `.venv/bin/python cairn/query.py --delivery-stats` (engagement/grade grouped by generation version + reranker). To stop it: `AB_TEST_ENABLED=False`. To change what B tests: edit `AB_B_INSTRUCTION`.
 - **OFFLINE replay harness** (`cairn/ab_writeside.py`) — an analysis tool (not the live experiment, never run on the corpus yet): replays transcripts through prompt-A vs prompt-B → Opus 4.8 judge, BLIND + position-swapped + pairwise (findability / self-sufficiency / fitness), A/B unit = session cohort; metrics dedup rate / findability backtest / self-sufficiency cold-read. CLI: `.venv/bin/python cairn/ab_writeside.py replay|ab --limit N [--dry-run]`.
 
-## Time handling (UTC storage, local display)
+### Phase 3 — trained cross-encoder student (shipped 2026-07-07)
+
+The read-side gate now has a trained student, not just instrumentation:
+
+- **`cairn/train_reranker.py`** — PAIRWISE fine-tune of a pretrained cross-encoder
+  (default `ms-marco-MiniLM`) on `training_data/relevance_silver.jsonl` via
+  `MarginRankingLoss` over `(query,memory)` logits; grades induce within-query order.
+  Held-out split is **by query** (`--min-gap 2` = train/eval on clear pairs only, since
+  adjacent grades dilute agreement to chance). The deploy gate is **beat the incumbent**
+  (`resolve_reranker()` scored on the SAME held-out pairs) by `--deploy-margin`, NOT an
+  arbitrary 90% (that's demoted to an `auto-promote-safe` flag). Saves to
+  `training_data/reranker-student/` only if it beats the incumbent.
+- **`cairn/calibrate_bge_floor.py`** — calibrates a suppression floor from the rg labels
+  (keep grade-3, drop grade-0). This surfaced and fixed a live bug: the bge floor `0.10`
+  was dropping 56% of load-bearing memories (now `0.015`).
+- **Deployment** — `config.resolve_reranker()` returns `CROSS_ENCODER_STUDENT_PATH`
+  (a LOCAL dir, offline-safe under `HF_HUB_OFFLINE`) when it exists, overriding the
+  pretrained base on any device. `training_data/` is gitignored, so the student is a
+  **per-machine** artifact — other nodes fall back to ms-marco gracefully until they have
+  their own. The student is PAIRWISE-trained (good ordering, compressed absolute scores),
+  so its floor is OFF (`CROSS_ENCODER_STUDENT_FLOOR=-100`) — it re-ranks via the
+  normalised blend without hard-suppressing; floor calibration is a follow-up.
+- **Status** — the first student beats the incumbent decisively (66.0% vs 39.6% held-out
+  pairwise agreement) and is live on this machine. It is NOT auto-promote-grade (<90%);
+  the lever to improve is MORE LABELS (per-delivery pool + other cairn instances), not
+  more epochs — 5 epochs (66.0%) did not beat 3 (67.0%): the student is data-limited.## Time handling (UTC storage, local display)
 
 Storage is **always UTC** (SQLite `CURRENT_TIMESTAMP` / `datetime('now')`); display
 and day-bucketing are **always local**. `cairn/timeutil.py` is the single source of

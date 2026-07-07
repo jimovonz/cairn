@@ -57,3 +57,6 @@ cairn/org_index.db-shm
 cairn/org_index.db-wal
 cairn/interface_registry.db
 cairn/reports/
+
+# relevance-gate silver labels (may contain prompt snippets)
+cairn/training_data/
