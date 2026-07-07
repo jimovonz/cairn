@@ -371,12 +371,14 @@ RERANKER_MIN_VRAM_GB = 6.0
 import os as _os_ce
 CROSS_ENCODER_STUDENT_PATH = _os_ce.path.join(_os_ce.path.dirname(__file__), "training_data", "reranker-student")
 del _os_ce
-# The student is PAIRWISE-trained: good ordering, but compressed/uncalibrated ABSOLUTE
-# scores (its logits sit ~[-11,-8]). The blend min-max-normalises per call so ordering is
-# what matters there; but the raw-score FLOOR would drop everything at ms-marco's -3.0.
-# So the student floor is set OFF (well below its range) — it re-ranks without hard
-# suppression. TODO: calibrate a real student floor from the rg labels.
-CROSS_ENCODER_STUDENT_FLOOR = -100.0
+# The student is PAIRWISE-trained: good ordering, compressed ABSOLUTE scores (logits
+# ~[-11,+0.2]). The blend min-max-normalises per call so ordering carries the value; a
+# global floor is a WEAK gate (relevant/noise overlap on the absolute scale). Calibrated
+# 2026-07-07 (calibrate_bge_floor.py --model <student>, 800-pair sample) to the conservative
+# "keep >=95% load-bearing" point: -10.84 drops ~22% of noise for ~5% load-bearing loss.
+# STALE after any retrain (score scale shifts) — RECOMPUTE this whenever the student is
+# retrained: `python -m cairn.calibrate_bge_floor --model cairn/training_data/reranker-student`.
+CROSS_ENCODER_STUDENT_FLOOR = -10.84
 
 
 def resolve_reranker():
