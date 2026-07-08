@@ -984,6 +984,10 @@ def find_similar(
         archived_candidates = archived_candidates[:CROSS_ENCODER_MAX_ARCHIVED]
         active_for_ce = diverse if ce_active else []
         ce_pool = active_for_ce + (archived_candidates if ce_archived else [])
+        # Passage = type/topic/content. (Enrichment with keywords+facts was tested via
+        # cairn.passage.render_passage + train_reranker --enrich and REVERTED: it lifted
+        # held-out agreement only +0.6pp — below the deploy margin — because the labels'
+        # own test-retest noise (~0.81) is the ceiling, not passage richness.)
         candidate_texts = [f"{r.get('type', '')} {r.get('topic', '')}: {r.get('content', '')}" for r in ce_pool]
         ce_out = _daemon_rerank(rerank_query or text, candidate_texts)
         ce_scores, ce_floor, ce_model = ce_out if ce_out else (None, None, None)

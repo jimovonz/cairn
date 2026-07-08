@@ -30,17 +30,32 @@ OUT_DIR = os.path.join(os.path.dirname(__file__), "training_data", "reranker-stu
 def qhash(q): return hashlib.sha1(q.encode("utf-8", "ignore")).hexdigest()[:12]
 
 
-def load_groups(path):
-    """-> {qhash: [(query, mem, grade), ...]} grouped by query."""
+def load_groups(path, enrich=False):
+    """-> {qhash: [(query, mem, grade), ...]} grouped by query. enrich=True re-renders
+    each passage from its memory_id with keywords+facts (reusing the stored grade —
+    validate_relabel showed enrichment shifts grades < the judge noise floor)."""
+    db = None
+    if enrich:
+        import pysqlite3 as sqlite3
+        import cairn.query as q
+        from cairn.label_relevance import _memtext
+        db = sqlite3.connect(q.DB_PATH)
     groups = {}
     with open(path) as f:
         for line in f:
             try: d = json.loads(line)
             except Exception: continue
-            if not (d.get("query") and d.get("mem") and d.get("grade") is not None):
+            if not (d.get("query") and d.get("grade") is not None):
+                continue
+            mem = d.get("mem")
+            if enrich and d.get("memory_id") is not None:
+                em = _memtext(db, d["memory_id"], enrich=True)
+                if em:
+                    mem = em
+            if not mem:
                 continue
             groups.setdefault(qhash(d["query"]), []).append(
-                (d["query"], d["mem"], int(d["grade"])))
+                (d["query"], mem, int(d["grade"])))
     return groups
 
 
@@ -109,6 +124,7 @@ def main():
     ap.add_argument("--eval-cap", type=int, default=2000, help="max held-out pairs scored")
     ap.add_argument("--floor-sample", type=int, default=800, help="labels sampled to calibrate the shipped floor")
     ap.add_argument("--min-gap", type=int, default=2, help="min grade gap for a pair (2=extremes only)")
+    ap.add_argument("--enrich", action="store_true", help="render passages with keywords+facts (must match inference)")
     ap.add_argument("--smoke", action="store_true", help="tiny run to verify wiring")
     args = ap.parse_args()
 
@@ -116,7 +132,7 @@ def main():
     from transformers import AutoTokenizer, AutoModelForSequenceClassification
     dev = torch.device(args.device)
 
-    groups = load_groups(args.labels)
+    groups = load_groups(args.labels, args.enrich)
     if not groups:
         sys.exit(f"no labels in {args.labels}")
     train_g, held_g = split_by_query(groups, args.heldout_frac)
@@ -185,7 +201,7 @@ def main():
         # scale shifts each retrain, so a hand-set config constant would silently mis-gate.
         try:
             from cairn.calibrate_bge_floor import load_labels, bge_scores, recommend_floor
-            cp, cg = load_labels(args.labels)
+            cp, cg = load_labels(args.labels, enrich=args.enrich)
             k = list(range(len(cp))); random.Random(0).shuffle(k); k = k[:args.floor_sample]
             cp, cg = [cp[i] for i in k], [cg[i] for i in k]
             (fl, kr, dn, klb), _ = recommend_floor(bge_scores(cp, args.device, model=args.out), cg, 0.95)

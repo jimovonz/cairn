@@ -19,7 +19,13 @@ import argparse, json, os, sys
 DEFAULT_LABELS = os.path.join(os.path.dirname(__file__), "training_data", "relevance_silver.jsonl")
 
 
-def load_labels(path):
+def load_labels(path, enrich=False):
+    db = None
+    if enrich:
+        import pysqlite3 as sqlite3
+        import cairn.query as q
+        from cairn.label_relevance import _memtext
+        db = sqlite3.connect(q.DB_PATH)
     pairs, grades = [], []
     with open(path) as f:
         for line in f:
@@ -27,8 +33,15 @@ def load_labels(path):
                 d = json.loads(line)
             except Exception:
                 continue
-            if d.get("query") and d.get("mem") and d.get("grade") is not None:
-                pairs.append((d["query"], d["mem"])); grades.append(int(d["grade"]))
+            if not (d.get("query") and d.get("grade") is not None):
+                continue
+            mem = d.get("mem")
+            if enrich and d.get("memory_id") is not None:
+                em = _memtext(db, d["memory_id"], enrich=True)
+                if em:
+                    mem = em
+            if mem:
+                pairs.append((d["query"], mem)); grades.append(int(d["grade"]))
     return pairs, grades
 
 

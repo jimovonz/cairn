@@ -69,9 +69,12 @@ def qhash(qy: str) -> str:
     return hashlib.sha1(qy.encode("utf-8", "ignore")).hexdigest()[:12]
 
 
-def _memtext(d, mid):
-    r = d.execute("SELECT type,topic,content FROM memories WHERE id=?", (mid,)).fetchone()
-    return f"{r[0]} {r[1]}: {r[2]}"[:600] if r else None
+def _memtext(d, mid, enrich=False):
+    r = d.execute("SELECT type,topic,content,keywords,facts FROM memories WHERE id=?", (mid,)).fetchone()
+    if not r:
+        return None
+    from cairn.passage import render_passage
+    return render_passage(r[0], r[1], r[2], r[3], r[4], enrich=enrich)
 
 
 def sample_pairs(n: int, stratify: bool, seen: set, per_delivery: bool = False) -> list[dict]:
@@ -134,6 +137,11 @@ def judge_batch(batch: list[dict], model: str, offset: int):
             capture_output=True, text=True, timeout=300, env=CLEAN_ENV, cwd=NEUTRAL_CWD)
     except subprocess.TimeoutExpired:
         return {}, False, "timeout"
+    except OSError as e:
+        # e.g. FileNotFoundError if `claude` momentarily vanishes during a CLI
+        # auto-update. Treat as a failed batch so the max-empty guard tolerates a
+        # transient disappearance (streak resets when it returns) instead of crashing.
+        return {}, False, f"exec failed: {e}"
     raw = res.stdout or ""
     # Contamination check robust to this corpus being FULL of cairn-self-referential
     # memories: a marker in the OUTPUT is fatal ONLY if it was NOT in the batch we sent
