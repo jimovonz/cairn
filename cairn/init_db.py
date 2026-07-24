@@ -761,6 +761,7 @@ def init_ephemeral(path=None):
             scope         TEXT,
             engaged       INTEGER,
             engaged_score REAL,
+            engaged_method TEXT,
             delivered_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -776,9 +777,15 @@ def init_ephemeral(path=None):
     #                   semantic second chance (cairn.relevance.semantic_engaged)
     #                   instead store cos(response, memory) — the same 0..1 range,
     #                   but a cosine rather than a lexical overlap ratio.
+    #   engaged_method — which pass produced the verdict: "lexical", "semantic"
+    #                   (live second chance), or "semantic-backfill" (retro-scored
+    #                   by cairn/backfill_semantic_engagement.py). Without this the
+    #                   two measurement bases are indistinguishable in aggregate
+    #                   stats, and a rate computed across the boundary is invalid.
     for _col, _ctype in (("reranker_model", "TEXT"), ("score_components", "TEXT"),
                          ("layer", "TEXT"), ("scope", "TEXT"),
-                         ("engaged", "INTEGER"), ("engaged_score", "REAL")):
+                         ("engaged", "INTEGER"), ("engaged_score", "REAL"),
+                         ("engaged_method", "TEXT")):
         try:
             conn.execute(f"ALTER TABLE memory_deliveries ADD COLUMN {_col} {_ctype}")
         except sqlite3.OperationalError:
