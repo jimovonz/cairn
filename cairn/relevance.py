@@ -510,7 +510,7 @@ def apply_engagement(response_text: str, *, session_id: str,
             if mt is None:
                 continue  # memory deleted since delivery — leave unscored
             engaged, score = score_engagement(response_text, mt, ctx or "")
-            pending.append([row_id, int(memory_id), ctx or "", engaged, score])
+            pending.append([row_id, int(memory_id), ctx or "", engaged, score, "lexical"])
 
         # Pass 2 — semantic second chance for rows the lexical pass called unengaged.
         # Recovers paraphrased use: the response applied the memory without reusing
@@ -533,17 +533,25 @@ def apply_engagement(response_text: str, *, session_id: str,
                             ccm = _cosine(ctx_vec.get(p[2]), mv)
                             if semantic_engaged(crm, ccm):
                                 # Semantic rows store cos(resp,mem) — same 0..1 range
-                                # as the lexical overlap ratio it replaces.
-                                p[3], p[4] = 1, round(crm, 4)
+                                # as the lexical overlap ratio it replaces. The method
+                                # tag keeps the two bases separable in aggregate stats.
+                                p[3], p[4], p[5] = 1, round(crm, 4), "semantic"
         except Exception:
             pass
 
         n = 0
-        for row_id, _mid, _ctx, engaged, score in pending:
-            conn.execute(
-                "UPDATE memory_deliveries SET engaged = ?, engaged_score = ? WHERE id = ?",
-                (engaged, score, row_id),
-            )
+        for row_id, _mid, _ctx, engaged, score, method in pending:
+            try:
+                conn.execute(
+                    "UPDATE memory_deliveries SET engaged = ?, engaged_score = ?, "
+                    "engaged_method = ? WHERE id = ?", (engaged, score, method, row_id),
+                )
+            except sqlite3.OperationalError:
+                # Ephemeral DB predating engaged_method — score anyway, untagged.
+                conn.execute(
+                    "UPDATE memory_deliveries SET engaged = ?, engaged_score = ? WHERE id = ?",
+                    (engaged, score, row_id),
+                )
             n += 1
         conn.commit()
         return n

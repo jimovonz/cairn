@@ -214,6 +214,15 @@ The read-side gate now has a trained student, not just instrumentation:
   p90 0.262, so the obvious-looking 0.5 admits ~1% of positives and starves the pool.
   Note `engaged_score` is bimodal — semantic-second-chance rows store a cosine
   (>= 0.55 by construction), lexical rows a much smaller overlap ratio.
+- **Semantic engagement backfill** — `.venv/bin/python cairn/backfill_semantic_engagement.py`
+  (`--dry-run`, `--limit`, `--json`) retro-scores historical deliveries, recovering the
+  response text from the session transcript since it is not stored on the delivery row.
+  Idempotent via the `engaged_method` tag (`lexical` / `semantic` / `semantic-backfill`) —
+  that column exists so the two measurement bases stay separable; **a rate computed across
+  untagged and tagged rows is invalid**. First run (2026-07-25): 981 examined, 26 rescued
+  (2.7%). The rescues look precise but low-recall — rescued rows average agent grade 2.17
+  vs 0.84 for non-rescued (n=6, too small to act on). Thresholds are NOT yet calibrated
+  against the grade labels; do that the way `calibrate_bge_floor.py` does, not by taste.
 
 ## Time handling (UTC storage, local display)
 
