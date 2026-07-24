@@ -204,7 +204,18 @@ The read-side gate now has a trained student, not just instrumentation:
 - **Status** — the first student beats the incumbent decisively (66.0% vs 39.6% held-out
   pairwise agreement) and is live on this machine. It is NOT auto-promote-grade (<90%);
   the lever to improve is MORE LABELS (per-delivery pool + other cairn instances), not
-  more epochs — 5 epochs (66.0%) did not beat 3 (67.0%): the student is data-limited.## Time handling (UTC storage, local display)
+  more epochs — 5 epochs (66.0%) did not beat 3 (67.0%): the student is data-limited.
+- **Engagement weak labels** — `train_reranker.py --engagement` merges behavioural
+  engagement observations (`memory_deliveries.engaged`) into the training pairs as
+  0/3 pseudo-grades, on top of the agent `rg` labels. Merged AFTER `split_by_query`,
+  so held-out stays pure agent-rg and the beat-the-incumbent deploy gate is never
+  judged on weak labels. Tunable via `--engagement-max-pairs` / `--engagement-min-pos`.
+  `ENGAGEMENT_MIN_POS_DEFAULT = 0.2`: the lexical overlap ratio runs median 0.110 /
+  p90 0.262, so the obvious-looking 0.5 admits ~1% of positives and starves the pool.
+  Note `engaged_score` is bimodal — semantic-second-chance rows store a cosine
+  (>= 0.55 by construction), lexical rows a much smaller overlap ratio.
+
+## Time handling (UTC storage, local display)
 
 Storage is **always UTC** (SQLite `CURRENT_TIMESTAMP` / `datetime('now')`); display
 and day-bucketing are **always local**. `cairn/timeutil.py` is the single source of

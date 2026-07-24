@@ -368,7 +368,7 @@ def handle_client(conn, emb):
             response = {"results": results}
 
         elif action == "ping":
-            response = {"status": "ok"}
+            response = {"status": "ok", "proto": PROTOCOL_VERSION}
 
         elif action == "sync_start":
             # Live-start P2P sync services (dashboard toggle / pairing auto-enable).
@@ -616,6 +616,15 @@ def send_request(request):
         return None
 
 
+# Serving-protocol version — bump whenever the daemon's action handlers or wire
+# format change. `ping` reports it; healthcheck/start restart a live daemon whose
+# reported proto differs from current code. This catches the wedged-alive/stale-code
+# failure (Jul 2026 outage): a daemon left running across a code upgrade kept its
+# PID and answered ping, but served an old handler set — clients silently fell
+# back to slow local embeds and memories were stored unembedded.
+PROTOCOL_VERSION = 2
+
+
 def is_running():
     """Check if daemon is running."""
     if not os.path.exists(PID_PATH):
@@ -656,6 +665,43 @@ def _rerank_healthy() -> bool:
     return isinstance(scores, list) and len(scores) == 1
 
 
+def _embed_healthy() -> bool:
+    """True if the daemon actually serves embeddings — a full embed round-trip
+    that returns a decodable vector. Catches a wedged-alive daemon (process
+    holds the PID and may even answer ping, but the serving loop is dead or
+    running stale code), which PID-liveness alone cannot see: clients then
+    silently fall back to slow local embeds and memories get stored unembedded."""
+    try:
+        resp = send_request({"action": "embed", "text": "health probe"})
+    except Exception:
+        return False
+    if not resp or resp.get("error"):
+        return False
+    vec = resp.get("vector")
+    if not isinstance(vec, str):
+        return False
+    try:
+        return len(bytes.fromhex(vec)) >= 4
+    except ValueError:
+        return False
+
+
+def _proto_current() -> bool:
+    """True if the running daemon reports the same PROTOCOL_VERSION as this code.
+    A daemon that predates the proto field (ping without `proto`) counts as stale."""
+    try:
+        resp = send_request({"action": "ping"})
+    except Exception:
+        return False
+    return bool(resp) and resp.get("proto") == PROTOCOL_VERSION
+
+
+def _serving_healthy() -> bool:
+    """Full serving health: protocol current + embed round-trip + rerank gate.
+    This — not is_running() — is what healthcheck/start must trust."""
+    return _proto_current() and _embed_healthy() and _rerank_healthy()
+
+
 def _stop_daemon() -> None:
     """SIGTERM the running daemon and wait for it to exit (best-effort)."""
     import time
@@ -680,13 +726,15 @@ if __name__ == "__main__":
 
     if cmd == "start":
         if is_running():
-            if _rerank_healthy():
+            if _serving_healthy():
                 print("Daemon already running.")
                 sys.exit(0)
-            # Responsive but the rerank gate is dead (e.g. GPU fault poisoned the
-            # cached cross-encoder). Restart to reload the model on a healthy
-            # device — ping-liveness alone would leave the gate silently off.
-            print("Daemon running but rerank unhealthy — restarting to reload model.")
+            # Alive but not actually serving: stale code (proto mismatch after an
+            # upgrade), wedged embed loop, or a dead rerank gate (e.g. GPU fault
+            # poisoned the cached cross-encoder). Restart to reload current code
+            # and models — PID/ping-liveness alone would leave clients on the
+            # silent local-embed fallback.
+            print("Daemon running but serving-unhealthy — restarting.")
             _stop_daemon()
         # Launch as detached subprocess
         import subprocess
@@ -728,19 +776,23 @@ if __name__ == "__main__":
         if is_running():
             resp = send_request({"action": "ping"})
             if resp and resp.get("status") == "ok":
-                print("Daemon running and responsive.")
+                if _serving_healthy():
+                    print("Daemon running, serving healthy (proto current, embed+rerank ok).")
+                else:
+                    print("Daemon running but serving-unhealthy (proto/embed/rerank) — run healthcheck.")
             else:
                 print("Daemon PID exists but not responding.")
         else:
             print("Daemon not running.")
 
     elif cmd == "healthcheck":
-        # Cron entry point: verify the daemon is up AND reranking works; restart
-        # if the gate is dead. Idempotent and quiet on the happy path.
-        if is_running() and _rerank_healthy():
+        # Cron entry point: verify the daemon is up AND actually serving (proto
+        # current, embed round-trip, rerank gate); restart otherwise. Idempotent
+        # and quiet on the happy path.
+        if is_running() and _serving_healthy():
             sys.exit(0)
         if is_running():
-            print("rerank unhealthy — restarting daemon.")
+            print("serving unhealthy (proto/embed/rerank) — restarting daemon.")
             _stop_daemon()
         import subprocess, time
         cairn_dir = os.path.dirname(os.path.abspath(__file__))
@@ -752,7 +804,7 @@ if __name__ == "__main__":
             stderr=subprocess.DEVNULL, start_new_session=True)
         for _ in range(20):
             time.sleep(1)
-            if is_running() and _rerank_healthy():
+            if is_running() and _serving_healthy():
                 print("daemon healthy.")
                 sys.exit(0)
         print("daemon restarted (rerank not yet confirmed).")

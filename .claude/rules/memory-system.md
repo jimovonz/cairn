@@ -211,6 +211,16 @@ This rule applies most strongly to:
 
 Push retrieval is for efficiency. Active search is for thoroughness. Use both.
 
+### Triggers that mean "query now"
+
+Run the query in the SAME response when one of these appears — don't first decide whether it's needed:
+
+- "the previous session", "last time", "we decided", "you said", or any question about a task list, backlog, plan, or prior state.
+- You're about to reconstruct past work from transcripts, logs, mtimes, or `git log` — cairn indexes those, and its link outlives them.
+- You're about to state what cairn does or doesn't contain, or that a topic has no history. Absence in pushed context means "no match", not "nothing stored".
+
+**A declaration is not a search.** The stop hook records `ctx_insufficient_without_query` and stages a reminder when a turn declares without searching.
+
 ## Retrieval is iterative
 
 If your `context: insufficient` declaration returns thin or off-topic results,
