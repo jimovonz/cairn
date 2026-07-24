@@ -84,6 +84,86 @@ def make_pairs(groups, max_pairs, min_gap=2, seed=7):
     return pairs[:max_pairs]
 
 
+# Minimum engaged_score for a weak positive. Measured 2026-07-25 over 1,675
+# engaged=1 rows, the LEXICAL overlap ratio runs min 0.018 / median 0.110 /
+# p90 0.262 / max 0.657 — so the originally-specified 0.5 sat above the 99th
+# percentile and admitted just 13 rows, collapsing the pool to a single usable
+# training group. 0.2 (~p79) keeps 345.
+# CAVEAT: engaged_score is bimodal by source. Semantic-second-chance rows store
+# cos(response, memory), which is >= ENGAGEMENT_SEM_THRESHOLD (0.55) by
+# construction, so any threshold above ~0.55 selects semantic rows exclusively
+# and silently discards every lexical positive. Recalibrate here, not upward.
+ENGAGEMENT_MIN_POS_DEFAULT = 0.2
+
+
+def _engagement_grade(engaged, engaged_score, agent_grade, min_pos=ENGAGEMENT_MIN_POS_DEFAULT):
+    """Fold a behavioural engagement observation into a 0/3 pseudo-grade.
+
+    Returns None for anything undecidable — dropping an ambiguous row beats
+    guessing, because these weak labels are merged into the training pairs.
+    The agent's own grade wins every conflict: it is a considered judgement,
+    while engagement is a mechanical proxy that both over- and under-fires.
+    """
+    if engaged == 1 and (engaged_score or 0) >= min_pos:
+        if agent_grade is not None and agent_grade <= 1:
+            return None  # behavioural yes vs agent no — trust the agent, drop the row
+        return 3
+    if engaged == 0 and agent_grade is None:
+        return 0  # weak lexical negative, with no agent opinion to outrank it
+    return None
+
+
+def load_engagement_groups(min_pos=ENGAGEMENT_MIN_POS_DEFAULT, eph_path=None, durable_path=None):
+    """-> {"eng:<qhash>": [(query, mem, grade), ...]} from behavioural engagement.
+
+    Same shape as load_groups() so both label sources merge into one pair pool.
+    The "eng:" key prefix stops these groups colliding with rg-label groups that
+    happen to share a context string.
+    """
+    import pysqlite3 as sqlite3
+    from cairn.relevance import _eph_path, _durable_path
+
+    try:
+        from cairn.label_relevance import _memtext
+    except Exception:
+        _memtext = None
+
+    econn = sqlite3.connect(_eph_path(eph_path))
+    dconn = sqlite3.connect(_durable_path(durable_path))
+    groups = {}
+    try:
+        rows = econn.execute(
+            "SELECT context_text, memory_id, engaged, engaged_score, grade "
+            "FROM memory_deliveries WHERE engaged IS NOT NULL "
+            "AND context_text IS NOT NULL AND context_text != ''"
+        ).fetchall()
+        for ctx, mid, engaged, escore, grade in rows:
+            g = _engagement_grade(engaged, escore, grade, min_pos)
+            if g is None:
+                continue
+            mem = None
+            if _memtext is not None:
+                try:
+                    # enrich=False — must match the inference-time candidate format.
+                    mem = _memtext(dconn, mid, enrich=False)
+                except Exception:
+                    mem = None
+            if not mem:
+                r = dconn.execute(
+                    "SELECT content, topic, keywords FROM memories WHERE id = ?", (mid,)
+                ).fetchone()
+                mem = " ".join(p for p in r if p) if r else None
+            if not mem:
+                continue
+            groups.setdefault("eng:" + qhash(ctx), []).append((ctx, mem, g))
+    finally:
+        econn.close()
+        dconn.close()
+    # A group yields pairs only if it holds both a positive and a negative.
+    return {k: v for k, v in groups.items()
+            if any(g == 3 for _, _, g in v) and any(g == 0 for _, _, g in v)}
+
+
 def agreement(model, tok, groups, device, max_eval=2000, min_gap=2):
     """Fraction of clear (gap>=min_gap) within-query pairs the model orders correctly."""
     import torch
@@ -126,6 +206,11 @@ def main():
     ap.add_argument("--min-gap", type=int, default=2, help="min grade gap for a pair (2=extremes only)")
     ap.add_argument("--enrich", action="store_true", help="render passages with keywords+facts (must match inference)")
     ap.add_argument("--smoke", action="store_true", help="tiny run to verify wiring")
+    ap.add_argument("--engagement", action="store_true",
+                    help="merge behavioural engagement weak labels into TRAIN pairs only")
+    ap.add_argument("--engagement-max-pairs", type=int, default=2000)
+    ap.add_argument("--engagement-min-pos", type=float, default=ENGAGEMENT_MIN_POS_DEFAULT,
+                    help="min engaged_score for a weak positive")
     args = ap.parse_args()
 
     import torch
@@ -137,6 +222,14 @@ def main():
         sys.exit(f"no labels in {args.labels}")
     train_g, held_g = split_by_query(groups, args.heldout_frac)
     tr_pairs = make_pairs(train_g, args.max_pairs, args.min_gap)
+    if args.engagement:
+        # TRAIN-ONLY by construction: merged after split_by_query, so held-out
+        # stays pure agent-rg and the deploy gate is never judged on weak labels.
+        eng_groups = load_engagement_groups(args.engagement_min_pos)
+        eng_pairs = make_pairs(eng_groups, args.engagement_max_pairs, min_gap=2, seed=11)
+        tr_pairs += eng_pairs
+        print(f"engagement: {len(eng_groups)} groups -> {len(eng_pairs)} weak pairs "
+              f"(train-only)", file=sys.stderr)
     if args.smoke:
         tr_pairs = tr_pairs[:32]; args.epochs = 1; args.eval_cap = 64
     print(f"queries: {len(groups)} (train {len(train_g)} / held {len(held_g)})  "

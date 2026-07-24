@@ -186,6 +186,50 @@ def _last_assistant_excerpt(transcript_path: str, max_chars: int = 400) -> str:
         return ""
 
 
+def _topic_gate_skip(query: str, session_id: str) -> bool:
+    """True when this prompt is on the same topic as the last Layer 1.5 search.
+
+    Already-served IDs are excluded per session, so re-searching an unchanged
+    topic mostly surfaces weaker next-tier matches — noise. The anchor vector is
+    updated ONLY when a search actually runs: re-anchoring on a skip would let
+    slow topic drift chain-skip forever, each prompt resembling the one before.
+
+    Fails open (False = run the search) on any error — the gate is an
+    optimisation and must never be the reason retrieval stops.
+    """
+    from cairn.config import L1_5_TOPIC_GATE_ENABLED, L1_5_TOPIC_STICKY_SIM
+
+    if not L1_5_TOPIC_GATE_ENABLED:
+        return False
+    try:
+        import numpy as np
+        # Module-style imports so tests can monkeypatch the source modules.
+        import cairn.embeddings as _emb
+        import hooks.hook_helpers as _hh
+
+        qvec = _emb.embed(query, allow_slow=False)
+        if qvec is None:
+            return False  # daemon down — never gate on a missing embedding
+        qvec = np.asarray(qvec, dtype=np.float32)
+
+        prev_raw = _hh.load_hook_state(session_id, "l1_5_topic_vec")
+        if prev_raw:
+            prev = np.asarray(json.loads(prev_raw), dtype=np.float32)
+            if prev.shape == qvec.shape:
+                denom = float(np.linalg.norm(prev)) * float(np.linalg.norm(qvec))
+                if denom > 0 and float(np.dot(prev, qvec)) / denom >= L1_5_TOPIC_STICKY_SIM:
+                    return True  # same topic — skip WITHOUT re-anchoring
+
+        _hh.save_hook_state(
+            session_id, "l1_5_topic_vec",
+            json.dumps([round(float(x), 5) for x in qvec]),
+        )
+        return False
+    except Exception as e:
+        log(f"Layer 1.5 topic gate error: {e}")
+        return False
+
+
 def layer1_5_search(user_message: str, session_id: str,
                     transcript_path: str = "") -> Optional[str]:
     """Layer 1.5: Per-prompt hybrid injection for subsequent prompts.
@@ -213,6 +257,11 @@ def layer1_5_search(user_message: str, session_id: str,
         log(f"Layer 1.5: query enriched with {len(excerpt)}ch assistant excerpt")
     else:
         query = user_message
+
+    if _topic_gate_skip(query, session_id):
+        log(f"Layer 1.5: skipped — same topic as last search: {user_message[:40]}")
+        record_metric(session_id, "layer1_5_topic_skip", user_message[:80])
+        return None
 
     try:
         conn = get_conn()
@@ -881,6 +930,19 @@ def main() -> None:
                 log(f"Question-before-cairn reminder injected (deferred)")
         except Exception as e:
             log(f"Failed to load question-before-cairn reminder: {e}")
+
+    # Belt-and-braces reminder (deferred): ctx:insufficient declared without a query
+    query_belt_file = os.path.join(staged_dir, f"{session_id}_query_belt.txt")
+    if os.path.exists(query_belt_file):
+        try:
+            with open(query_belt_file, "r") as f:
+                qb_text = f.read().strip()
+            os.remove(query_belt_file)
+            if qb_text:
+                context_parts.append(qb_text)
+                log(f"Belt-and-braces query reminder injected (deferred)")
+        except Exception as e:
+            log(f"Failed to load belt-and-braces reminder: {e}")
 
     # rg-grading nudge (deferred from previous stop hook — soft, periodic, non-blocking)
     rg_nudge_file = os.path.join(staged_dir, f"{session_id}_rg_nudge.txt")

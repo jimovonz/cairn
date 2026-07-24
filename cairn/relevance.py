@@ -418,6 +418,36 @@ def _durable_path(durable_path: Optional[str]) -> str:
             or os.path.join(os.path.dirname(os.path.abspath(__file__)), "cairn.db"))
 
 
+def _cosine(a, b) -> float:
+    """Full cosine between two vectors; 0.0 when either is degenerate."""
+    import numpy as np
+    if a is None or b is None:
+        return 0.0
+    a = np.asarray(a, dtype=np.float32)
+    b = np.asarray(b, dtype=np.float32)
+    if a.shape != b.shape:
+        return 0.0
+    denom = float(np.linalg.norm(a)) * float(np.linalg.norm(b))
+    return float(np.dot(a, b)) / denom if denom > 0 else 0.0
+
+
+def semantic_engaged(cos_resp_mem: float, cos_ctx_mem: float,
+                     threshold: Optional[float] = None,
+                     margin: Optional[float] = None) -> bool:
+    """Second-chance engagement verdict from embeddings rather than shared tokens.
+
+    Two conditions must both hold. The response must be close to the memory
+    (threshold), AND it must be closer than the context already was (margin) —
+    without the margin, a memory that merely echoes the prompt would score as
+    used, since the response naturally resembles its own prompt.
+    """
+    if threshold is None or margin is None:
+        from cairn.config import ENGAGEMENT_SEM_THRESHOLD, ENGAGEMENT_SEM_MARGIN
+        threshold = ENGAGEMENT_SEM_THRESHOLD if threshold is None else threshold
+        margin = ENGAGEMENT_SEM_MARGIN if margin is None else margin
+    return cos_resp_mem >= threshold and (cos_resp_mem - cos_ctx_mem) >= margin
+
+
 def apply_engagement(response_text: str, *, session_id: str,
                      eph_path: Optional[str] = None,
                      durable_path: Optional[str] = None) -> int:
@@ -442,25 +472,74 @@ def apply_engagement(response_text: str, *, session_id: str,
             return 0
         mem_ids = sorted({int(r[1]) for r in rows})
         mem_text = {}
+        mem_vec = {}
         try:
             dconn = sqlite3.connect(_durable_path(durable_path))
             try:
                 qmarks = ",".join("?" * len(mem_ids))
-                for mid, content, topic, kw in dconn.execute(
-                    f"SELECT id, content, topic, keywords FROM memories "
-                    f"WHERE id IN ({qmarks})", mem_ids,
-                ):
+                # `embedding` is optional: a durable DB predating the column must
+                # still get lexical scoring rather than silently scoring nothing.
+                try:
+                    drows = dconn.execute(
+                        f"SELECT id, content, topic, keywords, embedding FROM memories "
+                        f"WHERE id IN ({qmarks})", mem_ids,
+                    ).fetchall()
+                except sqlite3.Error:
+                    drows = [(r[0], r[1], r[2], r[3], None) for r in dconn.execute(
+                        f"SELECT id, content, topic, keywords FROM memories "
+                        f"WHERE id IN ({qmarks})", mem_ids,
+                    ).fetchall()]
+                for mid, content, topic, kw, emb in drows:
                     mem_text[int(mid)] = " ".join(p for p in (content, topic, kw) if p)
+                    if emb:
+                        try:
+                            from cairn.embeddings import from_blob
+                            mem_vec[int(mid)] = from_blob(emb)
+                        except Exception:
+                            pass  # unreadable vector — lexical verdict still stands
             finally:
                 dconn.close()
         except sqlite3.Error:
             return 0
-        n = 0
+        # Pass 1 — lexical distinctive-term overlap. Verdicts are held in `pending`
+        # rather than written straight out, so the semantic pass below can revise
+        # them before a single write loop commits the final answer.
+        pending = []
         for row_id, memory_id, ctx in rows:
             mt = mem_text.get(int(memory_id))
             if mt is None:
                 continue  # memory deleted since delivery — leave unscored
             engaged, score = score_engagement(response_text, mt, ctx or "")
+            pending.append([row_id, int(memory_id), ctx or "", engaged, score])
+
+        # Pass 2 — semantic second chance for rows the lexical pass called unengaged.
+        # Recovers paraphrased use: the response applied the memory without reusing
+        # its vocabulary. Fail-soft — any error leaves the lexical verdicts standing.
+        try:
+            from cairn.config import ENGAGEMENT_SEMANTIC_ENABLED
+            if ENGAGEMENT_SEMANTIC_ENABLED and mem_vec:
+                candidates = [p for p in pending if p[3] != 1 and p[1] in mem_vec]
+                if candidates:
+                    import cairn.embeddings as _emb
+                    resp_vec = _emb.embed(response_text[:4000], allow_slow=False)
+                    if resp_vec is not None:
+                        ctx_vec = {}
+                        for p in candidates:
+                            if p[2] and p[2] not in ctx_vec:
+                                ctx_vec[p[2]] = _emb.embed(p[2][:4000], allow_slow=False)
+                        for p in candidates:
+                            mv = mem_vec[p[1]]
+                            crm = _cosine(resp_vec, mv)
+                            ccm = _cosine(ctx_vec.get(p[2]), mv)
+                            if semantic_engaged(crm, ccm):
+                                # Semantic rows store cos(resp,mem) — same 0..1 range
+                                # as the lexical overlap ratio it replaces.
+                                p[3], p[4] = 1, round(crm, 4)
+        except Exception:
+            pass
+
+        n = 0
+        for row_id, _mid, _ctx, engaged, score in pending:
             conn.execute(
                 "UPDATE memory_deliveries SET engaged = ?, engaged_score = ? WHERE id = ?",
                 (engaged, score, row_id),

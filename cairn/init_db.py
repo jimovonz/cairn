@@ -772,7 +772,10 @@ def init_ephemeral(path=None):
     #   engaged       — 1 used / 0 not-used / NULL no-signal (the PRIMARY label)
     #   engaged_score — distinctive-term overlap ratio 0..1; -1.0 = evaluated but
     #                   undecidable (memory redundant with the prompt); NULL = not
-    #                   yet evaluated (the unscored sentinel).
+    #                   yet evaluated (the unscored sentinel). Rows recovered by the
+    #                   semantic second chance (cairn.relevance.semantic_engaged)
+    #                   instead store cos(response, memory) — the same 0..1 range,
+    #                   but a cosine rather than a lexical overlap ratio.
     for _col, _ctype in (("reranker_model", "TEXT"), ("score_components", "TEXT"),
                          ("layer", "TEXT"), ("scope", "TEXT"),
                          ("engaged", "INTEGER"), ("engaged_score", "REAL")):

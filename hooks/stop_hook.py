@@ -959,6 +959,38 @@ def main() -> None:
             except Exception as e:
                 log(f"Failed to stage question-before-cairn reminder: {e}")
 
+    # Belt-and-braces enforcement — declaring context: insufficient is only half
+    # the rule. The declaration delegates to push retrieval, which is
+    # opportunistic: when it matches nothing, its silence is indistinguishable
+    # from "cairn holds nothing", and acting on that reads as confident
+    # knowledge. The other half is running the search yourself in the same turn.
+    # Deferred (staged) rather than blocking, like the checks above.
+    from hooks.hook_helpers import cairn_query_invoked_this_turn
+    if (not is_continuation and context == "insufficient"
+            and not cairn_query_invoked_this_turn(transcript_path)):
+        log("Belt-and-braces: ctx:insufficient declared with no cairn query this turn")
+        record_metric(session_id, "ctx_insufficient_without_query")
+        try:
+            staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+            os.makedirs(staged_dir, exist_ok=True)
+            staged_file = os.path.join(staged_dir, f"{session_id}_query_belt.txt")
+            with open(staged_file, "w") as f:
+                f.write(
+                    "You declared context: insufficient on the previous turn but ran no cairn "
+                    "query yourself. The rule is belt-and-braces — declare AND search, in the "
+                    "same response — because push retrieval is opportunistic: it surfaces what "
+                    "its automatic query happened to match, so an empty result means 'no match', "
+                    "never 'nothing stored'. Treating that silence as absence is how a topic with "
+                    "real stored history gets answered from assumption. If that topic is still "
+                    "live, search directly before answering further on it: "
+                    "`.venv/bin/python ./cairn/query.py --semantic \"<your context_need>\"` "
+                    "(and the keyword form for exact terms). Vary the phrasing if the first "
+                    "attempt returns thin results."
+                )
+            log(f"Belt-and-braces query reminder staged for next prompt")
+        except Exception as e:
+            log(f"Failed to stage belt-and-braces reminder: {e}")
+
     # Thin-retrieval escalation — if a previous turn's L3 retrieval was thin (too few
     # entries or all weak), force escalation until either query.py is actively invoked
     # OR a refined context: insufficient is declared. The flag PERSISTS across stop hook

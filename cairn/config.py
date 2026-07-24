@@ -95,6 +95,12 @@ SCORE_W_CONFIDENCE = 0.0        # Disabled — veracity is not a ranking signal
 SCORE_W_KEYWORDS = 0.15         # Keyword overlap between query terms and memory keywords
 SCORE_W_RECENCY = 0.0           # Disabled — age is not a usefulness signal; obsolescence handled by supersession
 SCORE_W_SCOPE = 0.05
+
+# Source-utility prior — additive adjustment on the fused hybrid-search score,
+# keyed by memories.source_ref. Analyser-written rows engage at ~46% vs ~83% for
+# per-turn agent-written rows (measured 2026-07 from memory_deliveries), so they
+# are demoted by roughly one rank position. Demotes, never excludes.
+SCORE_SOURCE_PRIORS = {"analyser-session-arc": -0.05}
 RECENCY_HALF_LIFE_DAYS = 30        # Days after which recency weight halves
 
 # Memory types that apply universally regardless of project — biographical/cross-cutting facts
@@ -306,6 +312,10 @@ CORRECTION_TRIGGER_SIM_THRESHOLD = 0.45  # Similarity threshold for trigger matc
 L1_5_ENABLED = True                # Per-prompt semantic injection — disable via CAIRN_L1_5_ENABLED=0
 L1_5_SIM_THRESHOLD = 0.55          # Stricter than Layer 1 (0.30) — only strong mid-session matches
 L1_5_MAX_RESULTS = 3               # Keep injections tight on subsequent prompts
+# Topic-change gate: served IDs are already excluded per session, so a same-topic
+# re-search mostly serves weaker next-tier matches (noise). Fire only on topic shift.
+L1_5_TOPIC_GATE_ENABLED = True     # Gate L1.5 on topic change vs the last-searched query
+L1_5_TOPIC_STICKY_SIM = 0.80       # cos(current, last-searched) >= this = same topic -> skip
 
 # === Query expansion — Type-prefix fan-out ===
 # Memories are embedded as "{project} {type} {topic} {content}". A bare query misses the
@@ -573,6 +583,15 @@ RELEVANCE_LOGGING_ENABLED = True    # Log injected memories to memory_deliveries
 RELEVANCE_PREFILTER_ENABLED = True  # Bucket-4 self-referential-meta prefilter — ON since 2026-07-02 review
                                     # (session-arc meta spam engaged at 0%). Correction-exempt,
                                     # drop-audited via the relevance_prefilter_drop metric.
+
+# Semantic engagement second chance — lexical term-overlap under-detects a
+# response that APPLIED a memory while paraphrasing it (notably behavioural
+# corrections). A delivery the lexical pass scored as unengaged gets re-checked
+# against embeddings. The margin is the guard against prompt-echo false
+# positives: the response must be closer to the memory than the context already was.
+ENGAGEMENT_SEMANTIC_ENABLED = True
+ENGAGEMENT_SEM_THRESHOLD = 0.55     # Minimum cos(response, memory)
+ENGAGEMENT_SEM_MARGIN = 0.05        # cos(response,mem) - cos(context,mem) must exceed this
 
 # === NLI (Natural Language Inference) for consolidation ===
 # Used by the consolidation pipeline to detect entailment between memory pairs.
