@@ -691,8 +691,15 @@ PROXY_REWRITE = _os_proxy.environ.get("CAIRN_PROXY_REWRITE", "1").lower() in ("1
 # the verbatim block, and inject a per-session captured-topic digest for
 # in-session dedup. Marker from FIRST appearance (never verbatim->marker
 # transitions — those would break the frozen cache prefix mid-history).
-# Default ON (opt out with CAIRN_PARE_CM=0); flipping mid-session costs one cache rebuild (deliberate event).
-PARE_CM_ENABLED = _os_proxy.environ.get("CAIRN_PARE_CM", "1").lower() in ("1", "true", "yes")
+# Default OFF since 2026-07-25. The marker was repeatedly reproduced verbatim by
+# the model in place of a real [cm] block, costing whole turns to Stop-hook
+# re-prompts — and the confusion survived several rewordings, because the failure
+# is structural: any fixed string standing where a block belongs is a candidate
+# for imitation. Keeping the verbatim block in history costs tokens but removes
+# the ambiguity entirely. This is a CONTEXT-SIZE optimisation only — memory
+# capture, dedup and storage are the Stop hook and are unaffected either way.
+# Opt back in with CAIRN_PARE_CM=1; flipping mid-session costs one cache rebuild.
+PARE_CM_ENABLED = _os_proxy.environ.get("CAIRN_PARE_CM", "0").lower() in ("1", "true", "yes")
 
 # Context-paring PREFIX tier (docs/spec-context-paring.md): statically strip
 # never-used tool definitions from the outbound tools array. Unlike the CM/tail
