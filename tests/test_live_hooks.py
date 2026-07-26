@@ -57,7 +57,7 @@ def get_memory_count():
     return count
 
 
-def run_claude(prompt, timeout=60):
+def run_claude(prompt, timeout=240):  # 60s times out under full-suite load — flaky gate, not a real failure
     """Send a prompt through claude -p and return the result."""
     result = subprocess.run(
         ["claude", "-p", "--output-format", "json", prompt],

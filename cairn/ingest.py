@@ -67,6 +67,31 @@ EXTRACTOR_VERSIONS = {
 }
 
 
+# INPUT-DOMAIN INVARIANT (spec 1.10) — what this write path assumes about its
+# input. Both ingest defects came from transplanting an invariant into a domain
+# that violated it, which no amount of care at review time would have caught.
+INPUT_DOMAIN_INVARIANT = (
+    "Assumes a FIXED, NON-SHRINKING section namespace, and trusts the "
+    "distilling LLM's self-reported source_sections as the cache-invalidation "
+    "key. A mislabelled section leaves stale memories un-archived indefinitely. "
+    "Violated by any corpus with mutable membership (e.g. a wiki/Confluence "
+    "space) where documents disappear."
+)
+
+from cairn.config import INGEST_PIPELINE_VERSION
+
+
+def _extractor_versions_digest():
+    """Short stable digest of EXTRACTOR_VERSIONS, for source_ref provenance.
+
+    Ingest rows carry this so a change to any extractor is attributable — and
+    therefore retractable via `query.py --archive-by-source-ref --like` — without
+    embedding all 24 version numbers in every stamped row.
+    """
+    payload = json.dumps(EXTRACTOR_VERSIONS, sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()[:12]
+
+
 def _fingerprint_section(name, data):
     """SHA256 of section name + extractor version + serialized data."""
     version = EXTRACTOR_VERSIONS.get(name, 0)
@@ -1545,6 +1570,12 @@ def insert_memories(entries, project, source_ref, session_id=None, dry_run=False
         session_id = f"ingest-{project}-{time.strftime('%Y%m%d-%H%M%S')}"
 
     src_ref_base = {
+        # Pipeline provenance (spec 1.9): without a version, every ingest write
+        # since the beginning of time shares one stamp and can only be retracted
+        # wholesale. `extractors` digests EXTRACTOR_VERSIONS so a change to any
+        # extractor is attributable without enumerating all 24 in every row.
+        "pipeline": INGEST_PIPELINE_VERSION,
+        "extractors": _extractor_versions_digest(),
         "repo": source_ref.get("remote") or source_ref.get("path"),
         "commit": source_ref.get("commit"),
         "local": source_ref.get("local_only", True),

@@ -41,6 +41,16 @@ from typing import Any, Optional
 # The prior assistant response only supplies referents for anaphora, so cap it:
 # a long response must not dominate the short current prompt in the embedding
 # (the prompt-vs-response length asymmetry). Chars, not tokens — cheap + good enough.
+# INPUT-DOMAIN INVARIANT (spec 1.10) — what this write path assumes about its
+# input. Both ingest defects came from transplanting an invariant into a domain
+# that violated it, which care at review time would not have caught.
+INPUT_DOMAIN_INVARIANT = (
+    "Assumes a delivered memory is USED IN THE SAME TURN it was delivered. "
+    "Value realised later scores identically to never being used, so any layer "
+    "with a multi-turn value horizon (first-prompt) is systematically "
+    "under-measured by engagement."
+)
+
 PRIOR_RESPONSE_CAP = 600
 
 
