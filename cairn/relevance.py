@@ -244,11 +244,12 @@ def log_memory_deliveries(delivered: list[dict[str, Any]], *, session_id: str,
             conn.execute(
                 "INSERT INTO memory_deliveries "
                 "(session_id, turn_index, memory_id, context_text, context_vec, "
-                " ce_score, served_rank, reranker_model, score_components, layer, scope) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " ce_score, served_rank, reranker_model, score_components, layer, scope, "
+                " gate_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (session_id, turn_index, int(mid), context_text, context_vec,
                  ce, r.get("served_rank", rank), r.get("reranker_model"),
-                 _score_components(r), layer, scope),
+                 _score_components(r), layer, scope, r.get("gate_status")),
             )
             n += 1
         conn.commit()

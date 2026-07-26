@@ -762,6 +762,7 @@ def init_ephemeral(path=None):
             engaged       INTEGER,
             engaged_score REAL,
             engaged_method TEXT,
+            gate_status   TEXT,
             delivered_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -782,10 +783,17 @@ def init_ephemeral(path=None):
     #                   by cairn/backfill_semantic_engagement.py). Without this the
     #                   two measurement bases are indistinguishable in aggregate
     #                   stats, and a rate computed across the boundary is invalid.
+    #   gate_status   — why a row has (or lacks) a reranker_model: "reranked",
+    #                   "gate-unavailable" (daemon down mid-request), "disabled",
+    #                   "ungated-by-design", "below-min-candidates". A NULL model
+    #                   alone conflates the unavailable case with the by-design
+    #                   case, and a reranker comparison that re-admits the former
+    #                   manufactures ungated-vs-reranked results. Rows predating
+    #                   this column stay NULL and must be excluded, not assumed.
     for _col, _ctype in (("reranker_model", "TEXT"), ("score_components", "TEXT"),
                          ("layer", "TEXT"), ("scope", "TEXT"),
                          ("engaged", "INTEGER"), ("engaged_score", "REAL"),
-                         ("engaged_method", "TEXT")):
+                         ("engaged_method", "TEXT"), ("gate_status", "TEXT")):
         try:
             conn.execute(f"ALTER TABLE memory_deliveries ADD COLUMN {_col} {_ctype}")
         except sqlite3.OperationalError:

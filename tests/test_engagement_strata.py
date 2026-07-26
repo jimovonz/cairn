@@ -61,3 +61,24 @@ def test_neutralisation_makes_cross_stratum_rate_honest():
     assert agg["n"] == 5
     assert agg["decided"] == 2          # only the lexical rows are measurements
     assert agg["engaged_pct"] == 50.0   # not 80.0
+
+
+def test_untagged_positive_yields_no_training_pair():
+    """spec 1.7: the trainer's `engaged IS NOT NULL` filter admits untagged
+    positives, which carry no negatives with them. Neutralisation drops them
+    before they can inflate the positive class."""
+    from cairn.train_reranker import _engagement_grade
+    eng, score = query._neutralise_unusable_engagement(1, 0.9, None, {"lexical"})
+    assert _engagement_grade(eng, score, None) is None
+
+
+def test_lexical_positive_still_yields_a_pair():
+    from cairn.train_reranker import _engagement_grade
+    eng, score = query._neutralise_unusable_engagement(1, 0.9, "lexical", {"lexical"})
+    assert _engagement_grade(eng, score, None) == 3
+
+
+def test_lexical_negative_still_yields_a_pair():
+    from cairn.train_reranker import _engagement_grade
+    eng, score = query._neutralise_unusable_engagement(0, 0.01, "lexical", {"lexical"})
+    assert _engagement_grade(eng, score, None) == 0

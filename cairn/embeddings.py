@@ -637,6 +637,26 @@ def upsert_vec_index(conn: sqlite3.Connection, memory_id: int, embedding_blob: b
         return False
 
 
+def _classify_gate(ce_enabled, rerank_requested, attempted):
+    """Why a delivery row has, or lacks, a reranker_model.
+
+    A NULL model conflates "the daemon was down" with "this layer is not gated
+    by design". Any reranker comparison that re-admits the first case
+    manufactures ungated-vs-reranked conclusions, so the reason is recorded at
+    source instead of inferred downstream from absence.
+
+    "gate-unavailable" is the attempted-but-failed case and is the only value
+    that indicates degraded retrieval rather than intended behaviour.
+    """
+    if not ce_enabled:
+        return "disabled"
+    if not rerank_requested:
+        return "ungated-by-design"
+    if not attempted:
+        return "below-min-candidates"
+    return "gate-unavailable"
+
+
 def find_similar(
     conn: sqlite3.Connection,
     text: str,
@@ -977,6 +997,13 @@ def find_similar(
                               CROSS_ENCODER_MAX_CANDIDATES, CROSS_ENCODER_MAX_ARCHIVED)
     ce_active = CROSS_ENCODER_ENABLED and rerank and len(diverse) >= CROSS_ENCODER_MIN_CANDIDATES
     ce_archived = CROSS_ENCODER_ENABLED and rerank and bool(archived_candidates)
+    # Gate provenance (spec 2S.3). A NULL reranker_model conflates "the gate was
+    # unavailable" (daemon down) with "this layer is not gated by design" — and
+    # any reranker comparison that silently re-admits the former manufactures
+    # ungated-vs-reranked conclusions. Record WHY there is no model, at source,
+    # rather than inferring it downstream from absence.
+    gate_status = _classify_gate(CROSS_ENCODER_ENABLED, rerank,
+                                 ce_active or ce_archived)
     if ce_active or ce_archived:
         t_rerank = _time.perf_counter()
         if ce_active:
@@ -993,6 +1020,7 @@ def find_similar(
         ce_scores, ce_floor, ce_model = ce_out if ce_out else (None, None, None)
         floor = ce_floor if ce_floor is not None else CROSS_ENCODER_SCORE_FLOOR
         if ce_scores and len(ce_scores) == len(ce_pool):
+            gate_status = "reranked"
             for i, r in enumerate(ce_pool):
                 r["ce_score"] = ce_scores[i]
                 r["reranker_model"] = ce_model  # provenance for memory_deliveries
@@ -1027,6 +1055,9 @@ def find_similar(
     # the learning trail — deliberately delivered, never suppressed.
     if results and archived_candidates:
         results.extend(archived_candidates[:limit])
+
+    for r in results:
+        r.setdefault("gate_status", gate_status)
 
     return results
 

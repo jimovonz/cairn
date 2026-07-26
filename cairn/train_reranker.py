@@ -132,12 +132,30 @@ def load_engagement_groups(min_pos=ENGAGEMENT_MIN_POS_DEFAULT, eph_path=None, du
     dconn = sqlite3.connect(_durable_path(durable_path))
     groups = {}
     try:
-        rows = econn.execute(
-            "SELECT context_text, memory_id, engaged, engaged_score, grade "
-            "FROM memory_deliveries WHERE engaged IS NOT NULL "
-            "AND context_text IS NOT NULL AND context_text != ''"
-        ).fetchall()
-        for ctx, mid, engaged, escore, grade in rows:
+        # `engaged IS NOT NULL` is NOT sufficient. Historical untagged rows
+        # recorded engagement only when it was detected, so they contribute
+        # 1,699 positives and zero negatives — filtering on non-nullity alone
+        # admits them and inflates the positive class with rows drawn from a
+        # regime that could never produce a negative (spec 1.7). Restrict to
+        # strata that contain BOTH classes; neutralised rows come back with
+        # engaged=None, which _engagement_grade already drops.
+        from cairn.query import load_qualifying_strata, _neutralise_unusable_engagement
+        qualifying = load_qualifying_strata(econn)
+        try:
+            rows = econn.execute(
+                "SELECT context_text, memory_id, engaged, engaged_score, grade, "
+                "engaged_method FROM memory_deliveries WHERE engaged IS NOT NULL "
+                "AND context_text IS NOT NULL AND context_text != ''"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = [r + (None,) for r in econn.execute(
+                "SELECT context_text, memory_id, engaged, engaged_score, grade "
+                "FROM memory_deliveries WHERE engaged IS NOT NULL "
+                "AND context_text IS NOT NULL AND context_text != ''"
+            ).fetchall()]
+        for ctx, mid, engaged, escore, grade, method in rows:
+            engaged, escore = _neutralise_unusable_engagement(
+                engaged, escore, method, qualifying)
             g = _engagement_grade(engaged, escore, grade, min_pos)
             if g is None:
                 continue
