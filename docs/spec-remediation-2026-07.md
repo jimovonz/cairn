@@ -12,9 +12,9 @@ same commit as any stage change.
 
 | Stage | Title | State | Gate to enter |
 |-------|-------|-------|---------------|
-| 0 | Freeze + make the freeze legible | **not started** | — |
-| 1 | Truth & correctness needing no measurement | **in progress** — 1.8 done | Stage 0 committed |
-| 2F | Fast lane — enforcement cost | not started | Stage 1 committed |
+| 0 | Gate + make the surface legible | **done** — 0.1–0.4 | — |
+| 1 | Truth & correctness needing no measurement | **in progress** — 1.1–1.5, 1.7–1.10 done; 1.6 outstanding | — (Amendment 2) |
+| 2F | Fast lane — enforcement cost | not started | — (Amendment 2) |
 | 2S | Slow lane — label validity → reranker verdict | **in progress** — 2S.1 done, 2S.2 resolved (Finding F1) | — (Amendment 2) |
 | 3 | Act on measurement | blocked | 2F and 2S report |
 | 4 | New capability | blocked | Stage 3 committed |

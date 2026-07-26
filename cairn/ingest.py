@@ -1558,8 +1558,35 @@ def distill_with_haiku(result, verbose=False, sections_filter=None):
         return None
 
 
+def _attribute_sections(declared, distilled_sections):
+    """Which sections an entry is attributed to, for cache invalidation.
+
+    The declaration comes from the distilling LLM and is NOT trustworthy as an
+    invalidation key: a mislabelled section leaves a stale memory un-archived
+    indefinitely, because archival only touches entries whose sections changed.
+
+    What IS mechanically known is the set of sections fed to the distiller, so
+    the declaration is treated as a refinement WITHIN that set and is accepted
+    only when it is a subset of it. Anything else — no declaration, or a section
+    that was never fed in — falls back to the whole input set, which archives
+    more aggressively. Over-archiving costs a re-distillation; under-archiving
+    leaves a false memory in the corpus forever, so the failure is deliberately
+    asymmetric.
+
+    `distilled_sections` None means full-mode ingestion, where every prior
+    memory is archived regardless and attribution does not gate anything.
+    """
+    declared_set = set(declared or [])
+    if distilled_sections is None:
+        return sorted(declared_set)
+    fed = set(distilled_sections)
+    if declared_set and declared_set <= fed:
+        return sorted(declared_set)
+    return sorted(fed)
+
+
 def insert_memories(entries, project, source_ref, session_id=None, dry_run=False,
-                    changed_sections=None):
+                    changed_sections=None, distilled_sections=None):
     """Insert distilled memory entries into the Cairn database.
 
     If changed_sections is set, only archive previous memories whose source_ref
@@ -1690,9 +1717,8 @@ def insert_memories(entries, project, source_ref, session_id=None, dry_run=False
         assoc_files = json.dumps(source_files) if source_files else None
 
         entry_ref = dict(src_ref_base)
-        source_sections = entry.get("source_sections", [])
-        if source_sections:
-            entry_ref["sections"] = source_sections
+        entry_ref["sections"] = _attribute_sections(
+            entry.get("source_sections", []), distilled_sections)
         entry_ref_json = json.dumps(entry_ref)
 
         conn.execute(
@@ -1879,6 +1905,7 @@ def main():
         session_id=session_id,
         dry_run=args.dry_run,
         changed_sections=changed if incremental else None,
+        distilled_sections=sections_filter,
     )
 
     if not args.dry_run:

@@ -48,22 +48,27 @@ Surveyed the top 30 GitHub "claude memory" repos (April 2026) plus the two most 
 | SDK / API layer | Mem0 | Requires 2+ extra LLM calls per add(); no Claude Code hook integration |
 | MCP tool-call | claude-memory-mcp, claude_memory | LLM must explicitly invoke retrieval; passive otherwise |
 
-Cairn is the only system that makes the LLM an active participant on every turn with zero extra LLM calls:
+Two differences are structural rather than incremental:
 
-| Capability | Cairn | Claude-Mem | Mem0 | Others |
-|------------|-------|-----------|------|--------|
-| Knowledge distilled within the normal response — **no extra LLM calls** | ✓ | ✗ (1 call/session) | ✗ (2+ calls/add) | ✗ |
-| LLM self-declares context gaps mid-conversation, system injects and re-prompts | ✓ | ✗ | ✗ | ✗ |
-| Automatic context injection — no explicit tool call required | ✓ | ✗ | ✗ | ✗ |
-| Bootstrap enforcement — forces context checks every N turns | ✓ | ✗ | ✗ | ✗ |
-| Completeness enforcement — blocks stop if LLM says it's not done | ✓ | ✗ | ✗ | ✗ |
-| Veracity feedback loop — `+`/`-!` annotations across sessions | ✓ | ✗ | ✗ | ✗ |
-| Verbatim session recovery — retrieves actual transcript excerpt, not a summary | ✓ | partial | ✗ | ✗ |
-| Correction-file association — corrections auto-linked to files at time of mistake | ✓ | ✗ | ✗ | ✗ |
-| Structured memory taxonomy (decision/correction/fact/etc.) enforced at write time | ✓ | ✗ | ✗ | ✗ |
-| Trailing intent detection — blocks stop if LLM promised action without doing it | ✓ | ✗ | ✗ | ✗ |
-| Hybrid FTS5 + vector search with RRF | ✓ | ✗ | ✗ | one |
-| Cloud-free, no external dependencies | ✓ | ✓ | optional | most |
+**Knowledge is distilled inside the normal response.** The memory block is
+invisible tail content of the answer itself, so the tokens that respond to you
+also author the knowledge. Every alternative pays for a separate extraction
+pass, which is what confines them to session-end or explicit-tool granularity.
+This is what makes per-turn capture affordable.
+
+**Compliance is enforced mechanically, not requested.** A Stop hook inspects the
+response and blocks completion when the memory block is missing or the LLM
+declared itself incomplete. Systems that state the requirement in a prompt and
+hope are relying on the one thing LLMs do unreliably.
+
+Everything else Cairn does — hybrid FTS5 + vector search, a veracity feedback
+loop, structured memory types, verbatim transcript recovery — exists elsewhere in
+some form, and is a matter of degree rather than kind.
+
+Scope of the survey: the top 30 GitHub "claude memory" repos as of **April
+2026**, plus Claude-Mem and Mem0. It was a documentation review, not a hands-on
+benchmark, projects move fast, and the two claims above are the ones worth
+holding Cairn to.
 
 **Session 1** — casual conversation in `~/temp`:
 ```
@@ -281,7 +286,9 @@ Two feedback loops close the gap between *what gets injected* and *what was usef
 - **Behavioural engagement** (`score_engagement`/`apply_engagement`) — the Stop hook mechanically checks whether the response *used* each delivered memory, by counting the memory's distinctive terms (its tokens minus the prompt's) that resurface in the response. This is the primary, non-circular signal.
 - **Agent-as-teacher grades** — the main agent grades each surfaced memory 0–3 (plus a hard-negative flag) in the `[cm]` block's `rg` field; parsed and written back (`parse_relevance_grades`/`apply_relevance_grades`) to supplement engagement.
 
-An optional bucket-4 prefilter (`is_self_referential_meta`, gated by `RELEVANCE_PREFILTER_ENABLED`, off by default, corrections exempt) drops self-referential meta-memories. The reranker is GPU-aware (`config.resolve_reranker`): `ms-marco-MiniLM-L-6-v2` by default, `BAAI/bge-reranker-base` on CUDA when `RERANKER_BGE_ENABLED`. Phases 1–2 (instrument + agent labels) are implemented; a trained cross-encoder student that gates injections and lets the teacher step back (spec Phases 3–4) is future work. See `docs/spec-memory-relevance-grading.md`.
+An optional bucket-4 prefilter (`is_self_referential_meta`, gated by `RELEVANCE_PREFILTER_ENABLED`, off by default, corrections exempt) drops self-referential meta-memories. The reranker is GPU-aware (`config.resolve_reranker`): `ms-marco-MiniLM-L-6-v2` by default, `BAAI/bge-reranker-base` on CUDA when `RERANKER_BGE_ENABLED`. Phases 1–3 are implemented: instrumentation, agent labels, and a trained cross-encoder student (`cairn/train_reranker.py`) that beat the incumbent on held-out pairwise agreement and is deployed by `config.resolve_reranker()` when present. Teacher-demotion (Phase 4) is still future work.
+
+**The student is a per-machine artifact.** `training_data/` is gitignored, so a fresh clone has no student and falls back to pretrained `ms-marco-MiniLM-L-6-v2` — retrieval still works, but the trained gate is absent until that machine trains its own. Any quoted student-vs-incumbent figure describes the machine it was measured on. Cross-model comparisons drawn from live delivery logs are additionally time-confounded (a model change is a flag day, not a randomised assignment), so they are not promotion evidence. See `docs/spec-memory-relevance-grading.md` and `docs/spec-remediation-2026-07.md`.
 
 **Write side.** Every agent-written memory is stamped with `GENERATION_PROMPT_VERSION` (`genA-v4`) in `source_ref`, so downstream usefulness is attributable to the generation rules that produced it. The live rules carry a dual-altitude transferability lever (capture the generalised cross-project principle, anchored by the specific instance). `cairn/ab_writeside.py` is an offline A/B harness: it replays the transcript corpus through two generation prompts (A = control, B = control + one speculative lever) and judges them with Opus 4.8 — blind, position-swapped, and pairwise on findability / self-sufficiency / fitness, with the session cohort as the A/B unit (CLI: `replay`/`ab`). Separately, a **live per-prompt A/B** (`AB_TEST_ENABLED`, on) randomly assigns each prompt to arm A (control) or arm B (control + one speculative variable, `AB_B_INSTRUCTION`), stamps each memory with its arm in `source_ref` (`genA-v4` vs `genB-v2`), and compares outcomes by arm via `query.py --delivery-stats` (engagement/grade per generation version + reranker).
 
@@ -410,12 +417,56 @@ Notable subsystem toggles (all `CAIRN_<NAME>` env overrides; defaults from `cair
 | Decision | Rationale |
 |----------|-----------|
 | **No MCP** | Claude Code has direct filesystem access — MCP adds a protocol layer for capabilities already available natively |
-| **Pull-based retrieval** | The LLM decides when it needs context — more token-efficient than injecting on every prompt |
+| **Push + pull retrieval** | Both: context is injected automatically (first-prompt, per-prompt, project/correction bootstrap), *and* the LLM can declare `context: insufficient` to pull more mid-conversation. An earlier version of this table said "pull-based" — that described a design that predates automatic injection |
 | **Local models** | No API keys, no network latency, no ongoing costs. 3 local models: embedding, cross-encoder re-ranking, NLI for consolidation |
 | **Veracity over ranking** | Confidence tracks corroboration, not retrieval relevance — similarity and recency handle ranking |
 | **Invisible tags** | User sees clean output; hook infrastructure sees structured metadata — no UX compromise |
 | **sqlite-vec** | Indexed vector KNN search that scales, with transparent brute-force fallback |
 | **WAL + busy timeout** | Concurrent sessions, cron, and external integrations without "database locked" errors |
+
+## Subsystem maturity
+
+Cairn covers a lot of surface for a single maintainer. Rather than pretend it is
+uniform, every subsystem carries a tier, and the tier is a promise about what you
+can depend on:
+
+- **Supported** — used daily, covered by the test suite, breaking changes called
+  out in release notes. Depend on it.
+- **Experimental** — shipped and working, but not validated at scale. May change
+  shape or be withdrawn without a deprecation cycle. Anything experimental that
+  *writes* to the durable store is off by default.
+- **Frozen** — functional and not under active development. Bug fixes only.
+
+| Subsystem | Tier | Notes |
+|---|---|---|
+| Memory capture, retrieval, dedup | Supported | The core loop |
+| Hooks (prompt / stop / subagent) | Supported | Depends on undocumented Claude Code internals — see Limitations |
+| API proxy | Supported | Opt out with `CAIRN_PROXY_ENABLED=0` |
+| Code graph (`cairn-graph`, graph fleet) | Supported | Fails open when no graph is built |
+| Calibration system | Supported | Phases 1–7 shipped |
+| Dashboard | Supported | |
+| Repo ingestion | Supported | Incremental invalidation is section-granular; see `docs/spec-remediation-2026-07.md` 1.3/3.3 |
+| Review write-back | Supported | For durable rationale only, not transient bug findings |
+| Read-side relevance grading | Experimental | Phases 1–3 shipped; teacher-demotion (Phase 4) outstanding |
+| Trained reranker student | Experimental | Per-machine artifact; falls back to pretrained ms-marco |
+| Live write-side A/B | Experimental | Arm promotion requires measurable engagement labels |
+| Offline replay harness (`ab_writeside`) | Experimental | Analysis tool; never run over the full corpus |
+| Dev-container support | Experimental | |
+| Multi-node sync (v2) | Experimental | **Off by default.** See the caveat below |
+
+### Multi-node sync — read this before enabling
+
+Sync is the least settled thing in the repo, and it sits on a design whose every
+other assumption is single-user. Concretely: there is no ACL model, merges are
+last-write-wins by Lamport clock with no semantic conflict resolution, and there
+is no trust provenance between peers — a memory replicated from an approved peer
+is indistinguishable downstream from one you wrote yourself.
+
+That is fine for the intended case (several machines belonging to the same
+person on a LAN). It is *not* a multi-tenant or multi-user design, and nothing
+downstream of replication is prepared to treat a peer's memories as lower-trust
+input. Enable it for your own machines; do not enable it to share a corpus with
+other people.
 
 ## Limitations
 
