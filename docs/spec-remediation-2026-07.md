@@ -322,6 +322,38 @@ Consequences:
   first-prompt: single-turn engagement mismeasures a session-horizon layer, per
   the standing rejection of first-prompt suppression.
 
+### Finding F4 — 2026-07-26: file-absence is weak evidence of staleness
+
+4.1 was specified as verification-on-retrieval that archives memories asserting
+repo state that no longer holds. Built and run, the premise does not survive
+contact with the corpus, so the design changed from ARCHIVE to FLAG.
+
+Two false-positive classes, both found by running it:
+
+1. **Ephemeral paths.** The first live pass flagged 52 true memories about CAN
+   register findings solely because the `/tmp` file they were harvested into had
+   been cleaned up. The absence of a scratch file is evidence about the
+   filesystem, not about the claim. Now excluded by prefix.
+2. **Knowledge derived from a file.** After excluding ephemeral paths it still
+   flagged entries like `forscan-license-architecture`, whose content is what
+   was LEARNED from a binary, not an assertion that the binary exists. Deleting
+   the artefact does not falsify the finding.
+
+The general shape: a memory citing a path is usually asserting something learned
+*from* it, not asserting its existence. So the checkable subset is much smaller
+than 4.1 assumed, and archiving on file-absence would destroy true knowledge —
+the precise failure the no-passive-decay decision was protecting against.
+
+`cairn/verify_stale.py` therefore flags to the annotation log by default and
+archives only under an explicit `--archive`, with a versioned `source_ref` so a
+bad pass is retractable in one command. It also refuses to judge relative paths
+when the repo root is absent on this machine, since "not checked out here" is
+otherwise indistinguishable from "deleted".
+
+This does NOT reopen passive decay, which remains rejected for the original
+reason: confidence is decoupled from ranking, so decaying it would relabel
+without changing what is retrieved.
+
 ### Finding F3 — 2026-07-26: every layer carries substantial deferred value
 
 `cairn/deferred_engagement.py`, validated at **82.1% agreement** with live
