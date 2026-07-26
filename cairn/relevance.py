@@ -224,7 +224,7 @@ def log_memory_deliveries(delivered: list[dict[str, Any]], *, session_id: str,
                           context_text: str = "", context_vec: Optional[bytes] = None,
                           turn_index: Optional[int] = None,
                           layer: Optional[str] = None, project: Optional[str] = None,
-                          eph_path: Optional[str] = None) -> int:
+                          eph_path: Optional[str] = None, _retry: bool = True) -> int:
     """Insert one memory_deliveries row per injected memory. Fail-soft: returns
     the count written (0 on any error) — instrumentation must never break delivery.
 
@@ -264,6 +264,29 @@ def log_memory_deliveries(delivered: list[dict[str, Any]], *, session_id: str,
             n += 1
         conn.commit()
         return n
+    except sqlite3.OperationalError as exc:
+        # A missing column means this DB predates a schema change. Fail-soft was
+        # designed so instrumentation never breaks delivery — but combined with a
+        # new column in the INSERT it turns a migration gap into SILENT, total
+        # data loss: every insert returns 0 and nothing is recorded. That
+        # happened live on 2026-07-26 when gate_status shipped, costing hours of
+        # deliveries before it was noticed. Migrate and retry once.
+        # SQLite words this two ways: "has no column named X" from an INSERT and
+        # "no such column: X" from a SELECT. Matching only the second is why the
+        # first version of this guard did not fire on the very case it exists for.
+        _msg = str(exc).lower()
+        if not _retry or not ("no such column" in _msg or "has no column named" in _msg):
+            return 0
+        try:
+            from cairn.init_db import init_ephemeral
+            init_ephemeral(_eph_path(eph_path))
+        except Exception:
+            return 0
+        return log_memory_deliveries(
+            delivered, session_id=session_id, context_text=context_text,
+            context_vec=context_vec, turn_index=turn_index, layer=layer,
+            project=project, eph_path=eph_path, _retry=False,
+        )
     except sqlite3.Error:
         return 0
     finally:
