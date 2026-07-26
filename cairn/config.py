@@ -389,6 +389,30 @@ del _os_ce
 CROSS_ENCODER_STUDENT_FLOOR = -100.0
 
 
+def resolve_arm_floor(model_name):
+    """Score floor for a SPECIFIC A/B arm (spec 2S.5).
+
+    Floors are per-model and not interchangeable: the student is pairwise-trained
+    with compressed logits (calibrated floor around -9.3) while ms-marco is
+    pointwise with a -3.0 floor. Applying one model floor to the other
+    systematically suppresses or admits the wrong candidates, which would
+    handicap an arm and bias the very comparison the experiment exists to make.
+
+    Same convention as resolve_reranker: a local model dir ships its floor in
+    floor.txt; a named pretrained model uses the static logit floor.
+    """
+    import os as _os_af
+    if model_name and _os_af.path.isdir(model_name):
+        _ff = _os_af.path.join(model_name, "floor.txt")
+        if _os_af.path.exists(_ff):
+            try:
+                return float(open(_ff).read().strip())
+            except Exception:
+                pass
+        return CROSS_ENCODER_STUDENT_FLOOR
+    return CROSS_ENCODER_SCORE_FLOOR
+
+
 def resolve_reranker():
     """Return (model_name, score_floor) for the active device.
 

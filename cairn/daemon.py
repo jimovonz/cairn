@@ -347,7 +347,11 @@ def handle_client(conn, emb):
             # reranker_model still records which model actually scored.
             arm = request.get("model")
             ce = _get_cross_encoder_arm(arm) if arm else None
-            arm_name, arm_floor = (arm, None) if ce is not None else (None, None)
+            if ce is not None:
+                from cairn.config import resolve_arm_floor
+                arm_name, arm_floor = arm, resolve_arm_floor(arm)
+            else:
+                arm_name, arm_floor = None, None
             if ce is None:
                 ce = _get_cross_encoder()
             if ce is None:
