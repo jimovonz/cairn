@@ -322,6 +322,37 @@ Consequences:
   first-prompt: single-turn engagement mismeasures a session-horizon layer, per
   the standing rejection of first-prompt suppression.
 
+### Finding F3 — 2026-07-26: every layer carries substantial deferred value
+
+`cairn/deferred_engagement.py`, validated at **82.1% agreement** with live
+verdicts at window=1 before reporting.
+
+| layer | w=1 | w=3 | w=5 | w=10 | n |
+|---|---|---|---|---|---|
+| per-prompt | 41.7% | 72.0% | 79.9% | **88.9%** | 314 |
+| first-prompt | **19.8%** | 33.9% | 38.5% | **45.3%** | 192 |
+| correction-bootstrap | 64.5% | 75.2% | 76.9% | 78.5% | 121 |
+| project-bootstrap | 57.9% | 80.7% | 86.0% | 87.7% | 114 |
+
+**Single-turn engagement understates every layer, and understates first-prompt
+worst.** first-prompt has the lowest same-turn rate of any layer (19.8%) and
+more than doubles by ten turns. That is the quantitative confirmation of the
+standing rejection of first-prompt suppression: ranking layers on a single-turn
+window scores a session-horizon layer as noise, and the layer that looked
+weakest on the old metric is the one whose value is most deferred.
+
+Consequence: any layer-level decision (suppression, cap, budget) must state its
+window. A comparison at w=1 is not wrong, but it is a claim about immediate use,
+not about value.
+
+**The self-validation gate paid for itself on first use.** An initial run
+reported 76-90% at w=1 — implausible against a live rate near 15%. The gate
+withheld the layer table, which forced diagnosis rather than publication. The
+cause was an argument-order bug in this tool (`score_engagement` takes
+response, memory, prompt — memory was being passed first), not the response
+reconstruction that had been hypothesised. Without the gate, a confident and
+entirely false "deferred value does not exist" finding would have shipped.
+
 ### Finding F2 — 2026-07-26: the ranker is not ordering within its own head
 
 From `query.py --marginal-engagement`, lexical stratum only (n=1,204).
