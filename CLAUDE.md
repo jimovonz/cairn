@@ -259,14 +259,18 @@ resolves `sqlite3 -> pysqlite3`.
   `import sqlite3` in a throwaway script while the daemon is running) — use
   pysqlite3 or `query.py`. Concurrent stdlib access can corrupt the WAL.
 
-## Active remediation programme (2026-07) — FREEZE IN EFFECT
+## Active remediation programme (2026-07) — write-path gate
 
 **A staged remediation programme is running: `docs/spec-remediation-2026-07.md`.
 Read it before proposing or starting new Cairn work.**
 
-- **The freeze:** no new subsystems while any of Stages 0–2 is unfinished. Bug
-  fixes, docs, and tests are always permitted. New *capability* waits for
-  Stage 4.
+- **The gate is write-path only** (Amendment 1; the earlier blanket freeze is
+  retracted). Read-side work — thresholds, rerankers, retrieval, default-off
+  flags — ships freely, because a read-side error is bounded by the time it was
+  live. Write-path work (schema, corpus writes, archive/delete, replication)
+  lands only when its writes are **attributable** via `source_ref` and
+  **retractable in bulk** — a flag flipped off does not retract writes made
+  while it was on.
 - **Gates are data-volume, not date, based** — several stages need accumulated
   `memory_deliveries` / `metrics` rows before they can be validated, so the
   programme is applied over many sessions. Check the Status table in the spec

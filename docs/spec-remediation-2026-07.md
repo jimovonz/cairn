@@ -19,8 +19,11 @@ same commit as any stage change.
 | 3 | Act on measurement | blocked | 2F and 2S report |
 | 4 | New capability | blocked | Stage 3 committed |
 
-**Freeze is IN EFFECT while any of Stages 0–2 is unfinished.** No new
-subsystems. Bug fixes, docs, and tests are always permitted.
+**Gate (as amended by Amendment 1): write paths only.** Read-side work —
+thresholds, rerankers, retrieval, flags — ships freely with no gate. Write-path
+work (schema, corpus writes, archive/delete, replication) lands only when its
+writes are attributable via `source_ref` and retractable in bulk. The original
+blanket freeze on new subsystems is RETRACTED.
 
 ## Baseline snapshot — 2026-07-26
 
@@ -162,4 +165,81 @@ Scope undecidable until 2F and 2S report.
 Append numbered amendments here rather than rewriting stages in place, so the
 programme's evolution stays traceable.
 
-- *(none yet)*
+### Amendment 1 — 2026-07-26: freeze narrowed to write paths
+
+Source: revised third-party position, plus the stated constraint that Cairn is
+self-hosting, so a deferred effectiveness feature forfeits compounding return on
+every subsequent day of work. That is a real return, not a rationalisation.
+
+**The blanket freeze in Stage 0 is retracted.** Velocity was the wrong target.
+The line that matters is reversibility, and it runs read-side vs write-side:
+
+- **Read-side errors are bounded** by the time they were live. A miscalibrated
+  threshold, a weak reranker, an expensive fan-out — all revert by changing a
+  constant. Default-off flags (`CAIRN_SYNC_ENABLED`, `RERANKER_BGE_ENABLED`,
+  `CAIRN_GRAPH_WATCH`, `RELEVANCE_PREFILTER_ENABLED`) already handle this well.
+  **Ship these as fast as desired. No gate.**
+- **Write-side errors accumulate in the one artefact that cannot be rebuilt.**
+  A flag flipped off does not retract the writes made while it was on. So the
+  gate applies only to: schema changes, corpus writes, anything that archives or
+  deletes, anything replicated.
+
+**Replacement gate (Stage 0.4):** a write-path feature lands only when its
+writes are attributable via `source_ref` AND retractable in bulk. This costs
+roughly two lines per subsystem and no velocity.
+
+The velocity argument extends one step to support this: because Cairn gates the
+effectiveness of the work it is used to build, corpus noise taxes all future
+feature work. Past some noise level, shipping faster makes you slower. The
+crossing point will not be noticed by intuition — it presents as the assistant
+being vaguely less useful, not as a failure. **Marginal-entry engagement is the
+metric that would show it** (restored as 2S.7 below; it was dropped in error
+during the original re-staging).
+
+**Corrected attribution of the ingest defect.** The revised critique again cites
+"undetected removals". That remains disproved — `_fingerprint_section`
+(`ingest.py:70`) hashes the whole section payload, so deletions flip the hash.
+The write-side defect is 1.3: archival keys on `source_sections`, which the
+distilling LLM self-reports. This changes the invariant to record for
+`ingest.py`: not "assumes a fixed non-shrinking section namespace" (true of
+`diff_sections`, but not the bug) but **"trusts LLM-declared provenance as an
+invalidation key"**. Recording the wrong invariant would leave the actual defect
+undocumented.
+
+Also non-load-bearing in the revised critique: stale entries persisting "at 0.7
+confidence with no passive decay". `SCORE_W_CONFIDENCE = 0.0` — confidence feeds
+nothing, and archival is driven by `archived_reason`, not confidence.
+
+### Amendment 1 — new items
+
+- **0.4** Replace the blanket freeze with the write-path gate above. Read-side
+  work is explicitly unblocked, effective immediately.
+- **1.8** **Bulk retraction verb** — `query.py:604` `archive_memory` is single-id
+  only; there is no archive-by-`source_ref`. Stamping without retraction is
+  inert, so this lands **first**, with `--dry-run` and a count before it
+  writes. Until it exists, "a bad experiment is a query away from being
+  archived" is false.
+- **1.9** **Generalise version stamping to every write path.** Currently only the
+  agent-memory path carries a version (`GENERATION_PROMPT_VERSION` /
+  `AB_ARM_VERSIONS`). Unversioned: `review_writeback.py:200`
+  (`"review-writeback"`), the analyser (`"analyser-session-arc"`), and
+  `ingest.py`, which writes a rich source_ref dict but no extractor version
+  despite `EXTRACTOR_VERSIONS` existing and feeding only the fingerprint. Also
+  covers `ingest_transcript.py` and `backfill_ingestion.py`.
+- **1.10** **Per-subsystem input-domain invariant.** One line per write-path
+  subsystem stating what it assumes about its input domain. The two ingest
+  defects came from transplanting an invariant into a domain that violates it,
+  not from haste — slowing down would not have caught them. Cheapest available
+  intervention, zero velocity cost.
+- **2S.7** **Marginal-entry engagement** — restored. Gated on 2S.1 (segmented
+  reporting), since it is an engagement measure and inherits the stratum problem.
+- **4.1 reclassified.** Verification-on-retrieval archives stale entries, so it
+  is a write path, not a read path. Under the new gate its prerequisite is
+  1.8 + 1.9 (attributable and retractable), not "Stage 3 committed". Applying
+  the amendment consistently unblocks it earlier than the original staging did.
+
+Net effect: write-path features ship as fast as read-path ones, because a bad
+experiment becomes attributable and retractable rather than permanently mixed
+into the corpus. This also makes the engagement instrumentation usable
+per-experiment rather than per-tier — measurement currently generated and not
+consumed.
