@@ -15,9 +15,23 @@ same commit as any stage change.
 | 0 | Gate + make the surface legible | **done** — 0.1–0.4 | — |
 | 1 | Truth & correctness needing no measurement | **done** — 1.1–1.10 | — (Amendment 2) |
 | 2F | Fast lane — enforcement cost | **2F.1 done; 2F.2 BLOCKED on data** | needs ≥200 `hook_fired` after 2026-07-26 |
-| 2S | Slow lane — label validity → reranker verdict | **in progress** — 2S.1 done, 2S.2 resolved (Finding F1) | — (Amendment 2) |
-| 3 | Act on measurement | blocked | 2F and 2S report |
-| 4 | New capability | blocked | Stage 3 committed |
+| 2S | Slow lane — label validity → reranker verdict | **2S.1/2/3/7 done (F1, F2); 2S.4 BLOCKED on data; 2S.5, 2S.6 open** | — (Amendment 2) |
+| 3 | Act on measurement | **3.1 unblocked (expensive); 3.2 blocked on 2S.5; 3.3 open** | 2S.1 done |
+| 4 | New capability | **4.1 UNBLOCKED** — 1.8 + 1.9 both shipped | — (Amendment 1) |
+
+**Blocked on accumulating data (not on work):**
+- **2F.2** — needs ≥200 `hook_fired` after 2026-07-26, when `enforcement_block`
+  instrumentation landed. Pre-instrumentation rows cannot substitute: the old
+  cause markers fire on both blocking and non-blocking paths.
+- **2S.4** — needs `gate_status` rows to accumulate. Historical deliveries are
+  NULL on that column, and excluding by the NULL-`reranker_model` proxy is
+  exactly the approximation F1 flagged as insufficient.
+
+**Open and implementable now** (no data dependency): 2S.5 (randomised A/B —
+needs the daemon to hold and randomly assign two cross-encoders), 2S.6
+(deferred-value window), 3.3 (per-document fingerprints), 4.1
+(verification-on-retrieval). 3.1 is unblocked by 2S.1 but is a long-running,
+expensive Opus vote pass (~4,455 votes outstanding).
 
 **Gate (as amended by Amendment 1): write paths only.** Read-side work —
 thresholds, rerankers, retrieval, flags — ships freely with no gate. Write-path
