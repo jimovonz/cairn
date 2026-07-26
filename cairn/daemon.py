@@ -71,6 +71,33 @@ def _get_nli_model() -> Any:
         return None
 
 
+# Arm name -> loaded model, for the randomised reranker A/B (spec 2S.5). Each
+# resident arm costs memory, which is why the experiment is opt-in.
+_ce_arms: dict = {}
+
+
+def _get_cross_encoder_arm(model_name: str) -> Any:
+    """Load and cache a SPECIFIC reranker, for A/B arm assignment.
+
+    Kept separate from _get_cross_encoder so the default single-model path is
+    untouched when the experiment is off.
+    """
+    if model_name in _ce_arms:
+        return _ce_arms[model_name]
+    try:
+        from cairn.config import CROSS_ENCODER_ENABLED
+        if not CROSS_ENCODER_ENABLED:
+            return None
+        from sentence_transformers import CrossEncoder
+        model = CrossEncoder(model_name, device="cpu") if _force_cpu_reranker \
+            else CrossEncoder(model_name)
+        _ce_arms[model_name] = model
+        return model
+    except Exception:
+        _ce_arms[model_name] = None   # negative-cache: do not retry a bad arm per request
+        return None
+
+
 def _get_cross_encoder() -> Any:
     """Lazily load the cross-encoder model. Returns None if disabled or unavailable."""
     global _cross_encoder, _cross_encoder_name, _cross_encoder_floor
@@ -314,7 +341,15 @@ def handle_client(conn, emb):
         elif action == "rerank":
             query = request["query"]
             candidates = request["candidates"]
-            ce = _get_cross_encoder()
+            # A/B arm, when the caller assigned one (spec 2S.5). Falls back to
+            # the default model if that arm failed to load, so a bad arm
+            # degrades to normal service rather than dropping the gate — and
+            # reranker_model still records which model actually scored.
+            arm = request.get("model")
+            ce = _get_cross_encoder_arm(arm) if arm else None
+            arm_name, arm_floor = (arm, None) if ce is not None else (None, None)
+            if ce is None:
+                ce = _get_cross_encoder()
             if ce is None:
                 response = {"scores": None}
             else:
@@ -333,8 +368,15 @@ def handle_client(conn, emb):
                     if ce is None:
                         raise ce_err
                     scores = ce.predict(pairs).tolist()
-                response = {"scores": scores, "score_floor": _cross_encoder_floor,
-                            "model": _cross_encoder_name}
+                    # The assigned arm did not score this request after the
+                    # fault, so it must not be reported as the treatment.
+                    arm_name = None
+                # Report the model that ACTUALLY scored. Reporting the default
+                # name while an arm did the scoring would mislabel the treatment
+                # and silently invalidate the A/B (spec 2S.5).
+                response = {"scores": scores,
+                            "score_floor": arm_floor if arm_name else _cross_encoder_floor,
+                            "model": arm_name or _cross_encoder_name}
 
         elif action == "nli":
             pairs = request["pairs"]

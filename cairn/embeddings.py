@@ -202,7 +202,7 @@ def _daemon_vector_search(texts: list[str], n_base: int, min_sim: float,
     return None
 
 
-def _daemon_rerank(query: str, candidates: list[str]):
+def _daemon_rerank(query: str, candidates: list[str], model: str = None):
     """Re-rank candidates via the daemon's cross-encoder. Returns
     (scores, score_floor, model_name) or None. The daemon resolves the
     device-appropriate model + floor (bge on CUDA, ms-marco on CPU) and reports
@@ -210,7 +210,10 @@ def _daemon_rerank(query: str, candidates: list[str]):
     needn't import torch."""
     try:
         from cairn.daemon import send_request
-        resp = send_request({"action": "rerank", "query": query, "candidates": candidates})
+        req = {"action": "rerank", "query": query, "candidates": candidates}
+        if model:
+            req["model"] = model          # A/B arm assignment (spec 2S.5)
+        resp = send_request(req)
         if resp and resp.get("scores") is not None:
             return resp["scores"], resp.get("score_floor"), resp.get("model")
     except (ConnectionError, TimeoutError, OSError) as e:
@@ -1016,7 +1019,20 @@ def find_similar(
         # held-out agreement only +0.6pp — below the deploy margin — because the labels'
         # own test-retest noise (~0.81) is the ceiling, not passage richness.)
         candidate_texts = [f"{r.get('type', '')} {r.get('topic', '')}: {r.get('content', '')}" for r in ce_pool]
-        ce_out = _daemon_rerank(rerank_query or text, candidate_texts)
+        # Randomised arm assignment (spec 2S.5). Keyed on the rerank query so a
+        # retry of the same request keeps its treatment — switching arms on
+        # retry would contaminate the comparison. No-op when the experiment is
+        # off, which is the default.
+        _ab_query = rerank_query or text
+        _arm = None
+        try:
+            from cairn.config import (RERANKER_AB_ENABLED, RERANKER_AB_ARMS,
+                                      pick_reranker_arm)
+            if RERANKER_AB_ENABLED:
+                _arm = pick_reranker_arm(RERANKER_AB_ARMS, _ab_query)
+        except Exception:
+            _arm = None
+        ce_out = _daemon_rerank(_ab_query, candidate_texts, model=_arm)
         ce_scores, ce_floor, ce_model = ce_out if ce_out else (None, None, None)
         floor = ce_floor if ce_floor is not None else CROSS_ENCODER_SCORE_FLOOR
         if ce_scores and len(ce_scores) == len(ce_pool):

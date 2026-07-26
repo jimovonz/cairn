@@ -15,9 +15,9 @@ same commit as any stage change.
 | 0 | Gate + make the surface legible | **done** — 0.1–0.4 | — |
 | 1 | Truth & correctness needing no measurement | **done** — 1.1–1.10 | — (Amendment 2) |
 | 2F | Fast lane — enforcement cost | **2F.1 done; 2F.2 BLOCKED on data** | needs ≥200 `hook_fired` after 2026-07-26 |
-| 2S | Slow lane — label validity → reranker verdict | **2S.1/2/3/7 done (F1, F2); 2S.4 BLOCKED on data; 2S.5, 2S.6 open** | — (Amendment 2) |
-| 3 | Act on measurement | **3.1 unblocked (expensive); 3.2 blocked on 2S.5; 3.3 open** | 2S.1 done |
-| 4 | New capability | **4.1 UNBLOCKED** — 1.8 + 1.9 both shipped | — (Amendment 1) |
+| 2S | Slow lane — label validity → reranker verdict | **2S.1/2/3/5/6/7 done (F1, F2, F3); 2S.4 BLOCKED on data** | — (Amendment 2) |
+| 3 | Act on measurement | **3.3 done; 3.1 unblocked (expensive LLM pass); 3.2 blocked on 2S.5 data** | 2S.1 done |
+| 4 | New capability | **4.1 done** — flags, does not archive (F4) | — (Amendment 1) |
 
 **Blocked on accumulating data (not on work):**
 - **2F.2** — needs ≥200 `hook_fired` after 2026-07-26, when `enforcement_block`
@@ -321,6 +321,31 @@ Consequences:
 - Do NOT read the layer table's first-prompt figure (5.2%) as a verdict on
   first-prompt: single-turn engagement mismeasures a session-horizon layer, per
   the standing rejection of first-prompt suppression.
+
+### 2S.5 — how to run the randomised reranker A/B
+
+Shipped and OFF by default; each resident arm costs daemon memory. To start it:
+
+```bash
+export CAIRN_RERANKER_AB=1
+export CAIRN_RERANKER_AB_ARMS="cross-encoder/ms-marco-MiniLM-L-6-v2,<student-path>"
+cairn-daemon restart
+```
+
+Assignment is deterministic hash-bucketing on the rerank query, so a retry keeps
+its treatment — switching arms on retry would contaminate the comparison the
+experiment exists to make clean. Balance measured at 1001/999 over 2,000 keys.
+
+No new column: `memory_deliveries.reranker_model` already records which model
+scored, and the daemon reports the ARM that actually scored rather than the
+default model name — mislabelling the treatment would silently invalidate the
+experiment. A failed arm degrades to the default model rather than dropping the
+gate, and is labelled accordingly.
+
+Read the result with `query.py --delivery-stats` (stratified per 2S.1) and
+`--marginal-engagement`. Per Finding F2, judge on **rank-ordering quality**, not
+only aggregate engagement: a model that lifts the average while leaving the head
+flat has not done the ranker's job. Gate: ≥500 randomised deliveries per arm.
 
 ### Finding F4 — 2026-07-26: file-absence is weak evidence of staleness
 

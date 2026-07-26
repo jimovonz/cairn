@@ -441,6 +441,42 @@ def resolve_reranker():
 #   n=195 — mild measurement confound acknowledged, gap too large to be artifact).
 GENERATION_PROMPT_VERSION = "genA-v4"
 
+# === Randomised reranker A/B (spec 2S.5) ===
+# Every reranker verdict to date is flag-day/time-confounded: a model change is
+# a deployment, not an assignment, so a model deployed recently is compared
+# against sessions from a different period with different work in them. Finding
+# F1 showed how badly that misleads — the currently-deployed student had 449
+# scored rows across recent interactive sessions while ms-marco's 225 came from
+# older ones, producing an apparent 32.5%-vs-0.0% gap that cannot be read as
+# quality.
+#
+# With arms assigned per request, `memory_deliveries.reranker_model` — which is
+# already recorded — becomes a randomised treatment label, so no new column is
+# needed. OFF by default: each additional arm is a resident model in the daemon.
+import os as _os_ab
+RERANKER_AB_ENABLED = _os_ab.environ.get("CAIRN_RERANKER_AB", "0") == "1"
+# Empty means "use resolve_reranker()", i.e. current behaviour.
+RERANKER_AB_ARMS = tuple(
+    a for a in _os_ab.environ.get("CAIRN_RERANKER_AB_ARMS", "").split(",") if a.strip()
+)
+del _os_ab
+
+
+def pick_reranker_arm(arms, key):
+    """Deterministically assign a request to an arm (hash bucketing).
+
+    Deterministic rather than RNG-based so the same request always lands in the
+    same arm — a retry must not silently switch treatment and contaminate the
+    comparison. Uniform across distinct requests, which is what randomisation
+    needs; it does not need to be unpredictable.
+    """
+    if not arms:
+        return None
+    import hashlib
+    h = hashlib.sha256((key or "").encode()).digest()
+    return arms[h[0] % len(arms)]
+
+
 # === Write-path provenance versions (spec 1.9) ===
 # Every write path stamps a VERSIONED source_ref, so a bad experiment is
 # attributable and therefore retractable in bulk via
