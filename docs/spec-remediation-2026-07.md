@@ -308,6 +308,43 @@ Consequences:
   first-prompt: single-turn engagement mismeasures a session-horizon layer, per
   the standing rejection of first-prompt suppression.
 
+### Finding F2 — 2026-07-26: the ranker is not ordering within its own head
+
+From `query.py --marginal-engagement`, lexical stratum only (n=1,204).
+
+| served rank | n | engaged | rate |
+|---|---|---|---|
+| 0 | 328 | 51 | 15.5% |
+| 1 | 254 | 41 | 16.1% |
+| 2 | 215 | 38 | **17.7%** |
+| 3 | 126 | 21 | 16.7% |
+| 4 | 84 | 12 | 14.3% |
+| 5 | 53 | 5 | 9.4% |
+| 6 | 45 | 3 | 6.7% |
+
+Two readings, one actionable and one not:
+
+1. **Ordering within the head is flat, and slightly inverted.** If the ranker
+   were ordering well, engagement would fall monotonically with rank. Rank 0
+   (15.5%) is not better than rank 2 (17.7%). Across the top five positions the
+   ranker is not separating useful from less useful at all — a direct
+   measurement of ranking quality that an aggregate rate cannot express, and it
+   is independent of which model is deployed.
+2. **Marginal value does fall off after rank ~4** (9.4%, 6.7%), so the tail of
+   each injection is materially weaker than the head. This is the honest basis
+   for a cap discussion; the head-flatness above is the honest basis for
+   doubting that reranking currently earns its cost.
+
+**The by-turn-size table is confounded and must not be used to set a cap.**
+Turns with few injected memories are turns where retrieval found few candidates,
+so size correlates with match quality: the 2.7% rate at size 1 measures weak
+prompts, not an oversized cap. The readout now says so in-band, because the
+number is otherwise an inviting way to justify whatever cap one already wanted.
+
+Consequence: 2S.5's randomised A/B should be judged on rank-ordering quality,
+not only on aggregate engagement — a model that raises the average while leaving
+the head flat has not done the ranker's job.
+
 ### Amendment 2 — 2026-07-26: schedule by clock-start, not by stage
 
 The Stage 1 → 2 → 3 ordering sequenced work by certainty. With data-volume

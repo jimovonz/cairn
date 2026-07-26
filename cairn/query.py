@@ -1383,6 +1383,93 @@ def enforcement_stats(days=14):
     e.close()
 
 
+def marginal_engagement(days=None):
+    """Does the Nth injected memory still earn its place? (spec 2S.7)
+
+    The ranker's job is maximum relevant data against least noise, and an
+    aggregate engagement rate cannot tell those apart: a ranker that injects
+    more marginal entries and a ranker that injects fewer better ones can post
+    the same average. What distinguishes them is whether engagement survives at
+    the tail of the injected set.
+
+    Restricted to qualifying strata, because untagged rows are 100% engaged by
+    construction and would flatten the curve into meaninglessness.
+
+    Reads by rank (is the 5th entry still used?) and by turn size (does
+    injecting more dilute the whole set, or just add weak tail entries?).
+    """
+    from cairn.config import EPHEMERAL_DB_PATH
+    e = sqlite3.connect(EPHEMERAL_DB_PATH)
+    where_days = ""
+    args = []
+    if days:
+        where_days = " AND delivered_at >= datetime('now', ?)"
+        args = [f"-{int(days)} days"]
+
+    try:
+        rows = e.execute(
+            "SELECT session_id, turn_index, served_rank, engaged, engaged_method "
+            "FROM memory_deliveries WHERE engaged IS NOT NULL" + where_days, args
+        ).fetchall()
+    except sqlite3.OperationalError:
+        print("No delivery data.")
+        return
+    if not rows:
+        print("No scored deliveries in window.")
+        return
+
+    qualifying = _qualifying_strata((r[4], r[3]) for r in rows)
+    usable = [r for r in rows if (r[4] or "(untagged)") in qualifying]
+    print(f"=== Marginal-entry engagement ===")
+    print(f"  usable strata: {sorted(qualifying) or 'NONE'} "
+          f"({len(usable)}/{len(rows)} scored deliveries)")
+    if not usable:
+        print("  No stratum records both classes — marginal engagement is unmeasurable.")
+        e.close()
+        return
+
+    from collections import defaultdict
+    by_rank = defaultdict(lambda: [0, 0])
+    turn_size = defaultdict(int)
+    for sid, turn, rank, engaged, _m in usable:
+        b = by_rank[rank if rank is not None else -1]
+        b[0] += 1
+        b[1] += 1 if engaged == 1 else 0
+        turn_size[(sid, turn)] += 1
+
+    print(f"\n  by served rank (0 = top-ranked entry):")
+    print(f"    {'rank':>5} {'n':>7} {'engaged':>8} {'rate':>7}")
+    for rank in sorted(by_rank):
+        n, eng = by_rank[rank]
+        if n < 5:
+            continue
+        print(f"    {rank:>5} {n:>7} {eng:>8} {eng / n * 100:>6.1f}%")
+
+    by_size = defaultdict(lambda: [0, 0])
+    for sid, turn, rank, engaged, _m in usable:
+        size = turn_size[(sid, turn)]
+        b = by_size[size]
+        b[0] += 1
+        b[1] += 1 if engaged == 1 else 0
+    print(f"\n  by number of memories injected that turn:")
+    print(f"    {'size':>5} {'n':>7} {'engaged':>8} {'rate':>7}")
+    for size in sorted(by_size):
+        n, eng = by_size[size]
+        if n < 5:
+            continue
+        print(f"    {size:>5} {n:>7} {eng:>8} {eng / n * 100:>6.1f}%")
+    print("\n  Read RANK, not size: a rate that collapses at higher ranks means the "
+          "tail of\n  each injection is noise and the cap should fall; a rate that "
+          "holds means the cap\n  is too LOW and relevant data is being withheld. "
+          "Flat rate across the head means\n  the ranker is not ORDERING within it, "
+          "whatever its average.")
+    print("  The size table is CONFOUNDED and cannot justify a cap: turns with few "
+          "injected\n  memories are turns where retrieval found few candidates, so "
+          "size correlates with\n  match quality. Low rates at size 1-2 measure the "
+          "prompt, not the cap.")
+    e.close()
+
+
 def pare_stats():
     """Context-paring savings readout (Phase 1.5). Aggregates the per-session
     _pare_stats.json sidecars the proxy writes, reporting cumulative
@@ -1980,7 +2067,9 @@ def main_entry():
         sys.exit(1)
 
     cmd = sys.argv[1]
-    if cmd == "--enforcement-stats":
+    if cmd == "--marginal-engagement":
+        marginal_engagement(int(sys.argv[2]) if len(sys.argv) > 2 else None)
+    elif cmd == "--enforcement-stats":
         enforcement_stats(int(sys.argv[2]) if len(sys.argv) > 2 else 14)
     elif cmd == "--delivery-stats":
         delivery_stats()
