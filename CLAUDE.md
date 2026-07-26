@@ -259,6 +259,32 @@ resolves `sqlite3 -> pysqlite3`.
   `import sqlite3` in a throwaway script while the daemon is running) — use
   pysqlite3 or `query.py`. Concurrent stdlib access can corrupt the WAL.
 
+## Active remediation programme (2026-07) — FREEZE IN EFFECT
+
+**A staged remediation programme is running: `docs/spec-remediation-2026-07.md`.
+Read it before proposing or starting new Cairn work.**
+
+- **The freeze:** no new subsystems while any of Stages 0–2 is unfinished. Bug
+  fixes, docs, and tests are always permitted. New *capability* waits for
+  Stage 4.
+- **Gates are data-volume, not date, based** — several stages need accumulated
+  `memory_deliveries` / `metrics` rows before they can be validated, so the
+  programme is applied over many sessions. Check the Status table in the spec
+  for the current stage before acting.
+- **Two measurement facts that invalidate naive analysis** (baseline
+  2026-07-26): 94.6% of `memory_deliveries` rows have **no negative class**
+  (untagged rows recorded only positives; non-engagement is indistinguishable
+  from never-scored), so never compute an engagement rate across
+  `engaged_method` strata — only the ~1,198 lexical rows carry a usable base
+  rate. And enforcement events (~24% of stop events) currently conflate hard
+  blocks with staged nudges.
+- **Do not re-propose** items in the spec's Non-goals table — passive decay,
+  first-prompt suppression, student floor recalibration, semantic engagement
+  threshold tuning, and subsystem deletion are each rejected there with reasons.
+
+Update the spec's Status table in the same commit as any stage change, and
+append to its Amendment log rather than rewriting stages in place.
+
 ## Git workflow
 
 All changes MUST be made on feature branches, not main. Branch naming: `feature/<short-description>` or `fix/<short-description>`. Merge to main only after testing.
