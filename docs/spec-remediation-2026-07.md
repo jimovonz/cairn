@@ -15,7 +15,7 @@ same commit as any stage change.
 | 0 | Freeze + make the freeze legible | **not started** | — |
 | 1 | Truth & correctness needing no measurement | **in progress** — 1.8 done | Stage 0 committed |
 | 2F | Fast lane — enforcement cost | not started | Stage 1 committed |
-| 2S | Slow lane — label validity → reranker verdict | not started | Stage 1 committed |
+| 2S | Slow lane — label validity → reranker verdict | **in progress** — 2S.1 done, 2S.2 resolved (Finding F1) | — (Amendment 2) |
 | 3 | Act on measurement | blocked | 2F and 2S report |
 | 4 | New capability | blocked | Stage 3 committed |
 
@@ -251,3 +251,84 @@ experiment becomes attributable and retractable rather than permanently mixed
 into the corpus. This also makes the engagement instrumentation usable
 per-experiment rather than per-tier — measurement currently generated and not
 consumed.
+
+### Finding F1 — 2026-07-26: 2S.2 resolved, the anti-correlation was an artifact
+
+Closed by 2S.1's stratified reporting, against existing data — no new
+collection was needed, which is why Amendment 2 moved it forward.
+
+Engagement measured WITHIN the two-class stratum, by reranker:
+
+**What is established.** Untagged deliveries are 100% engaged *by construction*
+(1,699 positives, 0 negatives), so any group's blended rate rises with its
+untagged share. The prior finding — "ungated scores the HIGHEST engagement
+(61.6%) with the WORST grades", which was blocking trust in engagement as a
+referee — is fully explained by this: ungated rows are 97.3% untagged. That is
+arithmetic, not inference. **The anti-correlation was an artifact; there is no
+anomaly to explain, and engagement is usable as a referee provided strata are
+respected.** 2S.2 is closed.
+
+**What is NOT established — no ranker verdict follows.** Two errors must be
+avoided when reading the per-reranker numbers, and an earlier draft of this
+finding made both:
+
+1. **A NULL `reranker_model` is not an "ungated" arm.** On a gated layer it
+   means the gate was *unavailable* (daemon down), so those 428 rows must be
+   excluded from any reranker comparison. Including them manufactures
+   ungated-vs-reranker conclusions in whichever direction the artifact happens
+   to point.
+2. **Engagement rate is a precision proxy, not the ranker's objective.** The
+   ranker's job is maximum relevant data against least noise, so a model that
+   suppresses aggressively can post a high rate while losing recall. Rate must
+   always be read beside delivered relevant volume.
+
+Gate-available rows only, lexical stratum, volume beside rate:
+
+| reranker | lexical n | engaged | rate | engaged/session | sessions | avg grade |
+|---|---|---|---|---|---|---|
+| student (local) | 449 | 146 | 32.5% | 0.78 | 188 | 1.47 |
+| cross-encoder/ms-marco | 225 | 0 | 0.0% | 0.00 | 142 | 1.33 |
+| BAAI/bge-reranker-base | 102 | 0 | 0.0% | 0.00 | 603 | 1.20 |
+
+This looks like strict dominance and must not be read as one. **Zero engaged out
+of 225 is not what a mediocre ranker looks like — it is what a confound looks
+like.** The student is the currently deployed model, so its rows concentrate in
+recent interactive sessions, while bge's 102 rows are spread over 603 mostly
+historical sessions. The comparison is time-confounded exactly as 2S.5 assumes.
+
+Consequences:
+- 2S.2 closed; dependents (2S.4, 2S.7, 3.1) unblocked on the label-validity axis.
+- **No promotion decision may be taken from this table.** 2S.5 (randomised
+  per-delivery A/B) remains strictly required — a large effect measured badly is
+  still measured badly.
+- 2S.3 is upgraded from bookkeeping to a correctness prerequisite: until
+  gate-unavailable rows are marked explicitly rather than inferred from NULL,
+  every reranker comparison silently re-admits them.
+- Do NOT read the layer table's first-prompt figure (5.2%) as a verdict on
+  first-prompt: single-turn engagement mismeasures a session-horizon layer, per
+  the standing rejection of first-prompt suppression.
+
+### Amendment 2 — 2026-07-26: schedule by clock-start, not by stage
+
+The Stage 1 → 2 → 3 ordering sequenced work by certainty. With data-volume
+gates that is wrong: for any item gated on accumulating data, the instrumentation
+is what starts the clock, so deferring it behind untimed work burns calendar for
+zero benefit. **Stage numbers no longer imply execution order.** Schedule by
+class:
+
+- **Class A — clock-starters.** 1.9 (stamping: every unstamped write is
+  permanently unattributable, cf. the 10,501 NULL rows), 2F.1 (enforcement
+  split), 2S.1 (segmented reporting), 2S.3 (mark gate-unavailable deliveries),
+  2S.5 (randomisation switch). Land these first regardless of stage. Every day
+  deferred is a day of data permanently lost.
+- **Class B — analysis on data that already exists.** 2S.2, 2S.4, 2S.7. No
+  waiting whatsoever. In particular **2S.2 requires no new data** — the
+  stratum-artifact hypothesis is testable against historical rows immediately,
+  and it was previously parked behind a gate that does not exist.
+- **Class C — untimed correctness and docs.** 1.1–1.7, 1.10, 0.2, 0.3, 3.3.
+  Do these while Class A accumulates.
+- **Class D — genuinely gated.** 2F.2 (needs 2F.1's distribution), 3.1 (needs
+  valid labels), 3.2 (needs the A/B verdict), 4.1 (needs 1.8 + 1.9).
+
+The stage headings remain as topical grouping and dependency record. The
+Status table tracks stages; execution follows classes.
