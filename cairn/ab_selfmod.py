@@ -99,7 +99,8 @@ def _arm_stats(db_path: str, eph_path: str, version: str) -> tuple[int, Optional
     memories.source_ref. Cross-database join done in Python (memories
     lives in the durable DB, memory_deliveries in the ephemeral DB) —
     same approach query.py:delivery_stats() already uses."""
-    from cairn.query import _aggregate_outcomes
+    from cairn.query import (_aggregate_outcomes, load_qualifying_strata,
+                             _neutralise_unusable_engagement)
 
     d = _open(db_path)
     try:
@@ -113,16 +114,29 @@ def _arm_stats(db_path: str, eph_path: str, version: str) -> tuple[int, Optional
 
     e = _open(eph_path)
     try:
+        # Engagement strata are not comparable: historical untagged deliveries
+        # recorded only positives, so blending them inflates an arm's rate by an
+        # amount that depends on the arm's age. Neutralise non-qualifying strata
+        # to unlabelled before aggregating (spec 2S.1).
+        qualifying = load_qualifying_strata(e)
         records = []
         for i in range(0, len(ids), 500):
             chunk = ids[i:i + 500]
             q = ",".join("?" * len(chunk))
-            rows = e.execute(
-                f"SELECT engaged, engaged_score, grade FROM memory_deliveries "
-                f"WHERE memory_id IN ({q})", chunk
-            ).fetchall()
-            records.extend({"key": version, "engaged": r[0],
-                            "engaged_score": r[1], "grade": r[2]} for r in rows)
+            try:
+                rows = e.execute(
+                    f"SELECT engaged, engaged_score, grade, engaged_method "
+                    f"FROM memory_deliveries WHERE memory_id IN ({q})", chunk
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = [r + (None,) for r in e.execute(
+                    f"SELECT engaged, engaged_score, grade FROM memory_deliveries "
+                    f"WHERE memory_id IN ({q})", chunk
+                ).fetchall()]
+            for r in rows:
+                eng, sc = _neutralise_unusable_engagement(r[0], r[1], r[3], qualifying)
+                records.append({"key": version, "engaged": eng,
+                                "engaged_score": sc, "grade": r[2]})
     finally:
         e.close()
 
@@ -132,7 +146,10 @@ def _arm_stats(db_path: str, eph_path: str, version: str) -> tuple[int, Optional
     stat = agg.get(version)
     if not stat:
         return 0, None
-    return stat["n"], stat["engaged_pct"]
+    # Report the MEASURABLE count, not the raw delivery count: a rate-based
+    # promotion decision cannot be made on deliveries that carry no usable
+    # engagement label, so the sufficiency gate must count only those.
+    return stat["decided"], stat["engaged_pct"]
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +354,33 @@ def get_or_create_running_experiment(db_path: Optional[str] = None) -> Optional[
         conn.close()
 
 
+def _ab_decision(n_a, pct_a, n_b, pct_b):
+    """Pure promotion decision for one experiment. Returns (status, reason).
+
+    A None engaged_pct means the arm has no *measurable* engagement — no stratum
+    containing both classes — which is categorically different from a measured
+    0%. The previous `(pct or 0.0)` coercion collapsed the two, so an
+    unmeasurable arm scored as worst-possible and could be rejected (or its
+    opponent promoted) on a gap that was never observed. Stay "running" instead:
+    the experiment is undecided until real labels accumulate.
+    """
+    if n_a < AB_MIN_DELIVERIES_PER_ARM or n_b < AB_MIN_DELIVERIES_PER_ARM:
+        return "running", None
+    if pct_a is None or pct_b is None:
+        return "running", (
+            f"n_a={n_a} n_b={n_b} but engagement unmeasurable "
+            f"(pct_a={pct_a} pct_b={pct_b}) — no two-class engagement stratum; "
+            f"awaiting labelled deliveries"
+        )
+    gap = pct_b - pct_a
+    base = f"n_a={n_a} pct_a={pct_a} n_b={n_b} pct_b={pct_b} gap={gap:.1f}"
+    if gap >= AB_PROMOTE_GAP_PCT:
+        return "promoted", f"{base} >= {AB_PROMOTE_GAP_PCT}"
+    if gap <= AB_REJECT_GAP_PCT:
+        return "rejected", f"{base} <= {AB_REJECT_GAP_PCT}"
+    return "inconclusive", f"{base} within band"
+
+
 def assess_experiment(row: dict, db_path: Optional[str] = None,
                        eph_path: Optional[str] = None,
                        dry_run: bool = False) -> dict:
@@ -350,21 +394,7 @@ def assess_experiment(row: dict, db_path: Optional[str] = None,
     n_a, pct_a = _arm_stats(db_path, eph_path, row["base_version"])
     n_b, pct_b = _arm_stats(db_path, eph_path, row["candidate_version"])
 
-    status = "running"
-    reason = None
-    if n_a >= AB_MIN_DELIVERIES_PER_ARM and n_b >= AB_MIN_DELIVERIES_PER_ARM:
-        gap = (pct_b or 0.0) - (pct_a or 0.0)
-        if gap >= AB_PROMOTE_GAP_PCT:
-            status = "promoted"
-            reason = (f"n_a={n_a} pct_a={pct_a} n_b={n_b} pct_b={pct_b} "
-                      f"gap={gap:.1f} >= {AB_PROMOTE_GAP_PCT}")
-        elif gap <= AB_REJECT_GAP_PCT:
-            status = "rejected"
-            reason = (f"n_a={n_a} pct_a={pct_a} n_b={n_b} pct_b={pct_b} "
-                      f"gap={gap:.1f} <= {AB_REJECT_GAP_PCT}")
-        else:
-            status = "inconclusive"
-            reason = f"n_a={n_a} pct_a={pct_a} n_b={n_b} pct_b={pct_b} gap={gap:.1f} within band"
+    status, reason = _ab_decision(n_a, pct_a, n_b, pct_b)
 
     # Compliance gate: engaged_pct alone cannot confirm the candidate arm's
     # instruction actually changed writing behavior — only that the memories

@@ -1121,6 +1121,64 @@ def _version_label(source_ref):
     return source_ref  # genA-v1/v2/v3, subagent:genA-v*, review-writeback, ...
 
 
+def _qualifying_strata(rows):
+    """Which `engaged_method` strata are usable as a measurement basis.
+
+    A stratum qualifies only if it contains BOTH classes. Historical untagged
+    deliveries recorded engagement only when it was detected — non-engagement was
+    never distinguished from never-scored — so their rate is 100% by construction
+    and blending them with a two-class stratum inflates every aggregate.
+    `semantic-backfill` has the same shape: it only ever writes rescues.
+
+    Computed from the data rather than hardcoded, so a stratum that later starts
+    recording negatives qualifies automatically.
+
+    rows: iterable of (engaged_method, engaged). Returns a set of method names.
+    """
+    from collections import defaultdict
+    pos, neg = defaultdict(int), defaultdict(int)
+    for method, engaged in rows:
+        key = method or "(untagged)"
+        if engaged == 1:
+            pos[key] += 1
+        elif engaged == 0:
+            neg[key] += 1
+    return {m for m in set(pos) | set(neg) if pos[m] and neg[m]}
+
+
+def load_qualifying_strata(conn):
+    """Qualifying strata for a whole ephemeral DB (see `_qualifying_strata`).
+
+    Two-class-ness is a property of the measurement regime, not of any one
+    experiment arm or layer, so it is always computed over the entire delivery
+    corpus and then applied to whatever subset is being reported.
+
+    Falls back to a single untagged stratum on a pre-`engaged_method` schema —
+    such a DB may still contain both classes, and disqualifying everything there
+    would be a stronger claim than the data supports.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT engaged_method, engaged FROM memory_deliveries"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = conn.execute("SELECT NULL, engaged FROM memory_deliveries").fetchall()
+    return _qualifying_strata(rows)
+
+
+def _neutralise_unusable_engagement(engaged, engaged_score, method, qualifying):
+    """Treat observations from a non-qualifying stratum as UNLABELLED.
+
+    A positives-only stratum cannot yield a rate, so its rows are absence of
+    measurement, not evidence of engagement. Returning None (rather than the raw
+    1) is what keeps `_aggregate_outcomes` honest: `decided` counts measurements,
+    and a positives-only row was never a measurement in the required sense.
+    """
+    if (method or "(untagged)") in qualifying:
+        return engaged, engaged_score
+    return None, None
+
+
 def _aggregate_outcomes(records):
     """Pure aggregator for the delivery readout. records: iterable of
     {key, engaged, engaged_score, grade}. engaged_score == -1.0 means
@@ -1171,9 +1229,19 @@ def delivery_stats():
     reranker model. Turns the shipped write-side levers into evidence."""
     from cairn.config import EPHEMERAL_DB_PATH
     e = sqlite3.connect(EPHEMERAL_DB_PATH)
-    deliveries = e.execute(
-        "SELECT memory_id, reranker_model, engaged, engaged_score, grade, layer FROM memory_deliveries"
-    ).fetchall()
+    try:
+        deliveries = e.execute(
+            "SELECT memory_id, reranker_model, engaged, engaged_score, grade, layer, "
+            "engaged_method FROM memory_deliveries"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        deliveries = [r + (None,) for r in e.execute(
+            "SELECT memory_id, reranker_model, engaged, engaged_score, grade, layer "
+            "FROM memory_deliveries"
+        ).fetchall()]
+    # Engagement rates are only meaningful within a stratum that recorded BOTH
+    # classes; blending strata inflates every aggregate (spec 2S.1).
+    qualifying = _qualifying_strata((r[6], r[2]) for r in deliveries)
     if not deliveries:
         print("No deliveries logged yet.")
         return
@@ -1188,7 +1256,8 @@ def delivery_stats():
             ver[mid] = _version_label(sr)
 
     def _rec(r, key):
-        return {"key": key, "engaged": r[2], "engaged_score": r[3], "grade": r[4]}
+        eng, sc = _neutralise_unusable_engagement(r[2], r[3], r[6], qualifying)
+        return {"key": key, "engaged": eng, "engaged_score": sc, "grade": r[4]}
 
     by_ver = _aggregate_outcomes(_rec(r, ver.get(r[0], "deleted/unknown")) for r in deliveries)
     by_rer = _aggregate_outcomes(_rec(r, r[1] or "none") for r in deliveries)
@@ -1223,6 +1292,20 @@ def delivery_stats():
                   f"{a['graded']:>7} "
                   f"{(a['avg_grade'] if a['avg_grade'] is not None else '-'):>9}")
 
+    # Raw, un-neutralised — this table exists to make the strata visible, and is
+    # the ONE place cross-stratum numbers are shown, precisely so the reason the
+    # others are neutralised is legible.
+    by_method = _aggregate_outcomes(
+        {"key": r[6] or "(untagged)", "engaged": r[2], "engaged_score": r[3],
+         "grade": r[4]} for r in deliveries)
+    excluded = sorted(set(by_method) - qualifying)
+    print(f"\n  measurement basis: usable strata {sorted(qualifying) or 'NONE'}; "
+          f"treated as unlabelled {excluded or 'none'}")
+    if not qualifying:
+        print("  WARNING: no stratum recorded both classes — every engagement "
+              "rate below is unmeasurable, not zero.")
+
+    _table("by engagement method (RAW — strata are not comparable):", by_method)
     _table("by generation version (source_ref):", by_ver)
     _table("by reranker model:", by_rer)
     _table("by injection layer:", by_layer)
