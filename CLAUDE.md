@@ -282,6 +282,9 @@ Read it before proposing or starting new Cairn work.**
   `engaged_method` strata — only the ~1,198 lexical rows carry a usable base
   rate. And enforcement events (~24% of stop events) currently conflate hard
   blocks with staged nudges.
+- **Subsystem tiers** are published in README (Subsystem maturity): supported /
+  experimental / frozen, with per-tier guarantees. Anything experimental that
+  writes to the durable store is off by default.
 - **Do not re-propose** items in the spec's Non-goals table — passive decay,
   first-prompt suppression, student floor recalibration, semantic engagement
   threshold tuning, and subsystem deletion are each rejected there with reasons.
