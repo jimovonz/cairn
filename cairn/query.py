@@ -623,6 +623,81 @@ def archive_memory(memory_id, reason):
     print(f"  Reason: {reason}")
 
 
+def archive_by_source_ref(pattern, reason, dry_run=False, like=False, session_id=None):
+    """Bulk-archive every memory stamped with a matching source_ref.
+
+    The retraction half of provenance stamping (docs/spec-remediation-2026-07.md
+    item 1.8). source_ref makes a write-path experiment *attributable*; this
+    makes it *retractable*, which is what lets write-path features ship at
+    read-path speed — a bad experiment is archived rather than permanently
+    mixed into the corpus.
+
+    Exact match by default. `like=True` treats the pattern as SQL LIKE, so the
+    caller supplies the wildcards (e.g. "ingest-%").
+
+    Already-archived and soft-deleted rows are excluded, so re-running is
+    idempotent and the reported count is honest. Returns the number of memories
+    archived — or, under dry_run, the number that would be.
+    """
+    pat = (pattern or "").strip()
+    if not pat:
+        print("Refusing: empty source_ref pattern.")
+        return 0
+    if like and not pat.strip("%"):
+        print(f"Refusing: pattern {pat!r} matches every stamped memory. "
+              "Name a specific source_ref.")
+        return 0
+
+    op = "LIKE" if like else "="
+    where = (
+        f"source_ref IS NOT NULL AND source_ref {op} ? "
+        "AND (archived_reason IS NULL OR archived_reason = '') "
+        "AND deleted_at IS NULL"
+    )
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout=5000")
+    rows = conn.execute(
+        f"SELECT id, type, topic, source_ref FROM memories WHERE {where} ORDER BY id",
+        (pat,),
+    ).fetchall()
+
+    if not rows:
+        conn.close()
+        print(f"No live memories match source_ref {op} {pat!r}.")
+        return 0
+
+    # Count and sample before writing — this verb is itself a write path.
+    print(f"{len(rows)} memor{'y' if len(rows) == 1 else 'ies'} match "
+          f"source_ref {op} {pat!r}:")
+    for mid, mtype, topic, sref in rows[:10]:
+        print(f"  [{mid}] {mtype}/{topic}  ({sref})")
+    if len(rows) > 10:
+        print(f"  ... and {len(rows) - 10} more")
+
+    if dry_run:
+        conn.close()
+        print(f"DRY RUN — nothing written. Re-run without --dry-run to archive.")
+        return len(rows)
+
+    ids = [r[0] for r in rows]
+    placeholders = ",".join("?" for _ in ids)
+    conn.execute(
+        f"UPDATE memories SET confidence = 0, archived_reason = ?, "
+        f"updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+        [reason] + ids,
+    )
+    conn.executemany(
+        "INSERT INTO memory_annotation_log (memory_id, direction, reason, session_id) "
+        "VALUES (?, 'archive', ?, ?)",
+        [(mid, reason, session_id) for mid in ids],
+    )
+    conn.commit()
+    conn.close()
+    print(f"Archived {len(ids)} memories. Reason: {reason}")
+    return len(ids)
+
+
 def update_memory(memory_id, new_content):
     """Update a memory's content in place, preserving history."""
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
@@ -1258,6 +1333,8 @@ Commands:
   --add <type> <topic> <content> [--project <name>] [--session <id>]  Add a memory
   --update <id> <text>   Update a memory's content (preserves history)
   --archive <id> <reason> Archive a memory (confidence=0, reason preserved, stays in DB for learning)
+  --archive-by-source-ref <pattern> <reason> [--like] [--dry-run]
+                         Bulk-retract a write-path experiment by its source_ref stamp
   --delete <id>          Delete a memory and its history
   --compact [project]    Dense cairn dump for LLM ingestion
   --review               Surface low-confidence memories for inspection
@@ -1806,6 +1883,12 @@ def main_entry():
         update_memory(int(sys.argv[2]), " ".join(sys.argv[3:]))
     elif cmd == "--archive" and len(sys.argv) > 3:
         archive_memory(int(sys.argv[2]), " ".join(sys.argv[3:]))
+    elif cmd == "--archive-by-source-ref" and len(sys.argv) > 3:
+        a = sys.argv[2:]
+        dry = "--dry-run" in a
+        like = "--like" in a
+        a = [x for x in a if x not in ("--dry-run", "--like")]
+        archive_by_source_ref(a[0], " ".join(a[1:]), dry_run=dry, like=like)
     elif cmd == "--delete" and len(sys.argv) > 2:
         delete_memory(int(sys.argv[2]))
     elif cmd == "--compact":

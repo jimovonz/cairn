@@ -13,7 +13,7 @@ same commit as any stage change.
 | Stage | Title | State | Gate to enter |
 |-------|-------|-------|---------------|
 | 0 | Freeze + make the freeze legible | **not started** | — |
-| 1 | Truth & correctness needing no measurement | not started | Stage 0 committed |
+| 1 | Truth & correctness needing no measurement | **in progress** — 1.8 done | Stage 0 committed |
 | 2F | Fast lane — enforcement cost | not started | Stage 1 committed |
 | 2S | Slow lane — label validity → reranker verdict | not started | Stage 1 committed |
 | 3 | Act on measurement | blocked | 2F and 2S report |
@@ -226,6 +226,14 @@ nothing, and archival is driven by `archived_reason`, not confidence.
   `ingest.py`, which writes a rich source_ref dict but no extractor version
   despite `EXTRACTOR_VERSIONS` existing and feeding only the fingerprint. Also
   covers `ingest_transcript.py` and `backfill_ingestion.py`.
+  **Census 2026-07-26** (measured once 1.8 made it queryable): 10,501 memories
+  carry a NULL source_ref — the majority of the corpus is unattributable and
+  therefore unretractable. `analyser-session-arc` holds 2,227 rows under one
+  unversioned stamp, so a bad analyser change can only be retracted wholesale,
+  never per-version. Generation arms (`genA-*`/`genB-*`) total 1,209 and are the
+  only correctly versioned writes. Note `ingest.py` stamps the whole source_ref
+  JSON dict as the value, so ingest retraction requires `--like` on a path
+  substring; exact match cannot address it.
 - **1.10** **Per-subsystem input-domain invariant.** One line per write-path
   subsystem stating what it assumes about its input domain. The two ingest
   defects came from transplanting an invariant into a domain that violates it,
