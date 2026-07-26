@@ -137,8 +137,8 @@ from hooks.enforcement import check_trailing_intent, check_deferral, check_decli
 # blocks, NOT for behavioural blocks (incomplete work, trailing intent, context retrieval).
 AMEND_ONLY_SUFFIX = (
     "\n\nIMPORTANT: The user has already seen your previous response. "
-    "Do NOT restate or repeat it. Output ONLY the corrected memory block "
-    "with no other text — no acknowledgment, no summary, just the [cm] block."
+    "Do NOT restate or repeat it. Reply with one short line — a brief acknowledgement, "
+    "not a summary of your previous answer — followed by the corrected [cm] block."
 )
 from hooks.retrieval import (retrieve_context, layer2_cross_project_search,
                         load_context_cache, save_context_cache, is_context_cached, add_to_context_cache,
@@ -342,6 +342,24 @@ def auto_label_project(session_id: str, cwd: str, transcript_path: str = "") -> 
     conn.commit()
     conn.close()
     log(f"Auto-labelled project: {project_name} (from cwd: {cwd})")
+
+
+def _emit_decision(session_id: str, result: dict) -> None:
+    """Single exit point for a hook decision (spec 2F.1).
+
+    Hard blocks and staged nudges were indistinguishable in the metrics: both
+    were counted as "enforcement", so the cost of enforcement could only be
+    bounded, never measured. A block costs a full extra inference turn; a staged
+    nudge costs nothing until the next turn reads it.
+
+    The kind is taken from the emitted reason rather than passed per call site,
+    so it cannot drift out of sync with what was actually sent — a hand-
+    maintained event list would describe the code as it was when someone last
+    updated it.
+    """
+    if isinstance(result, dict) and result.get("decision") == "block":
+        record_metric(session_id, "enforcement_block", str(result.get("reason", ""))[:80])
+    print(json.dumps(result))   # the one real emission — never route back through this helper
 
 
 def main() -> None:
@@ -567,10 +585,10 @@ def main() -> None:
                 hint += locus + " "
             hint += 'Use this format:\n[cm]: # \'{"e":[{"t":"fact","to":"short key","c":"one line"}],"ok":true,"ctx":"s","kw":["relevant","words"]}\''
             result: dict = {"decision": "block", "reason": hint + AMEND_ONLY_SUFFIX}
-        elif re.search(r'\[cm:\s', text) or re.search(r'\(cairn: memory (?:captured|NOT captured) for this turn', text):
+        elif re.search(r'\[cm:\s', text) or re.search(r'\(cairn: memory (?:captured|NOT captured) for this turn', text) or re.search(r'<!--\s*cairn: memory (?:captured|NOT captured)', text):
             # Emitted the injected history marker (old "[cm: ...]" bracket form, or
-            # the current "(cairn: memory captured/NOT captured...)" parenthetical
-            # form) instead of a block. Name the exact mistake — the generic "add a
+            # the parenthetical "(cairn: memory captured/NOT captured...)" form, or the
+            # current HTML-comment form) instead of a block. Name the exact mistake — the generic "add a
             # block" text does not break this loop (the model keeps copying the
             # marker it sees on past turns).
             record_metric(session_id, "emitted_cm_marker_not_block")
@@ -591,7 +609,7 @@ def main() -> None:
                 "reason": "Response missing required memory block. Add a [cm]: # '{...}' block. "
                     'Minimum: [cm]: # \'{"ok":true,"ctx":"s","kw":["topic"]}\'' + AMEND_ONLY_SUFFIX
             }
-        print(json.dumps(result))
+        _emit_decision(session_id, result)
         sys.exit(0)
 
     log(f"Parsed: entries={len(entries) if entries else 0}, complete={complete}, remaining={remaining}, context={context}, context_need={context_need}, conf_updates={len(confidence_updates)}")
@@ -633,7 +651,7 @@ def main() -> None:
         log(f"Strict validation failed: {hint_text[:200]}")
         record_metric(session_id, "strict_validation_failed", hint_text[:100])
         increment_continuation(session_id)
-        print(json.dumps({"decision": "block", "reason": hint_text + AMEND_ONLY_SUFFIX}))
+        _emit_decision(session_id, {"decision": "block", "reason": hint_text + AMEND_ONLY_SUFFIX})
         sys.exit(0)
 
     # Hash verification — optional, log-only (not blocking)
@@ -715,7 +733,7 @@ def main() -> None:
         log(f"Content density check failed: {hint_text[:200]}")
         record_metric(session_id, "content_density_failed", hint_text[:100])
         increment_continuation(session_id)
-        print(json.dumps({"decision": "block", "reason": hint_text + AMEND_ONLY_SUFFIX}))
+        _emit_decision(session_id, {"decision": "block", "reason": hint_text + AMEND_ONLY_SUFFIX})
         sys.exit(0)
 
     # Apply confidence updates
@@ -857,7 +875,7 @@ def main() -> None:
                                           "applying it to your response.")
                             else:
                                 reason = f"CAIRN CONTEXT:\n{retrieved}"
-                            print(json.dumps({"decision": "block", "reason": reason}))
+                            _emit_decision(session_id, {"decision": "block", "reason": reason})
                             sys.exit(0)
                 else:
                     log(f"No context found for: {context_need}")
@@ -1098,7 +1116,7 @@ def main() -> None:
             "decision": "block",
             "reason": llm_reason
         }
-        print(json.dumps(result))
+        _emit_decision(session_id, result)
         sys.exit(0)
 
     # Trailing intent detection — block if response ends with unfulfilled action intent
@@ -1119,7 +1137,7 @@ def main() -> None:
                     "If you genuinely have nothing more to do, add 'intent: resolved' to your <memory> block."
                 )
             }
-            print(json.dumps(result))
+            _emit_decision(session_id, result)
             sys.exit(0)
 
     # Deferral detection — catch fabricated session/scope boundaries.
@@ -1139,7 +1157,7 @@ def main() -> None:
                     "Either continue the work now, or set ok:false with rem: describing what remains."
                 )
             }
-            print(json.dumps(result))
+            _emit_decision(session_id, result)
             sys.exit(0)
 
     # Declined-without-trying detection — catch "I can't do X" when no tool calls attempted
@@ -1159,7 +1177,7 @@ def main() -> None:
                     "If you've confirmed it genuinely can't be done from here, explain what you tried."
                 )
             }
-            print(json.dumps(result))
+            _emit_decision(session_id, result)
             sys.exit(0)
 
     # Correction trigger matching — check response against stored behavioural triggers
@@ -1180,7 +1198,7 @@ def main() -> None:
                     "If it doesn't apply here, proceed as-is."
                 )
             }
-            print(json.dumps(result))
+            _emit_decision(session_id, result)
             sys.exit(0)
 
     # Collect mid-response memory notes from the transcript

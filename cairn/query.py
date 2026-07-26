@@ -1311,6 +1311,78 @@ def delivery_stats():
     _table("by injection layer:", by_layer)
 
 
+def enforcement_stats(days=14):
+    """Enforcement cost readout (spec 2F.1): hard blocks vs staged nudges.
+
+    A hard block costs a full extra inference turn; a staged nudge costs nothing
+    until the next turn reads it. Reporting them together can only bound the
+    cost of enforcement, never measure it — which is why the README's "brief
+    pause" claim was unsupported.
+
+    `enforcement_block` rows are authoritative (recorded at the emission point).
+    Rows predating that instrumentation are reported separately as UNCLASSIFIED
+    rather than folded in, because assigning them by event name would be a guess
+    presented as a measurement.
+    """
+    from cairn.config import EPHEMERAL_DB_PATH
+    e = sqlite3.connect(EPHEMERAL_DB_PATH)
+    since = f"-{int(days)} days"
+
+    def _count(sql, *a):
+        try:
+            return e.execute(sql, a).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+    fired = _count("SELECT COUNT(*) FROM metrics WHERE event='hook_fired' "
+                   "AND created_at >= datetime('now', ?)", since)
+    fired_n = fired[0][0] if fired else 0
+
+    blocks = _count("SELECT detail, COUNT(*) FROM metrics WHERE event='enforcement_block' "
+                    "AND created_at >= datetime('now', ?) GROUP BY 1 ORDER BY 2 DESC", since)
+    nudges = _count("SELECT event, COUNT(*) FROM metrics WHERE event LIKE '%_staged' "
+                    "AND created_at >= datetime('now', ?) GROUP BY 1 ORDER BY 2 DESC", since)
+
+    block_n = sum(c for _, c in blocks)
+    nudge_n = sum(c for _, c in nudges)
+    stops = fired_n + block_n
+
+    print(f"=== Enforcement cost, last {days} days ===")
+    print(f"  stop events (est): {stops}   completed: {fired_n}   hard blocks: {block_n}   "
+          f"staged nudges: {nudge_n}")
+    if stops:
+        print(f"  hard-block rate: {block_n / stops * 100:.1f}% of stop events "
+              f"(each costs a full extra inference turn)")
+    else:
+        print("  hard-block rate: no stop events in window")
+
+    if blocks:
+        print("\n  hard blocks by reason:")
+        for detail, n in blocks:
+            print(f"    {n:>5}  {(detail or '(no reason)')[:70]}")
+    else:
+        print("\n  No enforcement_block rows in window — instrumentation landed "
+              "2026-07-26, so a quiet window here means 'not yet measured', not 'no blocks'.")
+
+    if nudges:
+        print("\n  staged nudges (no turn cost):")
+        for ev, n in nudges:
+            print(f"    {n:>5}  {ev}")
+
+    legacy = _count(
+        "SELECT event, COUNT(*) FROM metrics WHERE created_at >= datetime('now', ?) "
+        "AND event IN ('missing_memory_block','malformed_memory_block',"
+        "'strict_validation_failed','content_density_failed','trailing_intent_blocked',"
+        "'deferral_blocked','declined_without_trying_blocked','correction_trigger_blocked',"
+        "'emitted_cm_marker_not_block') GROUP BY 1 ORDER BY 2 DESC", since)
+    if legacy:
+        print("\n  UNCLASSIFIED (pre-instrumentation cause markers — these fire "
+              "alongside\n  both blocking and non-blocking paths, so they are NOT a block count):")
+        for ev, n in legacy:
+            print(f"    {n:>5}  {ev}")
+    e.close()
+
+
 def pare_stats():
     """Context-paring savings readout (Phase 1.5). Aggregates the per-session
     _pare_stats.json sidecars the proxy writes, reporting cumulative
@@ -1402,6 +1474,7 @@ Commands:
   --since <date>         Memories updated on or after date (ISO, today, yesterday, 3d, 2w, 1m)
   --until <date>         Memories updated on or before date
   --today                Shorthand for --since today
+  --enforcement-stats [days]  Enforcement cost: hard blocks vs staged nudges
   --delivery-stats       Injected-memory outcome (engagement/grade) by generation version + reranker
   --pare-stats           Context-paring savings — token-instances removed from resubmission by [cm] paring
   --ab-history           Write-side A/B experiment history (status, arm stats, decision reason)
@@ -1907,7 +1980,9 @@ def main_entry():
         sys.exit(1)
 
     cmd = sys.argv[1]
-    if cmd == "--delivery-stats":
+    if cmd == "--enforcement-stats":
+        enforcement_stats(int(sys.argv[2]) if len(sys.argv) > 2 else 14)
+    elif cmd == "--delivery-stats":
         delivery_stats()
     elif cmd == "--pare-stats":
         pare_stats()
