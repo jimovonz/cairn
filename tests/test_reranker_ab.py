@@ -45,3 +45,36 @@ def test_single_arm_always_selected():
 def test_empty_key_still_assigns():
     assert pick_reranker_arm(ARMS, "") in ARMS
     assert pick_reranker_arm(ARMS, None) in ARMS
+
+
+def test_arm_floors_are_not_interchangeable(tmp_path):
+    """Floors are per-model: the student is pairwise-trained with compressed
+    logits (~-9.3) while ms-marco is pointwise (-3.0). Serving one arm the
+    other's floor suppresses the wrong candidates and biases the comparison the
+    experiment exists to make."""
+    from cairn.config import (resolve_arm_floor, CROSS_ENCODER_SCORE_FLOOR,
+                              CROSS_ENCODER_STUDENT_FLOOR)
+
+    # A named pretrained model gets the static logit floor.
+    assert resolve_arm_floor("cross-encoder/ms-marco-MiniLM-L-6-v2") == CROSS_ENCODER_SCORE_FLOOR
+
+    # A local model dir ships its own floor.
+    d = tmp_path / "student"
+    d.mkdir()
+    (d / "floor.txt").write_text("-9.3228\n")
+    assert resolve_arm_floor(str(d)) == -9.3228
+
+    # A local dir with no floor.txt falls back to suppression-off, never to the
+    # ms-marco floor — guessing a floor for an uncalibrated model would silently
+    # drop relevant memories.
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert resolve_arm_floor(str(bare)) == CROSS_ENCODER_STUDENT_FLOOR
+
+
+def test_unreadable_floor_file_does_not_crash(tmp_path):
+    from cairn.config import resolve_arm_floor, CROSS_ENCODER_STUDENT_FLOOR
+    d = tmp_path / "m"
+    d.mkdir()
+    (d / "floor.txt").write_text("not-a-number")
+    assert resolve_arm_floor(str(d)) == CROSS_ENCODER_STUDENT_FLOOR
