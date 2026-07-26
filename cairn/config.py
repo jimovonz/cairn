@@ -441,6 +441,27 @@ def resolve_reranker():
 #   n=195 — mild measurement confound acknowledged, gap too large to be artifact).
 GENERATION_PROMPT_VERSION = "genA-v4"
 
+# === Write-path provenance versions (spec 1.9) ===
+# Every write path stamps a VERSIONED source_ref, so a bad experiment is
+# attributable and therefore retractable in bulk via
+# `query.py --archive-by-source-ref <version> <reason>`. Without a version, a
+# subsystem's whole history collapses into one undifferentiated stamp and can
+# only be retracted wholesale — the analyser's 2,227 rows were exactly that.
+#
+# Bump these whenever the prompt or logic producing the writes changes.
+# Each has a STABLE PREFIX used for matching (dedup, provenance queries) and a
+# versioned full value used for writing, so bumping a version never breaks
+# dedup against rows written by earlier versions.
+ANALYSER_SOURCE_REF_PREFIX = "analyser-session-arc"
+ANALYSER_PROMPT_VERSION = f"{ANALYSER_SOURCE_REF_PREFIX}-v1"
+
+REVIEW_WRITEBACK_PREFIX = "review-writeback"
+REVIEW_WRITEBACK_VERSION = f"{REVIEW_WRITEBACK_PREFIX}-v1"
+
+# Ingest stamps a source_ref dict rather than a bare string; this rides inside
+# it so an extractor-pipeline change is retractable per version.
+INGEST_PIPELINE_VERSION = "ingest-v1"
+
 # === Write-side A/B (live, per-prompt) ===
 # When enabled, each user prompt is randomly assigned arm A (control = current live
 # rules) or arm B (control + ONE speculative variable injected this turn). The Stop
