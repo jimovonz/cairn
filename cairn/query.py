@@ -33,14 +33,22 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 def search(query, limit=10):
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("""
+    sql = """
         SELECT m.id, m.type, m.topic, m.content, m.updated_at, m.keywords
         FROM memories_fts f
         JOIN memories m ON f.rowid = m.id
         WHERE memories_fts MATCH ? AND m.deleted_at IS NULL
         ORDER BY rank
         LIMIT ?
-    """, (query, limit)).fetchall()
+    """
+    try:
+        rows = conn.execute(sql, (query, limit)).fetchall()
+    except sqlite3.OperationalError:
+        # Punctuation in a bare token (project codes, file paths) parses as
+        # FTS5 syntax and RAISES rather than returning nothing. Retry with
+        # tokens quoted instead of surfacing a traceback to the caller.
+        from cairn import ftsquery
+        rows = conn.execute(sql, (ftsquery.sanitize(query), limit)).fetchall()
     conn.close()
     return rows
 
@@ -1439,8 +1447,7 @@ def check():
 
     # 4. Daemon
     print("\nDaemon:")
-    pid_path = os.path.join(cairn_dir, ".daemon.pid")
-    sock_path = os.path.join(cairn_dir, ".daemon.sock")
+    from cairn.daemon import PID_PATH as pid_path, SOCKET_PATH as sock_path
     if os.path.exists(pid_path):
         try:
             with open(pid_path, encoding="utf-8") as f:
