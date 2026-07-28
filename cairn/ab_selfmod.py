@@ -65,6 +65,15 @@ AB_MIN_DELIVERIES_PER_ARM = 30
 AB_PROMOTE_GAP_PCT = 15.0
 AB_REJECT_GAP_PCT = -15.0
 
+# Grade-based tie-breaker — consulted only when the engagement gap is within
+# band (inconclusive). The agent relevance-grade (0-3) is the more
+# comprehensive signal; a clear grade gap with enough graded deliveries
+# decides. Graded coverage is a fraction of deliveries, so this min-N is far
+# lower than AB_MIN_DELIVERIES_PER_ARM.
+AB_MIN_GRADED_PER_ARM = 40
+AB_PROMOTE_GRADE_GAP = 0.05
+AB_REJECT_GRADE_GAP = -0.20
+
 
 def _open(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
@@ -94,7 +103,7 @@ def _emit_metric(event: str, detail: dict,
 # Stats
 # ---------------------------------------------------------------------------
 
-def _arm_stats(db_path: str, eph_path: str, version: str) -> tuple[int, Optional[float]]:
+def _arm_stats(db_path: str, eph_path: str, version: str) -> tuple[int, Optional[float], int, Optional[float]]:
     """Delivery count + engaged% for memories stamped with `version` in
     memories.source_ref. Cross-database join done in Python (memories
     lives in the durable DB, memory_deliveries in the ephemeral DB) —
@@ -109,7 +118,7 @@ def _arm_stats(db_path: str, eph_path: str, version: str) -> tuple[int, Optional
     finally:
         d.close()
     if not ids:
-        return 0, None
+        return 0, None, 0, None
 
     e = _open(eph_path)
     try:
@@ -127,12 +136,12 @@ def _arm_stats(db_path: str, eph_path: str, version: str) -> tuple[int, Optional
         e.close()
 
     if not records:
-        return 0, None
+        return 0, None, 0, None
     agg = _aggregate_outcomes(records)
     stat = agg.get(version)
     if not stat:
-        return 0, None
-    return stat["n"], stat["engaged_pct"]
+        return 0, None, 0, None
+    return stat["n"], stat["engaged_pct"], stat["graded"], stat["avg_grade"]
 
 
 # ---------------------------------------------------------------------------
@@ -347,8 +356,8 @@ def assess_experiment(row: dict, db_path: Optional[str] = None,
     db_path = db_path or DB_PATH
     eph_path = eph_path or EPH_DB_PATH
 
-    n_a, pct_a = _arm_stats(db_path, eph_path, row["base_version"])
-    n_b, pct_b = _arm_stats(db_path, eph_path, row["candidate_version"])
+    n_a, pct_a, gn_a, grade_a = _arm_stats(db_path, eph_path, row["base_version"])
+    n_b, pct_b, gn_b, grade_b = _arm_stats(db_path, eph_path, row["candidate_version"])
 
     status = "running"
     reason = None
@@ -365,6 +374,23 @@ def assess_experiment(row: dict, db_path: Optional[str] = None,
         else:
             status = "inconclusive"
             reason = f"n_a={n_a} pct_a={pct_a} n_b={n_b} pct_b={pct_b} gap={gap:.1f} within band"
+            # Grade-based tie-breaker: engagement% is null (within band), but the
+            # agent relevance-grade (0-3) is the more comprehensive signal. When
+            # both arms have enough graded deliveries, let a clear grade gap
+            # decide. Runs before the compliance gate, so a grade-based promotion
+            # is still subject to the meta-compliance veto below.
+            if gn_a >= AB_MIN_GRADED_PER_ARM and gn_b >= AB_MIN_GRADED_PER_ARM:
+                grade_gap = (grade_b or 0.0) - (grade_a or 0.0)
+                if grade_gap >= AB_PROMOTE_GRADE_GAP:
+                    status = "promoted"
+                    reason = (f"{reason} | grade-promote: avg_grade_b={grade_b} - "
+                              f"avg_grade_a={grade_a} = {grade_gap:+.2f} >= "
+                              f"{AB_PROMOTE_GRADE_GAP} (graded n_a={gn_a} n_b={gn_b})")
+                elif grade_gap <= AB_REJECT_GRADE_GAP:
+                    status = "rejected"
+                    reason = (f"{reason} | grade-reject: avg_grade_b={grade_b} - "
+                              f"avg_grade_a={grade_a} = {grade_gap:+.2f} <= "
+                              f"{AB_REJECT_GRADE_GAP} (graded n_a={gn_a} n_b={gn_b})")
 
     # Compliance gate: engaged_pct alone cannot confirm the candidate arm's
     # instruction actually changed writing behavior — only that the memories
@@ -404,6 +430,8 @@ def assess_experiment(row: dict, db_path: Optional[str] = None,
 
     result = {"id": row["id"], "status": status, "n_a": n_a, "n_b": n_b,
               "engaged_pct_a": pct_a, "engaged_pct_b": pct_b, "decision_reason": reason,
+              "graded_a": gn_a, "graded_b": gn_b,
+              "avg_grade_a": grade_a, "avg_grade_b": grade_b,
               **compliance}
 
     if dry_run:

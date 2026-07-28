@@ -402,7 +402,8 @@ def resolve_reranker():
 #   genA-v3 -> genA-v4: promoted the arm-B question-form keyword seeding into the
 #   base rules (live A/B 2026-07-02: genB-v1 engaged 50.8% n=65 vs genA-v3 15.9%
 #   n=195 — mild measurement confound acknowledged, gap too large to be artifact).
-GENERATION_PROMPT_VERSION = "genA-v4"
+#   genA-v4 -> genA-v5: promoted genB-v2 ('[cairn A/B — arm B] For each memory you write THIS turn, do NOT write entries wh'...) after live A/B 2026-07-27: engaged_pct_b=70.5 vs engaged_pct_a=71.2 (n_a=3466, n_b=5034).
+GENERATION_PROMPT_VERSION = "genA-v5"
 
 # === Write-side A/B (live, per-prompt) ===
 # When enabled, each user prompt is randomly assigned arm A (control = current live
@@ -411,7 +412,7 @@ GENERATION_PROMPT_VERSION = "genA-v4"
 # outcomes compare by arm via `query.py --delivery-stats`. Per-prompt randomisation;
 # subagents are excluded. Flip AB_TEST_ENABLED off to stop the experiment.
 AB_TEST_ENABLED = True
-AB_ARM_VERSIONS = {"A": GENERATION_PROMPT_VERSION, "B": "genB-v2"}
+AB_ARM_VERSIONS = {"A": GENERATION_PROMPT_VERSION, "B": "genB-v3"}
 # The single speculative variable for arm B (swap this to test a different aspect).
 # genB-v1 (question-form keywords) WON — promoted into the base rules as genA-v4.
 # genB-v2 tests write-side meta suppression: session-arc/meta entries about cairn's
@@ -421,13 +422,7 @@ AB_ARM_VERSIONS = {"A": GENERATION_PROMPT_VERSION, "B": "genB-v2"}
 # about what cairn remembers/captured are meta; domain content about the cairn
 # CODEBASE is fine.
 AB_B_INSTRUCTION = (
-    "[cairn A/B — arm B] For each memory you write THIS turn, do NOT write entries "
-    "whose content is about the memory system's own bookkeeping — what cairn/memory "
-    "does or doesn't remember, what was or will be captured, session-arc summaries "
-    "of the conversation itself. Capture only domain knowledge: the code, system, "
-    "decision, or user fact the turn was actually about. (Domain work ON the cairn "
-    "codebase is NOT meta — this only excludes self-referential memory-coverage "
-    "statements.)"
+    '[cairn A/B — arm B] For each memory you write THIS turn, if the content cites a count, version, or number that drifts over time (test counts, tags, line numbers, file counts), do not freeze the bare number in the memory. Either omit it and point at the command that reproduces it, or explicitly flag the entry as time-sensitive so a future reader knows to re-verify before citing it.'
 )
 
 # === Write-side A/B — future hypothesis queue ===
@@ -686,3 +681,4 @@ def _build_env_key_map():
         r'^([A-Z][A-Z0-9_]*)\s*=\s*[^\n]*?environ\.get\(\s*"([^"]+)"', _src, _re.M)}
 
 CONFIG_ENV_KEYS = _build_env_key_map()
+# auto-advanced 2026-07-27: queued candidate genB-v3 (staleness self-check on volatile facts) now testing.
