@@ -720,7 +720,7 @@ def main() -> None:
                     # so the LLM can write a delta rather than start from scratch.
                     _prior_handoff_snippet = ""
                     try:
-                        from hooks.hook_helpers import resolve_project, get_conn
+                        from hooks.hook_helpers import resolve_project
                         _proj = resolve_project(cwd, transcript_path)
                         if _proj:
                             _conn = get_conn()
