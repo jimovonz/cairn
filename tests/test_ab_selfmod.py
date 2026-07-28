@@ -33,20 +33,22 @@ def _seed_memory(conn, source_ref):
     return cur.lastrowid
 
 
-def _seed_delivery(conn, memory_id, engaged):
+def _seed_delivery(conn, memory_id, engaged, grade=None):
     conn.execute(
-        "INSERT INTO memory_deliveries (session_id, memory_id, engaged) VALUES (?, ?, ?)",
-        ("sess", memory_id, engaged),
+        "INSERT INTO memory_deliveries (session_id, memory_id, engaged, grade) VALUES (?, ?, ?, ?)",
+        ("sess", memory_id, engaged, grade),
     )
 
 
-def _seed_arm(durable, eph, version, n, engaged_count):
+def _seed_arm(durable, eph, version, n, engaged_count, grade=None, graded_count=None):
     d = sqlite3.connect(durable)
     e = sqlite3.connect(eph)
+    gc = n if graded_count is None else graded_count
     for i in range(n):
         mid = _seed_memory(d, version)
         d.commit()
-        _seed_delivery(e, mid, 1 if i < engaged_count else 0)
+        g = grade if (grade is not None and i < gc) else None
+        _seed_delivery(e, mid, 1 if i < engaged_count else 0, g)
     e.commit()
     d.close()
     e.close()
@@ -75,14 +77,14 @@ def _fresh_config(tmp_dir, *, enabled=True, base_version="genA-v4",
 def test_arm_stats_aggregates_engaged_pct():
     durable, eph, td = _fresh_dbs()
     _seed_arm(durable, eph, "genA-v4", n=10, engaged_count=3)
-    n, pct = sm._arm_stats(durable, eph, "genA-v4")
+    n, pct, _gn, _grade = sm._arm_stats(durable, eph, "genA-v4")
     assert n == 10
     assert pct == 30.0
 
 
 def test_arm_stats_no_deliveries_returns_zero():
     durable, eph, td = _fresh_dbs()
-    n, pct = sm._arm_stats(durable, eph, "genA-v4")
+    n, pct, _gn, _grade = sm._arm_stats(durable, eph, "genA-v4")
     assert n == 0
     assert pct is None
 
@@ -200,6 +202,45 @@ def test_assess_inconclusive_within_band_no_config_edit():
     conn.close()
     assert status[0] == "inconclusive"
     assert status[1] is None
+
+
+def test_assess_grade_promotes_when_engagement_within_band():
+    durable, eph, td = _fresh_dbs()
+    # Engagement dead-level (within band), but B grades clearly higher.
+    _seed_arm(durable, eph, "genA-v4", n=40, engaged_count=15, grade=1, graded_count=40)
+    _seed_arm(durable, eph, "genB-v2", n=40, engaged_count=15, grade=2, graded_count=40)
+    row = _insert_row(durable, _row())
+    config_path = _fresh_config(td)
+    with patch.object(sm, "CONFIG_PATH", config_path):
+        result = sm.assess_experiment(row, db_path=durable, eph_path=eph, dry_run=False)
+    assert result["status"] == "promoted"
+    assert "grade-promote" in result["decision_reason"]
+    assert result["avg_grade_a"] == 1.0 and result["avg_grade_b"] == 2.0
+
+
+def test_assess_grade_rejects_when_engagement_within_band():
+    durable, eph, td = _fresh_dbs()
+    _seed_arm(durable, eph, "genA-v4", n=40, engaged_count=15, grade=2, graded_count=40)
+    _seed_arm(durable, eph, "genB-v2", n=40, engaged_count=15, grade=1, graded_count=40)
+    row = _insert_row(durable, _row())
+    config_path = _fresh_config(td)
+    with patch.object(sm, "CONFIG_PATH", config_path):
+        result = sm.assess_experiment(row, db_path=durable, eph_path=eph, dry_run=False)
+    assert result["status"] == "rejected"
+    assert "grade-reject" in result["decision_reason"]
+
+
+def test_assess_grade_ignored_below_min_graded_n():
+    durable, eph, td = _fresh_dbs()
+    # B grades much higher but too few graded deliveries -> stays inconclusive.
+    _seed_arm(durable, eph, "genA-v4", n=40, engaged_count=15, grade=1, graded_count=20)
+    _seed_arm(durable, eph, "genB-v2", n=40, engaged_count=15, grade=3, graded_count=20)
+    row = _insert_row(durable, _row())
+    config_path = _fresh_config(td)
+    with patch.object(sm, "CONFIG_PATH", config_path):
+        result = sm.assess_experiment(row, db_path=durable, eph_path=eph, dry_run=False)
+    assert result["status"] == "inconclusive"
+    assert "grade-promote" not in (result["decision_reason"] or "")
 
 
 def test_dry_run_never_touches_config():
