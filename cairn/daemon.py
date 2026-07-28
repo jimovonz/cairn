@@ -41,9 +41,20 @@ def _safe_session_filename(session_id: str) -> str:
     """Allow only alnum, dash, underscore in stashed filename to avoid path traversal."""
     return "".join(c for c in session_id if c.isalnum() or c in "-_")[:200] or "unknown"
 
-SOCKET_PATH = os.path.join(os.path.dirname(__file__), ".daemon.sock")
-PID_PATH = os.path.join(os.path.dirname(__file__), ".daemon.pid")
 CAIRN_DIR = os.path.dirname(__file__)
+
+# Unix domain sockets can't be created on some network/shared filesystems
+# (e.g. VirtualBox vboxsf mounts raise PermissionError on bind()). Keep the
+# runtime socket/PID files on a local, always-bindable path instead of inside
+# the (possibly network-mounted) repo checkout. Keyed by a hash of CAIRN_DIR
+# so multiple installs on the same machine don't collide.
+import hashlib as _hashlib
+_RUNTIME_BASE = os.environ.get("CAIRN_RUNTIME_DIR") or os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+_INSTALL_KEY = _hashlib.sha256(os.path.abspath(CAIRN_DIR).encode()).hexdigest()[:10]
+_RUNTIME_DIR = os.path.join(_RUNTIME_BASE, f"cairn-{_INSTALL_KEY}")
+os.makedirs(_RUNTIME_DIR, exist_ok=True)
+SOCKET_PATH = os.path.join(_RUNTIME_DIR, "daemon.sock")
+PID_PATH = os.path.join(_RUNTIME_DIR, "daemon.pid")
 
 # cairn package is on sys.path via pip install -e .
 

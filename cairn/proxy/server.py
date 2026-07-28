@@ -262,7 +262,7 @@ def run_proxy(port: int, debug: bool) -> None:
 
         async def _ensure_session(self):
             if self.session is None or self.session.closed:
-                self.session = aiohttp.ClientSession()
+                self.session = aiohttp.ClientSession(trust_env=True)
 
         async def handle(self, request):
             await self._ensure_session()
