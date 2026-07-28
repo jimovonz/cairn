@@ -7,7 +7,7 @@ This is the Cairn project — a persistent AI memory system using SQLite, Claude
 The memory database is at `./cairn/cairn.db`. Use `.venv/bin/python ./cairn/query.py` to search it (all commands below require the venv interpreter — system `python3` lacks pysqlite3, which cairn now requires).
 
 Query commands:
-- `.venv/bin/python ./cairn/query.py <search>` — full-text search
+- `.venv/bin/python ./cairn/query.py <search>` — full-text search (hyphenated terms are auto-quoted on FTS5 syntax errors — see `cairn/ftsquery.py`)
 - `.venv/bin/python ./cairn/query.py --semantic <query>` — semantic similarity search
 - `.venv/bin/python ./cairn/query.py --recent` — list recent memories
 - `.venv/bin/python ./cairn/query.py --today` — memories from today

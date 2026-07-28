@@ -303,13 +303,18 @@ def knowledge(symbol, repo_root=None):
 
     # FTS search on symbol name
     try:
-        fts_rows = cconn.execute(
-            "SELECT m.id, m.type, m.topic, m.content, m.updated_at "
-            "FROM memories_fts f JOIN memories m ON f.rowid = m.id "
-            "WHERE memories_fts MATCH ? AND m.deleted_at IS NULL "
-            "ORDER BY rank LIMIT 5",
-            (symbol,)
-        ).fetchall()
+        _fts_sql = ("SELECT m.id, m.type, m.topic, m.content, m.updated_at "
+                    "FROM memories_fts f JOIN memories m ON f.rowid = m.id "
+                    "WHERE memories_fts MATCH ? AND m.deleted_at IS NULL "
+                    "ORDER BY rank LIMIT 5")
+        try:
+            fts_rows = cconn.execute(_fts_sql, (symbol,)).fetchall()
+        except Exception:
+            # Hyphenated or dotted symbols parse as FTS5 syntax. The enclosing
+            # try would swallow that into a silent empty result, so the symbol
+            # would appear to have no attached knowledge at all.
+            from cairn import ftsquery
+            fts_rows = cconn.execute(_fts_sql, (ftsquery.sanitize(symbol),)).fetchall()
         for r in fts_rows:
             if r[0] not in seen_ids:
                 seen_ids.add(r[0])
