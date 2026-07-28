@@ -249,7 +249,18 @@ def find_clusters(
     """
     rows = conn.execute(
         "SELECT id, type, topic, content, embedding, updated_at, project, confidence, session_id "
-        "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '') AND deleted_at IS NULL"
+        "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '') "
+        "AND deleted_at IS NULL "
+        # Ingested DOCUMENT CHUNKS are excluded. Consolidation assumes its inputs
+        # are distilled claims, so two similar rows mean one is redundant. That is
+        # false for sequential fragments of one document: adjacent chunks share a
+        # topic (and, pre-v2, an overlap window), so they cluster and get merged,
+        # destroying text. This silently consumed 6,440 confluence rows -- 499
+        # clusters were chunks of a SINGLE page -- and emptied 268 pages out of
+        # cairn entirely. Obsolescence for ingested material is decided only by an
+        # LLM that has retrieved and assessed it, never by batch similarity.
+        "AND (source_ref IS NULL OR NOT json_valid(source_ref) "
+        "     OR json_extract(source_ref, '$.chunk') IS NULL)"
     ).fetchall()
 
     entries = []
