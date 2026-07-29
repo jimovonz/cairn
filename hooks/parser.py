@@ -34,6 +34,11 @@ class ParseResult(NamedTuple):
     hash_claimed: Optional[int] = None  # Claimed response hash (h:NNN)
     is_compact: bool = False         # True if compact format was used
     relevance_grades: tuple = ()     # (memory_id, grade 0-3, hard_neg) from rg — agent-as-teacher labels
+    # Which tolerance, if any, had to be applied to read the block ("multiline",
+    # "salvage"). Carried out to the caller rather than only logged so recovery
+    # RATE is countable: a recovery is a re-prompt turn that was not charged, and
+    # a rising rate is the signal that the emitted format has drifted.
+    recovery: Optional[str] = None
 
 
 # Sentinel for "no memory block found"
@@ -217,6 +222,7 @@ def _parse_linkdef(text: str) -> Optional[ParseResult]:
             log(f"Link-def JSON parse error: {e} — raw: {raw_json[:120]}")
             return None
         log(f"Link-def JSON salvaged after parse error ({e})")
+        recovery = f"{recovery}+salvage" if recovery else "salvage"
 
     if not isinstance(data, dict):
         log(f"Link-def JSON is not a dict: {type(data)}")
@@ -312,6 +318,7 @@ def _parse_linkdef(text: str) -> Optional[ParseResult]:
         retrieval_outcome=retrieval_outcome,
         keywords=keywords,
         intent=intent,
+        recovery=recovery,
         complete_explicit=True,
         context_explicit=True,
         keywords_explicit=bool(keywords),

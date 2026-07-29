@@ -1369,6 +1369,17 @@ def enforcement_stats(days=14):
         for ev, n in nudges:
             print(f"    {n:>5}  {ev}")
 
+    # Recoveries are the counterpart to blocks: a malformed block that was
+    # repaired mechanically instead of costing a re-prompt. Reported here so the
+    # ledger shows cost AVOIDED beside cost paid, and so format drift surfaces as
+    # a rising recovery rate rather than as a sudden wave of failures.
+    recovered = _count("SELECT detail, COUNT(*) FROM metrics WHERE event='linkdef_recovered' "
+                       "AND created_at >= datetime('now', ?) GROUP BY 1 ORDER BY 2 DESC", since)
+    rec_n = sum(c for _, c in recovered)
+    print(f"\n  block recoveries (re-prompts avoided): {rec_n}")
+    for detail, n in recovered:
+        print(f"    {n:>5}  {detail or '(unspecified)'}")
+
     legacy = _count(
         "SELECT event, COUNT(*) FROM metrics WHERE created_at >= datetime('now', ?) "
         "AND event IN ('missing_memory_block','malformed_memory_block',"

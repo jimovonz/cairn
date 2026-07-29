@@ -72,3 +72,34 @@ def test_unrecoverable_block_names_the_real_problem():
 def test_marker_without_payload_is_diagnosed_not_silently_ignored():
     d = linkdef_diagnosis("[cm]: # ")
     assert d is not None
+
+
+def test_clean_block_reports_no_recovery():
+    assert parse_memory_block(GOOD).recovery is None
+
+
+def test_wrapped_block_reports_multiline_recovery():
+    """Carried out to the caller, not just logged: a recovery is a re-prompt
+    turn that was not charged, so it belongs in the same ledger as the blocks
+    that were."""
+    wrapped = GOOD.replace('"content here"', '"content\n    here"')
+    assert parse_memory_block(wrapped).recovery == "multiline"
+
+
+def test_salvaged_block_reports_salvage_recovery():
+    inner = GOOD.replace('"content here"', '"he said "hello" loudly"')
+    assert parse_memory_block(inner).recovery == "salvage"
+
+
+def test_both_tolerances_are_reported_together():
+    """A rising recovery rate is the early signal of format drift, so which
+    tolerances fired must not be collapsed into a single flag."""
+    both = GOOD.replace('"content here"', '"he said "hello"\n    loudly"')
+    r = parse_memory_block(both)
+    assert r.recovery == "multiline+salvage"
+    assert len(r.entries) == 1
+
+
+def test_recovery_defaults_absent_on_the_no_block_sentinel():
+    from hooks.parser import NO_BLOCK
+    assert NO_BLOCK.recovery is None
