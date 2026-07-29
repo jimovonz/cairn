@@ -22,22 +22,32 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cairn.ingest import sqlite3  # pysqlite3 guard
 
 EPH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cairn-ephemeral.db")
+DURABLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cairn.db")
 
 
-def evaluate(layer=None, eph_path=None):
-    conn = sqlite3.connect(f"file:{eph_path or EPH}?mode=ro", uri=True)
+def evaluate(layer=None, eph_path=None, durable_path=None):
+    """Join fit labels (durable DB) against delivery scores (ephemeral DB).
+
+    The two now live in different files — fit pairs are irreplaceable training
+    data, deliveries are instrumentation — so this ATTACHes the ephemeral DB
+    rather than joining within one connection.
+    """
+    dur = durable_path or DURABLE
+    eph = eph_path or EPH
+    conn = sqlite3.connect(f"file:{dur}?mode=ro", uri=True)
     try:
         names = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         if "delivery_fit_pairs" not in names:
             return None, "no delivery_fit_pairs table yet — no fit labels collected"
+        conn.execute("ATTACH DATABASE ? AS eph", (f"file:{eph}?mode=ro",))
         q = """
             SELECT COALESCE(dw.layer,'?'),
                    dw.engaged_score, dl.engaged_score
             FROM delivery_fit_pairs p
-            JOIN memory_deliveries dw
+            JOIN eph.memory_deliveries dw
               ON dw.session_id = p.session_id AND dw.memory_id = p.winner_id
-            JOIN memory_deliveries dl
+            JOIN eph.memory_deliveries dl
               ON dl.session_id = p.session_id AND dl.memory_id = p.loser_id
             WHERE dw.engaged_score IS NOT NULL AND dl.engaged_score IS NOT NULL
               AND dw.engaged_score >= 0 AND dl.engaged_score >= 0
@@ -47,6 +57,8 @@ def evaluate(layer=None, eph_path=None):
             q += " AND dw.layer = ?"
             args.append(layer)
         rows = conn.execute(q, args).fetchall()
+    except sqlite3.Error as e:
+        return None, f"query failed: {type(e).__name__}: {e}"
     finally:
         conn.close()
     if not rows:

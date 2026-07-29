@@ -1318,13 +1318,42 @@ def check():
             tables = [r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()]
-            for t in ["memories", "sessions", "metrics", "hook_state", "memory_history"]:
+            # Probe each DB for ITS OWN tables. metrics/hook_state live in the
+            # ephemeral DB (init_db.EPHEMERAL_TABLES); asserting them against the
+            # durable DB reported two permanent false failures, and since
+            # install.sh prints its banner regardless the net effect was a
+            # perpetually-red check whose own advice ("run ./install.sh to fix")
+            # could never fix it. A check that always fails trains you to ignore
+            # the failure count, which costs more than the check earns.
+            for t in ["memories", "sessions", "memory_history"]:
                 if t in tables:
                     ok(f"Table '{t}' exists")
                 else:
                     fail(f"Table '{t}' missing")
+
+            # Ephemeral tables, sourced from the canonical tuple so this can never
+            # drift from what init_ephemeral actually creates.
+            try:
+                from cairn.config import EPHEMERAL_DB_PATH
+                from cairn.init_db import EPHEMERAL_TABLES
+                if os.path.exists(EPHEMERAL_DB_PATH):
+                    econn = sqlite3.connect(f"file:{EPHEMERAL_DB_PATH}?mode=ro", uri=True)
+                    etables = {r[0] for r in econn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")}
+                    econn.close()
+                    absent = [t for t in EPHEMERAL_TABLES if t not in etables]
+                    if absent:
+                        fail(f"Ephemeral tables missing: {', '.join(absent)}")
+                    else:
+                        ok(f"Ephemeral DB has all {len(EPHEMERAL_TABLES)} expected tables")
+                else:
+                    fail(f"Ephemeral DB not found at {EPHEMERAL_DB_PATH}")
+            except Exception as e:
+                fail(f"Ephemeral DB check failed: {type(e).__name__}: {e}")
+
             count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
             ok(f"{count} memories stored")
+
             missing_emb = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NULL").fetchone()[0]
             if missing_emb == 0:
                 ok("All memories have embeddings")

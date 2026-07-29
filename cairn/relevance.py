@@ -303,18 +303,27 @@ def parse_fit(raw: Any) -> list[tuple[int, int]]:
 
 def apply_fit_labels(pairs: list[tuple[int, int]], *, session_id: str,
                      turn_index: Optional[int] = None,
+                     durable_path: Optional[str] = None,
                      eph_path: Optional[str] = None) -> int:
     """Persist pairwise preferences to delivery_fit_pairs. Fail-soft.
+
+    DURABLE DB, not ephemeral. These are the training labels the whole
+    relevance-grading design rests on, and they are expensive to collect — a
+    label needs an agent to have judged one specific turn's context, which
+    cannot be reconstructed afterwards. "Ephemeral" advertises that a file is
+    safe to delete, and everything else in there genuinely is rebuildable
+    (term_df recomputes, memory_deliveries is instrumentation). Irreplaceable
+    data does not belong behind that name.
 
     Stored as pairs rather than folded into memory_deliveries.grade because a
     preference is a relation between two deliveries, not a property of one —
     flattening it to a per-row score would reintroduce the absolute scale this
-    replaces.
+    replaces. eph_path is accepted and ignored for call-site compatibility.
     """
     if not pairs or not session_id:
         return 0
     try:
-        conn = sqlite3.connect(_eph_path(eph_path))
+        conn = sqlite3.connect(_durable_path(durable_path))
     except sqlite3.Error:
         return 0
     conn.execute("PRAGMA busy_timeout=5000")
