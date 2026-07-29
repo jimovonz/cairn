@@ -45,8 +45,8 @@ def _assistant_text(content) -> str:
     return ""
 
 
-CM_MARKER_CAPTURED = "\n\n(cairn: memory captured for this turn — this note is not a template, do not reproduce it)"
-CM_MARKER_INVALID = "\n\n(cairn: memory NOT captured for this turn — the block was invalid or missing)"
+CM_MARKER_CAPTURED = "\n\n<!-- cairn: memory captured for this turn -->"
+CM_MARKER_INVALID = "\n\n<!-- cairn: memory NOT captured for this turn (block invalid or missing) -->"
 _CM_MARKERS = (CM_MARKER_CAPTURED, CM_MARKER_INVALID)
 _CM_JSON_RE = re.compile(r"\[cm\]: # '(.*)'", re.DOTALL)
 
