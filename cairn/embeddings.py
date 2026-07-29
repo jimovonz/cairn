@@ -660,6 +660,27 @@ def _classify_gate(ce_enabled, rerank_requested, attempted):
     return "gate-unavailable"
 
 
+def _filter_by_ce_floor(rows, floor, arm_assigned):
+    """Apply the cross-encoder floor — unless an A/B arm is assigned.
+
+    Floors are calibrated per model against different score distributions, so
+    each arm applying its own produced wildly different pass rates on the same
+    corpus: measured live, the student delivered 4.7 memories per turn and
+    ms-marco exactly 1.0. That confounds the comparison with delivery VOLUME
+    when the experiment is about ORDERING, and degrades live retrieval on half
+    of all turns.
+
+    With an arm assigned, every candidate is kept and the caller's limit supplies
+    an equal k for both arms, so the only difference between arms is the order
+    they put things in. Suppression behaviour is a separate question and needs
+    its own experiment, not a side effect of this one.
+    """
+    if arm_assigned:
+        return list(rows)
+    above = [r for r in rows if r["ce_score"] >= floor]
+    return above if above else list(rows[:1])
+
+
 def find_similar(
     conn: sqlite3.Connection,
     text: str,
@@ -1042,19 +1063,25 @@ def find_similar(
                 r["reranker_model"] = ce_model  # provenance for memory_deliveries
             if ce_active:
                 pre_filter = len(diverse)
-                above_floor = [r for r in diverse if r["ce_score"] >= floor]
-                diverse = above_floor if above_floor else diverse[:1]
+                diverse = _filter_by_ce_floor(diverse, floor, bool(_arm))
                 ce_min = min(r["ce_score"] for r in diverse) if diverse else 0
                 ce_max = max(r["ce_score"] for r in diverse) if diverse else 1
                 ce_range = ce_max - ce_min if ce_max > ce_min else 1.0
                 for r in diverse:
                     ce_norm = (r["ce_score"] - ce_min) / ce_range
                     r["score"] = (1 - CROSS_ENCODER_WEIGHT) * r["score"] + CROSS_ENCODER_WEIGHT * ce_norm
+                    # Suppression is otherwise unmeasurable: a turn whose
+                    # candidates were all filtered logs no delivery row at all,
+                    # so counting rows is survivorship-biased toward the more
+                    # permissive model. Carried in score_components, which is an
+                    # existing column — no migration, no repeat of the outage.
+                    r["prefilter_n"] = pre_filter
+                    r["postfilter_n"] = len(diverse)
                 diverse.sort(key=lambda x: x["score"], reverse=True)
                 _record_embed_metric("rerank_filtered", pre_filter - len(diverse))
             if ce_archived:
-                archived_candidates = [r for r in archived_candidates
-                                       if r["ce_score"] >= floor]
+                archived_candidates = _filter_by_ce_floor(
+                    archived_candidates, floor, bool(_arm))
         else:
             # Reranker produced no usable scores — daemon down, rerank action
             # unavailable, or length mismatch. The CE relevance gate did NOT run;
