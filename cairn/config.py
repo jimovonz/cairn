@@ -538,6 +538,13 @@ CAIRN_TZ = _os_tz.environ.get("CAIRN_TZ")
 
 # === Read-side memory relevance grading (docs/spec-memory-relevance-grading.md) ===
 RELEVANCE_LOGGING_ENABLED = True    # Log injected memories to memory_deliveries (instrument; T0)
+# Random-sampled relative-fit ask. K entries per injected block are named and
+# the agent is asked which were most/least fit. Uniform sampling is the point:
+# engagement-selected labels cannot calibrate a gate that must be judged on the
+# entries it would have dropped.
+FIT_SAMPLE_ENABLED = True
+FIT_SAMPLE_K = 3
+
 RELEVANCE_PREFILTER_ENABLED = True  # Bucket-4 self-referential-meta prefilter — ON since 2026-07-02 review
                                     # (session-arc meta spam engaged at 0%). Correction-exempt,
                                     # drop-audited via the relevance_prefilter_drop metric.

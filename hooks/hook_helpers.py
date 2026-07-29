@@ -693,7 +693,38 @@ def build_context_xml(query: str, project: Optional[str], layer: str,
             lines.append("  " + format_entry(r))
         lines.append("  </scope>")
 
+    # Random-sampled label ask. Placed INSIDE the block, before the closing tag,
+    # so it travels with the context it refers to.
+    #
+    # Uniform over what was actually injected — deliberately NOT the entries the
+    # agent is most likely to notice. Every label collected so far was selected
+    # on engagement, i.e. on the outcome being measured, which makes it useless
+    # for calibrating a gate: a gate has to be judged on the entries it would
+    # have DROPPED, and those are exactly the ones nobody volunteers a label on.
+    # Sampling 2-3 bounds the cost to a line of output per turn.
+    try:
+        from cairn.config import FIT_SAMPLE_K, FIT_SAMPLE_ENABLED
+    except ImportError:
+        FIT_SAMPLE_K, FIT_SAMPLE_ENABLED = 3, True
+    if FIT_SAMPLE_ENABLED and session_id:
+        try:
+            from cairn.relevance import sample_for_label
+            _pool = list(project_results) + list(global_results)
+            _samp = sample_for_label(_pool, FIT_SAMPLE_K, seed=f"{session_id}:{layer}:{len(_pool)}")
+            if len(_pool) > 1 and _samp:
+                _ids = ", ".join(str(s.get("id")) for s in _samp if s.get("id") is not None)
+                lines.append(
+                    f'  <fit_ask ids="{_ids}">Of these, which were most and least fit '
+                    f'for THIS turn? Answer relatively, not absolutely — "less useful '
+                    f'here than the others" is the judgement, not "bad". Reply in the '
+                    f'[cm] block as "fit":{{"best":[id],"worst":[id]}}, or "fit":{{}} '
+                    f'if nothing stood out either way. An explicit {{}} is a real '
+                    f'answer; omitting the field is not.</fit_ask>')
+        except Exception:
+            pass
+
     lines.append("</cairn_context>")
+
 
     # Phase 1 instrument: log each injected (post-filter) memory to memory_deliveries.
     if session_id:

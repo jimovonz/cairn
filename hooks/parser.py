@@ -33,7 +33,9 @@ class ParseResult(NamedTuple):
     keywords_explicit: bool = False   # True if 'keywords' was explicitly declared
     hash_claimed: Optional[int] = None  # Claimed response hash (h:NNN)
     is_compact: bool = False         # True if compact format was used
-    relevance_grades: tuple = ()     # (memory_id, grade 0-3, hard_neg) from rg — agent-as-teacher labels
+    relevance_grades: tuple = ()     # (memory_id, grade 0-3, hard_neg) from rg — legacy absolute scale
+    fit_pairs: tuple = ()            # (winner_id, loser_id) from fit — relative labels, the primary ask
+    fit_declared: bool = False       # fit field present at all (an explicit "none" is signal; absence is not)
 
 
 # Sentinel for "no memory block found"
@@ -242,6 +244,13 @@ def _parse_linkdef(text: str) -> Optional[ParseResult]:
     # Grammar lives in one place: cairn.relevance.parse_relevance_grades.
     from cairn.relevance import parse_relevance_grades
     relevance_grades = parse_relevance_grades(_g(data, "rg", "relevance_grades", default=[]))
+    from cairn.relevance import parse_fit
+    _fit_raw = _g(data, "fit", "relative_fit", default=None)
+    fit_pairs = parse_fit(_fit_raw)
+    # An explicit "none"/{} means "nothing stood out"; a missing field means the
+    # agent never considered it. Conflating them is what made the old coverage
+    # figure uninterpretable, so the distinction is preserved here.
+    fit_declared = _fit_raw is not None
 
     return ParseResult(
         entries=entries,
@@ -259,6 +268,8 @@ def _parse_linkdef(text: str) -> Optional[ParseResult]:
         hash_claimed=None,
         is_compact=False,
         relevance_grades=tuple(relevance_grades),
+        fit_pairs=tuple(fit_pairs),
+        fit_declared=fit_declared,
     )
 
 

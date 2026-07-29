@@ -262,6 +262,104 @@ def log_memory_deliveries(delivered: list[dict[str, Any]], *, session_id: str,
 # --- Phase 2: agent-as-teacher labels -----------------------------------------
 _GRADE_RE = re.compile(r"^\s*(\d+)\s*:\s*([0-3])\s*(!)?\s*$")
 
+# --- Relative fit labels (supersedes absolute 0-3 grading as the primary ask) --
+#
+# WHY RELATIVE: absolute grading produced labels on 0.5% of turns (340 of
+# 62,238) and 2 hard-negatives in 541k deliveries. Two causes, both structural:
+# an absolute scale asks "was this noise?", which is unanswerable for ambient
+# standing context (project-bootstrap has ZERO labels at 6.2 entries/turn); and
+# every guard against dishonest labelling ("a 0 is a confident claim", "omit if
+# unsure") correctly makes silence the safe move. Relevance is relative anyway
+# — an entry is noise *compared to better candidates*, not intrinsically — and
+# a cross-encoder trains on pairwise preference (margin ranking loss), so pairs
+# are the NATIVE training format, not a cheap approximation of grades.
+#
+# Grammar: {"best": [ids], "worst": [ids]} -> every best beats every worst.
+# One best + one worst yields one pair; the agent never counts or ranks.
+
+def parse_fit(raw: Any) -> list[tuple[int, int]]:
+    """Parse {"best":[42],"worst":[17,8]} -> [(42,17),(42,8)] as (winner, loser).
+
+    Accepts ints or numeric strings. Self-pairs are dropped. Returns [] for the
+    explicit no-signal answers ("none", {}, absent) — which are meaningfully
+    different from a missing field and are recorded by the caller as such.
+    """
+    def _ids(v: Any) -> list[int]:
+        if not isinstance(v, (list, tuple)):
+            return []
+        out = []
+        for x in v:
+            try:
+                out.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    if not isinstance(raw, dict):
+        return []
+    best, worst = _ids(raw.get("best")), _ids(raw.get("worst"))
+    return [(w, l) for w in best for l in worst if w != l]
+
+
+def apply_fit_labels(pairs: list[tuple[int, int]], *, session_id: str,
+                     turn_index: Optional[int] = None,
+                     eph_path: Optional[str] = None) -> int:
+    """Persist pairwise preferences to delivery_fit_pairs. Fail-soft.
+
+    Stored as pairs rather than folded into memory_deliveries.grade because a
+    preference is a relation between two deliveries, not a property of one —
+    flattening it to a per-row score would reintroduce the absolute scale this
+    replaces.
+    """
+    if not pairs or not session_id:
+        return 0
+    try:
+        conn = sqlite3.connect(_eph_path(eph_path))
+    except sqlite3.Error:
+        return 0
+    conn.execute("PRAGMA busy_timeout=5000")
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS delivery_fit_pairs ("
+            "  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, turn_index INTEGER,"
+            "  winner_id INTEGER NOT NULL, loser_id INTEGER NOT NULL,"
+            "  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fit_pairs_session "
+                     "ON delivery_fit_pairs(session_id, turn_index)")
+        conn.executemany(
+            "INSERT INTO delivery_fit_pairs (session_id, turn_index, winner_id, loser_id) "
+            "VALUES (?,?,?,?)",
+            [(session_id, turn_index, w, l) for w, l in pairs])
+        conn.commit()
+        return len(pairs)
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
+
+
+def sample_for_label(delivered: list[dict[str, Any]], k: int = 3,
+                     seed: Optional[str] = None) -> list[dict[str, Any]]:
+    """Pick k delivered entries at random to ask the agent about.
+
+    RANDOM, NOT ENGAGEMENT-SELECTED. The existing labels are all on entries the
+    agent noticed using, so the labelled set is selected on the outcome being
+    measured — useless for calibrating a gate, which must be judged on entries
+    it would have dropped. A uniform sample is the only way to get labels on
+    the entries nobody noticed. Seeded by session+turn so the same turn always
+    asks about the same ids (a retry must not resample).
+    """
+    if not delivered:
+        return []
+    import hashlib
+    import random
+    rnd = random.Random(hashlib.sha256((seed or "").encode()).hexdigest())
+    pool = [d for d in delivered if d.get("id") is not None]
+    if len(pool) <= k:
+        return list(pool)
+    return rnd.sample(pool, k)
+
+
 
 def parse_relevance_grades(raw: Any) -> list[tuple[int, int, bool]]:
     """Parse ["42:3", "17:0!"] -> [(42,3,False),(17,0,True)]. memory_id:grade,
