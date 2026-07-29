@@ -74,6 +74,9 @@ cairn-proxy = "cairn.proxy.server:main"
 cairn-sync = "cairn.sync.cli:main"
 cairn-review-writeback = "cairn.review_writeback:main"
 cairn-ab-selfmod = "cairn.ab_selfmod:main"
+cairn-signals = "cairn.signal_liveness:main"
+cairn-verify-stale = "cairn.verify_stale:main"
+cairn-deferred-engagement = "cairn.deferred_engagement:main"
 cairn-bench-report = "cairn.bench_report:main"
 
 [tool.setuptools.packages.find]
