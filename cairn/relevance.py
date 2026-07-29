@@ -478,35 +478,102 @@ _ENG_STOPWORDS = frozenset((
 _ENG_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_\-]{2,}")
 
 
-def _engagement_tokens(text: str) -> set[str]:
-    """Lowercased alnum tokens of length >=3, minus stopwords. Hyphen/underscore
-    kept (identifiers like 'bge-reranker', 'ce_score' are exactly the distinctive
-    terms we want). Returns a set — engagement is presence-based, not frequency."""
+def _engagement_tokens(text: str, bigrams: bool = True) -> set[str]:
+    """Lowercased alnum tokens of length >=3, minus stopwords, plus adjacent
+    bigrams. Hyphen/underscore kept (identifiers like 'bge-reranker', 'ce_score'
+    are exactly the distinctive terms we want). Returns a set — engagement is
+    presence-based, not frequency.
+
+    Bigrams ("term_a term_b") are emitted alongside unigrams because shared
+    PHRASING is far stronger evidence of influence than shared topic words. They
+    need no special weighting: a bigram is rarer than either of its parts, so IDF
+    scores it higher automatically. term_idf.build() tokenizes through this same
+    function, so document frequencies cover bigrams by construction.
+    """
     if not text:
         return set()
-    return {t for t in _ENG_TOKEN_RE.findall(text.lower()) if t not in _ENG_STOPWORDS}
+    uni = [t for t in _ENG_TOKEN_RE.findall(text.lower()) if t not in _ENG_STOPWORDS]
+    out = set(uni)
+    if bigrams:
+        out.update(f"{a} {b}" for a, b in zip(uni, uni[1:]))
+    return out
+
+
+# Terms below this IDF are corpus-generic — the project's own vocabulary, which
+# appears in a response whether or not any given memory was used. Counting them
+# as engagement is what made standing-context layers look strongest precisely
+# where they are hardest to judge.
+GENERIC_IDF_FLOOR = 0.5
+
+# Cues that the response is DISPUTING a delivered memory rather than using it.
+# Overlap is necessary to contradict something, so a correction currently scores
+# as engagement — the two push a gate in opposite directions and must not be
+# collapsed. Cue-based and deliberately conservative: it flags candidates for
+# review, it is not a claim about semantic entailment.
+_POLARITY_CUES = re.compile(
+    r"\b(?:no longer|not (?:true|correct|the case|accurate)|superseded|outdated|"
+    r"was wrong|is wrong|incorrect|actually,? |instead of|contradicts?|"
+    r"stale|obsolete|deprecated|doesn'?t|does not|isn'?t|is not)\b", re.IGNORECASE)
+
+
+def detect_polarity(response_text: str, matched_terms: set) -> Optional[str]:
+    """'corrected' if the response disputes near a matched term, else 'used'.
+
+    Proximity-scoped: a negation anywhere in a long response says nothing about
+    THIS memory. Requires the cue within a sentence that also carries one of the
+    memory's distinctive terms. Returns None when nothing matched.
+    """
+    if not matched_terms or not response_text:
+        return None
+    for sent in re.split(r"(?<=[.!?\n])\s+", response_text):
+        low = sent.lower()
+        if not _POLARITY_CUES.search(sent):
+            continue
+        if any(t in low for t in matched_terms):
+            return "corrected"
+    return "used"
+
 
 
 def score_engagement(response_text: str, memory_text: str,
-                     prompt_text: str = "") -> tuple[Optional[int], float]:
+                     prompt_text: str = "", *, weighted: bool = True,
+                     eph_path: Optional[str] = None) -> tuple[Optional[int], float]:
     """Did `response_text` use `memory_text`? Returns (engaged, score).
 
     Distinctive terms = memory tokens that are NOT in the prompt (the memory's
     marginal contribution — terms shared with the prompt would be repeated whether
-    or not the memory helped, so crediting them confounds topic-match with use).
+    or not the memory helped, so crediting them confounds topic-match with use),
+    then dropped if corpus-generic (below GENERIC_IDF_FLOOR).
       * engaged = 1 if >=2 distinctive terms appear in the response (strong: one
         shared term is plausibly coincidental, two is not), else 0.
-      * score   = fraction of distinctive terms surfaced (0..1).
+      * score   = IDF-weighted fraction of distinctive terms surfaced (0..1), so a
+        rare identifier counts for more than a common one.
       * (None, -1.0) when there are NO distinctive terms (memory redundant with the
-        prompt) — undecidable, so no signal rather than a false 0."""
+        prompt, or wholly generic) — undecidable, so no signal rather than a false 0.
+
+    NOT GROUND TRUTH FOR ORIENTATION MATERIAL. Repo/Confluence ingest memories are
+    designed to point you at the right place, not to be quoted — they succeed
+    without appearing in the response at all. Low engagement is their expected
+    signature, not a defect, so this score must never be used to gate or retire
+    them. Agent `fit` labels are the trustworthy signal for those layers.
+    """
     mem = _engagement_tokens(memory_text)
     distinctive = mem - _engagement_tokens(prompt_text)
+    if distinctive and weighted:
+        from cairn import term_idf
+        distinctive = {t for t in distinctive
+                       if term_idf.idf(t, eph_path) >= GENERIC_IDF_FLOOR}
     if not distinctive:
         return None, -1.0
     matched = distinctive & _engagement_tokens(response_text)
-    score = len(matched) / len(distinctive)
+    if weighted:
+        from cairn import term_idf
+        w = {t: term_idf.idf(t, eph_path) for t in distinctive}
+        total = sum(w.values()) or 1.0
+        score = sum(w[t] for t in matched) / total
+    else:
+        score = len(matched) / len(distinctive)
     return (1 if len(matched) >= 2 else 0), score
-
 
 def _durable_path(durable_path: Optional[str]) -> str:
     if durable_path:
@@ -553,12 +620,21 @@ def apply_engagement(response_text: str, *, session_id: str,
                 dconn.close()
         except sqlite3.Error:
             return 0
+        # Once per call, not per row: polarity separates "used this" from
+        # "disputed this", which overlap alone cannot distinguish.
+        try:
+            conn.execute("ALTER TABLE memory_deliveries ADD COLUMN polarity TEXT")
+        except sqlite3.Error:
+            pass
         n = 0
         for row_id, memory_id, ctx in rows:
             mt = mem_text.get(int(memory_id))
             if mt is None:
                 continue  # memory deleted since delivery — leave unscored
             engaged, score = score_engagement(response_text, mt, ctx or "")
+            _dist = _engagement_tokens(mt) - _engagement_tokens(ctx or "")
+            _pol = detect_polarity(response_text, _dist & _engagement_tokens(response_text))
+            conn.execute("UPDATE memory_deliveries SET polarity = ? WHERE id = ?", (_pol, row_id))
             conn.execute(
                 "UPDATE memory_deliveries SET engaged = ?, engaged_score = ? WHERE id = ?",
                 (engaged, score, row_id),
