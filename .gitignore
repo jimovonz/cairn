@@ -57,3 +57,8 @@ cairn/org_index.db-shm
 cairn/org_index.db-wal
 cairn/interface_registry.db
 cairn/reports/
+
+# DB snapshots/backups — large, regenerable, never versioned
+cairn.db.pre-*
+cairn.db.bak*
+*.db.pre-*
