@@ -952,16 +952,45 @@ def main() -> None:
     # it never fires on context that carries no gradable entries. Worded to lift
     # HONEST coverage only: grade what you used, omit the rest — a padded grade
     # is worse than a missing one for the cross-encoder it trains.
+    # Just-in-time relative-fit ask. The static rule in memory-system.md scrolls
+    # out of attention mid-session, which is why this echo exists at all.
+    #
+    # It replaces the previous "grade ONLY the ids you actually drew on" nudge.
+    # That instruction produced the labels' central defect: they were selected on
+    # engagement, i.e. on the outcome being measured, so they could never
+    # calibrate a gate — a gate must be judged on the entries it would have
+    # DROPPED, and nobody volunteers a label on those. Sampling uniformly and
+    # asking relatively fixes both the bias and the 0.5% coverage: a relative
+    # judgement is cheap and low-stakes, an absolute one is neither.
+    #
+    # Fires ONCE per turn over the complete injected set (build_context_xml runs
+    # per layer, so asking there would ask up to four times a turn and still miss
+    # the cross-layer comparison).
     grading_nudge = ""
     if injected_ids:
-        id_list = ",".join(str(i) for i in sorted(set(injected_ids)))
-        grading_nudge = (
-            f"\n\n[relevance grading] Memory ids shown above: {id_list}. In your [cm] "
-            f"block add rg:[\"id:grade\"] for ONLY the ids you actually drew on "
-            f"(0=noise, 1=weak, 2=relevant, 3=load-bearing; append ! if actively "
-            f"misleading). Omit ids you didn't use — a missing grade means \"no "
-            f"signal\", not zero. These train the cross-encoder gate, so grade honestly."
-        )
+        from cairn.config import FIT_SAMPLE_ENABLED, FIT_SAMPLE_K
+        from cairn.relevance import sample_for_label
+        uniq = sorted(set(injected_ids))
+        if FIT_SAMPLE_ENABLED and len(uniq) > 1:
+            samp = sample_for_label([{"id": i} for i in uniq], FIT_SAMPLE_K,
+                                    seed=f"{session_id}:{len(uniq)}:{uniq[0]}")
+            ids = ",".join(str(s["id"]) for s in samp)
+            grading_nudge = (
+                f"\n\n[relevance] Of these ids — {ids} — which fitted THIS turn best "
+                f"and which least? In your [cm] block add fit:{{\"best\":[id],"
+                f"\"worst\":[id]}}. Judge RELATIVELY: \"less useful here than the "
+                f"others\", not \"bad\". They are sampled at random, so some will be "
+                f"ones you never used — saying so is the point, not a failure. "
+                f"fit:{{}} means nothing stood out and is a real answer; omitting "
+                f"the field says you didn't consider it. Answer on impression."
+            )
+        else:
+            id_list = ",".join(str(i) for i in uniq)
+            grading_nudge = (
+                f"\n\n[relevance] Memory id shown above: {id_list}. If it was "
+                f"clearly load-bearing or clearly noise here, add rg:[\"id:grade\"] "
+                f"(0-3, ! if misleading). Otherwise omit."
+            )
 
     deliver_additional_context(
         session_id, "UserPromptSubmit",
