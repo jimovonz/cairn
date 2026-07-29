@@ -70,7 +70,7 @@ Because the verbatim blocks are gone from history, you can no longer scan them t
 This trap is not hypothetical — it produced a real, repeated failure spiral in a past session (2026-07-06): after fixing a genuine early copy-the-marker mistake, later turns were increasingly re-checked against stripped/rewritten evidence, and each check misread expected-post-success absence as renewed failure, producing several rounds of false "I did it again" self-accusation before the sidecar capture file (`.staged_context/<session>_cm_capture.jsonl`, keyed by `emitted_sha`) was actually inspected and showed the real blocks had been valid all along. If you notice yourself narrating "I keep failing to do X" about your own `[cm]` output across several consecutive turns, that pattern itself is the signal to stop trusting your self-check and instead verify against ground truth (the sidecar capture file, or `cairn/query.py --session <id>` to see what was actually stored) before saying so out loud.
 
 **Short key reference** (use short keys to save tokens):
-- Block-level: `ok`=complete (true/false), `ctx`=context (`s`=sufficient, `i`=insufficient), `cn`=context_need, `rem`=remaining, `cu`=confidence_updates (array of `"42:+"` / `"17:-! reason"` strings), `ro`=retrieval_outcome, `rg`=relevance_grades (array of `"42:3"` / `"17:0!"` strings — see Relevance grading), `int`=intent, `kw`=keywords
+- Block-level: `ok`=complete (true/false), `ctx`=context (`s`=sufficient, `i`=insufficient), `cn`=context_need, `rem`=remaining, `cu`=confidence_updates (array of `"42:+"` / `"17:-! reason"` strings), `ro`=retrieval_outcome, `fit`=relative fit labels (`{"best":[id],"worst":[id]}` — the primary ask, see Relative fit labelling), `rg`=relevance_grades (legacy absolute 0-3, array of `"42:3"` / `"17:0!"` strings), `int`=intent, `kw`=keywords
 - Per-entry (`e` array): `t`=type, `to`=topic, `c`=content, `kw`=keywords (overrides block-level), `d`=depth, `f`=facts (list of key=value strings stored in dedicated FTS5-indexed column; NOT in embedding)
 - Entry `t` values: `decision`, `preference`, `fact`, `correction`, `person`, `project`, `skill`, `workflow`
 
@@ -263,23 +263,46 @@ After receiving `<cairn_context>`, you may optionally rate the retrieval itself:
 
 This is a system-level learning signal — it helps tune retrieval quality over time. Only include when you have a clear signal.
 
-### Relevance grading (`rg`)
+### Relative fit labelling (`fit`) — the primary ask
 
-Separately from confidence (veracity) and retrieval_outcome (system-level), grade how **relevant each surfaced memory was to the immediate context**. This is the training signal that teaches a cross-encoder to gate future injections, so honest grades directly improve what you are shown next session. Emit an `rg` array of `"id:grade"` strings:
+When a `<cairn_context>` block contains a `<fit_ask ids="...">`, answer it. This is
+the main training signal for what gets injected next session, so an honest answer
+here directly improves what you are shown.
+
+**Judge relatively, never absolutely.** The question is *which of these was more
+fit for this turn*, not *which is good or bad*. A memory that is useless here may
+be exactly right elsewhere — noise is a comparison, not a property.
 
 ```
-[cm]: # '{... ,"rg":["42:3","17:0!","8:0"]}'
+[cm]: # '{... ,"fit":{"best":[42],"worst":[17]}}'
 ```
 
-- **Grade 0–3**, per memory `id` shown in `<cairn_context>`: `0` noise · `1` weak/tangential · `2` relevant · `3` load-bearing/essential.
-- **Hard-negative** — append `!` (e.g. `"17:0!"`) when a memory was *actively wrong or misleading here*. A distinct axis from mere irrelevance; reserve it for genuinely harmful entries. (If it is factually wrong/superseded, also use a `cu` `-!` annotation.)
+- `best` — the sampled entries that fit this turn best. `worst` — the ones that fit
+  least. One id in each is plenty; you are not ranking or scoring anything.
+- **`"fit":{}` is a real answer** meaning "nothing stood out either way", and is
+  genuinely useful. Omitting the field entirely is not the same thing — it says you
+  never considered the question.
+- Only use ids named in the `fit_ask`. They are sampled at random, so they will
+  often include entries you did not use — saying so is exactly the point. Labels
+  volunteered only on entries you noticed cannot measure what a filter would have
+  wrongly dropped.
+- Low stakes by design. "Less useful here than the others" is a mild, easily
+  revised claim, not an accusation. Answer on impression; do not deliberate.
 
-Rules — these keep the signal honest, so follow them:
-- **Only grade what you confidently judged.** Grade the clear extremes — obvious `0` noise and `3` load-bearing. Don't agonise over the murky middle.
-- **Non-engagement = unlabelled, NOT zero.** If you didn't actually use or assess a memory, **omit it** — silence means "no signal," not "irrelevant." A `0` is a confident claim that the memory was noise; never use it as a default for "ignored." (This guard is what stops self-grading from poisoning the model.)
-- **Only grade memories shown to you in `<cairn_context>`** (use the `id` attribute).
-- Optional and lightweight: flag the clear positives and the hard-negatives, skip the rest.
-- Orthogonal to `cu`/`confidence_update`: `rg` is "was this relevant *here*", `cu` is "is this *true*". A memory can be true-but-irrelevant (low `rg`, no `cu`) or relevant-but-wrong (`rg` 3 + `cu` `-!`).
+### Absolute grading (`rg`) — legacy, optional
+
+The older 0–3 scale. Still parsed, still valid, but no longer the primary ask —
+absolute grading asked "was this noise?", which is unanswerable for standing
+context and made silence the safe answer. Use it only when you have a strong,
+specific judgement:
+
+- Grade 0–3 per memory `id`: `0` noise · `1` weak · `2` relevant · `3` load-bearing.
+- Append `!` (e.g. `"17:0!"`) for a **hard negative** — actively wrong or misleading
+  here, not merely unhelpful. If it is factually wrong or superseded, also add a
+  `cu` `-!` annotation.
+- Only grade memories shown to you; omit anything you did not actually assess.
+- Orthogonal to `cu`: `rg`/`fit` is "was this relevant *here*", `cu` is "is this
+  *true*". An entry can be true-but-irrelevant, or relevant-but-wrong.
 
 ## Database
 
