@@ -1561,6 +1561,7 @@ Commands:
   --since <date>         Memories updated on or after date (ISO, today, yesterday, 3d, 2w, 1m)
   --until <date>         Memories updated on or before date
   --today                Shorthand for --since today
+  --signals              Signal liveness: is each instrumented signal still arriving?
   --enforcement-stats [days]  Enforcement cost: hard blocks vs staged nudges
   --delivery-stats       Injected-memory outcome (engagement/grade) by generation version + reranker
   --pare-stats           Context-paring savings — token-instances removed from resubmission by [cm] paring
@@ -2067,7 +2068,14 @@ def main_entry():
         sys.exit(1)
 
     cmd = sys.argv[1]
-    if cmd == "--marginal-engagement":
+    if cmd == "--signals":
+        # Call the functions, not main() — main() re-parses sys.argv and would
+        # reject the very flag that routed us here.
+        from cairn.signal_liveness import collect, render, probe_daemon
+        _hours = int(sys.argv[2]) if len(sys.argv) > 2 else 24
+        _rows, _active = collect(hours=_hours)
+        sys.exit(render(_rows, _active, _hours, probe_daemon()))
+    elif cmd == "--marginal-engagement":
         marginal_engagement(int(sys.argv[2]) if len(sys.argv) > 2 else None)
     elif cmd == "--enforcement-stats":
         enforcement_stats(int(sys.argv[2]) if len(sys.argv) > 2 else 14)
