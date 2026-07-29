@@ -326,7 +326,12 @@ def apply_fit_labels(pairs: list[tuple[int, int]], *, session_id: str,
         conn = sqlite3.connect(_durable_path(durable_path))
     except sqlite3.Error:
         return 0
-    conn.execute("PRAGMA busy_timeout=5000")
+    # 30s, far longer than the 5s used elsewhere. This writes at most once per
+    # turn, so waiting is nearly free, while the row is an irreplaceable training
+    # label — an agent judgement of one specific turn's context that cannot be
+    # reconstructed later. Against a fail-soft except, too short a timeout
+    # discards the label silently and the loss reads as "no labels yet".
+    conn.execute("PRAGMA busy_timeout=30000")
     try:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS delivery_fit_pairs ("
