@@ -36,10 +36,16 @@ PYEOF
     fi
 done
 
-# --- Remove rules file ---
+# --- Remove rules and reference files ---
 if [ -f "$CLAUDE_DIR/rules/memory-system.md" ]; then
     rm "$CLAUDE_DIR/rules/memory-system.md"
     echo "Removed global rules file."
+fi
+rm -f "$CLAUDE_DIR/rules/code-graph-navigation.md"
+if [ -f "$CLAUDE_DIR/reference/cairn-query.md" ]; then
+    rm "$CLAUDE_DIR/reference/cairn-query.md"
+    rmdir "$CLAUDE_DIR/reference" 2>/dev/null || true
+    echo "Removed on-demand reference file."
 fi
 
 # --- Remove slash command ---
@@ -90,8 +96,8 @@ sys.exit(0 if changed else 1)
 fi
 
 # --- Remove cron jobs ---
-if crontab -l 2>/dev/null | grep -q "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.proxy.server"; then
-    crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.proxy.server" | crontab -
+if crontab -l 2>/dev/null | grep -q "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.proxy.server\|cairn/signal_liveness"; then
+    crontab -l 2>/dev/null | grep -v "cairn-maintenance\|cairn/consolidate\|cairn/contradiction_scan\|cairn.proxy.server\|cairn/signal_liveness" | crontab -
     echo "Removed cairn cron jobs."
 else
     echo "No cairn cron jobs found."

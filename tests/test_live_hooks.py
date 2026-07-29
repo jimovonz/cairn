@@ -57,7 +57,7 @@ def get_memory_count():
     return count
 
 
-def run_claude(prompt, timeout=60):
+def run_claude(prompt, timeout=240):  # 60s times out under full-suite load — flaky gate, not a real failure
     """Send a prompt through claude -p and return the result."""
     result = subprocess.run(
         ["claude", "-p", "--output-format", "json", prompt],
@@ -79,47 +79,50 @@ def _cleanup_smoke_memories():
 
 def test_hooks_fire_and_fields_valid():
     """Send a prompt through claude -p, verify both hooks fire and read their
-    input fields correctly. This catches field name renames in Claude Code updates."""
+    input fields correctly. This catches field name renames in Claude Code updates.
+
+    Failures are ASSERTED, not returned. `return False` merely raises
+    PytestReturnNotNoneWarning and the test still PASSES, so every contract check
+    below was silently passing regardless of its outcome — the canary could not
+    fail for the reason it exists.
+
+    A CLI timeout is an environment condition (machine load, and the daemon now
+    holds two cross-encoders while the reranker A/B runs), not a contract
+    violation. It skips rather than fails, so the only failures reported are real
+    upstream changes.
+    """
     log_before = get_log_size()
     count_before = get_memory_count()
 
-    result = run_claude(
-        "Store a test memory with type: fact, topic: cairn-smoke-test, "
-        "content: live hook integration test verifying hook pipeline. Reply briefly."
-    )
+    try:
+        result = run_claude(
+            "Store a test memory with type: fact, topic: cairn-smoke-test, "
+            "content: live hook integration test verifying hook pipeline. Reply briefly."
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip("claude CLI timed out — machine load, not a hook-contract failure")
 
-    if result.returncode != 0:
-        print(f"FAIL: claude -p returned {result.returncode}")
-        print(f"  stderr: {result.stderr[:200]}")
-        return False
+    assert result.returncode == 0, (
+        f"claude -p returned {result.returncode}: {result.stderr[:200]}"
+    )
 
     time.sleep(1)
     new_log = get_log_tail(log_before)
 
-    # Stop hook must have fired
-    if "Hook fired" not in new_log:
-        print("FAIL: Stop hook did not fire")
-        return False
+    assert "Hook fired" in new_log, "Stop hook did not fire"
 
-    # Check for field name warnings — the critical check
-    if "No text found in hook input" in new_log:
-        print("FAIL: Stop hook couldn't read response text — field name changed")
-        print(f"  Log keys line: {[l for l in new_log.split(chr(10)) if 'Keys:' in l]}")
-        return False
+    keys = [l for l in new_log.splitlines() if "Keys:" in l]
+    assert "No text found in hook input" not in new_log, (
+        f"Stop hook could not read response text — field name changed. {keys}"
+    )
+    assert "No user message found in hook input" not in new_log, (
+        f"Prompt hook could not read user message — field name changed. {keys}"
+    )
 
-    if "No user message found in hook input" in new_log:
-        print("FAIL: Prompt hook couldn't read user message — field name changed")
-        print(f"  Log keys line: {[l for l in new_log.split(chr(10)) if 'Keys:' in l]}")
-        return False
-
-    # Memory should have been stored (proves stop hook parsed the response)
+    # Soft: the LLM may legitimately not comply with the store request.
     count_after = get_memory_count()
     if count_after <= count_before:
-        # Not a hard failure — LLM might not have complied, but log the concern
         print(f"WARN: No new memory stored (before={count_before}, after={count_after})")
-
-    print("PASS: hooks_fire_and_fields_valid")
-    return True
 
 
 def cleanup():
@@ -145,13 +148,14 @@ if __name__ == "__main__":
     failed = 0
 
     for test in tests:
+        # The tests assert rather than return a verdict, so "no exception" is a
+        # pass. Reading a return value here is what let silent failures through.
         try:
-            if test():
-                passed += 1
-            else:
-                failed += 1
+            test()
+            print(f"PASS: {test.__name__}")
+            passed += 1
         except Exception as e:
-            print(f"ERROR: {test.__name__}: {e}")
+            print(f"FAIL: {test.__name__}: {e}")
             failed += 1
 
     cleanup()

@@ -631,6 +631,81 @@ def archive_memory(memory_id, reason):
     print(f"  Reason: {reason}")
 
 
+def archive_by_source_ref(pattern, reason, dry_run=False, like=False, session_id=None):
+    """Bulk-archive every memory stamped with a matching source_ref.
+
+    The retraction half of provenance stamping (docs/spec-remediation-2026-07.md
+    item 1.8). source_ref makes a write-path experiment *attributable*; this
+    makes it *retractable*, which is what lets write-path features ship at
+    read-path speed — a bad experiment is archived rather than permanently
+    mixed into the corpus.
+
+    Exact match by default. `like=True` treats the pattern as SQL LIKE, so the
+    caller supplies the wildcards (e.g. "ingest-%").
+
+    Already-archived and soft-deleted rows are excluded, so re-running is
+    idempotent and the reported count is honest. Returns the number of memories
+    archived — or, under dry_run, the number that would be.
+    """
+    pat = (pattern or "").strip()
+    if not pat:
+        print("Refusing: empty source_ref pattern.")
+        return 0
+    if like and not pat.strip("%"):
+        print(f"Refusing: pattern {pat!r} matches every stamped memory. "
+              "Name a specific source_ref.")
+        return 0
+
+    op = "LIKE" if like else "="
+    where = (
+        f"source_ref IS NOT NULL AND source_ref {op} ? "
+        "AND (archived_reason IS NULL OR archived_reason = '') "
+        "AND deleted_at IS NULL"
+    )
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout=5000")
+    rows = conn.execute(
+        f"SELECT id, type, topic, source_ref FROM memories WHERE {where} ORDER BY id",
+        (pat,),
+    ).fetchall()
+
+    if not rows:
+        conn.close()
+        print(f"No live memories match source_ref {op} {pat!r}.")
+        return 0
+
+    # Count and sample before writing — this verb is itself a write path.
+    print(f"{len(rows)} memor{'y' if len(rows) == 1 else 'ies'} match "
+          f"source_ref {op} {pat!r}:")
+    for mid, mtype, topic, sref in rows[:10]:
+        print(f"  [{mid}] {mtype}/{topic}  ({sref})")
+    if len(rows) > 10:
+        print(f"  ... and {len(rows) - 10} more")
+
+    if dry_run:
+        conn.close()
+        print(f"DRY RUN — nothing written. Re-run without --dry-run to archive.")
+        return len(rows)
+
+    ids = [r[0] for r in rows]
+    placeholders = ",".join("?" for _ in ids)
+    conn.execute(
+        f"UPDATE memories SET confidence = 0, archived_reason = ?, "
+        f"updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+        [reason] + ids,
+    )
+    conn.executemany(
+        "INSERT INTO memory_annotation_log (memory_id, direction, reason, session_id) "
+        "VALUES (?, 'archive', ?, ?)",
+        [(mid, reason, session_id) for mid in ids],
+    )
+    conn.commit()
+    conn.close()
+    print(f"Archived {len(ids)} memories. Reason: {reason}")
+    return len(ids)
+
+
 def update_memory(memory_id, new_content):
     """Update a memory's content in place, preserving history."""
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
@@ -1054,6 +1129,64 @@ def _version_label(source_ref):
     return source_ref  # genA-v1/v2/v3, subagent:genA-v*, review-writeback, ...
 
 
+def _qualifying_strata(rows):
+    """Which `engaged_method` strata are usable as a measurement basis.
+
+    A stratum qualifies only if it contains BOTH classes. Historical untagged
+    deliveries recorded engagement only when it was detected — non-engagement was
+    never distinguished from never-scored — so their rate is 100% by construction
+    and blending them with a two-class stratum inflates every aggregate.
+    `semantic-backfill` has the same shape: it only ever writes rescues.
+
+    Computed from the data rather than hardcoded, so a stratum that later starts
+    recording negatives qualifies automatically.
+
+    rows: iterable of (engaged_method, engaged). Returns a set of method names.
+    """
+    from collections import defaultdict
+    pos, neg = defaultdict(int), defaultdict(int)
+    for method, engaged in rows:
+        key = method or "(untagged)"
+        if engaged == 1:
+            pos[key] += 1
+        elif engaged == 0:
+            neg[key] += 1
+    return {m for m in set(pos) | set(neg) if pos[m] and neg[m]}
+
+
+def load_qualifying_strata(conn):
+    """Qualifying strata for a whole ephemeral DB (see `_qualifying_strata`).
+
+    Two-class-ness is a property of the measurement regime, not of any one
+    experiment arm or layer, so it is always computed over the entire delivery
+    corpus and then applied to whatever subset is being reported.
+
+    Falls back to a single untagged stratum on a pre-`engaged_method` schema —
+    such a DB may still contain both classes, and disqualifying everything there
+    would be a stronger claim than the data supports.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT engaged_method, engaged FROM memory_deliveries"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = conn.execute("SELECT NULL, engaged FROM memory_deliveries").fetchall()
+    return _qualifying_strata(rows)
+
+
+def _neutralise_unusable_engagement(engaged, engaged_score, method, qualifying):
+    """Treat observations from a non-qualifying stratum as UNLABELLED.
+
+    A positives-only stratum cannot yield a rate, so its rows are absence of
+    measurement, not evidence of engagement. Returning None (rather than the raw
+    1) is what keeps `_aggregate_outcomes` honest: `decided` counts measurements,
+    and a positives-only row was never a measurement in the required sense.
+    """
+    if (method or "(untagged)") in qualifying:
+        return engaged, engaged_score
+    return None, None
+
+
 def _aggregate_outcomes(records):
     """Pure aggregator for the delivery readout. records: iterable of
     {key, engaged, engaged_score, grade}. engaged_score == -1.0 means
@@ -1104,9 +1237,19 @@ def delivery_stats():
     reranker model. Turns the shipped write-side levers into evidence."""
     from cairn.config import EPHEMERAL_DB_PATH
     e = sqlite3.connect(EPHEMERAL_DB_PATH)
-    deliveries = e.execute(
-        "SELECT memory_id, reranker_model, engaged, engaged_score, grade, layer FROM memory_deliveries"
-    ).fetchall()
+    try:
+        deliveries = e.execute(
+            "SELECT memory_id, reranker_model, engaged, engaged_score, grade, layer, "
+            "engaged_method FROM memory_deliveries"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        deliveries = [r + (None,) for r in e.execute(
+            "SELECT memory_id, reranker_model, engaged, engaged_score, grade, layer "
+            "FROM memory_deliveries"
+        ).fetchall()]
+    # Engagement rates are only meaningful within a stratum that recorded BOTH
+    # classes; blending strata inflates every aggregate (spec 2S.1).
+    qualifying = _qualifying_strata((r[6], r[2]) for r in deliveries)
     if not deliveries:
         print("No deliveries logged yet.")
         return
@@ -1121,7 +1264,8 @@ def delivery_stats():
             ver[mid] = _version_label(sr)
 
     def _rec(r, key):
-        return {"key": key, "engaged": r[2], "engaged_score": r[3], "grade": r[4]}
+        eng, sc = _neutralise_unusable_engagement(r[2], r[3], r[6], qualifying)
+        return {"key": key, "engaged": eng, "engaged_score": sc, "grade": r[4]}
 
     by_ver = _aggregate_outcomes(_rec(r, ver.get(r[0], "deleted/unknown")) for r in deliveries)
     by_rer = _aggregate_outcomes(_rec(r, r[1] or "none") for r in deliveries)
@@ -1156,9 +1300,193 @@ def delivery_stats():
                   f"{a['graded']:>7} "
                   f"{(a['avg_grade'] if a['avg_grade'] is not None else '-'):>9}")
 
+    # Raw, un-neutralised — this table exists to make the strata visible, and is
+    # the ONE place cross-stratum numbers are shown, precisely so the reason the
+    # others are neutralised is legible.
+    by_method = _aggregate_outcomes(
+        {"key": r[6] or "(untagged)", "engaged": r[2], "engaged_score": r[3],
+         "grade": r[4]} for r in deliveries)
+    excluded = sorted(set(by_method) - qualifying)
+    print(f"\n  measurement basis: usable strata {sorted(qualifying) or 'NONE'}; "
+          f"treated as unlabelled {excluded or 'none'}")
+    if not qualifying:
+        print("  WARNING: no stratum recorded both classes — every engagement "
+              "rate below is unmeasurable, not zero.")
+
+    _table("by engagement method (RAW — strata are not comparable):", by_method)
     _table("by generation version (source_ref):", by_ver)
     _table("by reranker model:", by_rer)
     _table("by injection layer:", by_layer)
+
+
+def enforcement_stats(days=14):
+    """Enforcement cost readout (spec 2F.1): hard blocks vs staged nudges.
+
+    A hard block costs a full extra inference turn; a staged nudge costs nothing
+    until the next turn reads it. Reporting them together can only bound the
+    cost of enforcement, never measure it — which is why the README's "brief
+    pause" claim was unsupported.
+
+    `enforcement_block` rows are authoritative (recorded at the emission point).
+    Rows predating that instrumentation are reported separately as UNCLASSIFIED
+    rather than folded in, because assigning them by event name would be a guess
+    presented as a measurement.
+    """
+    from cairn.config import EPHEMERAL_DB_PATH
+    e = sqlite3.connect(EPHEMERAL_DB_PATH)
+    since = f"-{int(days)} days"
+
+    def _count(sql, *a):
+        try:
+            return e.execute(sql, a).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+    fired = _count("SELECT COUNT(*) FROM metrics WHERE event='hook_fired' "
+                   "AND created_at >= datetime('now', ?)", since)
+    fired_n = fired[0][0] if fired else 0
+
+    blocks = _count("SELECT detail, COUNT(*) FROM metrics WHERE event='enforcement_block' "
+                    "AND created_at >= datetime('now', ?) GROUP BY 1 ORDER BY 2 DESC", since)
+    nudges = _count("SELECT event, COUNT(*) FROM metrics WHERE event LIKE '%_staged' "
+                    "AND created_at >= datetime('now', ?) GROUP BY 1 ORDER BY 2 DESC", since)
+
+    block_n = sum(c for _, c in blocks)
+    nudge_n = sum(c for _, c in nudges)
+    stops = fired_n + block_n
+
+    print(f"=== Enforcement cost, last {days} days ===")
+    print(f"  stop events (est): {stops}   completed: {fired_n}   hard blocks: {block_n}   "
+          f"staged nudges: {nudge_n}")
+    if stops:
+        print(f"  hard-block rate: {block_n / stops * 100:.1f}% of stop events "
+              f"(each costs a full extra inference turn)")
+    else:
+        print("  hard-block rate: no stop events in window")
+
+    if blocks:
+        print("\n  hard blocks by reason:")
+        for detail, n in blocks:
+            print(f"    {n:>5}  {(detail or '(no reason)')[:70]}")
+    else:
+        print("\n  No enforcement_block rows in window — instrumentation landed "
+              "2026-07-26, so a quiet window here means 'not yet measured', not 'no blocks'.")
+
+    if nudges:
+        print("\n  staged nudges (no turn cost):")
+        for ev, n in nudges:
+            print(f"    {n:>5}  {ev}")
+
+    # Recoveries are the counterpart to blocks: a malformed block that was
+    # repaired mechanically instead of costing a re-prompt. Reported here so the
+    # ledger shows cost AVOIDED beside cost paid, and so format drift surfaces as
+    # a rising recovery rate rather than as a sudden wave of failures.
+    recovered = _count("SELECT detail, COUNT(*) FROM metrics WHERE event='linkdef_recovered' "
+                       "AND created_at >= datetime('now', ?) GROUP BY 1 ORDER BY 2 DESC", since)
+    rec_n = sum(c for _, c in recovered)
+    print(f"\n  block recoveries (re-prompts avoided): {rec_n}")
+    for detail, n in recovered:
+        print(f"    {n:>5}  {detail or '(unspecified)'}")
+
+    legacy = _count(
+        "SELECT event, COUNT(*) FROM metrics WHERE created_at >= datetime('now', ?) "
+        "AND event IN ('missing_memory_block','malformed_memory_block',"
+        "'strict_validation_failed','content_density_failed','trailing_intent_blocked',"
+        "'deferral_blocked','declined_without_trying_blocked','correction_trigger_blocked',"
+        "'emitted_cm_marker_not_block') GROUP BY 1 ORDER BY 2 DESC", since)
+    if legacy:
+        print("\n  UNCLASSIFIED (pre-instrumentation cause markers — these fire "
+              "alongside\n  both blocking and non-blocking paths, so they are NOT a block count):")
+        for ev, n in legacy:
+            print(f"    {n:>5}  {ev}")
+    e.close()
+
+
+def marginal_engagement(days=None):
+    """Does the Nth injected memory still earn its place? (spec 2S.7)
+
+    The ranker's job is maximum relevant data against least noise, and an
+    aggregate engagement rate cannot tell those apart: a ranker that injects
+    more marginal entries and a ranker that injects fewer better ones can post
+    the same average. What distinguishes them is whether engagement survives at
+    the tail of the injected set.
+
+    Restricted to qualifying strata, because untagged rows are 100% engaged by
+    construction and would flatten the curve into meaninglessness.
+
+    Reads by rank (is the 5th entry still used?) and by turn size (does
+    injecting more dilute the whole set, or just add weak tail entries?).
+    """
+    from cairn.config import EPHEMERAL_DB_PATH
+    e = sqlite3.connect(EPHEMERAL_DB_PATH)
+    where_days = ""
+    args = []
+    if days:
+        where_days = " AND delivered_at >= datetime('now', ?)"
+        args = [f"-{int(days)} days"]
+
+    try:
+        rows = e.execute(
+            "SELECT session_id, turn_index, served_rank, engaged, engaged_method "
+            "FROM memory_deliveries WHERE engaged IS NOT NULL" + where_days, args
+        ).fetchall()
+    except sqlite3.OperationalError:
+        print("No delivery data.")
+        return
+    if not rows:
+        print("No scored deliveries in window.")
+        return
+
+    qualifying = _qualifying_strata((r[4], r[3]) for r in rows)
+    usable = [r for r in rows if (r[4] or "(untagged)") in qualifying]
+    print(f"=== Marginal-entry engagement ===")
+    print(f"  usable strata: {sorted(qualifying) or 'NONE'} "
+          f"({len(usable)}/{len(rows)} scored deliveries)")
+    if not usable:
+        print("  No stratum records both classes — marginal engagement is unmeasurable.")
+        e.close()
+        return
+
+    from collections import defaultdict
+    by_rank = defaultdict(lambda: [0, 0])
+    turn_size = defaultdict(int)
+    for sid, turn, rank, engaged, _m in usable:
+        b = by_rank[rank if rank is not None else -1]
+        b[0] += 1
+        b[1] += 1 if engaged == 1 else 0
+        turn_size[(sid, turn)] += 1
+
+    print(f"\n  by served rank (0 = top-ranked entry):")
+    print(f"    {'rank':>5} {'n':>7} {'engaged':>8} {'rate':>7}")
+    for rank in sorted(by_rank):
+        n, eng = by_rank[rank]
+        if n < 5:
+            continue
+        print(f"    {rank:>5} {n:>7} {eng:>8} {eng / n * 100:>6.1f}%")
+
+    by_size = defaultdict(lambda: [0, 0])
+    for sid, turn, rank, engaged, _m in usable:
+        size = turn_size[(sid, turn)]
+        b = by_size[size]
+        b[0] += 1
+        b[1] += 1 if engaged == 1 else 0
+    print(f"\n  by number of memories injected that turn:")
+    print(f"    {'size':>5} {'n':>7} {'engaged':>8} {'rate':>7}")
+    for size in sorted(by_size):
+        n, eng = by_size[size]
+        if n < 5:
+            continue
+        print(f"    {size:>5} {n:>7} {eng:>8} {eng / n * 100:>6.1f}%")
+    print("\n  Read RANK, not size: a rate that collapses at higher ranks means the "
+          "tail of\n  each injection is noise and the cap should fall; a rate that "
+          "holds means the cap\n  is too LOW and relevant data is being withheld. "
+          "Flat rate across the head means\n  the ranker is not ORDERING within it, "
+          "whatever its average.")
+    print("  The size table is CONFOUNDED and cannot justify a cap: turns with few "
+          "injected\n  memories are turns where retrieval found few candidates, so "
+          "size correlates with\n  match quality. Low rates at size 1-2 measure the "
+          "prompt, not the cap.")
+    e.close()
 
 
 def pare_stats():
@@ -1252,6 +1580,8 @@ Commands:
   --since <date>         Memories updated on or after date (ISO, today, yesterday, 3d, 2w, 1m)
   --until <date>         Memories updated on or before date
   --today                Shorthand for --since today
+  --signals              Signal liveness: is each instrumented signal still arriving?
+  --enforcement-stats [days]  Enforcement cost: hard blocks vs staged nudges
   --delivery-stats       Injected-memory outcome (engagement/grade) by generation version + reranker
   --pare-stats           Context-paring savings — token-instances removed from resubmission by [cm] paring
   --ab-history           Write-side A/B experiment history (status, arm stats, decision reason)
@@ -1266,6 +1596,8 @@ Commands:
   --add <type> <topic> <content> [--project <name>] [--session <id>]  Add a memory
   --update <id> <text>   Update a memory's content (preserves history)
   --archive <id> <reason> Archive a memory (confidence=0, reason preserved, stays in DB for learning)
+  --archive-by-source-ref <pattern> <reason> [--like] [--dry-run]
+                         Bulk-retract a write-path experiment by its source_ref stamp
   --delete <id>          Delete a memory and its history
   --compact [project]    Dense cairn dump for LLM ingestion
   --review               Surface low-confidence memories for inspection
@@ -1783,7 +2115,18 @@ def main_entry():
         sys.exit(1)
 
     cmd = sys.argv[1]
-    if cmd == "--delivery-stats":
+    if cmd == "--signals":
+        # Call the functions, not main() — main() re-parses sys.argv and would
+        # reject the very flag that routed us here.
+        from cairn.signal_liveness import collect, render, probe_daemon
+        _hours = int(sys.argv[2]) if len(sys.argv) > 2 else 24
+        _rows, _active = collect(hours=_hours)
+        sys.exit(render(_rows, _active, _hours, probe_daemon()))
+    elif cmd == "--marginal-engagement":
+        marginal_engagement(int(sys.argv[2]) if len(sys.argv) > 2 else None)
+    elif cmd == "--enforcement-stats":
+        enforcement_stats(int(sys.argv[2]) if len(sys.argv) > 2 else 14)
+    elif cmd == "--delivery-stats":
         delivery_stats()
     elif cmd == "--pare-stats":
         pare_stats()
@@ -1842,6 +2185,12 @@ def main_entry():
         update_memory(int(sys.argv[2]), " ".join(sys.argv[3:]))
     elif cmd == "--archive" and len(sys.argv) > 3:
         archive_memory(int(sys.argv[2]), " ".join(sys.argv[3:]))
+    elif cmd == "--archive-by-source-ref" and len(sys.argv) > 3:
+        a = sys.argv[2:]
+        dry = "--dry-run" in a
+        like = "--like" in a
+        a = [x for x in a if x not in ("--dry-run", "--like")]
+        archive_by_source_ref(a[0], " ".join(a[1:]), dry_run=dry, like=like)
     elif cmd == "--delete" and len(sys.argv) > 2:
         delete_memory(int(sys.argv[2]))
     elif cmd == "--compact":

@@ -328,6 +328,16 @@ def _union_keywords(existing_csv: Optional[str], new_csv: Optional[str]) -> Opti
     return ",".join(out) or None
 
 
+# INPUT-DOMAIN INVARIANT (spec 1.10) — what this write path assumes about its
+# input. Both ingest defects came from transplanting an invariant into a domain
+# that violated it, which care at review time would not have caught.
+INPUT_DOMAIN_INVARIANT = (
+    "Assumes cosine 0.85 dedup is sufficient to stop duplicate accumulation. "
+    "Anything below that threshold always inserts, so a corpus of many "
+    "near-but-not-quite duplicates grows without bound and is never "
+    "consolidated by this path."
+)
+
 def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = None,
                     transcript_path: Optional[str] = None,
                     source_ref: Optional[str] = None) -> int:

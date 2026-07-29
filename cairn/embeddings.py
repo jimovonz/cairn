@@ -202,7 +202,7 @@ def _daemon_vector_search(texts: list[str], n_base: int, min_sim: float,
     return None
 
 
-def _daemon_rerank(query: str, candidates: list[str]):
+def _daemon_rerank(query: str, candidates: list[str], model: str = None):
     """Re-rank candidates via the daemon's cross-encoder. Returns
     (scores, score_floor, model_name) or None. The daemon resolves the
     device-appropriate model + floor (bge on CUDA, ms-marco on CPU) and reports
@@ -210,7 +210,10 @@ def _daemon_rerank(query: str, candidates: list[str]):
     needn't import torch."""
     try:
         from cairn.daemon import send_request
-        resp = send_request({"action": "rerank", "query": query, "candidates": candidates})
+        req = {"action": "rerank", "query": query, "candidates": candidates}
+        if model:
+            req["model"] = model          # A/B arm assignment (spec 2S.5)
+        resp = send_request(req)
         if resp and resp.get("scores") is not None:
             return resp["scores"], resp.get("score_floor"), resp.get("model")
     except (ConnectionError, TimeoutError, OSError) as e:
@@ -648,6 +651,47 @@ def upsert_vec_index(conn: sqlite3.Connection, memory_id: int, embedding_blob: b
         return False
 
 
+def _classify_gate(ce_enabled, rerank_requested, attempted):
+    """Why a delivery row has, or lacks, a reranker_model.
+
+    A NULL model conflates "the daemon was down" with "this layer is not gated
+    by design". Any reranker comparison that re-admits the first case
+    manufactures ungated-vs-reranked conclusions, so the reason is recorded at
+    source instead of inferred downstream from absence.
+
+    "gate-unavailable" is the attempted-but-failed case and is the only value
+    that indicates degraded retrieval rather than intended behaviour.
+    """
+    if not ce_enabled:
+        return "disabled"
+    if not rerank_requested:
+        return "ungated-by-design"
+    if not attempted:
+        return "below-min-candidates"
+    return "gate-unavailable"
+
+
+def _filter_by_ce_floor(rows, floor, arm_assigned):
+    """Apply the cross-encoder floor — unless an A/B arm is assigned.
+
+    Floors are calibrated per model against different score distributions, so
+    each arm applying its own produced wildly different pass rates on the same
+    corpus: measured live, the student delivered 4.7 memories per turn and
+    ms-marco exactly 1.0. That confounds the comparison with delivery VOLUME
+    when the experiment is about ORDERING, and degrades live retrieval on half
+    of all turns.
+
+    With an arm assigned, every candidate is kept and the caller's limit supplies
+    an equal k for both arms, so the only difference between arms is the order
+    they put things in. Suppression behaviour is a separate question and needs
+    its own experiment, not a side effect of this one.
+    """
+    if arm_assigned:
+        return list(rows)
+    above = [r for r in rows if r["ce_score"] >= floor]
+    return above if above else list(rows[:1])
+
+
 def find_similar(
     conn: sqlite3.Connection,
     text: str,
@@ -988,6 +1032,13 @@ def find_similar(
                               CROSS_ENCODER_MAX_CANDIDATES, CROSS_ENCODER_MAX_ARCHIVED)
     ce_active = CROSS_ENCODER_ENABLED and rerank and len(diverse) >= CROSS_ENCODER_MIN_CANDIDATES
     ce_archived = CROSS_ENCODER_ENABLED and rerank and bool(archived_candidates)
+    # Gate provenance (spec 2S.3). A NULL reranker_model conflates "the gate was
+    # unavailable" (daemon down) with "this layer is not gated by design" — and
+    # any reranker comparison that silently re-admits the former manufactures
+    # ungated-vs-reranked conclusions. Record WHY there is no model, at source,
+    # rather than inferring it downstream from absence.
+    gate_status = _classify_gate(CROSS_ENCODER_ENABLED, rerank,
+                                 ce_active or ce_archived)
     if ce_active or ce_archived:
         t_rerank = _time.perf_counter()
         if ce_active:
@@ -995,29 +1046,53 @@ def find_similar(
         archived_candidates = archived_candidates[:CROSS_ENCODER_MAX_ARCHIVED]
         active_for_ce = diverse if ce_active else []
         ce_pool = active_for_ce + (archived_candidates if ce_archived else [])
+        # Passage = type/topic/content. (Enrichment with keywords+facts was tested via
+        # cairn.passage.render_passage + train_reranker --enrich and REVERTED: it lifted
+        # held-out agreement only +0.6pp — below the deploy margin — because the labels'
+        # own test-retest noise (~0.81) is the ceiling, not passage richness.)
         candidate_texts = [f"{r.get('type', '')} {r.get('topic', '')}: {r.get('content', '')}" for r in ce_pool]
-        ce_out = _daemon_rerank(rerank_query or text, candidate_texts)
+        # Randomised arm assignment (spec 2S.5). Keyed on the rerank query so a
+        # retry of the same request keeps its treatment — switching arms on
+        # retry would contaminate the comparison. No-op when the experiment is
+        # off, which is the default.
+        _ab_query = rerank_query or text
+        _arm = None
+        try:
+            from cairn.config import (RERANKER_AB_ENABLED, RERANKER_AB_ARMS,
+                                      pick_reranker_arm)
+            if RERANKER_AB_ENABLED:
+                _arm = pick_reranker_arm(RERANKER_AB_ARMS, _ab_query)
+        except Exception:
+            _arm = None
+        ce_out = _daemon_rerank(_ab_query, candidate_texts, model=_arm)
         ce_scores, ce_floor, ce_model = ce_out if ce_out else (None, None, None)
         floor = ce_floor if ce_floor is not None else CROSS_ENCODER_SCORE_FLOOR
         if ce_scores and len(ce_scores) == len(ce_pool):
+            gate_status = "reranked"
             for i, r in enumerate(ce_pool):
                 r["ce_score"] = ce_scores[i]
                 r["reranker_model"] = ce_model  # provenance for memory_deliveries
             if ce_active:
                 pre_filter = len(diverse)
-                above_floor = [r for r in diverse if r["ce_score"] >= floor]
-                diverse = above_floor if above_floor else diverse[:1]
+                diverse = _filter_by_ce_floor(diverse, floor, bool(_arm))
                 ce_min = min(r["ce_score"] for r in diverse) if diverse else 0
                 ce_max = max(r["ce_score"] for r in diverse) if diverse else 1
                 ce_range = ce_max - ce_min if ce_max > ce_min else 1.0
                 for r in diverse:
                     ce_norm = (r["ce_score"] - ce_min) / ce_range
                     r["score"] = (1 - CROSS_ENCODER_WEIGHT) * r["score"] + CROSS_ENCODER_WEIGHT * ce_norm
+                    # Suppression is otherwise unmeasurable: a turn whose
+                    # candidates were all filtered logs no delivery row at all,
+                    # so counting rows is survivorship-biased toward the more
+                    # permissive model. Carried in score_components, which is an
+                    # existing column — no migration, no repeat of the outage.
+                    r["prefilter_n"] = pre_filter
+                    r["postfilter_n"] = len(diverse)
                 diverse.sort(key=lambda x: x["score"], reverse=True)
                 _record_embed_metric("rerank_filtered", pre_filter - len(diverse))
             if ce_archived:
-                archived_candidates = [r for r in archived_candidates
-                                       if r["ce_score"] >= floor]
+                archived_candidates = _filter_by_ce_floor(
+                    archived_candidates, floor, bool(_arm))
         else:
             # Reranker produced no usable scores — daemon down, rerank action
             # unavailable, or length mismatch. The CE relevance gate did NOT run;
@@ -1034,6 +1109,9 @@ def find_similar(
     # the learning trail — deliberately delivered, never suppressed.
     if results and archived_candidates:
         results.extend(archived_candidates[:limit])
+
+    for r in results:
+        r.setdefault("gate_status", gate_status)
 
     return results
 

@@ -95,6 +95,12 @@ SCORE_W_CONFIDENCE = 0.0        # Disabled — veracity is not a ranking signal
 SCORE_W_KEYWORDS = 0.15         # Keyword overlap between query terms and memory keywords
 SCORE_W_RECENCY = 0.0           # Disabled — age is not a usefulness signal; obsolescence handled by supersession
 SCORE_W_SCOPE = 0.05
+
+# Source-utility prior — additive adjustment on the fused hybrid-search score,
+# keyed by memories.source_ref. Analyser-written rows engage at ~46% vs ~83% for
+# per-turn agent-written rows (measured 2026-07 from memory_deliveries), so they
+# are demoted by roughly one rank position. Demotes, never excludes.
+SCORE_SOURCE_PRIORS = {"analyser-session-arc": -0.05}
 RECENCY_HALF_LIFE_DAYS = 30        # Days after which recency weight halves
 
 # Memory types that apply universally regardless of project — biographical/cross-cutting facts
@@ -306,6 +312,10 @@ CORRECTION_TRIGGER_SIM_THRESHOLD = 0.45  # Similarity threshold for trigger matc
 L1_5_ENABLED = True                # Per-prompt semantic injection — disable via CAIRN_L1_5_ENABLED=0
 L1_5_SIM_THRESHOLD = 0.55          # Stricter than Layer 1 (0.30) — only strong mid-session matches
 L1_5_MAX_RESULTS = 3               # Keep injections tight on subsequent prompts
+# Topic-change gate: served IDs are already excluded per session, so a same-topic
+# re-search mostly serves weaker next-tier matches (noise). Fire only on topic shift.
+L1_5_TOPIC_GATE_ENABLED = True     # Gate L1.5 on topic change vs the last-searched query
+L1_5_TOPIC_STICKY_SIM = 0.80       # cos(current, last-searched) >= this = same topic -> skip
 
 # === Query expansion — Type-prefix fan-out ===
 # Memories are embedded as "{project} {type} {topic} {content}". A bare query misses the
@@ -347,7 +357,7 @@ CROSS_ENCODER_MAX_ARCHIVED = 6     # Cap archived (negative-knowledge) pairs in 
 # beats ms-marco. Constants kept so the A/B can flip the flag, not rewrite code.
 # bge outputs SIGMOID 0-1 scores (not ms-marco logits), so it carries its own floor.
 CROSS_ENCODER_MODEL_CUDA = "BAAI/bge-reranker-base"
-CROSS_ENCODER_SCORE_FLOOR_CUDA = 0.10  # calibrated 2026-07-02 from 9k memory_deliveries: engaged med CE 0.103/p75 0.42
+CROSS_ENCODER_SCORE_FLOOR_CUDA = 0.015  # recalibrated 2026-07-07 from 3733 Opus rg-labels: old 0.10 dropped 56% of grade-3 (load-bearing); 0.015 (youden-opt) keeps 87% grade-3 / drops 38% noise. bge under-discriminates on cairn jargon corpus — trained student is the real gate.
                                         # vs non-engaged med 0.070/p75 0.111; floor 0.10 keeps 51% of engaged
                                         # while dropping 67% of non-engaged deliveries (0.0005 filtered nothing)
 
@@ -364,6 +374,44 @@ RERANKER_BGE_ENABLED = True   # enabled: CUDA available; floor loose (0.0005) pe
 # the 4070 (8GB) gets bge.
 RERANKER_MIN_VRAM_GB = 6.0
 
+# A locally-trained student (saved dir) overrides the pretrained base when present — it
+# ranks better on the cairn corpus (66% vs 39.6% held-out pairwise agreement, 2026-07-07).
+# Loaded from a LOCAL path, so HF_HUB_OFFLINE=1 is a non-issue. Empty string => disabled
+# (falls back to the device-appropriate pretrained reranker below).
+import os as _os_ce
+CROSS_ENCODER_STUDENT_PATH = _os_ce.path.join(_os_ce.path.dirname(__file__), "training_data", "reranker-student")
+del _os_ce
+# The live student floor ships PER-MODEL in <student_dir>/floor.txt, auto-calibrated by
+# train_reranker on save (recommend_floor: conservative "keep >=95% load-bearing"), so it
+# tracks each retrain's score scale and never goes stale. This constant is only the
+# FAIL-SAFE fallback when a model dir has no floor.txt: -100 = suppression OFF (don't apply
+# an arbitrary threshold to an uncalibrated model — the pairwise student's value is ordering).
+CROSS_ENCODER_STUDENT_FLOOR = -100.0
+
+
+def resolve_arm_floor(model_name):
+    """Score floor for a SPECIFIC A/B arm (spec 2S.5).
+
+    Floors are per-model and not interchangeable: the student is pairwise-trained
+    with compressed logits (calibrated floor around -9.3) while ms-marco is
+    pointwise with a -3.0 floor. Applying one model floor to the other
+    systematically suppresses or admits the wrong candidates, which would
+    handicap an arm and bias the very comparison the experiment exists to make.
+
+    Same convention as resolve_reranker: a local model dir ships its floor in
+    floor.txt; a named pretrained model uses the static logit floor.
+    """
+    import os as _os_af
+    if model_name and _os_af.path.isdir(model_name):
+        _ff = _os_af.path.join(model_name, "floor.txt")
+        if _os_af.path.exists(_ff):
+            try:
+                return float(open(_ff).read().strip())
+            except Exception:
+                pass
+        return CROSS_ENCODER_STUDENT_FLOOR
+    return CROSS_ENCODER_SCORE_FLOOR
+
 
 def resolve_reranker():
     """Return (model_name, score_floor) for the active device.
@@ -373,6 +421,19 @@ def resolve_reranker():
     When the flag is True AND a CUDA GPU is present: the dormant bge model + its 0-1
     floor (the path the step-1b A/B will validate). Imports torch lazily; only ever
     called inside the daemon (torch already loaded)."""
+    import os as _os_rr
+    # A trained student (local dir) wins over any pretrained base — better cairn ranking.
+    if CROSS_ENCODER_STUDENT_PATH and _os_rr.path.isdir(CROSS_ENCODER_STUDENT_PATH):
+        # Floor ships WITH the model (floor.txt, written by train_reranker on save) so it
+        # can't go stale on retrain; fall back to the config constant if absent/unreadable.
+        floor = CROSS_ENCODER_STUDENT_FLOOR
+        _ff = _os_rr.path.join(CROSS_ENCODER_STUDENT_PATH, "floor.txt")
+        if _os_rr.path.exists(_ff):
+            try:
+                floor = float(open(_ff).read().strip())
+            except Exception:
+                pass
+        return CROSS_ENCODER_STUDENT_PATH, floor
     if RERANKER_BGE_ENABLED:
         try:
             import torch
@@ -404,6 +465,63 @@ def resolve_reranker():
 #   n=195 — mild measurement confound acknowledged, gap too large to be artifact).
 #   genA-v4 -> genA-v5: promoted genB-v2 ('[cairn A/B — arm B] For each memory you write THIS turn, do NOT write entries wh'...) after live A/B 2026-07-27: engaged_pct_b=70.5 vs engaged_pct_a=71.2 (n_a=3466, n_b=5034).
 GENERATION_PROMPT_VERSION = "genA-v5"
+
+# === Randomised reranker A/B (spec 2S.5) ===
+# Every reranker verdict to date is flag-day/time-confounded: a model change is
+# a deployment, not an assignment, so a model deployed recently is compared
+# against sessions from a different period with different work in them. Finding
+# F1 showed how badly that misleads — the currently-deployed student had 449
+# scored rows across recent interactive sessions while ms-marco's 225 came from
+# older ones, producing an apparent 32.5%-vs-0.0% gap that cannot be read as
+# quality.
+#
+# With arms assigned per request, `memory_deliveries.reranker_model` — which is
+# already recorded — becomes a randomised treatment label, so no new column is
+# needed. OFF by default: each additional arm is a resident model in the daemon.
+import os as _os_ab
+RERANKER_AB_ENABLED = _os_ab.environ.get("CAIRN_RERANKER_AB", "0") == "1"
+# Empty means "use resolve_reranker()", i.e. current behaviour.
+RERANKER_AB_ARMS = tuple(
+    a for a in _os_ab.environ.get("CAIRN_RERANKER_AB_ARMS", "").split(",") if a.strip()
+)
+del _os_ab
+
+
+def pick_reranker_arm(arms, key):
+    """Deterministically assign a request to an arm (hash bucketing).
+
+    Deterministic rather than RNG-based so the same request always lands in the
+    same arm — a retry must not silently switch treatment and contaminate the
+    comparison. Uniform across distinct requests, which is what randomisation
+    needs; it does not need to be unpredictable.
+    """
+    if not arms:
+        return None
+    import hashlib
+    h = hashlib.sha256((key or "").encode()).digest()
+    return arms[h[0] % len(arms)]
+
+
+# === Write-path provenance versions (spec 1.9) ===
+# Every write path stamps a VERSIONED source_ref, so a bad experiment is
+# attributable and therefore retractable in bulk via
+# `query.py --archive-by-source-ref <version> <reason>`. Without a version, a
+# subsystem's whole history collapses into one undifferentiated stamp and can
+# only be retracted wholesale — the analyser's 2,227 rows were exactly that.
+#
+# Bump these whenever the prompt or logic producing the writes changes.
+# Each has a STABLE PREFIX used for matching (dedup, provenance queries) and a
+# versioned full value used for writing, so bumping a version never breaks
+# dedup against rows written by earlier versions.
+ANALYSER_SOURCE_REF_PREFIX = "analyser-session-arc"
+ANALYSER_PROMPT_VERSION = f"{ANALYSER_SOURCE_REF_PREFIX}-v1"
+
+REVIEW_WRITEBACK_PREFIX = "review-writeback"
+REVIEW_WRITEBACK_VERSION = f"{REVIEW_WRITEBACK_PREFIX}-v1"
+
+# Ingest stamps a source_ref dict rather than a bare string; this rides inside
+# it so an extractor-pipeline change is retractable per version.
+INGEST_PIPELINE_VERSION = "ingest-v1"
 
 # === Write-side A/B (live, per-prompt) ===
 # When enabled, each user prompt is randomly assigned arm A (control = current live
@@ -549,6 +667,15 @@ RELEVANCE_PREFILTER_ENABLED = True  # Bucket-4 self-referential-meta prefilter �
                                     # (session-arc meta spam engaged at 0%). Correction-exempt,
                                     # drop-audited via the relevance_prefilter_drop metric.
 
+# Semantic engagement second chance — lexical term-overlap under-detects a
+# response that APPLIED a memory while paraphrasing it (notably behavioural
+# corrections). A delivery the lexical pass scored as unengaged gets re-checked
+# against embeddings. The margin is the guard against prompt-echo false
+# positives: the response must be closer to the memory than the context already was.
+ENGAGEMENT_SEMANTIC_ENABLED = True
+ENGAGEMENT_SEM_THRESHOLD = 0.55     # Minimum cos(response, memory)
+ENGAGEMENT_SEM_MARGIN = 0.05        # cos(response,mem) - cos(context,mem) must exceed this
+
 # === NLI (Natural Language Inference) for consolidation ===
 # Used by the consolidation pipeline to detect entailment between memory pairs.
 # Same lazy-load pattern as cross-encoder — loaded in daemon on first use.
@@ -647,8 +774,15 @@ PROXY_REWRITE = _os_proxy.environ.get("CAIRN_PROXY_REWRITE", "1").lower() in ("1
 # the verbatim block, and inject a per-session captured-topic digest for
 # in-session dedup. Marker from FIRST appearance (never verbatim->marker
 # transitions — those would break the frozen cache prefix mid-history).
-# Default ON (opt out with CAIRN_PARE_CM=0); flipping mid-session costs one cache rebuild (deliberate event).
-PARE_CM_ENABLED = _os_proxy.environ.get("CAIRN_PARE_CM", "1").lower() in ("1", "true", "yes")
+# Default OFF since 2026-07-25. The marker was repeatedly reproduced verbatim by
+# the model in place of a real [cm] block, costing whole turns to Stop-hook
+# re-prompts — and the confusion survived several rewordings, because the failure
+# is structural: any fixed string standing where a block belongs is a candidate
+# for imitation. Keeping the verbatim block in history costs tokens but removes
+# the ambiguity entirely. This is a CONTEXT-SIZE optimisation only — memory
+# capture, dedup and storage are the Stop hook and are unaffected either way.
+# Opt back in with CAIRN_PARE_CM=1; flipping mid-session costs one cache rebuild.
+PARE_CM_ENABLED = _os_proxy.environ.get("CAIRN_PARE_CM", "0").lower() in ("1", "true", "yes")
 
 # Context-paring PREFIX tier (docs/spec-context-paring.md): statically strip
 # never-used tool definitions from the outbound tools array. Unlike the CM/tail

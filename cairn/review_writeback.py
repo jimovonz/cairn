@@ -63,6 +63,15 @@ VALID_TYPES = {"correction", "decision", "fact", "preference",
                "person", "project", "skill", "workflow"}
 
 
+# INPUT-DOMAIN INVARIANT (spec 1.10) — what this write path assumes about its
+# input. Both ingest defects came from transplanting an invariant into a domain
+# that violated it, which care at review time would not have caught.
+INPUT_DOMAIN_INVARIANT = (
+    "Assumes findings are DURABLE rationale (intentional couplings, accepted "
+    "trade-offs), not transient bug claims. A \"PR has bug X\" entry becomes false "
+    "the moment it is fixed, and nothing retracts it automatically."
+)
+
 def _git_toplevel(path: str) -> Optional[str]:
     import subprocess
     try:
@@ -178,7 +187,7 @@ def write_back(payload: dict, dry_run: bool = False) -> dict:
 
     from hooks.hook_helpers import get_conn
     from hooks.storage import insert_memories
-    from cairn.config import MAX_MEMORIES_PER_RESPONSE
+    from cairn.config import MAX_MEMORIES_PER_RESPONSE, REVIEW_WRITEBACK_VERSION
 
     # Register the synthetic session so insert_memories tags the memories to the
     # TARGET repo's project (it derives project from sessions.project).
@@ -197,7 +206,7 @@ def write_back(payload: dict, dry_run: bool = False) -> dict:
     for start in range(0, len(entries), cap):
         chunk = entries[start:start + cap]
         inserted += insert_memories(chunk, session_id=session_id, transcript_path=repo_root,
-                                    source_ref="review-writeback")
+                                    source_ref=REVIEW_WRITEBACK_VERSION)
 
     return {"inserted": inserted, "project": project, "session": session_id,
             "submitted": len(entries), "skipped": len(errors), "errors": errors}

@@ -238,7 +238,10 @@ class TestSelectiveArchival:
                            (inserted[0],)).fetchone()
         conn.close()
         ref = json.loads(row[0])
-        assert ref["sections"] == ["docs", "config"]
+        # Sorted, not declaration order: attribution is compared as a SET during
+        # archival, so deterministic ordering is worth more than preserving the
+        # distilling LLM's arbitrary output order (spec 1.3).
+        assert ref["sections"] == ["config", "docs"]
 
 
 # --- _prepare_extracts_text filtering ---

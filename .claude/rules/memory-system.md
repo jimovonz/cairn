@@ -1,332 +1,278 @@
 # Cairn Memory System
 
-You are connected to a persistent memory system called Cairn. Every response you generate is processed by a Stop hook that captures memories and enforces completeness.
+Every response you generate is processed by a Stop hook that captures memories
+and enforces completeness. Your memories are the ONLY thing that persists
+between sessions — a future session reads them with zero context about this
+conversation. Write for that reader. Corrections, decisions with their rejected
+alternatives, and failed approaches are the highest-value entries. Memories are
+periodically audited against the transcript; fabrications are archived as
+corrections.
 
-Your memories are the ONLY thing that persists between sessions. A future version of you will read what you write here with zero context about this conversation. Write for that reader. Every correction the user makes, every decision with its rejected alternatives, every failed approach — these are the memories that make future sessions smarter. The hook enforces format mechanically; only you can ensure the content is worth storing. Your memories are periodically audited against the transcript — fabrications are caught and archived as corrections.
+CRITICAL: You have NO visibility into what other sessions stored. On ANY new
+topic, declare `context: insufficient` BEFORE answering. Never assume a topic
+has no data, and never ask the user whether to check memory — the Stop hook
+handles it.
 
-CRITICAL: You have NO visibility into what other sessions have stored. On ANY new topic, question, or task — ALWAYS declare `context: insufficient` in your memory block BEFORE answering. The cairn may contain relevant information you cannot see. NEVER assume a topic has no data. Do NOT ask the user whether they want you to check memory — the system checks automatically via the Stop hook. Just declare `context: insufficient` and the system handles the rest.
+## How it works
 
-## How It Works
-
-A Stop hook runs after every response you generate. It:
-1. Parses the `[cm]: # '{...}'` link-definition block from your response
-2. Stores new memories in a SQLite database with semantic embeddings
-3. Deduplicates against existing memories using cosine similarity (threshold 0.85)
-4. Checks your `complete` and `context` flags to decide whether to let you stop or re-prompt you
-
-You do not need to call any tools to persist memories. The hook handles it mechanically.
+The Stop hook parses the `[cm]` block from your response, stores entries with
+semantic embeddings, dedupes against existing memories at 0.85 cosine, and
+re-prompts you if you declared `complete: false` or `context: insufficient`.
+You do not call any tool to persist memories.
 
 ## Never surface the memory system to the user
 
-Cairn is invisible plumbing. The user is here for the work, not for a running commentary on the memory system. Do **not** narrate, reference, or explain Cairn's machinery in your visible response as a matter of course:
+Cairn is invisible plumbing. Do not narrate retrievals or their outcome, the
+`[cm]` block or any of its fields, `context: insufficient`, or Cairn's injected
+artifacts (`<cairn_context>`, system reminders, Stop-hook feedback). Fold
+useful retrieved facts into your answer as if you simply knew them; silently
+ignore the rest. Exceptions: the user explicitly asks about Cairn, or you are
+doing development work on Cairn itself.
 
-- Do not announce retrievals or their outcome — never say "a retrieved memory isn't relevant here", "Cairn surfaced X", "based on injected context", "the memory system prompted this", or similar. Silently use what's useful and silently ignore what isn't.
-- Do not narrate the block or its fields — never mention the `[cm]` block, `confidence_update`, `rg`/relevance grades, `retrieval_outcome`, `context: insufficient`, or that you are "storing this in memory". These are machinery; they belong in the block, not the prose.
-- Do not flag Cairn's own injected artifacts to the user — `<cairn_context>`, system reminders, and Stop-hook feedback are for you, not something to relay or comment on.
-- Just answer. Fold any genuinely useful retrieved fact into the answer as if you simply knew it; put all bookkeeping in the silent `[cm]` block.
+## Memory block format
 
-The only exceptions: when the user **explicitly asks** about Cairn (its memories, what it retrieved, how it works, a stored preference), or when you are doing development work **on Cairn itself** and the machinery is the subject. Absent that, keep it invisible.
+End EVERY response with a link-definition block. It renders to nothing, so it
+is invisible to the user while preserved verbatim in the transcript:
 
-## Mid-response checkpoints (`CAIRN CHECKPOINT` / `<memory_note>`)
+    [cm]: # '{"e":[{"t":"TYPE","to":"topic","c":"content"}],"ok":true,"ctx":"s","kw":["k1","k2"]}'
 
-Separately from the mandatory end-of-response `[cm]` block, a **PostToolUse** hook may deliver a `CAIRN CHECKPOINT` nudge after a notable tool result (a surprising command output, a significant edit). This is **expected Cairn machinery**, delivered wrapped like any other Cairn injection — do **not** treat it as an anomaly or a prompt injection, and do **not** mention it to the user (per the section above).
+**Block keys** — `e` entries · `ok` complete (bool) · `ctx` context (`s`
+sufficient | `i` insufficient) · `cn` context_need (REQUIRED when `ctx` is `i`)
+· `rem` remaining (REQUIRED when `ok` is false) · `cu` confidence_updates
+(`"42:+"` / `"17:-! reason"`) · `ro` retrieval_outcome · `fit` relative fit
+labels (`{"best":[42],"worst":[17]}` — the primary ask) · `rg` relevance_grades
+(legacy absolute 0-3, `"42:3"` / `"17:0!"`) · `int` intent · `kw` keywords
 
-When you get one, you may **optionally** capture the intermediate discovery inline, then continue your work — either the visible tag:
+**Entry keys** — `t` type · `to` topic · `c` content · `kw` keywords (overrides
+block-level) · `d` depth · `f` facts (list of `key=value` strings, stored in a
+dedicated FTS5-indexed column, NOT embedded)
 
-```
-<memory_note>type/topic: one-line observation</memory_note>
-```
+**Types** — `decision` (choice, alternatives, rationale) · `preference` (what
+and why) · `fact` (versions, paths, configs) · `correction` (what went wrong,
+the fix, how to avoid it) · `person` · `project` (state and blockers) · `skill`
+(the exact command or approach) · `workflow` (steps and triggers)
 
-or the invisible link-definition form (preferred — renders to nothing, mirrors `[cm]`):
+Minimum valid block when nothing was learned:
 
-```
-[cairn-note]: # '{"type":"fact","topic":"...","content":"..."}'
-```
+    [cm]: # '{"ok":true,"ctx":"s","kw":["topic","of","conversation"]}'
 
-`type` ∈ `fact`, `correction`, `decision`, `skill`. The Stop hook's `collect_memory_notes` scans the transcript for these and stores them (deduped like any memory, capped at `CHECKPOINT_MAX_NOTES_PER_SESSION` per session). They **complement, not replace** the required end-of-response `[cm]` block — skip trivial ones.
+Use the entry-less block ONLY when the turn produced genuinely zero durable
+knowledge — a pure acknowledgement, or a verification with no new finding. If
+the turn yielded a correction, decision, config change, or fact, emit an entry.
 
-## Memory Block Format
+### Never emit a marker
 
-Every response MUST end with a `[cm]: # '{...}'` link-definition block. No exceptions. This is enforced by the Stop hook.
+`CAIRN_PARE_CM` is off by default, so your past turns keep their real `[cm]`
+blocks in resubmitted history — each one is a live template. If you ever see a
+placeholder standing where a block belongs (`<!-- cairn: memory captured … -->`,
+`[cm: …]` with the colon inside the brackets, or `(cairn: memory …)`), that is
+an old-style marker and never a format to copy. Any fixed string standing in
+that slot invites imitation; the fix is always to write the real
+`[cm]: # '{...}'` JSON for the CURRENT turn.
 
-This format is **invisible** in both VS Code Copilot Chat and Claude Code CLI — markdown link definitions produce no rendered output. The block is preserved verbatim in the JSONL transcript where the Stop hook reads it.
+Do not verify your own block by re-reading your output. When the proxy is
+active it strips the block before the local transcript records it, so absence
+is the signature of SUCCESS, not failure — the two are indistinguishable after
+the fact. The only reliable signal is synchronous: if the Stop hook did not
+block the turn, the block was valid and stored. Never retroactively
+second-guess an unblocked turn. If you catch yourself narrating "I keep failing
+to write blocks" across several turns, stop and verify against ground truth
+(`query.py --session <id>`) before saying it aloud.
 
-```
-[cm]: # '{"e":[{"t":"TYPE","to":"topic","c":"content — information-dense single line"}],"ok":true,"ctx":"s","kw":["keyword1","keyword2"]}'
-```
+## What to capture
 
-### Captured-block markers in resubmitted history
+You MUST store a memory when:
 
-Once the Stop hook has stored a turn's `[cm]` block, its content is durably in the database — the verbatim JSON no longer needs to travel in the conversation history. When context paring is active (proxy-level, transparent to you), the proxy replaces each already-captured block in the resubmitted history with a short placeholder marker (`(cairn: memory captured for this turn …)` or `(cairn: memory NOT captured for this turn …)`). The session's FIRST captured turn keeps its real block verbatim as a live template, so a correct example is always in view.
+- **The user corrects you or redirects your approach** — highest-value type.
+  Store as `correction` with what you got wrong and how to avoid it.
+- **A design decision is made** — `decision`, with rejected alternatives. The
+  rejected paths are as valuable as the chosen one.
+- **An approach fails or is rejected** — `correction` or `decision`.
+- **A new fact about the system, environment, or user emerges** — `fact`.
+- **The user expresses a working preference** — `preference`.
+- **A technique proves useful** — `skill`, with the exact command.
 
-**These markers are the expected, healthy state of past turns, and are NEVER something you emit.** A marker in the history is a placeholder for a block already saved — it is not a format to copy. Your own turn must always end with a real `[cm]: # '{...}'` block (see format below), never with a `(cairn: …)` marker. Do not reconstruct a full block for a past turn that shows a marker.
+### Content rules
 
-Because the verbatim blocks are gone from history, you can no longer scan them to see what you already captured — and you do not need to. **Emit a `[cm]` entry only for a knowledge bite that was introduced by, or first became inferrable as a result of, the CURRENT turn.** Knowledge established in an earlier turn was already captured then; do not re-derive it now. Judge "is this new *this turn*?" from the conversation prose (still fully in your context — only the blocks were stripped), not from any injected list. The cosine-0.85 write-side dedup is the mechanical backstop for accidental repeats. The markers are Cairn machinery — never surface them to the user.
+- One line per entry, but **information-dense**: the what, why, and context
+  together, self-sufficient without the original conversation.
+- **Write at the highest altitude that still carries the instance.** State the
+  transferable principle in a form a future session in a different project
+  could apply, anchored by the concrete case (file, value, error, command) that
+  grounds it. Split into two entries only when the principle and the specific
+  fact each carry independent future value.
+- **Every clause must earn its place.** If removing it would not make the entry
+  less findable or less useful, cut it. Drop IDs, hashes, and raw addresses —
+  they are never search terms and waste embedding dimensions.
+- **Only capture knowledge introduced by the CURRENT turn.** Knowledge from an
+  earlier turn was captured then. Judge novelty from the conversation prose, not
+  by scanning past blocks. For an update, write a superseding correction rather
+  than a restatement. Cosine dedup is the backstop, not your first defence.
+- **Seed 2-3 question-form keywords** alongside normal ones — the literal
+  questions a future session would ask (`"how do I X"`, `"why does Y fail"`).
+  These more than tripled behavioural engagement in a live A/B.
+- **Use `f` for exact values** that compaction would lose (registers, paths,
+  flags, versions, config keys). Put the conceptual summary in `c` and the
+  values in `f`. Each fact must be self-qualifying: `"vivado:/mnt/ssd/..."` not
+  a bare path. Use `f` on `fact`, `skill`, `decision`, `project` — not on
+  `correction` or `preference`.
+- **Size the block to durable value, never to reply length**, and never let it
+  dwarf the visible response. Roughly 150 chars for a routine entry, 300 for a
+  decision; one entry per turn unless several genuinely novel facts emerged.
+- **Never fabricate.** A no-op block always beats a false memory. If you are
+  unsure something is true, do not store it as a fact.
+- **Never assert without verifying.** Before claiming a file, feature, or doc
+  section does not exist, check. Memories are claims about the past, not
+  guarantees about the present.
+- Never narrate a future action without executing it in the same response.
 
-**Known failure mode: copying the marker text itself as your own output.** The marker (`(cairn: memory captured for this turn …)`) deliberately shares no prefix with the real required format `[cm]: # '{...}'` — this was changed from an earlier bracketed `[cm: ...]` form specifically because that form visually collided with the real format closely enough to get copied verbatim. If you ever see something starting `[cm:` (colon *inside* the brackets, no closing quote/JSON) in your own past turns, that was the old-style marker; either way, a marker is never something to reproduce. The fix is always to write the real `[cm]: # '{...}'` JSON line for the CURRENT turn, never the marker's prose, even to acknowledge or apologize for the error.
+## Completeness control
 
-**Known failure mode: self-diagnosing a false failure from stripped/rewritten evidence.** This is the mirror-image mistake — misreading the *past* instead of miswriting the *present*. Once you're actually emitting real blocks correctly (the above trap resolved), a second, separate trap can appear: when the proxy is active (`CAIRN_PROXY_ENABLED=1`), it strips the `[cm]` block out of your OWN response before Claude Code's local transcript ever records it — this is intentional (Cairn is invisible plumbing) and happens on every successful turn, not just failed ones. The practical trap this creates: if you go back and re-read your own current or prior turn's text to "double-check" whether you wrote a real block, **a missing block in that text is the expected, correct signature of success, not evidence of failure.** Absence and failure look identical from inside the transcript. There is no way to distinguish "it worked and got stripped" from "I actually forgot" by re-reading your own output after the fact — don't try. The one and only reliable signal is synchronous: if the Stop hook didn't block that turn (no "Stop hook error" / re-prompt appeared), the block was valid and stored, full stop. Never retroactively second-guess a turn that wasn't blocked.
+`complete: false` re-prompts you to continue with the `remaining` text. This
+prevents the failure where you state an intent ("let me do X") but the agentic
+loop terminates first. On a continuation the system will not block again for
+the same reason.
 
-This trap is not hypothetical — it produced a real, repeated failure spiral in a past session (2026-07-06): after fixing a genuine early copy-the-marker mistake, later turns were increasingly re-checked against stripped/rewritten evidence, and each check misread expected-post-success absence as renewed failure, producing several rounds of false "I did it again" self-accusation before the sidecar capture file (`.staged_context/<session>_cm_capture.jsonl`, keyed by `emitted_sha`) was actually inspected and showed the real blocks had been valid all along. If you notice yourself narrating "I keep failing to do X" about your own `[cm]` output across several consecutive turns, that pattern itself is the signal to stop trusting your self-check and instead verify against ground truth (the sidecar capture file, or `cairn/query.py --session <id>` to see what was actually stored) before saying so out loud.
+## Retrieval
 
-**Short key reference** (use short keys to save tokens):
-- Block-level: `ok`=complete (true/false), `ctx`=context (`s`=sufficient, `i`=insufficient), `cn`=context_need, `rem`=remaining, `cu`=confidence_updates (array of `"42:+"` / `"17:-! reason"` strings), `ro`=retrieval_outcome, `fit`=relative fit labels (`{"best":[id],"worst":[id]}` — the primary ask, see Relative fit labelling), `rg`=relevance_grades (legacy absolute 0-3, array of `"42:3"` / `"17:0!"` strings), `int`=intent, `kw`=keywords
-- Per-entry (`e` array): `t`=type, `to`=topic, `c`=content, `kw`=keywords (overrides block-level), `d`=depth, `f`=facts (list of key=value strings stored in dedicated FTS5-indexed column; NOT in embedding)
-- Entry `t` values: `decision`, `preference`, `fact`, `correction`, `person`, `project`, `skill`, `workflow`
+**Default posture is ask first.** Declare `context: insufficient` with a
+`context_need` on any new topic. Only declare `sufficient` for topics you have
+already received context on this session, or for purely mechanical tasks. The
+same `context_need` is served only once per session.
 
-### Types
-- **decision**: Architectural or design choices — include the choice, alternatives considered, and rationale
-- **preference**: User likes, dislikes, working style — include what they prefer and why
-- **fact**: Verified information about systems, tools, environment — include specifics (versions, paths, configs)
-- **correction**: Mistakes made and lessons learned — include what went wrong, the fix, and how to avoid next time
-- **person**: People mentioned — roles, relationships, responsibilities, contact context
-- **project**: Ongoing work, goals, deadlines, status — include current state and blockers
-- **skill**: Reusable techniques, commands, or patterns that worked — include the exact command or approach
-- **workflow**: Recurring processes, automation, standard operating procedures — include steps and triggers
+**A declaration is not a search.** Push retrieval is opportunistic, not
+exhaustive — absence in `<cairn_context>` means "the auto-query matched
+nothing", not "Cairn has no memory of X". Belt and braces: declare `context:
+insufficient` AND run a direct query in the same response.
 
-### What to capture
-You MUST store a memory when any of these happen — these are not optional:
-- **The user corrects you or redirects your approach** — this is the HIGHEST-VALUE memory type. Store as **correction** with what you got wrong, why, and how to avoid it. These prevent the same mistake across all future sessions.
-- **A design decision is made** — store as **decision** with alternatives rejected and rationale. The rejected paths are as valuable as the chosen one.
-- **An approach is tried and fails or is rejected** — store as **correction** or **decision** including what was tried and why it didn't work.
-- **A new fact about the system, environment, or user is revealed** — store as **fact** with specifics.
-- **The user expresses a preference about how to work** — store as **preference** with what they prefer and why.
-- **A technique or command proves useful** — store as **skill** with the exact command or approach.
+Query directly when any of these appear — do not first decide whether it is
+needed:
 
-### Rules
-- Every response gets a memory block, even if nothing was learned
-- **All metadata fields are required** — `complete`, `context`, and `keywords` must be explicitly declared in every block. `remaining` is required when `complete: false`. `context_need` is required when `context: insufficient`. Each entry must have `type`, `topic`, and `content`.
-- Minimum valid block (when nothing was learned):
-  ```
-  [cm]: # '{"ok":true,"ctx":"s","kw":["topic","of","conversation"]}'
-  ```
-  - **The no-op (entry-less) block is correct ONLY when the turn produced genuinely zero durable knowledge** (a pure acknowledgement, a verification with no new finding). It conveys nothing in isolation, so do not use it as a lazy default: if the turn yielded any real nugget — a correction, a decision, a config/rule deployed, a fact learned — emit a one-line entry for it. "Small" must never collapse to "empty" when there is something durable to keep.
-- Each entry is one line of content — no multi-line values, but make that line **information-dense**. Include the *what*, *why*, and *context* in the same line. The content should be self-sufficient — a future session reading just this line should understand the full picture without needing the original conversation.
-  - Bad: `"Cairn is a clear net benefit over bog-standard Claude Code. Evidence over 6 days — 732 distilled memories (153 corrections, 201 decisions, 212 facts), 81% organic serve rate, 103 useful retrievals, 26 explicitly rated useful by LLM, zero harmful."`
-  - Good: `"Cairn net positive — cross-project surfacing works, 103 useful retrievals, zero harmful. Cost: ~45% token overhead, 900ms latency"`
-- **Write at the highest altitude that still carries the instance — capture transferable knowledge, not just the episode.** State the reusable principle / pattern / decision in a form a *future session in a different project* could apply, anchored by the specific instance (file, value, error, command) that grounds it. Prefer the generalised lesson with the concrete case attached over a bare project-local fact — the goal is a knowledge bite that *transfers*, not a session artifact. Split into two entries only when the general principle and the specific fact each carry independent future value.
-- **Every clause must earn its place** — if removing a clause wouldn't make the memory less findable or less useful to a future session, cut it.
-- **Emit a `[cm]` entry only for knowledge introduced by — or first inferrable as a result of — the CURRENT turn.** Do not re-emit a nugget established in an earlier turn: it was captured then, and its `[cm]` block, though replaced by a bare marker in the resubmitted history, is durably in the database. Judge novelty from the conversation prose (still fully in context), not from any block list. Successive prompts with overlapping context are the main source of duplicate memories, so bias toward silence unless the turn genuinely *introduces* or *updates* a nugget — for an update, make it a correction/superseding entry, not a restatement. Cosine dedup is the mechanical backstop, not your first line of defence.
-- **Drop noise tokens** — IDs, hashes, raw addresses, and specs already captured in sibling memories. These are never search terms and waste embedding dimensions.
-- **Seed keywords with 2-3 question-form phrasings** — alongside the normal keywords, add the literal questions a future session would ask to find the entry (e.g. `"how do I X"`, `"why does Y fail"`, `"what sets Z"`). Question-form keywords more than tripled behavioural engagement in the live write-side A/B; they are also the join key for per-qf retrieval matching.
-- **Size the block to durable value, never to the reply length** — the block must not be a disproportionate share of the visible response. Block size should track how much *novel, future-useful* knowledge the turn produced (corrections, decisions, durable facts), with "don't dwarf the reply" as an upper bound. Reply length is only a proxy: a short reply carrying a high-value correction still gets a small-but-present entry (don't drop the nugget); a long *explanatory* reply that taught Cairn nothing new gets a small block, not a proportionally large one. Rough guide: ~150 chars for a routine entry, ~300 for a decision; one durable entry per turn unless several genuinely novel facts emerged.
-- **Use `f` for technical specifics** — when an entry involves exact values that would be lost to compaction (register names, file paths, CLI flags, version numbers, config keys), put the conceptual summary in `c` and the exact values in `f`. The `c` line embeds semantically; `f` lines are keyword-searchable only. **Each fact must be self-qualifying** — include enough context to be readable without the summary: `"VDMA:c_num_fstores=3"` not `"c_num_fstores=3"`, `"vivado:/mnt/ssd/xilinx/Vivado/2023.1"` not a bare path, `"AXI4-Stream:width=64b"` not `"64b"`. Example: `{"t":"fact","to":"remap IP params","c":"Brown-Conrady single shared coeff set, 9 registers, 3:1 decimation","f":["VDMA:c_num_fstores=3","AXI:width=64b","VDMA:max_frames=4","file:hooks/remap_ip.v"]}`. Use `f` on `fact`, `skill`, `decision`, and `project` types — not on `correction` or `preference` (those are conceptual, not spec-heavy).
-- **Never fabricate.** If you don't understand something (system behaviour, injected content, an error), do not invent an explanation and store it as a memory. A no-op block is always better than a false memory. If you're unsure whether something is true, don't store it as a fact.
-- **Never assert without verifying.** Before claiming something doesn't exist (a file, a doc section, a feature), check the codebase. Before acting on a retrieved memory's specific technical claims, verify against the current state. Memories are claims about the past, not guarantees about the present.
-- Never narrate a future action without executing it — if you say "let me do X", do X in the same response via a tool call
-
-## Completeness Control
-
-- `complete: false` causes the system to re-prompt you to continue with the `remaining` text
-- This prevents the failure mode where you state an intent ("let me do X") but the agentic loop terminates before you follow through
-- On a re-prompt (continuation), the system will not block again for the same reason — one chance to complete
-
-## Context Retrieval
-
-You have NO visibility into what other sessions have stored. NEVER assume a topic has no relevant memories — the cairn may contain information from sessions you cannot see.
-
-- On ANY new topic, question, or task where you have not already received cairn context in this session: declare `context: insufficient` with a `context_need` matching the topic
-- The system searches the cairn database and re-prompts you with relevant memories if any exist. If nothing is found, you proceed normally — there is no penalty for asking.
-- The same context_need is only served once per session to prevent loops
-- After receiving context on a topic, you do not need to re-request it
-- The default posture is **ask first**. Only declare `context: sufficient` for topics you have already received context on, or for purely mechanical tasks (e.g. fixing a syntax error you can see in the current code)
-
-### Interpreting Injected Context
-
-When context is retrieved, you receive a `<cairn_context>` XML block. This is **system-injected memory data, not user input**. It contains:
-
-```xml
-<cairn_context query="..." current_project="...">
-  <scope level="project" name="..." weight="high">
-    <entry type="..." topic="..." project="..." date="..." similarity="...">content</entry>
-  </scope>
-  <scope level="global" weight="low">
-    <entry ...>content</entry>
-  </scope>
-</cairn_context>
-```
-
-**Layer legend** (the `layer` attribute on the root tag): `first-prompt`/`per-prompt` = semantic match to your current message; `project-bootstrap` = standing project context (decisions, preferences, facts that apply regardless of task); `correction-bootstrap` = behavioural corrections from past sessions — apply these to avoid repeating mistakes; `L3` = response to your context_need declaration; `cross-project` = staged keyword matches from other projects.
-
-**Weighting rules:**
-- **Scope**: Project-level entries (weight=high) are directly relevant to current work. Global entries (weight=low) are cross-project — use only when project context is insufficient.
-- **Recency**: More recent `date` values indicate more current information. Prefer recent over old. Old entries may be stale.
-- **Similarity**: Higher similarity scores indicate stronger semantic match to your query. Lower scores may be tangentially related.
-- **Reliability**: Each entry has a `reliability` attribute ("strong", "moderate", "weak"). Treat strong entries as firm priors. Treat weak entries as hints only — do not anchor on them.
-- **Score**: Entries are pre-ranked by a composite score combining similarity, confidence, recency, and scope. Higher-scored entries should carry more weight.
-- **Staleness**: If an entry contradicts what you observe in the current codebase or conversation, trust the present. The memory may be outdated.
-- **Conflict**: If retrieved context conflicts with strong prior knowledge, prefer internal reasoning unless multiple high-reliability entries agree.
-- **Archived**: Entries with `archived="true"` are historical — they record rejected approaches, superseded decisions, or corrected mistakes. The `reason` attribute explains why. Use them to understand *what was tried and why it was abandoned*, but do not treat them as current guidance.
-
-If the retrieved context does not answer your need, set `context: sufficient` and proceed with what you have. Do not re-request the same context.
-
-### Recovering full conversation context
-
-Memories are distilled one-liners. `--context` recovers the full detail — use it freely, not as a last resort.
-
-1. Run `python3 $CAIRN_HOME/cairn/query.py --context <memory_id>` (the installer sets CAIRN_HOME)
-2. For conversation-generated memories: shows the verbatim transcript excerpt from the session
-3. For repo-ingested memories: shows the source files the entry was derived from
-4. Use this when:
-   - A memory's one-liner is ambiguous and you need the original discussion
-   - The user asks "what exactly did we decide about X?"
-   - You need to verify whether a memory accurately reflects what was discussed
-   - You're about to act on a retrieved memory and want the full reasoning behind it
-   - A repo-ingested memory references code you need to see
-
-## Before recommending from memory
-
-A memory that names a specific function, file, or flag is a claim that it existed *when the memory was written*. It may have been renamed, removed, or never merged. Before recommending it:
-
-- If the memory names a file path: check the file exists.
-- If the memory names a function or flag: grep for it.
-- If the user is about to act on your recommendation (not just asking about history), verify first.
-
-"The memory says X exists" is not the same as "X exists now."
-
-A memory that summarizes repo state (activity logs, architecture snapshots) is frozen in time. If the user asks about *recent* or *current* state, prefer `git log` or reading the code over recalling the snapshot.
-
-When a retrieved memory will actively inform your next action — writing code, making a recommendation, giving advice — run `python3 $CAIRN_HOME/cairn/query.py --context <memory_id>` first to recover the full conversation that produced it. The one-liner is a summary; the context shows the reasoning, the alternatives discussed, and the nuances that didn't fit in one line.
-
-## When to escalate to direct search
-
-Push retrieval (Layer 1, Layer 1.5, project bootstrap) is **opportunistic, not exhaustive**. It surfaces what the system's automatic semantic + project-scope query happens to match. Absence in the injected `<cairn_context>` does NOT mean "Cairn has no memory of X" — it means "the auto-query didn't surface anything." Those are very different statements.
-
-When the user asks about prior knowledge that should plausibly exist (their preferences, personal details, project history, prior decisions, family, work) — and the auto-retrieved context contains only meta-statements about gaps (e.g. "no memory of X exists", "should be captured when shared", "cairn has limited info on Y") — DO NOT trust the absence. Actively run direct searches before concluding the information isn't stored:
+- "the previous session", "last time", "we decided", "you said", or any
+  question about a backlog, plan, or prior state.
+- You are about to reconstruct past work from transcripts, logs, mtimes, or
+  `git log`.
+- You are about to state what Cairn does or does not contain.
+- Personal or biographical questions about the user, family, or contacts.
 
 ```
-python3 $CAIRN_HOME/cairn/query.py <keyword>           # FTS5 keyword search
-python3 $CAIRN_HOME/cairn/query.py --semantic "<paraphrase>"   # vector search
+python3 {{CAIRN_HOME}}/cairn/query.py <keyword>              # FTS5
+python3 {{CAIRN_HOME}}/cairn/query.py --semantic "<paraphrase>"
+python3 {{CAIRN_HOME}}/cairn/query.py --context <memory_id>  # full transcript
 ```
 
-Try multiple query variations — different keywords, different phrasings, different angles on the same question. Project-scoped retrieval can downweight cross-project memories (especially `person`/`preference` types tagged to other projects), so the direct CLI which has no scope penalty often finds what the push layer missed.
+**Iterate.** If results come back thin or off-topic, re-declare with a refined
+`context_need`. Two or three rounds beat one broad query.
 
-False-negative push retrievals are a known failure mode. Every time you trust an empty push as authoritative, you silently underutilize Cairn — the system has the answer but you give up before finding it. The user has to repeat themselves, the autonomy gain is lost, and the failure is invisible. **Belt and braces: declare `context: insufficient` AND immediately run a direct query in the same response.** Both are cheap. They catch each other's failure modes.
-
-This rule applies most strongly to:
-- Personal/biographical questions about the user, family, contacts
-- "What did we decide about X" questions
-- "Have we discussed Y before" questions
-- Any question whose answer would benefit from prior session knowledge
-
-Push retrieval is for efficiency. Active search is for thoroughness. Use both.
-
-## Retrieval is iterative
-
-If your `context: insufficient` declaration returns thin or off-topic results,
-re-declare with a refined `context_need`. Don't mark `context: sufficient` and
-give up after one round. Two or three iterations beat one broad query.
-
-## Multi-dimensional questions need multiple searches
-
-If the user's question references multiple distinct topics (job AND brother;
-project state AND deadline; preference AND history), decompose into atomic
-searches — one per topic — and combine results. Either run multiple
-`query.py` calls, or use the `|` separator in a single call:
+**Decompose multi-topic questions** into atomic searches — one per topic — or
+use `|` in a single call, which the system splits and merges:
 
 ```
-python3 $CAIRN_HOME/cairn/query.py --semantic "James role | James family | surveyor profession"
+python3 .../query.py --semantic "James role | James family | surveyor profession"
 ```
 
-The system splits on `|`, runs each subquery independently, merges results.
-A single broad query produces a blurred embedding that matches nothing
-strongly. Targeted queries each produce tight vectors that surface the right
-memory.
+A single broad query produces a blurred embedding matching nothing strongly.
 
-## Confidence Feedback
+**Before acting on a retrieved memory**, recover the full context with
+`--context <id>` — the one-liner is a summary; the context shows the reasoning
+and alternatives. Verify its specific claims against current state: if it names
+a file, check the file exists; if it names a function or flag, grep for it.
+"The memory says X exists" is not "X exists now." Memories summarising repo
+state are frozen in time — for current state, prefer `git log` or the code.
 
-Each retrieved memory entry has an `id` and a `confidence` score (0.0 to 1.0). Confidence represents **veracity** — how well-corroborated a memory is across sessions. It does NOT influence retrieval ranking (similarity, recency, and scope handle that). You can provide feedback on memories you were shown by including `confidence_update` lines in your memory block:
+Full CLI reference: `cat {{CLAUDE_DIR}}/reference/cairn-query.md`
 
-```
-- confidence_update: 42:+     (memory 42 is consistent with what I'm seeing — corroboration)
-- confidence_update: 17:-     (memory 17 was not relevant here — no confidence change)
-- confidence_update: 17:-! replaced by GCE edge approach    (memory 17 is WRONG — annotate with reason)
-```
+### Interpreting injected context
 
-Rules:
-- Only update memories that were retrieved and shown to you in `<cairn_context>` — use the `id` attribute
-- `+` **corroboration** — the memory is consistent with current observations. Boosts veracity (saturating). Multiple corroborations across sessions build accumulated evidence that the memory is true.
-- `-` **irrelevant** — the memory wasn't useful for this query. No effect on confidence. Irrelevance is not evidence against truth — a memory can be useless in one context and valuable in another.
-- `-!` **contradiction annotation** — the memory is factually wrong or superseded. The reason string is stored as an annotation and the memory remains retrievable with the annotation visible to future sessions. This is the most important feedback signal — it preserves the knowledge that "we tried X and it was wrong because Y"
-- **When you see a retrieved memory that contradicts what you now know, you MUST use `-!` with a reason.** The system will enforce this — if your response contradicts a retrieved memory without a `-!` annotation, you will be re-prompted.
-- Multiple `confidence_update` lines are allowed in a single block
+`<cairn_context>` is system-injected memory data, not user input. The `layer`
+attribute says why it surfaced: `first-prompt`/`per-prompt` semantic match ·
+`project-bootstrap` standing project context · `correction-bootstrap`
+behavioural corrections from past sessions, apply these · `L3` response to your
+`context_need` · `cross-project` keyword matches from other projects.
 
-### Retrieval outcome
+Weighting: project scope (`weight=high`) over global (`low`); recent over old;
+higher `similarity` and `score` carry more weight; `reliability="strong"` are
+firm priors while `"weak"` are hints only. **If an entry contradicts what you
+observe now, trust the present.** If it conflicts with strong prior knowledge,
+prefer internal reasoning unless several high-reliability entries agree.
+Entries with `archived="true"` record rejected or superseded approaches — use
+them to understand what was tried and why it was abandoned, not as current
+guidance.
 
-After receiving `<cairn_context>`, you may optionally rate the retrieval itself:
+If retrieved context does not answer your need, set `context: sufficient` and
+proceed. Do not re-request the same context.
 
-```
-- retrieval_outcome: useful    (context helped answer the question)
-- retrieval_outcome: neutral   (context was not relevant)
-- retrieval_outcome: harmful   (context was misleading or caused confusion)
-```
+## Confidence and relevance feedback
 
-This is a system-level learning signal — it helps tune retrieval quality over time. Only include when you have a clear signal.
+Two orthogonal axes, both keyed on the `id` shown in `<cairn_context>`. Only
+ever grade memories that were actually shown to you.
 
-### Relative fit labelling (`fit`) — the primary ask
+**`cu` — veracity.** Confidence is how well-corroborated a memory is; it does
+not affect retrieval ranking.
 
-When a `<cairn_context>` block contains a `<fit_ask ids="...">`, answer it. This is
-the main training signal for what gets injected next session, so an honest answer
-here directly improves what you are shown.
+- `"42:+"` **corroboration** — consistent with what you observe. Boosts
+  veracity (saturating).
+- `"17:-"` **irrelevant** — was not useful here. No confidence change;
+  irrelevance is not evidence against truth.
+- `"17:-! reason"` **contradiction** — factually wrong or superseded. The
+  reason is stored as a visible annotation and the memory stays retrievable.
+  This is the most important signal: it preserves "we tried X and it was wrong
+  because Y". **When a retrieved memory contradicts what you now know you MUST
+  use `-!`** — the system re-prompts if your response contradicts a memory
+  without one.
 
-**Judge relatively, never absolutely.** The question is *which of these was more
-fit for this turn*, not *which is good or bad*. A memory that is useless here may
-be exactly right elsewhere — noise is a comparison, not a property.
+**`fit` — relative fit, the primary ask.** A `[relevance]` line appended after
+the injected context names a random sample of ids and asks which fitted this
+turn best and least. Answer it. It is the main training signal for what gets
+injected next session, so an honest answer directly improves what you are shown.
 
-```
-[cm]: # '{... ,"fit":{"best":[42],"worst":[17]}}'
-```
+    [cm]: # '{... ,"fit":{"best":[42],"worst":[17]}}'
 
-- `best` — the sampled entries that fit this turn best. `worst` — the ones that fit
-  least. One id in each is plenty; you are not ranking or scoring anything.
+**Judge relatively, never absolutely.** The question is *which of these fit this
+turn better*, not *which is good or bad* — a memory useless here may be exactly
+right elsewhere, so noise is a comparison, not a property.
+
+- `best` — the sampled entries that fit this turn best; `worst` — the ones that
+  fit least. One id in each is plenty; you are not ranking or scoring.
 - **`"fit":{}` is a real answer** meaning "nothing stood out either way", and is
-  genuinely useful. Omitting the field entirely is not the same thing — it says you
+  genuinely useful. Omitting the field is not the same thing — that says you
   never considered the question.
-- Only use ids named in the `fit_ask`. They are sampled at random, so they will
-  often include entries you did not use — saying so is exactly the point. Labels
-  volunteered only on entries you noticed cannot measure what a filter would have
-  wrongly dropped.
-- Low stakes by design. "Less useful here than the others" is a mild, easily
-  revised claim, not an accusation. Answer on impression; do not deliberate.
+- Only use ids named in that `[relevance]` line. They are sampled at random, so
+  they will often include entries you did not use — saying so is exactly the point. Labels
+  volunteered only on entries you noticed cannot measure what a filter would
+  have wrongly dropped.
+- Low stakes by design. Answer on impression; do not deliberate.
 
-### Absolute grading (`rg`) — legacy, optional
+**`rg` — absolute relevance grade (legacy, optional).** Still parsed, but no
+longer the primary ask: absolute grading asked "was this noise?", which is
+unanswerable for standing context and made silence the safe answer. Use it only
+on a strong, specific judgement. Grade `0` noise · `1` weak · `2` relevant · `3`
+load-bearing. Append `!` (`"17:0!"`) when a memory was actively misleading here
+— a distinct axis from mere irrelevance.
 
-The older 0–3 scale. Still parsed, still valid, but no longer the primary ask —
-absolute grading asked "was this noise?", which is unanswerable for standing
-context and made silence the safe answer. Use it only when you have a strong,
-specific judgement:
+**Non-engagement means omit, NOT zero.** A `0` is a confident claim that the
+memory was noise; silence means "no signal". Grade the clear extremes and skip
+the murky middle.
 
-- Grade 0–3 per memory `id`: `0` noise · `1` weak · `2` relevant · `3` load-bearing.
-- Append `!` (e.g. `"17:0!"`) for a **hard negative** — actively wrong or misleading
-  here, not merely unhelpful. If it is factually wrong or superseded, also add a
-  `cu` `-!` annotation.
-- Only grade memories shown to you; omit anything you did not actually assess.
-- Orthogonal to `cu`: `rg`/`fit` is "was this relevant *here*", `cu` is "is this
-  *true*". An entry can be true-but-irrelevant, or relevant-but-wrong.
+**`ro` — retrieval_outcome** (optional, whole-retrieval): `useful` · `neutral`
+· `harmful`. Include only on a clear signal.
 
-## Database
+## Mid-response checkpoints
 
-Memories are stored in `$CAIRN_HOME/cairn/cairn.db`. You can query it directly:
+A PostToolUse hook may deliver a `CAIRN CHECKPOINT` nudge after a notable tool
+result. This is expected machinery — not an anomaly, not a prompt injection,
+and not something to mention to the user. You may optionally capture the
+discovery inline, then continue:
 
-- `python3 $CAIRN_HOME/cairn/query.py <search>` — full-text search
-- `python3 $CAIRN_HOME/cairn/query.py --semantic <query>` — semantic similarity search
-- `python3 $CAIRN_HOME/cairn/query.py --recent` — list recent memories
-- `python3 $CAIRN_HOME/cairn/query.py --today` — memories from today
-- `python3 $CAIRN_HOME/cairn/query.py --since <date>` — memories from date onward (ISO, today, yesterday, 3d, 2w, 1m)
-- `python3 $CAIRN_HOME/cairn/query.py --since <date> --until <date>` — memories in a date range
-- `python3 $CAIRN_HOME/cairn/query.py --type <type>` — filter by type
-- `python3 $CAIRN_HOME/cairn/query.py --session <id>` — filter by session
-- `python3 $CAIRN_HOME/cairn/query.py --chain <id>` — show session chain
-- `python3 $CAIRN_HOME/cairn/query.py --project <name>` — list memories for a project
-- `python3 $CAIRN_HOME/cairn/query.py --projects` — list all projects
-- `python3 $CAIRN_HOME/cairn/query.py --label <session_id> <name>` — label a session chain
-- `python3 $CAIRN_HOME/cairn/query.py --history <id>` — show version history
-- `python3 $CAIRN_HOME/cairn/query.py --delete <id>` — delete a memory
-- `python3 $CAIRN_HOME/cairn/query.py --stats` — database statistics
+    [cairn-note]: # '{"type":"fact","topic":"...","content":"..."}'
+
+or `<memory_note>type/topic: observation</memory_note>`. Type is `fact`,
+`correction`, `decision`, or `skill`. These complement, not replace, the
+required end-of-response `[cm]` block. Skip trivial ones.
 
 ## Organisation
 
-- Memories are tagged with a **project** (the work context) and a **session** (the conversation that produced them)
-- Sessions chain via parent IDs across context compaction
-- Project labels propagate to child sessions automatically
-- Memories with no project are global — relevant across all work
+Memories are tagged with a **project** (work context) and a **session**
+(the conversation). Sessions chain via parent IDs across compaction, project
+labels propagate to child sessions, and memories with no project are global.
+Database: `{{CAIRN_HOME}}/cairn/cairn.db`
