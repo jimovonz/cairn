@@ -32,7 +32,8 @@ import os
 from typing import Optional
 
 from hooks.hook_helpers import log, get_conn, get_ephemeral_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery, restore_stripped_cm
-from hooks.parser import parse_memory_block, parse_memory_notes, linkdef_error_locus
+from hooks.parser import (parse_memory_block, parse_memory_notes, linkdef_error_locus,
+                          linkdef_diagnosis)
 from hooks.hash_verify import compute_response_hash
 from hooks.storage import apply_confidence_updates, inline_backfill, insert_memories
 
@@ -576,13 +577,14 @@ def main() -> None:
         has_linkdef: bool = bool(re.search(r'^\[(?:cm|cairn-memory)\]:', text, re.MULTILINE))
         if has_legacy_tag or has_linkdef:
             record_metric(session_id, "malformed_memory_block")
-            hint: str = "Your memory block could not be parsed. "
-            # Point the retry at the exact break instead of letting it rewrite
-            # the whole block blind (the usual cause of multi-retry churn): the
-            # dominant failure is an unescaped " or \ inside a content string.
-            locus = linkdef_error_locus(text)
-            if locus:
-                hint += locus + " "
+            # Name the ACTUAL failure. This branch fires whenever a line merely
+            # STARTS with the marker, which is a weaker condition than "the JSON
+            # is invalid" — so the old fixed "could not be parsed" text asserted
+            # a cause it had not established, and sent several debugging attempts
+            # chasing quoting bugs that were not there.
+            diagnosis = linkdef_diagnosis(text)
+            hint: str = (diagnosis + " ") if diagnosis else \
+                "Your memory block could not be parsed. "
             hint += 'Use this format:\n[cm]: # \'{"e":[{"t":"fact","to":"short key","c":"one line"}],"ok":true,"ctx":"s","kw":["relevant","words"]}\''
             result: dict = {"decision": "block", "reason": hint + AMEND_ONLY_SUFFIX}
         elif re.search(r'\[cm:\s', text) or re.search(r'\(cairn: memory (?:captured|NOT captured) for this turn', text) or re.search(r'<!--\s*cairn: memory (?:captured|NOT captured)', text):
