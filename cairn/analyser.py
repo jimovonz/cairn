@@ -53,6 +53,15 @@ EPH_DB_PATH = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "cairn-ephemeral.db"),
 )
 
+# INPUT-DOMAIN INVARIANT (spec 1.10) — what this write path assumes about its
+# input. Both ingest defects came from transplanting an invariant into a domain
+# that violated it, which care at review time would not have caught.
+INPUT_DOMAIN_INVARIANT = (
+    "Assumes a session transcript is APPEND-ONLY. Re-analysis is gated on turn "
+    "COUNT growth, so a transcript that is edited, truncated, or rewritten in "
+    "place without growing is never re-examined."
+)
+
 TRANSCRIPT_ROOTS = [os.path.expanduser("~/.claude/projects")]
 DEFAULT_IDLE_MINUTES = 15
 DEFAULT_TIMEOUT_S = 1800
@@ -72,7 +81,11 @@ MIN_CLEANED_CHARS = 500
 INCREMENTAL_TURN_THRESHOLD = 10
 ANALYSER_STATE_KEY = "calibration_analyser_state"
 
-ANALYSER_SOURCE_REF = "analyser-session-arc"
+# Written value is versioned (spec 1.9); matching uses the stable prefix below
+# so dedup still sees rows written by earlier analyser versions.
+from cairn.config import ANALYSER_PROMPT_VERSION as _ANALYSER_VERSION
+from cairn.config import ANALYSER_SOURCE_REF_PREFIX as ANALYSER_SOURCE_REF_PREFIX
+ANALYSER_SOURCE_REF = _ANALYSER_VERSION
 
 # Source-tier initial confidences (spec §"Source tiers"). Match the
 # CLI defaults in cairn/calibration.py SOURCE_INITIAL_CONFIDENCE.
@@ -563,9 +576,11 @@ def _memory_is_duplicate(conn, embedding_text: str,
     if vec is None:
         return None
     rows = conn.execute(
-        "SELECT id, embedding FROM memories WHERE source_ref = ? "
+        # Prefix match, not equality: dedup must span every analyser version,
+        # or bumping the version silently re-writes every prior memory.
+        "SELECT id, embedding FROM memories WHERE source_ref LIKE ? || '%' "
         "AND embedding IS NOT NULL AND deleted_at IS NULL",
-        (ANALYSER_SOURCE_REF,),
+        (ANALYSER_SOURCE_REF_PREFIX,),
     ).fetchall()
     best_id, best_sim = None, 0.0
     for rid, blob in rows:

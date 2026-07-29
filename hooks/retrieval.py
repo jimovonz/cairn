@@ -124,6 +124,37 @@ def _loc_attr(mem_id: int) -> str:
     return f' loc="{html.escape(label, quote=True)}"' if label else ""
 
 
+def _apply_source_priors(fused: list[dict[str, Any]], conn) -> None:
+    """Apply per-source utility priors to fused scores, in place.
+
+    Some write paths produce systematically less useful memories than others —
+    analyser-written session-arc rows engage at roughly half the rate of
+    per-turn agent-written ones. A small additive prior demotes them by about a
+    rank position; it never excludes, so a strong analyser row still wins.
+
+    Fail-open: the prior is an optimisation and must never block a search.
+    """
+    try:
+        # Function-local so tests can monkeypatch cairn.config.SCORE_SOURCE_PRIORS.
+        from cairn.config import SCORE_SOURCE_PRIORS
+
+        if not SCORE_SOURCE_PRIORS or not fused:
+            return
+        ids = [r["id"] for r in fused if r.get("id") is not None]
+        if not ids:
+            return
+        qmarks = ",".join("?" * len(ids))
+        srefs = dict(conn.execute(
+            f"SELECT id, source_ref FROM memories WHERE id IN ({qmarks})", ids
+        ).fetchall())
+        for r in fused:
+            prior = SCORE_SOURCE_PRIORS.get(srefs.get(r.get("id")) or "", 0.0)
+            if prior:
+                r["score"] += prior
+    except Exception:
+        pass
+
+
 def hybrid_search(
     query: str,
     conn,
@@ -270,6 +301,7 @@ def hybrid_search(
 
         fused.append(result_dict)
 
+    _apply_source_priors(fused, conn)
     fused.sort(key=lambda x: x["score"], reverse=True)
 
     # --- Split by scope ---

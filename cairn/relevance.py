@@ -41,6 +41,16 @@ from typing import Any, Optional
 # The prior assistant response only supplies referents for anaphora, so cap it:
 # a long response must not dominate the short current prompt in the embedding
 # (the prompt-vs-response length asymmetry). Chars, not tokens — cheap + good enough.
+# INPUT-DOMAIN INVARIANT (spec 1.10) — what this write path assumes about its
+# input. Both ingest defects came from transplanting an invariant into a domain
+# that violated it, which care at review time would not have caught.
+INPUT_DOMAIN_INVARIANT = (
+    "Assumes a delivered memory is USED IN THE SAME TURN it was delivered. "
+    "Value realised later scores identically to never being used, so any layer "
+    "with a multi-turn value horizon (first-prompt) is systematically "
+    "under-measured by engagement."
+)
+
 PRIOR_RESPONSE_CAP = 600
 
 
@@ -196,8 +206,12 @@ def _score_components(r: dict[str, Any]) -> Optional[str]:
     across the ms-marco->bge reranker transition; the composite blends CE + RRF +
     similarity). Only present keys are stored; returns None if nothing is known."""
     comp = {}
+    # prefilter_n/postfilter_n make SUPPRESSION measurable. Without them a turn
+    # whose candidates were all filtered leaves no trace, so any per-model
+    # comparison drawn from delivery rows silently favours the permissive model.
     for src, dst in (("ce_score", "ce"), ("score", "composite"), ("rrf_score", "rrf"),
-                     ("similarity", "sim"), ("confidence", "conf")):
+                     ("similarity", "sim"), ("confidence", "conf"),
+                     ("prefilter_n", "pre_n"), ("postfilter_n", "post_n")):
         v = r.get(src)
         if v is not None:
             try:
@@ -214,7 +228,7 @@ def log_memory_deliveries(delivered: list[dict[str, Any]], *, session_id: str,
                           context_text: str = "", context_vec: Optional[bytes] = None,
                           turn_index: Optional[int] = None,
                           layer: Optional[str] = None, project: Optional[str] = None,
-                          eph_path: Optional[str] = None) -> int:
+                          eph_path: Optional[str] = None, _retry: bool = True) -> int:
     """Insert one memory_deliveries row per injected memory. Fail-soft: returns
     the count written (0 on any error) — instrumentation must never break delivery.
 
@@ -244,15 +258,39 @@ def log_memory_deliveries(delivered: list[dict[str, Any]], *, session_id: str,
             conn.execute(
                 "INSERT INTO memory_deliveries "
                 "(session_id, turn_index, memory_id, context_text, context_vec, "
-                " ce_score, served_rank, reranker_model, score_components, layer, scope) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " ce_score, served_rank, reranker_model, score_components, layer, scope, "
+                " gate_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (session_id, turn_index, int(mid), context_text, context_vec,
                  ce, r.get("served_rank", rank), r.get("reranker_model"),
-                 _score_components(r), layer, scope),
+                 _score_components(r), layer, scope, r.get("gate_status")),
             )
             n += 1
         conn.commit()
         return n
+    except sqlite3.OperationalError as exc:
+        # A missing column means this DB predates a schema change. Fail-soft was
+        # designed so instrumentation never breaks delivery — but combined with a
+        # new column in the INSERT it turns a migration gap into SILENT, total
+        # data loss: every insert returns 0 and nothing is recorded. That
+        # happened live on 2026-07-26 when gate_status shipped, costing hours of
+        # deliveries before it was noticed. Migrate and retry once.
+        # SQLite words this two ways: "has no column named X" from an INSERT and
+        # "no such column: X" from a SELECT. Matching only the second is why the
+        # first version of this guard did not fire on the very case it exists for.
+        _msg = str(exc).lower()
+        if not _retry or not ("no such column" in _msg or "has no column named" in _msg):
+            return 0
+        try:
+            from cairn.init_db import init_ephemeral
+            init_ephemeral(_eph_path(eph_path))
+        except Exception:
+            return 0
+        return log_memory_deliveries(
+            delivered, session_id=session_id, context_text=context_text,
+            context_vec=context_vec, turn_index=turn_index, layer=layer,
+            project=project, eph_path=eph_path, _retry=False,
+        )
     except sqlite3.Error:
         return 0
     finally:
@@ -597,6 +635,36 @@ def _durable_path(durable_path: Optional[str]) -> str:
             or os.path.join(os.path.dirname(os.path.abspath(__file__)), "cairn.db"))
 
 
+def _cosine(a, b) -> float:
+    """Full cosine between two vectors; 0.0 when either is degenerate."""
+    import numpy as np
+    if a is None or b is None:
+        return 0.0
+    a = np.asarray(a, dtype=np.float32)
+    b = np.asarray(b, dtype=np.float32)
+    if a.shape != b.shape:
+        return 0.0
+    denom = float(np.linalg.norm(a)) * float(np.linalg.norm(b))
+    return float(np.dot(a, b)) / denom if denom > 0 else 0.0
+
+
+def semantic_engaged(cos_resp_mem: float, cos_ctx_mem: float,
+                     threshold: Optional[float] = None,
+                     margin: Optional[float] = None) -> bool:
+    """Second-chance engagement verdict from embeddings rather than shared tokens.
+
+    Two conditions must both hold. The response must be close to the memory
+    (threshold), AND it must be closer than the context already was (margin) —
+    without the margin, a memory that merely echoes the prompt would score as
+    used, since the response naturally resembles its own prompt.
+    """
+    if threshold is None or margin is None:
+        from cairn.config import ENGAGEMENT_SEM_THRESHOLD, ENGAGEMENT_SEM_MARGIN
+        threshold = ENGAGEMENT_SEM_THRESHOLD if threshold is None else threshold
+        margin = ENGAGEMENT_SEM_MARGIN if margin is None else margin
+    return cos_resp_mem >= threshold and (cos_resp_mem - cos_ctx_mem) >= margin
+
+
 def apply_engagement(response_text: str, *, session_id: str,
                      eph_path: Optional[str] = None,
                      durable_path: Optional[str] = None) -> int:
@@ -621,15 +689,31 @@ def apply_engagement(response_text: str, *, session_id: str,
             return 0
         mem_ids = sorted({int(r[1]) for r in rows})
         mem_text = {}
+        mem_vec = {}
         try:
             dconn = sqlite3.connect(_durable_path(durable_path))
             try:
                 qmarks = ",".join("?" * len(mem_ids))
-                for mid, content, topic, kw in dconn.execute(
-                    f"SELECT id, content, topic, keywords FROM memories "
-                    f"WHERE id IN ({qmarks})", mem_ids,
-                ):
+                # `embedding` is optional: a durable DB predating the column must
+                # still get lexical scoring rather than silently scoring nothing.
+                try:
+                    drows = dconn.execute(
+                        f"SELECT id, content, topic, keywords, embedding FROM memories "
+                        f"WHERE id IN ({qmarks})", mem_ids,
+                    ).fetchall()
+                except sqlite3.Error:
+                    drows = [(r[0], r[1], r[2], r[3], None) for r in dconn.execute(
+                        f"SELECT id, content, topic, keywords FROM memories "
+                        f"WHERE id IN ({qmarks})", mem_ids,
+                    ).fetchall()]
+                for mid, content, topic, kw, emb in drows:
                     mem_text[int(mid)] = " ".join(p for p in (content, topic, kw) if p)
+                    if emb:
+                        try:
+                            from cairn.embeddings import from_blob
+                            mem_vec[int(mid)] = from_blob(emb)
+                        except Exception:
+                            pass  # unreadable vector — lexical verdict still stands
             finally:
                 dconn.close()
         except sqlite3.Error:
@@ -640,19 +724,66 @@ def apply_engagement(response_text: str, *, session_id: str,
             conn.execute("ALTER TABLE memory_deliveries ADD COLUMN polarity TEXT")
         except sqlite3.Error:
             pass
-        n = 0
+        # Pass 1 — lexical distinctive-term overlap. Verdicts are held in `pending`
+        # rather than written straight out, so the semantic pass below can revise
+        # them before a single write loop commits the final answer.
+        pending = []
         for row_id, memory_id, ctx in rows:
             mt = mem_text.get(int(memory_id))
             if mt is None:
                 continue  # memory deleted since delivery — leave unscored
             engaged, score = score_engagement(response_text, mt, ctx or "")
+            # Polarity is a lexical judgement over the distinctive terms the
+            # response actually reused, so it is computed here in pass 1 and
+            # carried through unchanged — the semantic pass revises the engaged
+            # verdict, not the stance.
             _dist = _engagement_tokens(mt) - _engagement_tokens(ctx or "")
             _pol = detect_polarity(response_text, _dist & _engagement_tokens(response_text))
-            conn.execute("UPDATE memory_deliveries SET polarity = ? WHERE id = ?", (_pol, row_id))
-            conn.execute(
-                "UPDATE memory_deliveries SET engaged = ?, engaged_score = ? WHERE id = ?",
-                (engaged, score, row_id),
-            )
+            pending.append([row_id, int(memory_id), ctx or "", engaged, score,
+                            "lexical", _pol])
+
+        # Pass 2 — semantic second chance for rows the lexical pass called unengaged.
+        # Recovers paraphrased use: the response applied the memory without reusing
+        # its vocabulary. Fail-soft — any error leaves the lexical verdicts standing.
+        try:
+            from cairn.config import ENGAGEMENT_SEMANTIC_ENABLED
+            if ENGAGEMENT_SEMANTIC_ENABLED and mem_vec:
+                candidates = [p for p in pending if p[3] != 1 and p[1] in mem_vec]
+                if candidates:
+                    import cairn.embeddings as _emb
+                    resp_vec = _emb.embed(response_text[:4000], allow_slow=False)
+                    if resp_vec is not None:
+                        ctx_vec = {}
+                        for p in candidates:
+                            if p[2] and p[2] not in ctx_vec:
+                                ctx_vec[p[2]] = _emb.embed(p[2][:4000], allow_slow=False)
+                        for p in candidates:
+                            mv = mem_vec[p[1]]
+                            crm = _cosine(resp_vec, mv)
+                            ccm = _cosine(ctx_vec.get(p[2]), mv)
+                            if semantic_engaged(crm, ccm):
+                                # Semantic rows store cos(resp,mem) — same 0..1 range
+                                # as the lexical overlap ratio it replaces. The method
+                                # tag keeps the two bases separable in aggregate stats.
+                                p[3], p[4], p[5] = 1, round(crm, 4), "semantic"
+        except Exception:
+            pass
+
+        n = 0
+        for row_id, _mid, _ctx, engaged, score, method, polarity in pending:
+            try:
+                conn.execute(
+                    "UPDATE memory_deliveries SET engaged = ?, engaged_score = ?, "
+                    "engaged_method = ?, polarity = ? WHERE id = ?",
+                    (engaged, score, method, polarity, row_id),
+                )
+            except sqlite3.OperationalError:
+                # Ephemeral DB predating engaged_method/polarity — score anyway,
+                # untagged.
+                conn.execute(
+                    "UPDATE memory_deliveries SET engaged = ?, engaged_score = ? WHERE id = ?",
+                    (engaged, score, row_id),
+                )
             n += 1
         conn.commit()
         return n

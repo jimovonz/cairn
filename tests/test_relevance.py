@@ -418,6 +418,7 @@ def test_resolve_reranker_ms_marco_default_even_on_cuda(monkeypatch):
     # device, even when CUDA is present (it just loads on the GPU).
     import torch
     from cairn import config
+    monkeypatch.setattr(config, "CROSS_ENCODER_STUDENT_PATH", "")  # test the pretrained branch
     monkeypatch.setattr(config, "RERANKER_BGE_ENABLED", False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     m, f = config.resolve_reranker()
@@ -437,6 +438,7 @@ def test_resolve_reranker_bge_when_flag_on_and_cuda(monkeypatch):
     # bge requires flag on + CUDA + a FAST GPU (VRAM >= RERANKER_MIN_VRAM_GB).
     import torch
     from cairn import config
+    monkeypatch.setattr(config, "CROSS_ENCODER_STUDENT_PATH", "")  # test the pretrained branch
     monkeypatch.setattr(config, "RERANKER_BGE_ENABLED", True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     # Big discrete GPU (e.g. 8GB 4070) -> bge.
@@ -458,6 +460,7 @@ def test_resolve_reranker_falls_back_when_torch_missing(monkeypatch):
     # If torch import fails inside resolve, must fall back to the CPU default.
     import builtins
     from cairn import config
+    monkeypatch.setattr(config, "CROSS_ENCODER_STUDENT_PATH", "")  # test the pretrained branch
     real_import = builtins.__import__
     def _no_torch(name, *a, **k):
         if name == "torch":
@@ -466,6 +469,24 @@ def test_resolve_reranker_falls_back_when_torch_missing(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", _no_torch)
     m, f = config.resolve_reranker()
     assert m == config.CROSS_ENCODER_MODEL and f == config.CROSS_ENCODER_SCORE_FLOOR
+
+
+def test_resolve_reranker_student_wins_when_present(monkeypatch, tmp_path):
+    # A trained student dir overrides any pretrained base, on any device.
+    from cairn import config
+    monkeypatch.setattr(config, "CROSS_ENCODER_STUDENT_PATH", str(tmp_path))
+    monkeypatch.setattr(config, "CROSS_ENCODER_STUDENT_FLOOR", -100.0)
+    m, f = config.resolve_reranker()
+    assert m == str(tmp_path) and f == -100.0
+    # a floor.txt in the model dir overrides the config-constant fallback
+    (tmp_path / "floor.txt").write_text("-7.5\n")
+    m, f = config.resolve_reranker()
+    assert m == str(tmp_path) and f == -7.5
+    # empty path disables it -> falls through to the pretrained default
+    monkeypatch.setattr(config, "CROSS_ENCODER_STUDENT_PATH", "")
+    monkeypatch.setattr(config, "RERANKER_BGE_ENABLED", False)
+    m, f = config.resolve_reranker()
+    assert m == config.CROSS_ENCODER_MODEL
 
 
 # ---- superseded-pair suppression (build_context_xml) --------------------------

@@ -1,6 +1,20 @@
 # Spec: Context Paring — proxy-level context token minimisation
 
-Status: PROPOSAL (2026-07-05). Not yet implemented.
+Status: IMPLEMENTED. The CM tier and the PREFIX tool-strip tier shipped 2026-07-05/06.
+
+**The CM tier defaults OFF since 2026-07-25** (`CAIRN_PARE_CM=1` to re-enable). It
+worked as designed and saved real tokens — roughly 1.19M chars (~300K tokens) measured
+over its active period — but the marker it substitutes was repeatedly emitted by the
+model as its own output in place of a real `[cm]` block, costing a Stop-hook re-prompt
+and a wasted turn each time. Three rewordings were tried (bracketed `[cm: ...]`,
+parenthetical `(cairn: memory ...)`, HTML comment `<!-- cairn: ... -->`) and the
+imitation survived all three, which is the signal that the failure is structural rather
+than lexical: any fixed string standing in the slot where a block belongs is a
+candidate for imitation. The forfeited saving is the known cost of that decision.
+
+The PREFIX tool-strip tier remains ON (`CAIRN_PARE_TOOLS`) — it substitutes nothing
+into the assistant turn, so it carries no equivalent risk.
+
 Owner: cairn proxy (`cairn/proxy/`). Applies to proxied sessions only (`c` launcher →
 `ANTHROPIC_BASE_URL=127.0.0.1:8789`); bare `claude` sessions are unaffected.
 
@@ -164,5 +178,5 @@ session's own tool log:
 - Verify per session via `usage`: cache_read_input_tokens must stay high across pared
   requests (partial-prefix hits at breakpoints); input_tokens delta = realised saving.
 - Flags: `CAIRN_PARE_CM`, `CAIRN_PARE_EVENTS`, `CAIRN_PARE_DEMOTE`, `CAIRN_PARE_PROSE`,
-  `CAIRN_PARE_MINIFY` — `CAIRN_PARE_CM` defaults ON (enabled by default; opt out with `CAIRN_PARE_CM=0`); the rest default off, enabled in order after measuring the prior.
+  `CAIRN_PARE_MINIFY` — `CAIRN_PARE_CM` defaults OFF since 2026-07-25 (opt in with `CAIRN_PARE_CM=1`; see Status above for why); the rest default off, enabled in order after measuring the prior.
 - Failure posture: any ledger inconsistency → send unpared (correctness over savings).

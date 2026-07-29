@@ -196,9 +196,6 @@ def query_py_invoked_since(transcript_path: str, since_iso: str) -> bool:
     """
     if not transcript_path or not os.path.exists(transcript_path):
         return False
-    TRIVIAL = ("--stats", "--check", "--recent", "--projects", "--today", "--bootstrap")
-    SUBSTANTIVE_FLAGS = ("--semantic", "--type", "--project", "--since", "--context",
-                         "--history", "--compact")
     from hooks.transcript_adapter import iter_normalized_entries
     for entry in iter_normalized_entries(transcript_path):
         try:
@@ -212,19 +209,89 @@ def query_py_invoked_since(transcript_path: str, since_iso: str) -> bool:
             if not isinstance(content, list):
                 continue
             for block in content:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") != "tool_use" or block.get("name") != "Bash":
-                    continue
-                cmd = block.get("input", {}).get("command", "")
-                if "query.py" not in cmd:
-                    continue
-                if any(flag in cmd for flag in SUBSTANTIVE_FLAGS):
-                    return True
-                if not any(t in cmd for t in TRIVIAL):
+                if _is_query_py_probe(block):
                     return True
         except (AttributeError, KeyError):
             continue
+    return False
+
+
+# What counts as actively probing cairn for knowledge, rather than checking its
+# status. Status calls must NOT satisfy a "did you search?" check — otherwise
+# `query.py --stats` reads as compliance while answering nothing.
+_CAIRN_TRIVIAL_FLAGS = ("--stats", "--check", "--recent", "--projects", "--today", "--bootstrap")
+_CAIRN_SUBSTANTIVE_FLAGS = ("--semantic", "--type", "--project", "--since", "--context",
+                            "--history", "--compact")
+# Graph-side knowledge probes — only accepted by the turn-scoped check below, so
+# query_py_invoked_since keeps its exact prior semantics for its 8 callers.
+_CAIRN_GRAPH_PROBES = ("cairn-graph --knowledge", "cairn-graph --context-pack")
+
+
+def _is_query_py_probe(block) -> bool:
+    """True when a tool-use block is a substantive query.py knowledge probe."""
+    if not isinstance(block, dict):
+        return False
+    if block.get("type") != "tool_use" or block.get("name") != "Bash":
+        return False
+    cmd = block.get("input", {}).get("command", "")
+    if "query.py" not in cmd:
+        return False
+    if any(flag in cmd for flag in _CAIRN_SUBSTANTIVE_FLAGS):
+        return True
+    return not any(t in cmd for t in _CAIRN_TRIVIAL_FLAGS)
+
+
+def _is_real_user_turn(msg: dict) -> bool:
+    """True for an actual user prompt, False for a tool-result carrier.
+
+    Tool results come back wrapped in role="user" messages, so a naive search
+    for the last user entry lands on a tool result rather than the prompt.
+    """
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return not any(isinstance(b, dict) and b.get("type") == "tool_result"
+                       for b in content)
+    return False
+
+
+def cairn_query_invoked_this_turn(transcript_path: str) -> bool:
+    """Did the current turn actually search cairn, or only declare that it should?
+
+    Turn-scoped counterpart to query_py_invoked_since: the boundary is the last
+    real user prompt rather than a timestamp. Declaring context: insufficient
+    delegates the search to push retrieval, which is opportunistic — its silence
+    means "no match", never "nothing stored". This detects the other half of the
+    rule, the half where the agent does the searching itself.
+    """
+    if not transcript_path or not os.path.exists(transcript_path):
+        return False
+    try:
+        from hooks.transcript_adapter import iter_normalized_entries
+        entries = list(iter_normalized_entries(transcript_path))
+        start = 0
+        for i in range(len(entries) - 1, -1, -1):
+            msg = entries[i].get("message", {})
+            if isinstance(msg, dict) and msg.get("role") == "user" and _is_real_user_turn(msg):
+                start = i
+                break
+        for entry in entries[start:]:
+            msg = entry.get("message", {})
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", [])
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if _is_query_py_probe(block):
+                    return True
+                if (isinstance(block, dict) and block.get("type") == "tool_use"
+                        and any(m in json.dumps(block.get("input", {}))
+                                for m in _CAIRN_GRAPH_PROBES)):
+                    return True
+    except Exception:
+        pass
     return False
 
 

@@ -67,11 +67,102 @@ EXTRACTOR_VERSIONS = {
 }
 
 
+# INPUT-DOMAIN INVARIANT (spec 1.10) — what this write path assumes about its
+# input. Both ingest defects came from transplanting an invariant into a domain
+# that violated it, which no amount of care at review time would have caught.
+INPUT_DOMAIN_INVARIANT = (
+    "Assumes a FIXED, NON-SHRINKING section namespace, and trusts the "
+    "distilling LLM's self-reported source_sections as the cache-invalidation "
+    "key. A mislabelled section leaves stale memories un-archived indefinitely. "
+    "Violated by any corpus with mutable membership (e.g. a wiki/Confluence "
+    "space) where documents disappear."
+)
+
+from cairn.config import INGEST_PIPELINE_VERSION
+
+
+def _extractor_versions_digest():
+    """Short stable digest of EXTRACTOR_VERSIONS, for source_ref provenance.
+
+    Ingest rows carry this so a change to any extractor is attributable — and
+    therefore retractable via `query.py --archive-by-source-ref --like` — without
+    embedding all 24 version numbers in every stamped row.
+    """
+    payload = json.dumps(EXTRACTOR_VERSIONS, sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()[:12]
+
+
 def _fingerprint_section(name, data):
     """SHA256 of section name + extractor version + serialized data."""
     version = EXTRACTOR_VERSIONS.get(name, 0)
     payload = json.dumps({"v": version, "n": name, "d": data}, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+# Identity keys an extractor may use for an addressable unit, most specific
+# first. Every current extractor returns list[dict] carrying "file".
+_UNIT_ID_KEYS = ("file", "path", "name", "symbol")
+_WHOLE_SECTION = "__whole__"
+
+
+def _section_units(data):
+    """Split a section payload into independently-addressable units.
+
+    Section-level fingerprints are correct but coarse: one changed docstring
+    invalidates the whole `docs` section and re-distills every document in it.
+    Splitting into units makes distillation cost proportional to what actually
+    changed (spec 3.3).
+
+    Falls back to a single opaque unit for any payload with no stable identity,
+    which preserves today's behaviour rather than inventing one.
+    """
+    if isinstance(data, list) and data and all(isinstance(i, dict) for i in data):
+        for key in _UNIT_ID_KEYS:
+            if all(key in i for i in data):
+                ids = [str(i[key]) for i in data]
+                if len(set(ids)) == len(ids):     # identity must be unique
+                    return dict(zip(ids, data))
+    if isinstance(data, dict):
+        return {str(k): v for k, v in data.items()}
+    return {_WHOLE_SECTION: data}
+
+
+def _fingerprint_units(name, data):
+    """Per-unit fingerprints for one section."""
+    version = EXTRACTOR_VERSIONS.get(name, 0)
+    out = {}
+    for unit, payload in _section_units(data).items():
+        blob = json.dumps({"v": version, "n": name, "u": unit, "d": payload},
+                          sort_keys=True, default=str)
+        out[unit] = hashlib.sha256(blob.encode()).hexdigest()
+    return out
+
+
+def changed_units(name, data, cached_units):
+    """Unit keys in this section whose content changed, is new, or is unknown.
+
+    `cached_units` maps unit -> fingerprint from the previous ingestion. A unit
+    absent from the cache counts as changed: unknown provenance must be
+    re-distilled, never assumed current.
+    """
+    current = _fingerprint_units(name, data)
+    return {u for u, fp in current.items() if cached_units.get(u) != fp}
+
+
+def prune_section_to_units(data, keep):
+    """Reduce a section payload to only the units in `keep`, preserving shape.
+
+    Returns the payload unchanged when the section is a single opaque unit —
+    there is nothing to prune, and silently emptying it would drop content.
+    """
+    units = _section_units(data)
+    if set(units) == {_WHOLE_SECTION}:
+        return data
+    if isinstance(data, list):
+        return [v for u, v in units.items() if u in keep]
+    if isinstance(data, dict):
+        return {u: v for u, v in units.items() if u in keep}
+    return data
 
 
 def compute_fingerprints(extractions):
@@ -119,6 +210,80 @@ def store_fingerprints(project, fingerprints, session_id):
         )
     conn.commit()
     conn.close()
+
+
+def _init_unit_cache(conn):
+    """Per-unit fingerprints (spec 3.3). Separate table from ingestion_cache so
+    section-level change detection and archival semantics are untouched — this
+    only makes distillation cost proportional to what changed."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ingestion_unit_cache (
+            project TEXT NOT NULL,
+            section TEXT NOT NULL,
+            unit    TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (project, section, unit)
+        )
+    """)
+
+
+def get_cached_unit_fingerprints(project):
+    """-> {section: {unit: fingerprint}} from the previous ingestion."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout=5000")
+    _init_unit_cache(conn)
+    rows = conn.execute(
+        "SELECT section, unit, fingerprint FROM ingestion_unit_cache WHERE project = ?",
+        (project,),
+    ).fetchall()
+    conn.close()
+    out = {}
+    for section, unit, fp in rows:
+        out.setdefault(section, {})[unit] = fp
+    return out
+
+
+def store_unit_fingerprints(project, extractions):
+    """Replace this project's per-unit fingerprints with the current ones."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout=5000")
+    _init_unit_cache(conn)
+    conn.execute("DELETE FROM ingestion_unit_cache WHERE project = ?", (project,))
+    for section, data in extractions.items():
+        for unit, fp in _fingerprint_units(section, data).items():
+            conn.execute(
+                "INSERT OR REPLACE INTO ingestion_unit_cache "
+                "(project, section, unit, fingerprint) VALUES (?, ?, ?, ?)",
+                (project, section, unit, fp),
+            )
+    conn.commit()
+    conn.close()
+
+
+def prune_extractions(extractions, changed, cached_units):
+    """Reduce changed sections to only their changed units, for distillation.
+
+    Sections that did not change are left untouched (the caller decides whether
+    to distil them at all). Returns (pruned_extractions, stats) where stats maps
+    section -> (kept_units, total_units) for reporting.
+
+    Deliberately conservative: a section with no cached units prunes nothing,
+    because every unit then reads as changed and pruning would be a no-op with
+    extra risk.
+    """
+    pruned = dict(extractions)
+    stats = {}
+    for section in sorted(changed or ()):
+        if section not in extractions:
+            continue
+        data = extractions[section]
+        keep = changed_units(section, data, (cached_units or {}).get(section, {}))
+        total = len(_section_units(data))
+        if keep and len(keep) < total:
+            pruned[section] = prune_section_to_units(data, keep)
+            stats[section] = (len(keep), total)
+    return pruned, stats
 
 
 def diff_sections(current, cached):
@@ -1533,8 +1698,35 @@ def distill_with_haiku(result, verbose=False, sections_filter=None):
         return None
 
 
+def _attribute_sections(declared, distilled_sections):
+    """Which sections an entry is attributed to, for cache invalidation.
+
+    The declaration comes from the distilling LLM and is NOT trustworthy as an
+    invalidation key: a mislabelled section leaves a stale memory un-archived
+    indefinitely, because archival only touches entries whose sections changed.
+
+    What IS mechanically known is the set of sections fed to the distiller, so
+    the declaration is treated as a refinement WITHIN that set and is accepted
+    only when it is a subset of it. Anything else — no declaration, or a section
+    that was never fed in — falls back to the whole input set, which archives
+    more aggressively. Over-archiving costs a re-distillation; under-archiving
+    leaves a false memory in the corpus forever, so the failure is deliberately
+    asymmetric.
+
+    `distilled_sections` None means full-mode ingestion, where every prior
+    memory is archived regardless and attribution does not gate anything.
+    """
+    declared_set = set(declared or [])
+    if distilled_sections is None:
+        return sorted(declared_set)
+    fed = set(distilled_sections)
+    if declared_set and declared_set <= fed:
+        return sorted(declared_set)
+    return sorted(fed)
+
+
 def insert_memories(entries, project, source_ref, session_id=None, dry_run=False,
-                    changed_sections=None):
+                    changed_sections=None, distilled_sections=None):
     """Insert distilled memory entries into the Cairn database.
 
     If changed_sections is set, only archive previous memories whose source_ref
@@ -1545,6 +1737,12 @@ def insert_memories(entries, project, source_ref, session_id=None, dry_run=False
         session_id = f"ingest-{project}-{time.strftime('%Y%m%d-%H%M%S')}"
 
     src_ref_base = {
+        # Pipeline provenance (spec 1.9): without a version, every ingest write
+        # since the beginning of time shares one stamp and can only be retracted
+        # wholesale. `extractors` digests EXTRACTOR_VERSIONS so a change to any
+        # extractor is attributable without enumerating all 24 in every row.
+        "pipeline": INGEST_PIPELINE_VERSION,
+        "extractors": _extractor_versions_digest(),
         "repo": source_ref.get("remote") or source_ref.get("path"),
         "commit": source_ref.get("commit"),
         "local": source_ref.get("local_only", True),
@@ -1659,9 +1857,8 @@ def insert_memories(entries, project, source_ref, session_id=None, dry_run=False
         assoc_files = json.dumps(source_files) if source_files else None
 
         entry_ref = dict(src_ref_base)
-        source_sections = entry.get("source_sections", [])
-        if source_sections:
-            entry_ref["sections"] = source_sections
+        entry_ref["sections"] = _attribute_sections(
+            entry.get("source_sections", []), distilled_sections)
         entry_ref_json = json.dumps(entry_ref)
 
         conn.execute(
@@ -1817,6 +2014,21 @@ def main():
         if unchanged:
             print(f"Skipping {unchanged} unchanged sections", file=sys.stderr)
 
+    # Per-unit pruning (spec 3.3): section-level detection already told us WHICH
+    # sections changed; this narrows WHAT is sent to the distiller to the changed
+    # documents inside them, so one edited docstring stops re-distilling all 16.
+    # Section-level change detection and archival semantics are unaffected.
+    full_extractions = result["extractions"]
+    if incremental:
+        cached_units = get_cached_unit_fingerprints(project)
+        pruned, unit_stats = prune_extractions(full_extractions, changed, cached_units)
+        if unit_stats:
+            for _sec, (_kept, _total) in sorted(unit_stats.items()):
+                print(f"  {_sec}: distilling {_kept}/{_total} changed units",
+                      file=sys.stderr)
+            result = dict(result)
+            result["extractions"] = pruned
+
     # Phase 2: Distill (only changed sections in incremental mode)
     print("\nPhase 2: Distilling with Haiku...", file=sys.stderr)
     entries = distill_with_haiku(result, verbose=args.verbose, sections_filter=sections_filter)
@@ -1848,11 +2060,16 @@ def main():
         session_id=session_id,
         dry_run=args.dry_run,
         changed_sections=changed if incremental else None,
+        distilled_sections=sections_filter,
     )
 
     if not args.dry_run:
         print(f"\nInserted {len(inserted)} memories (IDs: {inserted[0]}–{inserted[-1]})", file=sys.stderr)
         store_fingerprints(project, current_fps, session_id)
+        # Store from the UNPRUNED extractions — the pruned copy only ever went
+        # to the distiller, and caching it would mark unchanged units as absent
+        # and re-distil them next run.
+        store_unit_fingerprints(project, full_extractions)
         dep_graph_data = result["extractions"].get("dep_graph", {})
         if dep_graph_data and not dep_graph_data.get("error"):
             edge_count = store_graph_edges(dep_graph_data, project, session_id)

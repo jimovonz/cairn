@@ -32,7 +32,8 @@ import os
 from typing import Optional
 
 from hooks.hook_helpers import log, get_conn, get_ephemeral_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery, restore_stripped_cm
-from hooks.parser import parse_memory_block, parse_memory_notes, linkdef_error_locus
+from hooks.parser import (parse_memory_block, parse_memory_notes, linkdef_error_locus,
+                          linkdef_diagnosis)
 from hooks.hash_verify import compute_response_hash
 from hooks.storage import apply_confidence_updates, inline_backfill, insert_memories
 
@@ -137,8 +138,8 @@ from hooks.enforcement import check_trailing_intent, check_deferral, check_decli
 # blocks, NOT for behavioural blocks (incomplete work, trailing intent, context retrieval).
 AMEND_ONLY_SUFFIX = (
     "\n\nIMPORTANT: The user has already seen your previous response. "
-    "Do NOT restate or repeat it. Output ONLY the corrected memory block "
-    "with no other text — no acknowledgment, no summary, just the [cm] block."
+    "Do NOT restate or repeat it. Reply with one short line — a brief acknowledgement, "
+    "not a summary of your previous answer — followed by the corrected [cm] block."
 )
 from hooks.retrieval import (retrieve_context, layer2_cross_project_search,
                         load_context_cache, save_context_cache, is_context_cached, add_to_context_cache,
@@ -344,6 +345,24 @@ def auto_label_project(session_id: str, cwd: str, transcript_path: str = "") -> 
     log(f"Auto-labelled project: {project_name} (from cwd: {cwd})")
 
 
+def _emit_decision(session_id: str, result: dict) -> None:
+    """Single exit point for a hook decision (spec 2F.1).
+
+    Hard blocks and staged nudges were indistinguishable in the metrics: both
+    were counted as "enforcement", so the cost of enforcement could only be
+    bounded, never measured. A block costs a full extra inference turn; a staged
+    nudge costs nothing until the next turn reads it.
+
+    The kind is taken from the emitted reason rather than passed per call site,
+    so it cannot drift out of sync with what was actually sent — a hand-
+    maintained event list would describe the code as it was when someone last
+    updated it.
+    """
+    if isinstance(result, dict) and result.get("decision") == "block":
+        record_metric(session_id, "enforcement_block", str(result.get("reason", ""))[:80])
+    print(json.dumps(result))   # the one real emission — never route back through this helper
+
+
 def main() -> None:
     if os.environ.get("CAIRN_ENABLED", "1") == "0":
         sys.exit(0)
@@ -430,6 +449,12 @@ def main() -> None:
 
     # Parse memory block
     parsed = parse_memory_block(text)
+    if getattr(parsed, "recovery", None):
+        # A recovery is a re-prompt turn that was NOT charged, so it belongs in
+        # the same ledger as the blocks that were. Counting it also makes format
+        # drift visible: a rising recovery rate means the emitted block shape is
+        # moving, which is worth knowing long before it degrades into failures.
+        record_metric(session_id, "linkdef_recovered", parsed.recovery)
     entries, complete, remaining = parsed.entries, parsed.complete, parsed.remaining
     context, context_need = parsed.context, parsed.context_need
     confidence_updates, retrieval_outcome = parsed.confidence_updates, parsed.retrieval_outcome
@@ -573,19 +598,20 @@ def main() -> None:
         has_linkdef: bool = bool(re.search(r'^\[(?:cm|cairn-memory)\]:', text, re.MULTILINE))
         if has_legacy_tag or has_linkdef:
             record_metric(session_id, "malformed_memory_block")
-            hint: str = "Your memory block could not be parsed. "
-            # Point the retry at the exact break instead of letting it rewrite
-            # the whole block blind (the usual cause of multi-retry churn): the
-            # dominant failure is an unescaped " or \ inside a content string.
-            locus = linkdef_error_locus(text)
-            if locus:
-                hint += locus + " "
+            # Name the ACTUAL failure. This branch fires whenever a line merely
+            # STARTS with the marker, which is a weaker condition than "the JSON
+            # is invalid" — so the old fixed "could not be parsed" text asserted
+            # a cause it had not established, and sent several debugging attempts
+            # chasing quoting bugs that were not there.
+            diagnosis = linkdef_diagnosis(text)
+            hint: str = (diagnosis + " ") if diagnosis else \
+                "Your memory block could not be parsed. "
             hint += 'Use this format:\n[cm]: # \'{"e":[{"t":"fact","to":"short key","c":"one line"}],"ok":true,"ctx":"s","kw":["relevant","words"]}\''
             result: dict = {"decision": "block", "reason": hint + AMEND_ONLY_SUFFIX}
-        elif re.search(r'\[cm:\s', text) or re.search(r'\(cairn: memory (?:captured|NOT captured) for this turn', text):
+        elif re.search(r'\[cm:\s', text) or re.search(r'\(cairn: memory (?:captured|NOT captured) for this turn', text) or re.search(r'<!--\s*cairn: memory (?:captured|NOT captured)', text):
             # Emitted the injected history marker (old "[cm: ...]" bracket form, or
-            # the current "(cairn: memory captured/NOT captured...)" parenthetical
-            # form) instead of a block. Name the exact mistake — the generic "add a
+            # the parenthetical "(cairn: memory captured/NOT captured...)" form, or the
+            # current HTML-comment form) instead of a block. Name the exact mistake — the generic "add a
             # block" text does not break this loop (the model keeps copying the
             # marker it sees on past turns).
             record_metric(session_id, "emitted_cm_marker_not_block")
@@ -606,7 +632,7 @@ def main() -> None:
                 "reason": "Response missing required memory block. Add a [cm]: # '{...}' block. "
                     'Minimum: [cm]: # \'{"ok":true,"ctx":"s","kw":["topic"]}\'' + AMEND_ONLY_SUFFIX
             }
-        print(json.dumps(result))
+        _emit_decision(session_id, result)
         sys.exit(0)
 
     log(f"Parsed: entries={len(entries) if entries else 0}, complete={complete}, remaining={remaining}, context={context}, context_need={context_need}, conf_updates={len(confidence_updates)}")
@@ -648,7 +674,7 @@ def main() -> None:
         log(f"Strict validation failed: {hint_text[:200]}")
         record_metric(session_id, "strict_validation_failed", hint_text[:100])
         increment_continuation(session_id)
-        print(json.dumps({"decision": "block", "reason": hint_text + AMEND_ONLY_SUFFIX}))
+        _emit_decision(session_id, {"decision": "block", "reason": hint_text + AMEND_ONLY_SUFFIX})
         sys.exit(0)
 
     # Hash verification — optional, log-only (not blocking)
@@ -730,7 +756,7 @@ def main() -> None:
         log(f"Content density check failed: {hint_text[:200]}")
         record_metric(session_id, "content_density_failed", hint_text[:100])
         increment_continuation(session_id)
-        print(json.dumps({"decision": "block", "reason": hint_text + AMEND_ONLY_SUFFIX}))
+        _emit_decision(session_id, {"decision": "block", "reason": hint_text + AMEND_ONLY_SUFFIX})
         sys.exit(0)
 
     # Apply confidence updates
@@ -872,7 +898,7 @@ def main() -> None:
                                           "applying it to your response.")
                             else:
                                 reason = f"CAIRN CONTEXT:\n{retrieved}"
-                            print(json.dumps({"decision": "block", "reason": reason}))
+                            _emit_decision(session_id, {"decision": "block", "reason": reason})
                             sys.exit(0)
                 else:
                     log(f"No context found for: {context_need}")
@@ -973,6 +999,38 @@ def main() -> None:
                 log(f"Question-before-cairn reminder staged for next prompt")
             except Exception as e:
                 log(f"Failed to stage question-before-cairn reminder: {e}")
+
+    # Belt-and-braces enforcement — declaring context: insufficient is only half
+    # the rule. The declaration delegates to push retrieval, which is
+    # opportunistic: when it matches nothing, its silence is indistinguishable
+    # from "cairn holds nothing", and acting on that reads as confident
+    # knowledge. The other half is running the search yourself in the same turn.
+    # Deferred (staged) rather than blocking, like the checks above.
+    from hooks.hook_helpers import cairn_query_invoked_this_turn
+    if (not is_continuation and context == "insufficient"
+            and not cairn_query_invoked_this_turn(transcript_path)):
+        log("Belt-and-braces: ctx:insufficient declared with no cairn query this turn")
+        record_metric(session_id, "ctx_insufficient_without_query")
+        try:
+            staged_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".staged_context")
+            os.makedirs(staged_dir, exist_ok=True)
+            staged_file = os.path.join(staged_dir, f"{session_id}_query_belt.txt")
+            with open(staged_file, "w") as f:
+                f.write(
+                    "You declared context: insufficient on the previous turn but ran no cairn "
+                    "query yourself. The rule is belt-and-braces — declare AND search, in the "
+                    "same response — because push retrieval is opportunistic: it surfaces what "
+                    "its automatic query happened to match, so an empty result means 'no match', "
+                    "never 'nothing stored'. Treating that silence as absence is how a topic with "
+                    "real stored history gets answered from assumption. If that topic is still "
+                    "live, search directly before answering further on it: "
+                    "`.venv/bin/python ./cairn/query.py --semantic \"<your context_need>\"` "
+                    "(and the keyword form for exact terms). Vary the phrasing if the first "
+                    "attempt returns thin results."
+                )
+            log(f"Belt-and-braces query reminder staged for next prompt")
+        except Exception as e:
+            log(f"Failed to stage belt-and-braces reminder: {e}")
 
     # Thin-retrieval escalation — if a previous turn's L3 retrieval was thin (too few
     # entries or all weak), force escalation until either query.py is actively invoked
@@ -1081,7 +1139,7 @@ def main() -> None:
             "decision": "block",
             "reason": llm_reason
         }
-        print(json.dumps(result))
+        _emit_decision(session_id, result)
         sys.exit(0)
 
     # Trailing intent detection — block if response ends with unfulfilled action intent
@@ -1102,7 +1160,7 @@ def main() -> None:
                     "If you genuinely have nothing more to do, add 'intent: resolved' to your <memory> block."
                 )
             }
-            print(json.dumps(result))
+            _emit_decision(session_id, result)
             sys.exit(0)
 
     # Deferral detection — catch fabricated session/scope boundaries.
@@ -1122,7 +1180,7 @@ def main() -> None:
                     "Either continue the work now, or set ok:false with rem: describing what remains."
                 )
             }
-            print(json.dumps(result))
+            _emit_decision(session_id, result)
             sys.exit(0)
 
     # Declined-without-trying detection — catch "I can't do X" when no tool calls attempted
@@ -1142,7 +1200,7 @@ def main() -> None:
                     "If you've confirmed it genuinely can't be done from here, explain what you tried."
                 )
             }
-            print(json.dumps(result))
+            _emit_decision(session_id, result)
             sys.exit(0)
 
     # Correction trigger matching — check response against stored behavioural triggers
@@ -1163,7 +1221,7 @@ def main() -> None:
                     "If it doesn't apply here, proceed as-is."
                 )
             }
-            print(json.dumps(result))
+            _emit_decision(session_id, result)
             sys.exit(0)
 
     # Collect mid-response memory notes from the transcript
