@@ -99,6 +99,68 @@ def _salvage_json(raw: str, max_fixes: int = 400):
     return None
 
 
+_LINKDEF_LINE = r"^\[(?:cairn-memory|cm)\]:\s*#\s*'(.+)'\s*$"
+_LINKDEF_MARK = r"^\[(?:cairn-memory|cm)\]:"
+
+
+def extract_linkdef_raw(text: str):
+    """-> (raw_json, recovery) for the LAST link-def block, or (None, None).
+
+    `recovery` names any tolerance that had to be applied, so the caller can
+    report it rather than silently accepting a degraded block.
+
+    Multi-line tolerance: JSON strings cannot contain a literal newline, so a
+    block that wrapped across lines is invalid JSON even though its content is
+    perfectly good. Rejecting it costs a full inference turn and — worse — the
+    resulting error names bad JSON, which sends the next attempt chasing quoting
+    bugs that do not exist. Rejoining is unambiguous, so do that instead.
+
+    Anchored to the LAST marker before the DOTALL match. Without that anchor a
+    greedy match would run from an EARLIER block in the conversation history all
+    the way to this one's closing quote, silently fusing two unrelated blocks.
+    """
+    # Anchor to the LAST marker before matching anything. Searching the whole
+    # text for a single-line block first would return an EARLIER, still-valid
+    # block from conversation history whenever this turn's block wrapped —
+    # storing a stale block, which is worse than reporting a failure.
+    starts = [m.start() for m in re.finditer(_LINKDEF_MARK, text, re.MULTILINE)]
+    if not starts:
+        return None, None
+    tail = text[starts[-1]:]
+
+    m = re.match(_LINKDEF_LINE, tail, re.MULTILINE)
+    if m:
+        return m.group(1), None
+    m = re.match(_LINKDEF_LINE, tail, re.DOTALL)
+    if m:
+        return re.sub(r"\s*\n\s*", " ", m.group(1)), "multiline"
+    return None, None
+
+
+def linkdef_diagnosis(text: str) -> Optional[str]:
+    """Why a present-but-unusable [cm] block failed. None when it is fine.
+
+    The hook previously reported "could not be parsed" for ANY block its strict
+    single-line regex missed, which is a different condition from invalid JSON
+    and sent several debugging attempts after the wrong cause. Name the actual
+    failure instead.
+    """
+    if not re.search(_LINKDEF_MARK, text, re.MULTILINE):
+        return None
+    raw, _recovery = extract_linkdef_raw(text)
+    if raw is None:
+        return ("The block is present but its JSON could not be located: it must "
+                "sit between single quotes after [cm]: # and the closing quote "
+                "must be the last character on its line.")
+    try:
+        _json.loads(raw)
+        return None
+    except (_json.JSONDecodeError, ValueError):
+        if _salvage_json(raw) is not None:
+            return None
+        return linkdef_error_locus(text)
+
+
 def linkdef_error_locus(text: str) -> Optional[str]:
     """For a [cm] block that fails to parse even after salvage, return a short
     human-readable pointer to the exact break so the re-prompt can be targeted
@@ -138,15 +200,12 @@ def _parse_linkdef(text: str) -> Optional[ParseResult]:
 
     Accepts [cairn-memory] or [cm] as the link label.
     """
-    # Scan for the link definition line(s) — take the last one if multiple
-    matches = re.findall(
-        r"^\[(?:cairn-memory|cm)\]:\s*#\s*'(.+)'\s*$",
-        text, re.MULTILINE
-    )
-    if not matches:
+    raw_json, recovery = extract_linkdef_raw(text)
+    if raw_json is None:
         return None
-
-    raw_json = matches[-1]
+    if recovery:
+        log(f"Link-def recovered via {recovery} tolerance — block was valid but "
+            f"not on a single line")
     try:
         data = _json.loads(raw_json)
     except (_json.JSONDecodeError, ValueError) as e:
