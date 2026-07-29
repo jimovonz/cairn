@@ -8,6 +8,7 @@ recorded `memory_deliveries.reranker_model` into a randomised treatment label.
 from collections import Counter
 
 from cairn.config import pick_reranker_arm
+from cairn.embeddings import _filter_by_ce_floor
 
 ARMS = ("student", "ms-marco")
 
@@ -78,3 +79,40 @@ def test_unreadable_floor_file_does_not_crash(tmp_path):
     d.mkdir()
     (d / "floor.txt").write_text("not-a-number")
     assert resolve_arm_floor(str(d)) == CROSS_ENCODER_STUDENT_FLOOR
+
+
+def _rows(*scores):
+    return [{"ce_score": s, "id": i} for i, s in enumerate(scores)]
+
+
+def test_floor_applies_normally_when_no_arm_assigned():
+    kept = _filter_by_ce_floor(_rows(2.0, -1.0, -8.0), floor=-3.0, arm_assigned=False)
+    assert [r["ce_score"] for r in kept] == [2.0, -1.0]
+
+
+def test_arm_assignment_keeps_every_candidate():
+    """The defect this fixes: with each arm applying its own calibrated floor,
+    the student delivered 4.7 memories per turn and ms-marco exactly 1.0, so
+    delivery VOLUME was confounded with arm in an experiment about ORDERING."""
+    rows = _rows(2.0, -1.0, -8.0, -20.0)
+    kept = _filter_by_ce_floor(rows, floor=-3.0, arm_assigned=True)
+    assert len(kept) == len(rows)
+
+
+def test_both_arms_yield_equal_k_for_the_same_candidates():
+    rows = _rows(6.8, 0.3, -4.0, -11.0)
+    a = _filter_by_ce_floor(rows, floor=-3.0, arm_assigned=True)       # ms-marco floor
+    b = _filter_by_ce_floor(rows, floor=-9.3228, arm_assigned=True)    # student floor
+    assert len(a) == len(b) == len(rows)
+
+
+def test_total_suppression_still_keeps_one_when_no_arm():
+    """Existing safety net: never return nothing because the floor was harsh."""
+    kept = _filter_by_ce_floor(_rows(-50.0, -60.0), floor=-3.0, arm_assigned=False)
+    assert len(kept) == 1
+
+
+def test_filter_does_not_mutate_its_input():
+    rows = _rows(2.0, -8.0)
+    _filter_by_ce_floor(rows, floor=-3.0, arm_assigned=True)
+    assert len(rows) == 2

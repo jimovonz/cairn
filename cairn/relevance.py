@@ -206,8 +206,12 @@ def _score_components(r: dict[str, Any]) -> Optional[str]:
     across the ms-marco->bge reranker transition; the composite blends CE + RRF +
     similarity). Only present keys are stored; returns None if nothing is known."""
     comp = {}
+    # prefilter_n/postfilter_n make SUPPRESSION measurable. Without them a turn
+    # whose candidates were all filtered leaves no trace, so any per-model
+    # comparison drawn from delivery rows silently favours the permissive model.
     for src, dst in (("ce_score", "ce"), ("score", "composite"), ("rrf_score", "rrf"),
-                     ("similarity", "sim"), ("confidence", "conf")):
+                     ("similarity", "sim"), ("confidence", "conf"),
+                     ("prefilter_n", "pre_n"), ("postfilter_n", "post_n")):
         v = r.get(src)
         if v is not None:
             try:
