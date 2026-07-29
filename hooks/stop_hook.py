@@ -449,6 +449,12 @@ def main() -> None:
 
     # Parse memory block
     parsed = parse_memory_block(text)
+    if getattr(parsed, "recovery", None):
+        # A recovery is a re-prompt turn that was NOT charged, so it belongs in
+        # the same ledger as the blocks that were. Counting it also makes format
+        # drift visible: a rising recovery rate means the emitted block shape is
+        # moving, which is worth knowing long before it degrades into failures.
+        record_metric(session_id, "linkdef_recovered", parsed.recovery)
     entries, complete, remaining = parsed.entries, parsed.complete, parsed.remaining
     context, context_need = parsed.context, parsed.context_need
     confidence_updates, retrieval_outcome = parsed.confidence_updates, parsed.retrieval_outcome
