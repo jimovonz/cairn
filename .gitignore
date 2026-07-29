@@ -60,3 +60,6 @@ cairn/reports/
 
 # relevance-gate silver labels (may contain prompt snippets)
 cairn/training_data/
+
+# Session capture scratch — local debugging artefacts, not repo content
+scratch_captures/
