@@ -56,7 +56,7 @@ except ImportError:  # pragma: no cover - guarded by tests/test_sqlite_guard.py
         )
     import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _ro(path):
@@ -83,6 +83,14 @@ def _git_commit():
 def collect_rg(durable_path=None, eph_path=None):
     """Agent `rg` grades -> [{query, mem, grade, ...}]. The eval-grade signal.
 
+    Ranking provenance travels with the label because `ce_score` is NOT
+    comparable across nodes or across time: it is a raw logit from whichever
+    model scored that delivery, and this corpus spans an ms-marco -> bge
+    transition plus a locally trained student. `reranker_model` is what makes a
+    score interpretable, and a NULL there means the gate was DOWN for that
+    delivery — not that the layer is ungated. A receiver that cannot tell those
+    apart will manufacture ungated-vs-reranked conclusions.
+
     Rows whose memory has since been deleted are dropped: the grade was a
     judgement about a specific passage, and without that text it cannot be
     reattached to anything.
@@ -96,10 +104,13 @@ def collect_rg(durable_path=None, eph_path=None):
     try:
         rows = e.execute(
             "SELECT context_text, memory_id, grade, hard_negative, layer, scope, "
-            "reranker_model, ce_score, delivered_at FROM memory_deliveries "
+            "reranker_model, ce_score, score_components, served_rank, gate_status, "
+            "engaged, engaged_score, engaged_method, session_id, turn_index, "
+            "delivered_at FROM memory_deliveries "
             "WHERE grade IS NOT NULL AND context_text IS NOT NULL AND context_text != ''"
         ).fetchall()
-        for ctx, mid, grade, hard_neg, layer, scope, rr, ce, at in rows:
+        for (ctx, mid, grade, hard_neg, layer, scope, rr, ce, comps, rank, gate,
+             engaged, escore, emethod, sess, turn, at) in rows:
             # enrich=False — must match the inference-time candidate format.
             mem = _memtext(d, mid, enrich=False)
             if not mem:
@@ -114,8 +125,19 @@ def collect_rg(durable_path=None, eph_path=None):
                 "hard_negative": int(hard_neg or 0),
                 "layer": layer,
                 "scope": scope,
+                # NULL reranker_model = gate was down for this delivery.
                 "reranker_model": rr,
                 "ce_score": ce,
+                "score_components": comps,
+                "served_rank": rank,
+                "gate_status": gate,
+                # Behavioural signal alongside the agent grade, so the receiver
+                # can cross-check the two rather than treating them as one.
+                "engaged": engaged,
+                "engaged_score": escore,
+                "engaged_method": emethod,
+                "src_session_id": sess,
+                "turn_index": turn,
                 "delivered_at": at,
             })
     finally:
@@ -124,25 +146,92 @@ def collect_rg(durable_path=None, eph_path=None):
     return out, dropped
 
 
-def collect_engagement(min_pos=None):
-    """Behavioural engagement pseudo-grades -> [{query, mem, grade, group, weak}].
+def collect_engagement(min_pos=None, durable_path=None, eph_path=None):
+    """Behavioural engagement pseudo-grades -> [{query, mem, grade, group, ...}].
 
-    Delegates to the trainer's own loader so the qualifying-strata filter is
-    applied identically here and at training time. That filter matters: untagged
-    historical rows recorded engagement only when detected, contributing
-    positives and zero negatives, and admitting them inflates the positive class
-    with a regime that could never produce a negative.
+    Reimplements `train_reranker.load_engagement_groups` rather than calling it,
+    for one reason: that loader returns only (query, mem, grade), and the
+    receiving node needs the RAW `engaged` / `engaged_score` / `engaged_method`
+    to re-derive the filter itself instead of trusting this exporter's word for
+    it. Every semantic decision below reuses the trainer's own helpers, so the
+    two cannot drift: `load_qualifying_strata`, `_neutralise_unusable_engagement`,
+    `_engagement_grade`, the `eng:` group prefix, and the final both-classes
+    filter are all the trainer's.
 
-    `group` is preserved so the far end can keep these out of the held-out split.
+    The strata filter is the load-bearing part. Untagged historical rows recorded
+    engagement only when it was DETECTED, so they contribute positives and zero
+    negatives; admitting them inflates the positive class with a regime that
+    could never have produced a negative. Rows it neutralises come back as
+    engaged=None and are dropped by `_engagement_grade`.
+
+    Returns (rows, accounting) so the manifest can report what each stage
+    removed — a reader can then audit the yield instead of inferring it.
     """
-    from cairn.train_reranker import (ENGAGEMENT_MIN_POS_DEFAULT,
-                                      load_engagement_groups)
-    groups = load_engagement_groups(
-        min_pos=ENGAGEMENT_MIN_POS_DEFAULT if min_pos is None else min_pos)
-    return [
-        {"query": q, "mem": m, "grade": int(g), "group": key, "weak": True}
-        for key, items in groups.items() for q, m, g in items
-    ]
+    from cairn.query import load_qualifying_strata, _neutralise_unusable_engagement
+    from cairn.train_reranker import (ENGAGEMENT_MIN_POS_DEFAULT, _engagement_grade,
+                                      qhash)
+    from cairn.label_relevance import _memtext
+    from cairn.relevance import _eph_path, _durable_path
+
+    min_pos = ENGAGEMENT_MIN_POS_DEFAULT if min_pos is None else min_pos
+    e = _ro(_eph_path(eph_path))
+    d = _ro(_durable_path(durable_path))
+    acct = {"candidate_rows": 0, "dropped_by_strata_or_grade": 0,
+            "dropped_missing_memory": 0, "dropped_single_class_group": 0}
+    groups = {}
+    try:
+        qualifying = load_qualifying_strata(e)
+        rows = e.execute(
+            "SELECT context_text, memory_id, engaged, engaged_score, grade, "
+            "engaged_method, layer, scope, reranker_model, session_id, turn_index "
+            "FROM memory_deliveries WHERE engaged IS NOT NULL "
+            "AND context_text IS NOT NULL AND context_text != ''"
+        ).fetchall()
+        acct["candidate_rows"] = len(rows)
+        for (ctx, mid, engaged, escore, agrade, emethod, layer, scope, rr,
+             sess, turn) in rows:
+            neu_engaged, neu_score = _neutralise_unusable_engagement(
+                engaged, escore, emethod, qualifying)
+            g = _engagement_grade(neu_engaged, neu_score, agrade, min_pos)
+            if g is None:
+                acct["dropped_by_strata_or_grade"] += 1
+                continue
+            mem = _memtext(d, mid, enrich=False)
+            if not mem:
+                acct["dropped_missing_memory"] += 1
+                continue
+            groups.setdefault("eng:" + qhash(ctx), []).append({
+                "query": ctx,
+                "mem": mem,
+                "grade": int(g),
+                "weak": True,
+                "src_memory_id": int(mid),
+                # Raw, pre-neutralisation values: these are what let the receiver
+                # reconstruct the strata filter rather than trust it.
+                "engaged_raw": engaged,
+                "engaged_score_raw": escore,
+                "engaged_method": emethod,
+                "agent_grade": agrade,
+                "layer": layer,
+                "scope": scope,
+                "reranker_model": rr,
+                "src_session_id": sess,
+                "turn_index": turn,
+            })
+    finally:
+        e.close()
+        d.close()
+
+    # A group yields pairs only if it holds both a positive and a negative.
+    out = []
+    for key, items in groups.items():
+        if any(i["grade"] == 3 for i in items) and any(i["grade"] == 0 for i in items):
+            for i in items:
+                i["group"] = key
+            out.extend(items)
+        else:
+            acct["dropped_single_class_group"] += len(items)
+    return out, acct
 
 
 def collect_fit(durable_path=None):
@@ -192,16 +281,30 @@ def build(out_dir, node_id=None, stats_only=False):
 
     node = _node_id(node_id)
     rg, rg_dropped = collect_rg()
-    eng = collect_engagement()
+    eng, eng_acct = collect_engagement()
     fit, fit_dropped = collect_fit()
+
+    # Labels/query is the number that decides this export's worth, so it is
+    # reported rather than left to be derived. A pairwise trainer learns only
+    # from WITHIN-query pairs, so a query carrying one label contributes
+    # nothing — 600 labels at 1.8/query are worth far less than 300 at 6/query.
+    rg_per_query = {}
+    for r in rg:
+        rg_per_query[r["query"]] = rg_per_query.get(r["query"], 0) + 1
+    singles = sum(1 for n in rg_per_query.values() if n == 1)
 
     counts = {
         "rg_labels": len(rg),
         "rg_dropped_missing_memory": rg_dropped,
-        "rg_distinct_queries": len({r["query"] for r in rg}),
+        "rg_distinct_queries": len(rg_per_query),
+        "rg_labels_per_query": round(len(rg) / len(rg_per_query), 2) if rg_per_query else 0,
+        "rg_single_label_queries": singles,
+        "rg_pairable_queries": len(rg_per_query) - singles,
+        "rg_gate_down_rows": sum(1 for r in rg if r["reranker_model"] is None),
         "engagement_labels": len(eng),
         "engagement_groups": len({r["group"] for r in eng}),
         "engagement_positive": sum(1 for r in eng if r["grade"] == 3),
+        "engagement_accounting": eng_acct,
         "fit_pairs": len(fit),
         "fit_dropped_missing_memory": fit_dropped,
     }
@@ -229,6 +332,12 @@ def build(out_dir, node_id=None, stats_only=False):
         "reranker_at_export": list(config.resolve_reranker()),
         "counts": counts,
         "files": {k: {"bytes": v} for k, v in paths.items()},
+        "merge_on": "content hash of query+mem — NEVER src_memory_id",
+        "absent_columns": {
+            "prefilter_n": "not a column on memory_deliveries; suppression rate "
+                           "is not reconstructable from this export",
+            "postfilter_n": "as above",
+        },
         "notes": [
             "Passages pre-rendered with render_passage(enrich=False) to match "
             "inference-time candidate format.",
@@ -236,6 +345,15 @@ def build(out_dir, node_id=None, stats_only=False):
             "autoincrements and MUST NOT be fed to load_groups(enrich=True).",
             "engagement_weak.jsonl.gz holds WEAK labels — merge only AFTER "
             "split_by_query so held-out stays pure agent-rg.",
+            "ce_score is a raw logit from the model named in reranker_model and "
+            "is NOT comparable across nodes or across the ms-marco->bge->student "
+            "transitions. The grades are agent-assigned and unaffected.",
+            "reranker_model NULL means the gate was DOWN for that delivery, not "
+            "that the layer is ungated — exclude those rows before comparing "
+            "gated against ungated.",
+            "The reranker A/B arm identifier IS reranker_model (an arm is a "
+            "model), so matched arms across nodes require identical "
+            "CAIRN_RERANKER_AB_ARMS and CAIRN_RERANKER_AB=1 on both.",
             "context_text contains prompt snippets; treat as private and do not "
             "commit (training_data/ and exports/ are gitignored).",
         ],
@@ -265,11 +383,27 @@ not be saved.
 This export omits `memory_id` for that reason (it is `src_memory_id`), so
 `--enrich` degrades safely — but do not rename the field back.
 
+## Merging
+
+Merge on a content hash of `query + mem`. **Never on `src_memory_id`** — ids are
+per-node autoincrements.
+
+`ce_score` is a raw logit from the model named in `reranker_model` and is not
+comparable across nodes or across the ms-marco -> bge -> student transitions.
+The grades themselves are agent-assigned and unaffected. A NULL
+`reranker_model` means the gate was down for that delivery, not that the layer
+is ungated; exclude those before comparing gated against ungated.
+
 ## engagement_weak.jsonl.gz
 
-Weak labels, already filtered to qualifying strata. `--engagement` reads the
-LOCAL DBs, so consuming this file needs a loader flag that merges it after
-`split_by_query`. Until that exists, these rows are archival.
+Weak labels, already filtered to qualifying strata — but the raw
+`engaged_raw` / `engaged_score_raw` / `engaged_method` ride along so the
+receiver can reconstruct that filter rather than trust it, and
+`manifest.counts.engagement_accounting` reports what each stage dropped.
+
+Merge only AFTER `split_by_query`, so the held-out split stays pure agent-rg
+and the beat-the-incumbent deploy gate is never judged on weak labels.
+`--engagement` reads the LOCAL DBs, so consuming this file needs a loader flag.
 
 ## fit_pairs.jsonl.gz
 

@@ -115,15 +115,83 @@ def test_deleted_memory_drops_the_label_rather_than_shipping_an_empty_passage():
     assert all(r["mem"] for r in rows)
 
 
+def _seed_engagement(durable, eph, method="lexical"):
+    """One two-class group: same context, one engaged positive and one negative.
+
+    `method` is the stratum key — a stratum qualifies only if it recorded BOTH
+    classes, so seeding both under one method is what makes these rows survive
+    the filter.
+    """
+    d = sqlite3.connect(durable)
+    e = sqlite3.connect(eph)
+    ids = []
+    for i in range(2):
+        cur = d.execute(
+            "INSERT INTO memories (type, topic, content) VALUES (?,?,?)",
+            ("fact", f"e{i}", f"engagement content {i}"))
+        ids.append(cur.lastrowid)
+    ctx = "shared context for the engagement group"
+    e.execute("INSERT INTO memory_deliveries (session_id, memory_id, context_text, "
+              "engaged, engaged_score, engaged_method) VALUES (?,?,?,?,?,?)",
+              ("s", ids[0], ctx, 1, 0.9, method))
+    e.execute("INSERT INTO memory_deliveries (session_id, memory_id, context_text, "
+              "engaged, engaged_score, engaged_method) VALUES (?,?,?,?,?,?)",
+              ("s", ids[1], ctx, 0, 0.0, method))
+    d.commit(); e.commit(); d.close(); e.close()
+    return ids
+
+
+def _collect_eng(durable, eph):
+    with patch("cairn.relevance._durable_path", lambda p=None: durable), \
+         patch("cairn.relevance._eph_path", lambda p=None: eph):
+        return ex.collect_engagement()
+
+
 def test_weak_engagement_labels_are_flagged_and_grouped():
     """They must stay distinguishable from agent-rg after transport: the trainer
     merges them only AFTER split_by_query, so held-out stays pure agent-rg and
     the beat-the-incumbent gate is never judged on weak labels."""
-    with patch("cairn.train_reranker.load_engagement_groups",
-               lambda min_pos=None: {"eng:abc": [("q", "m", 3), ("q", "m2", 0)]}):
-        rows = ex.collect_engagement()
+    durable, eph, _ = _fresh_dbs()
+    _seed_engagement(durable, eph)
+    rows, acct = _collect_eng(durable, eph)
     assert rows and all(r["weak"] is True for r in rows)
     assert all(r["group"].startswith("eng:") for r in rows)
+    assert {r["grade"] for r in rows} == {0, 3}, "group must carry both classes"
+
+
+def test_raw_engagement_fields_let_the_receiver_redo_the_filter():
+    """The strata filter is the exporter's most consequential judgement, and the
+    receiving node has 94.6% single-class rows of its own. Shipping only the
+    derived grade would make that judgement unauditable at the far end."""
+    durable, eph, _ = _fresh_dbs()
+    _seed_engagement(durable, eph)
+    rows, acct = _collect_eng(durable, eph)
+    for r in rows:
+        assert r["engaged_raw"] in (0, 1)
+        assert r["engaged_score_raw"] is not None
+        assert r["engaged_method"] == "lexical"
+    assert acct["candidate_rows"] == 2
+    assert sum(acct[k] for k in acct if k.startswith("dropped")) == 0
+
+
+def test_single_class_stratum_is_dropped_and_accounted_for():
+    """A positives-only stratum cannot yield a rate; admitting it inflates the
+    positive class with a regime that could never produce a negative. Dropping
+    it silently would leave the receiver unable to see why the yield is low."""
+    durable, eph, _ = _fresh_dbs()
+    d = sqlite3.connect(durable)
+    e = sqlite3.connect(eph)
+    cur = d.execute("INSERT INTO memories (type, topic, content) VALUES ('fact','t','c')")
+    mid = cur.lastrowid
+    for i in range(3):  # positives only, one stratum
+        e.execute("INSERT INTO memory_deliveries (session_id, memory_id, context_text, "
+                  "engaged, engaged_score, engaged_method) VALUES (?,?,?,?,?,?)",
+                  ("s", mid, f"ctx{i}", 1, 0.9, "untagged-regime"))
+    d.commit(); e.commit(); d.close(); e.close()
+    rows, acct = _collect_eng(durable, eph)
+    assert rows == []
+    assert acct["candidate_rows"] == 3
+    assert acct["dropped_by_strata_or_grade"] == 3
 
 
 def test_archive_round_trips_through_the_trainer_loader():
@@ -131,8 +199,7 @@ def test_archive_round_trips_through_the_trainer_loader():
     _seed(durable, eph, n=4)
     out = os.path.join(td, "exports")
     with patch("cairn.relevance._durable_path", lambda p=None: durable), \
-         patch("cairn.relevance._eph_path", lambda p=None: eph), \
-         patch("cairn.train_reranker.load_engagement_groups", lambda min_pos=None: {}):
+         patch("cairn.relevance._eph_path", lambda p=None: eph):
         counts, archive = ex.build(out, node_id="testnode")
 
     assert counts["rg_labels"] == 4
