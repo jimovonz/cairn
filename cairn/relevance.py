@@ -22,6 +22,7 @@ async crons over this log, never here on the hot path.
 
 from __future__ import annotations
 
+import json
 import re
 try:
     import pysqlite3 as sqlite3  # type: ignore[import-untyped]
@@ -339,6 +340,78 @@ def parse_fit(raw: Any) -> list[tuple[int, int]]:
     return [(w, l) for w in best for l in worst if w != l]
 
 
+def _record_undelivered(event, session_id, ids, eph_path=None, conn=None):
+    """Log ids an agent labelled that were never delivered to it.
+
+    Splits the ids into 'nowhere' (never delivered in any session) and
+    'elsewhere' (delivered, but in a different session). The distinction is the
+    whole point of the metric: 'elsewhere' would suggest a plumbing fault worth
+    fixing — a delivery logged under one session id and labelled under another —
+    while 'nowhere' means the id was invented. Recording only a count, as this
+    did before, leaves the two indistinguishable and invites the wrong fix.
+
+    Measured here when this was added: of 875 undelivered rg grades, 15 were
+    reachable through the session chain and the rest were not, so the
+    compaction-plumbing story this metric was originally annotated with is not
+    what is happening.
+
+    `conn` is the CALLER's open ephemeral connection, passed in when it has one.
+    Opening a second connection while the caller holds an uncommitted write
+    transaction on the same DB blocks until busy_timeout expires, and the
+    fail-soft except then swallows the metric — the loss this function exists to
+    make visible would itself become invisible.
+    """
+    own = conn is None
+    try:
+        c = sqlite3.connect(_eph_path(eph_path)) if own else conn
+        if own:
+            c.execute("PRAGMA busy_timeout=5000")
+        try:
+            nowhere = elsewhere = 0
+            for mid in set(ids):
+                seen = c.execute(
+                    "SELECT 1 FROM memory_deliveries WHERE memory_id = ? LIMIT 1",
+                    (int(mid),)).fetchone()
+                if seen:
+                    elsewhere += 1
+                else:
+                    nowhere += 1
+            c.execute(
+                "INSERT INTO metrics (event, session_id, detail, value) VALUES (?,?,?,?)",
+                (event, session_id,
+                 json.dumps({"nowhere": nowhere, "elsewhere": elsewhere,
+                             "ids": sorted(set(int(i) for i in ids))[:20]}),
+                 len(set(ids))))
+            if own:
+                c.commit()          # else the caller's commit carries it
+        finally:
+            if own:
+                c.close()
+    except (sqlite3.Error, ValueError, TypeError):
+        pass
+
+
+def _delivered_ids(session_id, eph_path=None):
+    """Memory ids actually delivered in this session, or None if unknowable.
+
+    None is NOT an empty set: it means the lookup failed, and the caller must
+    then keep every label rather than discard all of them. Dropping on a
+    transient DB error would destroy irreplaceable training data on the strength
+    of a question we never got to ask.
+    """
+    try:
+        c = sqlite3.connect(_eph_path(eph_path))
+        c.execute("PRAGMA busy_timeout=5000")
+        try:
+            return {int(r[0]) for r in c.execute(
+                "SELECT DISTINCT memory_id FROM memory_deliveries WHERE session_id = ?",
+                (session_id,))}
+        finally:
+            c.close()
+    except sqlite3.Error:
+        return None
+
+
 def apply_fit_labels(pairs: list[tuple[int, int]], *, session_id: str,
                      turn_index: Optional[int] = None,
                      durable_path: Optional[str] = None,
@@ -356,10 +429,29 @@ def apply_fit_labels(pairs: list[tuple[int, int]], *, session_id: str,
     Stored as pairs rather than folded into memory_deliveries.grade because a
     preference is a relation between two deliveries, not a property of one —
     flattening it to a per-row score would reintroduce the absolute scale this
-    replaces. eph_path is accepted and ignored for call-site compatibility.
+    replaces.
+
+    IDS ARE VALIDATED AGAINST WHAT WAS ACTUALLY DELIVERED. Measured on the rg
+    path, which reports its misses: 875 volunteered grades named a memory that
+    had never been delivered in that session, against 610 that landed — the
+    agent emits plausible-looking ids it was never shown, at a rate exceeding
+    the true signal. rg survives that because a non-matching UPDATE affects
+    zero rows; an INSERT has no such backstop, so unvalidated fit pairs would
+    accumulate fabricated training data in the durable DB and look like growth.
     """
     if not pairs or not session_id:
         return 0
+
+    delivered = _delivered_ids(session_id, eph_path)
+    if delivered is None:
+        kept, dropped = list(pairs), []          # lookup failed: keep everything
+    else:
+        kept, dropped = [], []
+        for w, l in pairs:
+            (kept if w in delivered and l in delivered else dropped).append((w, l))
+    if not kept and not dropped:
+        return 0
+
     try:
         conn = sqlite3.connect(_durable_path(durable_path))
     except sqlite3.Error:
@@ -378,16 +470,25 @@ def apply_fit_labels(pairs: list[tuple[int, int]], *, session_id: str,
             "  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_fit_pairs_session "
                      "ON delivery_fit_pairs(session_id, turn_index)")
-        conn.executemany(
-            "INSERT INTO delivery_fit_pairs (session_id, turn_index, winner_id, loser_id) "
-            "VALUES (?,?,?,?)",
-            [(session_id, turn_index, w, l) for w, l in pairs])
+        if kept:
+            conn.executemany(
+                "INSERT INTO delivery_fit_pairs (session_id, turn_index, winner_id, loser_id) "
+                "VALUES (?,?,?,?)",
+                [(session_id, turn_index, w, l) for w, l in kept])
         conn.commit()
-        return len(pairs)
     except sqlite3.Error:
         return 0
     finally:
         conn.close()
+
+    if dropped:
+        # Only the OFFENDING ids, not their valid partners — a pair is rejected
+        # whole, but counting the good half as undelivered would overstate the
+        # fabrication rate this metric exists to measure.
+        _record_undelivered(
+            "fit_pair_dropped", session_id,
+            [i for p in dropped for i in p if i not in delivered], eph_path)
+    return len(kept)
 
 
 def sample_for_label(delivered: list[dict[str, Any]], k: int = 3,
@@ -454,19 +555,20 @@ def apply_relevance_grades(grades: list[tuple[int, int, bool]], *, session_id: s
             else:
                 dropped.append(int(mid))
         # Silent-drop visibility: a grade matches 0 rows when no delivery for
-        # (session_id, memory_id) exists — typically a compaction-chained session
-        # where the delivery was logged under the parent but the grade arrives
-        # under the child. Without this, the agent grades honestly yet the signal
-        # vanishes. Record it as a metric so --stats surfaces the loss.
+        # (session_id, memory_id) exists.
+        #
+        # This was previously annotated as "typically a compaction-chained
+        # session where the delivery was logged under the parent but the grade
+        # arrives under the child". The data does not support that: of 875
+        # dropped grades, only 15 were reachable by resolving the session chain.
+        # The UPDATE above already searches the WHOLE session, so a drop means
+        # the id was never delivered in this session at any turn — the agent
+        # emitted an id it was not shown. Do not "fix" this with chain matching;
+        # it recovers almost nothing and risks attaching a grade to an unrelated
+        # delivery of the same memory.
         if dropped:
-            try:
-                conn.execute(
-                    "INSERT INTO metrics (event, session_id, detail, value) VALUES (?, ?, ?, ?)",
-                    ("rg_grade_dropped", session_id,
-                     ",".join(str(m) for m in dropped[:20]), len(dropped)),
-                )
-            except sqlite3.Error:
-                pass
+            _record_undelivered("rg_grade_dropped", session_id, dropped,
+                                eph_path, conn=conn)
         conn.commit()
         return n
     except sqlite3.Error:
