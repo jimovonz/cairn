@@ -129,8 +129,12 @@ def test_log_and_grade_roundtrip(eph):
 
 def test_grade_drop_records_metric(eph):
     """A grade for a memory with no matching delivery matches 0 rows and must be
-    surfaced as an rg_grade_dropped metric (compaction-chained-session signal
-    loss), not silently swallowed."""
+    surfaced as an rg_grade_dropped metric, not silently swallowed.
+
+    Previously described here as compaction-chained signal loss. Measured: of
+    875 such drops only 15 were reachable via the session chain, and the UPDATE
+    already searches the whole session — so a drop means the agent graded an id
+    it was never shown, and the metric must record WHICH kind it was."""
     relevance.log_memory_deliveries([{"id": 1, "score": 0.9}], session_id="s",
                                     context_text="t", eph_path=eph)
     # Grade id 1 (exists) and id 999 (no delivery -> drop).
@@ -143,6 +147,11 @@ def test_grade_drop_records_metric(eph):
     ).fetchone()
     assert m is not None and m[0] == "s"
     assert m[2] == 1 and "999" in m[1]
+    # The nowhere/elsewhere split is the point: a bare count cannot tell an
+    # invented id from a delivery logged under another session, and that
+    # ambiguity previously pointed at the wrong fix.
+    detail = json.loads(m[1])
+    assert detail["nowhere"] == 1 and detail["elsewhere"] == 0
 
 
 def test_grade_no_drop_metric_when_all_match(eph):
