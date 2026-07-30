@@ -77,6 +77,71 @@ def _looks_like_code_search(command: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+_GRAPH_CALL_RE = re.compile(r'(?<![-\w])cairn-graph\b')
+_CODE_EXT_RE = re.compile(r'\.(?:py|js|ts|tsx|jsx|c|h|cc|cpp|hpp|rs|go|java|rb|v|sv|sh)\b')
+_CODE_READ_RE = re.compile(r'(?<![-\w])(?:sed|cat|head|tail)\b')
+
+_DIRECTIVE_TEXT = (
+    "Also use the code graph for this — cairn-graph --location/--callers to find "
+    "symbols instead of reading or grepping for them, and verify the result is "
+    "the symbol you meant before working from it."
+)
+
+
+def _navigates_code_unassisted(command: str) -> bool:
+    """Is this command navigating code WITHOUT asking the graph?
+
+    First pipeline segment only: a trailing `| grep x` narrows output rather
+    than locating anything.
+    """
+    head = command.split('|')[0]
+    if _GRAPH_CALL_RE.search(head):
+        return False
+    if _looks_like_code_search(head):
+        return True
+    return bool(_CODE_READ_RE.search(head) and _CODE_EXT_RE.search(head))
+
+
+def _maybe_stage_graph_directive(session_id: str, command: str, graph_present: bool) -> None:
+    """Count unassisted code navigation; past a threshold, stage a directive.
+
+    Staged for the NEXT prompt rather than returned here, because a directive
+    that lands in the user's turn is complied with while the same words in hook
+    output are skimmed. Deliberately loose: the payload is ~20 tokens and its
+    advice is right in any graph-ready repo, so the cost of firing when the
+    model would have used the graph anyway is near zero, while the cost of
+    staying silent is the entire benefit. Requiring a graph is the one hard
+    gate — without one the directive points at a tool that cannot answer.
+
+    Fail-soft throughout: a hook must never break a tool call.
+    """
+    try:
+        from cairn import config
+        if not getattr(config, "GRAPH_DIRECTIVE_ENABLED", False) or not graph_present:
+            return
+        if not _navigates_code_unassisted(command):
+            # A graph call resets the count: the behaviour we wanted happened.
+            if _GRAPH_CALL_RE.search(command.split('|')[0]):
+                save_hook_state(session_id, "graph_directive_nav", "0")
+            return
+        n = int(load_hook_state(session_id, "graph_directive_nav") or 0) + 1
+        save_hook_state(session_id, "graph_directive_nav", str(n))
+        if n < getattr(config, "GRAPH_DIRECTIVE_MIN_NAV", 3):
+            return
+        fired = int(load_hook_state(session_id, "graph_directive_fired") or 0)
+        if fired >= getattr(config, "GRAPH_DIRECTIVE_MAX_PER_SESSION", 2):
+            return
+        if not getattr(config, "PROXY_ENABLED", False):
+            return          # bare-text delivery only exists on the proxy path
+        from cairn.proxy import sidecar
+        sidecar.append_prompt_directive(session_id, _DIRECTIVE_TEXT)
+        save_hook_state(session_id, "graph_directive_fired", str(fired + 1))
+        save_hook_state(session_id, "graph_directive_nav", "0")
+        record_metric(session_id, "graph_directive_staged", str(n))
+    except Exception:
+        return
+
+
 def _edit_intent_symbol(tool_name: str, tool_input: dict, edited_files: list):
     """(symbol, def_file_abspath) for a symbol whose DEFINITION lives in a file
     being edited this call, or None. Ties served callers to the symbol actually
@@ -504,6 +569,9 @@ def main() -> None:
         # already filtered inside _edit_intent_symbol).
         if symbol and symbol.lower() in _GENERIC_HUBS:
             symbol = None
+        if tool_name == "Bash" and command:
+            _maybe_stage_graph_directive(session_id, command, graph_present)
+
         served_symbol = False
         if symbol and graph_present:
             sym_seen_raw = load_hook_state(session_id, "graph_symbols_seen") or ""

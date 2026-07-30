@@ -185,6 +185,9 @@ def inject_bootstrap(data: dict, bootstrap_text: str, move_breakpoint: bool = Tr
 
 _CTX_SENTINEL = "<!--cairn-context-->"
 
+# A directive past this length stops reading as a user aside.
+_DIRECTIVE_MAX_CHARS = 240
+
 
 def inject_prompt_context(data: dict, context_text: str) -> dict:
     """Append volatile per-prompt context to the last user message (post-cache).
@@ -216,6 +219,48 @@ def inject_prompt_context(data: dict, context_text: str) -> dict:
                        for b in content):
                     return data
                 content.append({"type": "text", "text": payload})
+            return data
+    return data
+
+
+def inject_prompt_directive(data: dict, directive_text: str) -> dict:
+    """Append a short imperative directive to the last user message, unwrapped.
+
+    Deliberately NOT <system-reminder>-wrapped, unlike inject_prompt_context.
+    The wrapping there exists because a multi-hundred-token retrieval payload
+    glued onto the user's turn is not something a person would type, so it reads
+    as anomalous and invites suspicion. A one-line imperative is the opposite
+    case: it reads exactly like the user's own aside, and that is what makes it
+    land. Observed repeatedly — a directive in the prompt ("utilise the code
+    graph") is complied with, while the same guidance as a standing rules file
+    or a passive menu is skimmed and ignored.
+
+    No in-band sentinel, for the same reason: a stray HTML comment in the user's
+    turn is itself the tell. Idempotency lives in the sidecar queue, which is
+    cleared on consume.
+
+    Length is capped hard. Past the cap this stops reading as an aside and
+    starts reading as a payload, which is precisely the failure the wrapped
+    channel exists to avoid.
+    """
+    if not directive_text:
+        return data
+    text = " ".join(directive_text.split())
+    if len(text) > _DIRECTIVE_MAX_CHARS:
+        text = text[:_DIRECTIVE_MAX_CHARS].rsplit(" ", 1)[0]
+    messages = data.get("messages", [])
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, str):
+                if text in content:
+                    return data
+                msg["content"] = content + "\n\n" + text
+            elif isinstance(content, list):
+                if any(isinstance(b, dict) and text in b.get("text", "")
+                       for b in content):
+                    return data
+                content.append({"type": "text", "text": text})
             return data
     return data
 
