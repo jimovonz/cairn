@@ -66,5 +66,8 @@ cairn.db.bak*
 # relevance-gate silver labels (may contain prompt snippets)
 cairn/training_data/
 
+# portable label exports — contain prompt snippets, moved between nodes by hand
+exports/
+
 # Session capture scratch — local debugging artefacts, not repo content
 scratch_captures/
