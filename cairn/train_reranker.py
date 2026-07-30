@@ -311,12 +311,35 @@ def main():
         inc_model = AutoModelForSequenceClassification.from_pretrained(inc_name, num_labels=1).to(dev)
         inc_agr, _ = agreement(inc_model, inc_tok, held_g, dev, args.eval_cap, args.min_gap)
 
+    # CHANCE-LINE CONTROL. Pairwise agreement has a 50% null: guessing scores 0.5.
+    # "Beat the incumbent" is only meaningful when the incumbent beats a coin, and
+    # the first live run had an incumbent at 39.6% — BELOW chance. A ranker that
+    # loses to random is not weak, it is anti-correlated with the labels, which
+    # means either the scoring is inverted or the labels are. Promoting against
+    # such a baseline reads as a decisive win while proving nothing, so it is
+    # blocked rather than merely reported.
+    CHANCE = 0.5
+    inc_below_chance = inc_agr is not None and inc_agr < CHANCE
+    student_below_chance = ft_agr is not None and ft_agr < CHANCE
+
     beats = ft_agr > (inc_agr or 0) + args.deploy_margin
+    if inc_below_chance or student_below_chance:
+        beats = False
     promote_safe = ft_agr >= args.gate
     print("\n=== reranker student result (held-out clear pairs) ===")
-    print(f"incumbent [{inc_name.split('/')[-1]}]: {inc_agr*100:.1f}%")
-    print(f"student   [finetuned {args.base.split('/')[-1]}]: {ft_agr*100:.1f}%")
-    print(f"DEPLOY (student > incumbent + {args.deploy_margin*100:.0f}pt): {'YES' if beats else 'NO'}"
+    print(f"chance (pairwise null): {CHANCE*100:.0f}%")
+    print(f"incumbent [{inc_name.split('/')[-1]}]: {inc_agr*100:.1f}%"
+          f"{'   <-- BELOW CHANCE' if inc_below_chance else ''}")
+    print(f"student   [finetuned {args.base.split('/')[-1]}]: {ft_agr*100:.1f}%"
+          f"{'   <-- BELOW CHANCE' if student_below_chance else ''}")
+    if inc_below_chance:
+        print("BLOCKED: the incumbent scores below chance, so beating it is not "
+              "evidence of quality. Inspect for inverted scoring or inverted "
+              "labels before trusting any comparison against it.", file=sys.stderr)
+    if student_below_chance:
+        print("BLOCKED: the student itself scores below chance.", file=sys.stderr)
+    print(f"DEPLOY (student > incumbent + {args.deploy_margin*100:.0f}pt, both above chance): "
+          f"{'YES' if beats else 'NO'}"
           f"   [auto-promote-safe (>= {args.gate*100:.0f}%): {'yes' if promote_safe else 'no'}]")
     if beats and not args.smoke:
         os.makedirs(args.out, exist_ok=True)
