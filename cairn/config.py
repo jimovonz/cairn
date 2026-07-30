@@ -268,6 +268,15 @@ GRAPH_RISK_TAIL_THRESHOLD = 0.55       # risk_score above which a symbol is flag
 GRAPH_SYMBOL_CONTEXT_ENABLED = True    # Serve impact+callers for a resolved symbol on grep/edit-intent — serves DATA, not a reminder menu (the tier that failed)
 GRAPH_SYMBOL_CONTEXT_MAX_CALLERS = 8   # Cap caller lines served per symbol (token discipline)
 
+# Tool-use directive: a short imperative appended to the user's next prompt when
+# a session keeps navigating code by reading instead of asking the graph. Fires
+# LOOSELY on purpose — the payload is ~20 tokens and its advice is correct in
+# any graph-ready repo, so a false positive costs almost nothing while a missed
+# one costs the whole benefit. The only hard gate is that a graph exists to use.
+GRAPH_DIRECTIVE_ENABLED = True
+GRAPH_DIRECTIVE_MIN_NAV = 3      # Unassisted navigation commands before firing
+GRAPH_DIRECTIVE_MAX_PER_SESSION = 2   # Habituation guard: repetition is what dulls it
+
 # === Per-file injection scoping (pretool hook) ===
 # Generic basenames are weak retrieval keys — hundreds of unrelated memories
 # match "README.md" by name across projects. Exact-path matches still serve;

@@ -29,6 +29,7 @@ from cairn import config
 from cairn.proxy.response_filter import CairnResponseFilter
 from cairn.proxy.request_inject import (reinject_cm, inject_cm_markers,
                                          inject_bootstrap, inject_prompt_context,
+                                         inject_prompt_directive,
                                          sanitize_empty_text_blocks)
 from cairn.proxy import sidecar
 
@@ -239,6 +240,12 @@ def _rewrite_request(body: bytes, session_id: str) -> bytes:
                 if cur_sha != prev_sha or unstable != prev_unstable:
                     sidecar.write_prefix_state(session_id, cur_sha, unstable)
             inject_prompt_context(data, sidecar.consume_prompt_context(session_id))
+            # Bare imperative directive, appended after the wrapped context so
+            # it is the last thing in the user's turn — where an aside sits.
+            _directive = sidecar.consume_prompt_directive(session_id)
+            if _directive:
+                inject_prompt_directive(data, _directive)
+                sidecar.log_directive(session_id, _directive)
         # Phase 1.5: fold this request's paring deltas into the session totals
         # (best-effort; record_pare_savings swallows any error). Runs for every
         # paring request, not just tool requests — markers apply on all of them.
