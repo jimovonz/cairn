@@ -60,18 +60,18 @@ if ! "$VENV_PYTHON" -c "import torch" 2>/dev/null; then
         echo "Installing PyTorch (CUDA)..."
         # Use PIPESTATUS so pip exit code (not grep's) determines success.
         # grep -E '...' || true keeps the pipeline alive if no output line matches the filter.
-        "$VENV_PATH/bin/pip" install torch 2>&1 \
+        "$VENV_PYTHON" -m pip install torch 2>&1 \
             | { grep -E "^(Collecting|Downloading|Installing|Successfully)" || true; }
         [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "ERROR: PyTorch install failed."; exit 1; }
     else
         echo "Installing PyTorch (CPU-only, ~200MB)..."
-        "$VENV_PATH/bin/pip" install torch --index-url https://download.pytorch.org/whl/cpu 2>&1 \
+        "$VENV_PYTHON" -m pip install torch --index-url https://download.pytorch.org/whl/cpu 2>&1 \
             | { grep -E "^(Collecting|Downloading|Installing|Successfully)" || true; }
         [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "ERROR: PyTorch install failed."; exit 1; }
     fi
 fi
 
-"$VENV_PATH/bin/pip" install --progress-bar on -e "$CAIRN_HOME[test,ast,graph]" 2>&1 \
+"$VENV_PYTHON" -m pip install --progress-bar on -e "$CAIRN_HOME[test,ast,graph]" 2>&1 \
     | { grep -E "^(Collecting|Downloading|Installing|Successfully)" || true; }
 [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "ERROR: Dependency install failed. Run manually:"; \
          echo "  $VENV_PATH/bin/pip install -e \"$CAIRN_HOME[test,ast,graph]\""; exit 1; }
@@ -270,7 +270,7 @@ fi
 # that corp proxies typically allow direct anyway.
 PROXY_STRIP=""
 if [ -n "$ALL_PROXY$HTTPS_PROXY$HTTP_PROXY$all_proxy$https_proxy$http_proxy" ]; then
-    PROXY_STRIP="-u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY -u all_proxy -u https_proxy -u http_proxy"
+    PROXY_STRIP="-u ALL_PROXY -u all_proxy"
     echo "Unsetting proxy env vars for model download (httpx[socks] not required)."
 fi
 
@@ -383,7 +383,7 @@ SHELL_RC="${CAIRN_SHELL_RC:-$HOME/.bashrc}"
 CAIRN_PROXY_ENABLED="${CAIRN_PROXY_ENABLED:-1}"
 if [ "${CAIRN_PROXY_ENABLED:-}" = "1" ]; then
     echo "Enabling cairn API proxy on 127.0.0.1:$PROXY_PORT (opt out with CAIRN_PROXY_ENABLED=0)..."
-    "$VENV_PATH/bin/pip" install --progress-bar off -e "$CAIRN_HOME[proxy]" >/dev/null 2>&1 \
+    "$VENV_PYTHON" -m pip install --progress-bar off -e "$CAIRN_HOME[proxy]" >/dev/null 2>&1 \
         || { echo "ERROR: aiohttp (proxy extra) install failed."; exit 1; }
     # Install/refresh the `c` launcher in the shell rc (marked block, idempotent).
     # Overrides any existing `c` alias; preserves --dangerously-skip-permissions.

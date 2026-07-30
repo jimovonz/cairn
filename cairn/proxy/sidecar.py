@@ -25,6 +25,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import time
 from typing import Optional
 
 # repo_root/.staged_context — matches hooks' own resolution.
@@ -191,6 +192,69 @@ def consume_prompt_context(session_id: str) -> str:
     except FileNotFoundError:
         return ""
     return data.strip()
+
+
+# -- directives: bare imperative text appended to the user's own turn ----------
+# Separate queue from prompt_context because the two are framed differently on
+# the wire: context is <system-reminder>-wrapped, a directive is not. A short
+# imperative in the user's voice is obeyed where a wrapped hint is skimmed, and
+# unlike a retrieval payload it is short enough to read as something a person
+# would actually type.
+def prompt_directive_path(session_id: str) -> str:
+    return _path(session_id, "_directive.txt")
+
+
+def directive_log_path(session_id: str) -> str:
+    return _path(session_id, "_directive_log.jsonl")
+
+
+def append_prompt_directive(session_id: str, text: str) -> None:
+    """Queue one directive, ignoring an exact repeat still unconsumed."""
+    if not text:
+        return
+    path = prompt_directive_path(session_id)
+    entry = text.rstrip("\n")
+    with open(path, "a+", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        fh.seek(0)
+        existing = fh.read()
+        if existing.startswith(entry + "\n") or ("\n" + entry + "\n") in existing:
+            return
+        fh.write(entry + "\n")
+
+
+def consume_prompt_directive(session_id: str) -> str:
+    """Read and clear the queued directive atomically (see consume_prompt_context)."""
+    path = prompt_directive_path(session_id)
+    try:
+        with open(path, "r+", encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            data = fh.read()
+            fh.seek(0)
+            fh.truncate()
+    except FileNotFoundError:
+        return ""
+    return data.strip()
+
+
+def log_directive(session_id: str, text: str) -> None:
+    """Record every emitted directive, out of band.
+
+    A directive is indistinguishable from the user's own words by design — that
+    is what makes it work. But the memory writer reads the same transcript, so
+    without this log an injected instruction can be captured as a user
+    preference the user never expressed, then re-injected in later sessions as
+    standing guidance. This file is the only place the distinction survives;
+    attribution checks join against it. Never raises: a failed log must not
+    cost the directive.
+    """
+    try:
+        with open(directive_log_path(session_id), "a", encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            fh.write(json.dumps({"ts": time.time(), "session": session_id,
+                                 "text": text}) + "\n")
+    except Exception:
+        pass
 
 
 # -- proxy-internal: per-session cache-prefix integrity state ------------------

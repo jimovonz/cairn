@@ -39,8 +39,9 @@ is invisible to the user while preserved verbatim in the transcript:
 **Block keys** — `e` entries · `ok` complete (bool) · `ctx` context (`s`
 sufficient | `i` insufficient) · `cn` context_need (REQUIRED when `ctx` is `i`)
 · `rem` remaining (REQUIRED when `ok` is false) · `cu` confidence_updates
-(`"42:+"` / `"17:-! reason"`) · `ro` retrieval_outcome · `rg` relevance_grades
-(`"42:3"` / `"17:0!"`) · `int` intent · `kw` keywords
+(`"42:+"` / `"17:-! reason"`) · `ro` retrieval_outcome · `fit` relative fit
+labels (`{"best":[42],"worst":[17]}` — the primary ask) · `rg` relevance_grades
+(legacy absolute 0-3, `"42:3"` / `"17:0!"`) · `int` intent · `kw` keywords
 
 **Entry keys** — `t` type · `to` topic · `c` content · `kw` keywords (overrides
 block-level) · `d` depth · `f` facts (list of `key=value` strings, stored in a
@@ -220,11 +221,34 @@ not affect retrieval ranking.
   use `-!`** — the system re-prompts if your response contradicts a memory
   without one.
 
-**`rg` — relevance to the immediate context.** Trains a cross-encoder that
-gates future injections, so honest grades improve what you are shown next
-session. Grade `0` noise · `1` weak · `2` relevant · `3` load-bearing. Append
-`!` (`"17:0!"`) when a memory was actively misleading here — a distinct axis
-from mere irrelevance.
+**`fit` — relative fit, the primary ask.** A `[relevance]` line appended after
+the injected context names a random sample of ids and asks which fitted this
+turn best and least. Answer it. It is the main training signal for what gets
+injected next session, so an honest answer directly improves what you are shown.
+
+    [cm]: # '{... ,"fit":{"best":[42],"worst":[17]}}'
+
+**Judge relatively, never absolutely.** The question is *which of these fit this
+turn better*, not *which is good or bad* — a memory useless here may be exactly
+right elsewhere, so noise is a comparison, not a property.
+
+- `best` — the sampled entries that fit this turn best; `worst` — the ones that
+  fit least. One id in each is plenty; you are not ranking or scoring.
+- **`"fit":{}` is a real answer** meaning "nothing stood out either way", and is
+  genuinely useful. Omitting the field is not the same thing — that says you
+  never considered the question.
+- Only use ids named in that `[relevance]` line. They are sampled at random, so
+  they will often include entries you did not use — saying so is exactly the point. Labels
+  volunteered only on entries you noticed cannot measure what a filter would
+  have wrongly dropped.
+- Low stakes by design. Answer on impression; do not deliberate.
+
+**`rg` — absolute relevance grade (legacy, optional).** Still parsed, but no
+longer the primary ask: absolute grading asked "was this noise?", which is
+unanswerable for standing context and made silence the safe answer. Use it only
+on a strong, specific judgement. Grade `0` noise · `1` weak · `2` relevant · `3`
+load-bearing. Append `!` (`"17:0!"`) when a memory was actively misleading here
+— a distinct axis from mere irrelevance.
 
 **Non-engagement means omit, NOT zero.** A `0` is a confident claim that the
 memory was noise; silence means "no signal". Grade the clear extremes and skip

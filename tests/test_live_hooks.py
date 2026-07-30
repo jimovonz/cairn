@@ -128,6 +128,9 @@ def test_hooks_fire_and_fields_valid():
 def cleanup():
     """Remove smoke test memories."""
     conn = sqlite3.connect(CAIRN_DB)
+    # The live DB has a daemon and ingest cron writing to it; without this the
+    # teardown races them and errors the test that already passed.
+    conn.execute("PRAGMA busy_timeout=8000")
     deleted = conn.execute(
         "DELETE FROM memories WHERE topic = 'cairn-smoke-test'"
     ).rowcount

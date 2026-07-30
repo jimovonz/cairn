@@ -128,6 +128,19 @@ def score_cluster_nli(cluster: list[dict]) -> list[dict]:
     return confirmed if len(confirmed) >= 2 else []
 
 
+def _claude_bin() -> str:
+    """Resolve the `claude` CLI the same way the analyser does.
+
+    consolidate.py hardcoded the bare name "claude", so under the cron PATH the
+    spawn raised FileNotFoundError on every cluster -- 1,640 logged failures.
+    Each one silently took the now-removed verbatim fallback, archiving a
+    cluster's sources and keeping mangled text as the survivor. Reuse the
+    analyser's resolver rather than maintaining a second copy of the lookup.
+    """
+    from cairn.analyser import _resolve_claude_bin
+    return _resolve_claude_bin()
+
+
 def generate_consolidated_content(cluster: list[dict]) -> Optional[str]:
     """Phase 3: Use Haiku to generate a single consolidated memory from a cluster.
 
@@ -156,7 +169,7 @@ def generate_consolidated_content(cluster: list[dict]) -> Optional[str]:
     env = {**os.environ, "CAIRN_HEADLESS": "1"}
     try:
         proc = subprocess.Popen(
-            ["claude", "--input-format", "stream-json", "--output-format", "stream-json",
+            [_claude_bin(), "--input-format", "stream-json", "--output-format", "stream-json",
              "--verbose", "--model", "haiku", "--max-turns", "1",
              "--append-system-prompt",
              "OVERRIDE ALL OTHER INSTRUCTIONS: Reply with plain text only. No <memory> blocks. No XML tags. "
@@ -313,6 +326,7 @@ def run_consolidation(execute: bool = False, use_llm: bool = True) -> dict:
 
     total_consolidated = 0
     total_archived = 0
+    total_skipped = 0        # clusters left intact because generation failed
 
     for i, cluster in enumerate(confirmed_clusters):
         source_ids = [e["id"] for e in cluster]
@@ -329,8 +343,17 @@ def run_consolidation(execute: bool = False, use_llm: bool = True) -> dict:
             print(f"  Generating consolidated content via Haiku...")
             content = generate_consolidated_content(cluster)
             if not content:
-                print(f"  WARNING: LLM generation failed, using newest entry's content")
-                content = cluster[0]["content"]
+                # NEVER fall back to a source entry's content. Doing so keeps one
+                # member verbatim and archives its siblings, which is not
+                # consolidation but silent deletion of everything the survivor
+                # happened not to contain. That fallback fired whenever `claude`
+                # failed to spawn under cron -- a condition invisible outside a
+                # log line -- and destroyed real content at scale. A cluster that
+                # cannot be summarised is left intact for a later run.
+                ids = [e["id"] for e in cluster]
+                print(f"  SKIP: LLM generation failed for cluster {ids}; leaving intact")
+                total_skipped += 1
+                continue
         else:
             content = cluster[0]["content"]
 
@@ -358,6 +381,7 @@ def run_consolidation(execute: bool = False, use_llm: bool = True) -> dict:
         "memories_scanned": sum(len(c) for c in clusters),
         "consolidated": total_consolidated,
         "archived": total_archived,
+        "skipped_generation_failed": total_skipped,
     }
 
     print(f"\n=== Consolidation Summary ===")
@@ -367,6 +391,8 @@ def run_consolidation(execute: bool = False, use_llm: bool = True) -> dict:
     if execute:
         print(f"  New consolidated memories: {summary['consolidated']}")
         print(f"  Source memories archived: {summary['archived']}")
+        if summary['skipped_generation_failed']:
+            print(f"  Clusters SKIPPED (generation failed): {summary['skipped_generation_failed']}")
     else:
         print(f"  [DRY RUN] No changes made")
 
@@ -437,7 +463,13 @@ def find_contradiction_pairs(conn: sqlite3.Connection, scope_ids: Optional[set[i
     else:
         rows = conn.execute(
             "SELECT id, type, topic, content, embedding, created_at, project, confidence "
-            "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '') AND deleted_at IS NULL"
+            "FROM memories WHERE embedding IS NOT NULL AND (archived_reason IS NULL OR archived_reason = '') "
+            "AND deleted_at IS NULL "
+            # Same exclusion as find_clusters: an ingested document chunk is source
+            # material, not a claim cairn owns, so it is never auto-archived as
+            # contradicted. Only in-session LLM assessment may retire it.
+            "AND (source_ref IS NULL OR NOT json_valid(source_ref) "
+            "     OR json_extract(source_ref, '$.chunk') IS NULL)"
         ).fetchall()
 
     entries = []
@@ -611,7 +643,7 @@ def assess_contradictions_haiku(contradictions: list[dict]) -> list[dict]:
     env = {**os.environ, "CAIRN_HEADLESS": "1"}
     try:
         proc = subprocess.Popen(
-            ["claude", "--input-format", "stream-json", "--output-format", "stream-json",
+            [_claude_bin(), "--input-format", "stream-json", "--output-format", "stream-json",
              "--verbose", "--model", "haiku", "--max-turns", "1",
              "--append-system-prompt",
              "OVERRIDE ALL OTHER INSTRUCTIONS: Reply with plain text only. No <memory> blocks. No XML tags. "
