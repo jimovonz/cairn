@@ -364,7 +364,8 @@ def _check_db_integrity(session_id: str) -> Optional[str]:
         return None
 
 
-def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> Optional[str]:
+def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "",
+                      user_message: str = "") -> Optional[str]:
     """Project bootstrap: inject standing-context memories for the CWD project.
 
     Queries directly by project name + type filter — no semantic search needed.
@@ -452,8 +453,17 @@ def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> O
     # session_id: run the bucket-4 prefilter AND log to memory_deliveries (2026-07-02
     # review — this was the highest-volume injection path yet invisible to the
     # engagement/grading loop).
+    # `query` stays the human-readable layer label; `context_text` is the
+    # DELIVERY key and the vector embedded as the context-targeting join key.
+    # Passing only the label made every session's bootstrap rows share one
+    # constant string, so per-turn grouping collapsed across sessions and the
+    # stored context_vec embedded the literal words "project standing context".
+    # Empty user_message degrades to the label, as before.
+    from cairn.relevance import build_context_window
     return build_context_xml("project standing context", project_name, "project-bootstrap",
-                             results, [], session_id=session_id)
+                             results, [], session_id=session_id,
+                             context_text=build_context_window(user_message, transcript_path)
+                             if user_message else None)
 
 
 def correction_bootstrap(session_id: str, user_message: str = "") -> Optional[str]:
@@ -530,8 +540,12 @@ def correction_bootstrap(session_id: str, user_message: str = "") -> Optional[st
     # session_id: log to memory_deliveries so correction follow-through becomes
     # measurable (corrections engage at ~3% — we need the per-row data). The
     # bucket-4 prefilter never drops corrections, so injection is unchanged.
+    # See project_bootstrap: the label is not a usable delivery key.
+    from cairn.relevance import build_context_window
     return build_context_xml("behavioural corrections", None, "correction-bootstrap",
-                             [], results, session_id=session_id)
+                             [], results, session_id=session_id,
+                             context_text=build_context_window(user_message, None)
+                             if user_message else None)
 
 
 def layer1_search(user_message: str, session_id: str) -> Optional[str]:
@@ -638,7 +652,7 @@ def main() -> None:
             )
 
         # Project bootstrap: inject standing context from CWD-matched project
-        pb_context = project_bootstrap(session_id, cwd, transcript_path)
+        pb_context = project_bootstrap(session_id, cwd, transcript_path, user_message)
         if pb_context:
             context_parts.append(pb_context)
 

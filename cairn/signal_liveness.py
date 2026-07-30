@@ -72,6 +72,19 @@ SIGNALS = [
     {"name": "enforcement_block", "db": "eph", "table": "metrics",
      "ts": "created_at", "where": "event = 'enforcement_block'", "max_silence_h": None,
      "why": "gates spec 2F.2; legitimately rare, so never STALE"},
+    # Label fabrication. Agents emit ids they were never shown — measured at 875
+    # dropped rg grades against 610 that landed. These are counter-signals: unlike
+    # every row above, a RISING count is the bad direction, and silence is health.
+    # They are listed so the rate is visible without a bespoke query, and so the
+    # rg-vs-fit comparison stays honest — rg asks the agent to RECALL which ids it
+    # used, fit PRESENTS a sampled list to choose from, and the gap between these
+    # two counters is the evidence for retiring the recall-style ask.
+    {"name": "rg_grade_dropped", "db": "eph", "table": "metrics",
+     "ts": "created_at", "where": "event = 'rg_grade_dropped'", "max_silence_h": None,
+     "why": "COUNTER-SIGNAL: grades naming undelivered ids; silence is health"},
+    {"name": "fit_pair_dropped", "db": "eph", "table": "metrics",
+     "ts": "created_at", "where": "event = 'fit_pair_dropped'", "max_silence_h": None,
+     "why": "COUNTER-SIGNAL: fit pairs rejected at write; should stay far below rg"},
 ]
 
 
