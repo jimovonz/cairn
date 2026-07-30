@@ -114,11 +114,25 @@ def _engagement_grade(engaged, engaged_score, agent_grade, min_pos=ENGAGEMENT_MI
 
 
 def load_engagement_groups(min_pos=ENGAGEMENT_MIN_POS_DEFAULT, eph_path=None, durable_path=None):
-    """-> {"eng:<qhash>": [(query, mem, grade), ...]} from behavioural engagement.
+    """-> {"eng:<session>:<turn>": [(query, mem, grade), ...]} from engagement.
 
     Same shape as load_groups() so both label sources merge into one pair pool.
-    The "eng:" key prefix stops these groups colliding with rg-label groups that
-    happen to share a context string.
+    The "eng:" key prefix stops these groups colliding with rg-label groups.
+
+    GROUPED BY TURN, NOT BY CONTEXT HASH. A within-query pair is only meaningful
+    if both members were candidates for the SAME retrieval; grouping by
+    hash(context_text) silently violates that for any layer whose context is a
+    constant placeholder. `project-bootstrap` ("project standing context") and
+    `correction-bootstrap` ("behavioural corrections") are standing context with
+    no prompt to embed against, so every session shares one string: measured
+    here, that pooled 70 and 56 unrelated sessions into two groups which alone
+    produced 68,700 and 3,060 pairs — 99.8% of the total, all of them teaching a
+    query-free popularity prior, and outnumbering the genuine agent-rg pairs
+    ~800:1 once merged.
+
+    Keying on (session_id, turn_index) makes a group exactly one retrieval. A
+    placeholder-context turn then forms its own small group and contributes only
+    if that single turn saw both classes, which is the honest reading.
     """
     import pysqlite3 as sqlite3
     from cairn.relevance import _eph_path, _durable_path
@@ -144,16 +158,17 @@ def load_engagement_groups(min_pos=ENGAGEMENT_MIN_POS_DEFAULT, eph_path=None, du
         try:
             rows = econn.execute(
                 "SELECT context_text, memory_id, engaged, engaged_score, grade, "
-                "engaged_method FROM memory_deliveries WHERE engaged IS NOT NULL "
+                "engaged_method, session_id, turn_index FROM memory_deliveries "
+                "WHERE engaged IS NOT NULL "
                 "AND context_text IS NOT NULL AND context_text != ''"
             ).fetchall()
         except sqlite3.OperationalError:
-            rows = [r + (None,) for r in econn.execute(
-                "SELECT context_text, memory_id, engaged, engaged_score, grade "
-                "FROM memory_deliveries WHERE engaged IS NOT NULL "
+            rows = [r[:5] + (None,) + r[5:] for r in econn.execute(
+                "SELECT context_text, memory_id, engaged, engaged_score, grade, "
+                "session_id, turn_index FROM memory_deliveries WHERE engaged IS NOT NULL "
                 "AND context_text IS NOT NULL AND context_text != ''"
             ).fetchall()]
-        for ctx, mid, engaged, escore, grade, method in rows:
+        for ctx, mid, engaged, escore, grade, method, sess, turn in rows:
             engaged, escore = _neutralise_unusable_engagement(
                 engaged, escore, method, qualifying)
             g = _engagement_grade(engaged, escore, grade, min_pos)
@@ -173,7 +188,7 @@ def load_engagement_groups(min_pos=ENGAGEMENT_MIN_POS_DEFAULT, eph_path=None, du
                 mem = " ".join(p for p in r if p) if r else None
             if not mem:
                 continue
-            groups.setdefault("eng:" + qhash(ctx), []).append((ctx, mem, g))
+            groups.setdefault(f"eng:{sess}:{turn}", []).append((ctx, mem, g))
     finally:
         econn.close()
         dconn.close()

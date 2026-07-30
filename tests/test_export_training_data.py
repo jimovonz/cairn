@@ -174,6 +174,48 @@ def test_raw_engagement_fields_let_the_receiver_redo_the_filter():
     assert sum(acct[k] for k in acct if k.startswith("dropped")) == 0
 
 
+def test_placeholder_context_layers_do_not_pool_across_sessions():
+    """The defect this guards produced 99.8% of a real export's pairs.
+
+    project-bootstrap and correction-bootstrap are standing context with no
+    prompt to embed against, so every session shares one context string
+    ("project standing context"). Keyed by hash(context) they collapsed 70
+    unrelated sessions into a single 608-row pseudo-query worth 68,700 pairs,
+    all of them teaching a query-free popularity prior. Keyed by turn, each
+    session stays its own group and contributes only what it actually saw.
+    """
+    durable, eph, _ = _fresh_dbs()
+    d = sqlite3.connect(durable)
+    e = sqlite3.connect(eph)
+    cur = d.execute("INSERT INTO memories (type, topic, content) VALUES ('fact','t','c1')")
+    m1 = cur.lastrowid
+    cur = d.execute("INSERT INTO memories (type, topic, content) VALUES ('fact','t','c2')")
+    m2 = cur.lastrowid
+    # Six sessions, all sharing the placeholder context, each seeing both classes.
+    for s in range(6):
+        for mid, eng, sc in ((m1, 1, 0.9), (m2, 0, 0.0)):
+            e.execute(
+                "INSERT INTO memory_deliveries (session_id, turn_index, memory_id, "
+                "context_text, engaged, engaged_score, engaged_method, layer) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (f"sess{s}", 0, mid, "project standing context", eng, sc,
+                 "lexical", "project-bootstrap"))
+    d.commit(); e.commit(); d.close(); e.close()
+
+    rows, _ = _collect_eng(durable, eph)
+    groups = {r["group"] for r in rows}
+    assert len(groups) == 6, "each session's turn must stay its own group"
+
+    from cairn.train_reranker import make_pairs
+    by_group = {}
+    for r in rows:
+        by_group.setdefault(r["group"], []).append((r["query"], r["mem"], r["grade"]))
+    pairs = len(make_pairs(by_group, 10**6, min_gap=2))
+    # 6 groups x (1 positive x 1 negative) = 6. Pooled by context it would be
+    # 6 positives x 6 negatives = 36 — six times the real evidence.
+    assert pairs == 6, f"expected 6 within-turn pairs, got {pairs}"
+
+
 def test_single_class_stratum_is_dropped_and_accounted_for():
     """A positives-only stratum cannot yield a rate; admitting it inflates the
     positive class with a regime that could never produce a negative. Dropping

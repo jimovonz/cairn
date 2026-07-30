@@ -168,8 +168,7 @@ def collect_engagement(min_pos=None, durable_path=None, eph_path=None):
     removed — a reader can then audit the yield instead of inferring it.
     """
     from cairn.query import load_qualifying_strata, _neutralise_unusable_engagement
-    from cairn.train_reranker import (ENGAGEMENT_MIN_POS_DEFAULT, _engagement_grade,
-                                      qhash)
+    from cairn.train_reranker import ENGAGEMENT_MIN_POS_DEFAULT, _engagement_grade
     from cairn.label_relevance import _memtext
     from cairn.relevance import _eph_path, _durable_path
 
@@ -200,7 +199,10 @@ def collect_engagement(min_pos=None, durable_path=None, eph_path=None):
             if not mem:
                 acct["dropped_missing_memory"] += 1
                 continue
-            groups.setdefault("eng:" + qhash(ctx), []).append({
+            # Keyed by TURN, not context hash — see load_engagement_groups. A
+            # placeholder-context layer otherwise pools every session that ever
+            # used it into one enormous pseudo-query.
+            groups.setdefault(f"eng:{sess}:{turn}", []).append({
                 "query": ctx,
                 "mem": mem,
                 "grade": int(g),
