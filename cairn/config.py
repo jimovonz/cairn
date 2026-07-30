@@ -268,6 +268,15 @@ GRAPH_RISK_TAIL_THRESHOLD = 0.55       # risk_score above which a symbol is flag
 GRAPH_SYMBOL_CONTEXT_ENABLED = True    # Serve impact+callers for a resolved symbol on grep/edit-intent — serves DATA, not a reminder menu (the tier that failed)
 GRAPH_SYMBOL_CONTEXT_MAX_CALLERS = 8   # Cap caller lines served per symbol (token discipline)
 
+# Tool-use directive: a short imperative appended to the user's next prompt when
+# a session keeps navigating code by reading instead of asking the graph. Fires
+# LOOSELY on purpose — the payload is ~20 tokens and its advice is correct in
+# any graph-ready repo, so a false positive costs almost nothing while a missed
+# one costs the whole benefit. The only hard gate is that a graph exists to use.
+GRAPH_DIRECTIVE_ENABLED = True
+GRAPH_DIRECTIVE_MIN_NAV = 3      # Unassisted navigation commands before firing
+GRAPH_DIRECTIVE_MAX_PER_SESSION = 2   # Habituation guard: repetition is what dulls it
+
 # === Per-file injection scoping (pretool hook) ===
 # Generic basenames are weak retrieval keys — hundreds of unrelated memories
 # match "README.md" by name across projects. Exact-path matches still serve;
@@ -463,7 +472,8 @@ def resolve_reranker():
 #   genA-v3 -> genA-v4: promoted the arm-B question-form keyword seeding into the
 #   base rules (live A/B 2026-07-02: genB-v1 engaged 50.8% n=65 vs genA-v3 15.9%
 #   n=195 — mild measurement confound acknowledged, gap too large to be artifact).
-GENERATION_PROMPT_VERSION = "genA-v4"
+#   genA-v4 -> genA-v5: promoted genB-v2 ('[cairn A/B — arm B] For each memory you write THIS turn, do NOT write entries wh'...) after live A/B 2026-07-27: engaged_pct_b=70.5 vs engaged_pct_a=71.2 (n_a=3466, n_b=5034).
+GENERATION_PROMPT_VERSION = "genA-v5"
 
 # === Randomised reranker A/B (spec 2S.5) ===
 # Every reranker verdict to date is flag-day/time-confounded: a model change is
@@ -529,7 +539,7 @@ INGEST_PIPELINE_VERSION = "ingest-v1"
 # outcomes compare by arm via `query.py --delivery-stats`. Per-prompt randomisation;
 # subagents are excluded. Flip AB_TEST_ENABLED off to stop the experiment.
 AB_TEST_ENABLED = True
-AB_ARM_VERSIONS = {"A": GENERATION_PROMPT_VERSION, "B": "genB-v2"}
+AB_ARM_VERSIONS = {"A": GENERATION_PROMPT_VERSION, "B": "genB-v3"}
 # The single speculative variable for arm B (swap this to test a different aspect).
 # genB-v1 (question-form keywords) WON — promoted into the base rules as genA-v4.
 # genB-v2 tests write-side meta suppression: session-arc/meta entries about cairn's
@@ -539,13 +549,7 @@ AB_ARM_VERSIONS = {"A": GENERATION_PROMPT_VERSION, "B": "genB-v2"}
 # about what cairn remembers/captured are meta; domain content about the cairn
 # CODEBASE is fine.
 AB_B_INSTRUCTION = (
-    "[cairn A/B — arm B] For each memory you write THIS turn, do NOT write entries "
-    "whose content is about the memory system's own bookkeeping — what cairn/memory "
-    "does or doesn't remember, what was or will be captured, session-arc summaries "
-    "of the conversation itself. Capture only domain knowledge: the code, system, "
-    "decision, or user fact the turn was actually about. (Domain work ON the cairn "
-    "codebase is NOT meta — this only excludes self-referential memory-coverage "
-    "statements.)"
+    '[cairn A/B — arm B] For each memory you write THIS turn, if the content cites a count, version, or number that drifts over time (test counts, tags, line numbers, file counts), do not freeze the bare number in the memory. Either omit it and point at the command that reproduces it, or explicitly flag the entry as time-sensitive so a future reader knows to re-verify before citing it.'
 )
 
 # === Write-side A/B — future hypothesis queue ===
@@ -661,6 +665,13 @@ CAIRN_TZ = _os_tz.environ.get("CAIRN_TZ")
 
 # === Read-side memory relevance grading (docs/spec-memory-relevance-grading.md) ===
 RELEVANCE_LOGGING_ENABLED = True    # Log injected memories to memory_deliveries (instrument; T0)
+# Random-sampled relative-fit ask. K entries per injected block are named and
+# the agent is asked which were most/least fit. Uniform sampling is the point:
+# engagement-selected labels cannot calibrate a gate that must be judged on the
+# entries it would have dropped.
+FIT_SAMPLE_ENABLED = True
+FIT_SAMPLE_K = 3
+
 RELEVANCE_PREFILTER_ENABLED = True  # Bucket-4 self-referential-meta prefilter — ON since 2026-07-02 review
                                     # (session-arc meta spam engaged at 0%). Correction-exempt,
                                     # drop-audited via the relevance_prefilter_drop metric.
@@ -820,3 +831,4 @@ def _build_env_key_map():
         r'^([A-Z][A-Z0-9_]*)\s*=\s*[^\n]*?environ\.get\(\s*"([^"]+)"', _src, _re.M)}
 
 CONFIG_ENV_KEYS = _build_env_key_map()
+# auto-advanced 2026-07-27: queued candidate genB-v3 (staleness self-check on volatile facts) now testing.

@@ -468,6 +468,21 @@ def main() -> None:
         except Exception as e:
             log(f"relevance grade write-back failed: {e}")
 
+    # Relative fit labels -> delivery_fit_pairs. The primary ask; rg above is
+    # kept for the labels already collected under the absolute scale.
+    if parsed.fit_declared:
+        try:
+            from cairn.relevance import apply_fit_labels
+            n_fit = apply_fit_labels(list(parsed.fit_pairs), session_id=session_id)
+            # An explicit "nothing stood out" is a real observation about the
+            # turn's context, so record that it was answered. Without this,
+            # "declined to judge" and "judged, found nothing" are the same row.
+            record_metric(session_id, "fit_declared",
+                          json.dumps({"pairs": n_fit, "empty": not parsed.fit_pairs}))
+        except Exception as e:
+            log(f"fit label write-back failed: {e}")
+
+
     # rg-grading periodic nudge — soft, non-blocking (see cairn/config.py RG_NUDGE_*).
     # Main session only: subagents skip enforcement entirely, and a continuation
     # turn is a re-prompt of THIS turn, not a fresh turn to count toward the streak.

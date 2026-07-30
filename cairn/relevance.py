@@ -22,6 +22,7 @@ async crons over this log, never here on the hot path.
 
 from __future__ import annotations
 
+import json
 import re
 try:
     import pysqlite3 as sqlite3  # type: ignore[import-untyped]
@@ -300,6 +301,218 @@ def log_memory_deliveries(delivered: list[dict[str, Any]], *, session_id: str,
 # --- Phase 2: agent-as-teacher labels -----------------------------------------
 _GRADE_RE = re.compile(r"^\s*(\d+)\s*:\s*([0-3])\s*(!)?\s*$")
 
+# --- Relative fit labels (supersedes absolute 0-3 grading as the primary ask) --
+#
+# WHY RELATIVE: absolute grading produced labels on 0.5% of turns (340 of
+# 62,238) and 2 hard-negatives in 541k deliveries. Two causes, both structural:
+# an absolute scale asks "was this noise?", which is unanswerable for ambient
+# standing context (project-bootstrap has ZERO labels at 6.2 entries/turn); and
+# every guard against dishonest labelling ("a 0 is a confident claim", "omit if
+# unsure") correctly makes silence the safe move. Relevance is relative anyway
+# — an entry is noise *compared to better candidates*, not intrinsically — and
+# a cross-encoder trains on pairwise preference (margin ranking loss), so pairs
+# are the NATIVE training format, not a cheap approximation of grades.
+#
+# Grammar: {"best": [ids], "worst": [ids]} -> every best beats every worst.
+# One best + one worst yields one pair; the agent never counts or ranks.
+
+def parse_fit(raw: Any) -> list[tuple[int, int]]:
+    """Parse {"best":[42],"worst":[17,8]} -> [(42,17),(42,8)] as (winner, loser).
+
+    Accepts ints or numeric strings. Self-pairs are dropped. Returns [] for the
+    explicit no-signal answers ("none", {}, absent) — which are meaningfully
+    different from a missing field and are recorded by the caller as such.
+    """
+    def _ids(v: Any) -> list[int]:
+        if not isinstance(v, (list, tuple)):
+            return []
+        out = []
+        for x in v:
+            try:
+                out.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    if not isinstance(raw, dict):
+        return []
+    best, worst = _ids(raw.get("best")), _ids(raw.get("worst"))
+    return [(w, l) for w in best for l in worst if w != l]
+
+
+def _record_undelivered(event, session_id, ids, eph_path=None, conn=None):
+    """Log ids an agent labelled that were never delivered to it.
+
+    Splits the ids into 'nowhere' (never delivered in any session) and
+    'elsewhere' (delivered, but in a different session). The distinction is the
+    whole point of the metric: 'elsewhere' would suggest a plumbing fault worth
+    fixing — a delivery logged under one session id and labelled under another —
+    while 'nowhere' means the id was invented. Recording only a count, as this
+    did before, leaves the two indistinguishable and invites the wrong fix.
+
+    Measured here when this was added: of 875 undelivered rg grades, 15 were
+    reachable through the session chain and the rest were not, so the
+    compaction-plumbing story this metric was originally annotated with is not
+    what is happening.
+
+    `conn` is the CALLER's open ephemeral connection, passed in when it has one.
+    Opening a second connection while the caller holds an uncommitted write
+    transaction on the same DB blocks until busy_timeout expires, and the
+    fail-soft except then swallows the metric — the loss this function exists to
+    make visible would itself become invisible.
+    """
+    own = conn is None
+    try:
+        c = sqlite3.connect(_eph_path(eph_path)) if own else conn
+        if own:
+            c.execute("PRAGMA busy_timeout=5000")
+        try:
+            nowhere = elsewhere = 0
+            for mid in set(ids):
+                seen = c.execute(
+                    "SELECT 1 FROM memory_deliveries WHERE memory_id = ? LIMIT 1",
+                    (int(mid),)).fetchone()
+                if seen:
+                    elsewhere += 1
+                else:
+                    nowhere += 1
+            c.execute(
+                "INSERT INTO metrics (event, session_id, detail, value) VALUES (?,?,?,?)",
+                (event, session_id,
+                 json.dumps({"nowhere": nowhere, "elsewhere": elsewhere,
+                             "ids": sorted(set(int(i) for i in ids))[:20]}),
+                 len(set(ids))))
+            if own:
+                c.commit()          # else the caller's commit carries it
+        finally:
+            if own:
+                c.close()
+    except (sqlite3.Error, ValueError, TypeError):
+        pass
+
+
+def _delivered_ids(session_id, eph_path=None):
+    """Memory ids actually delivered in this session, or None if unknowable.
+
+    None is NOT an empty set: it means the lookup failed, and the caller must
+    then keep every label rather than discard all of them. Dropping on a
+    transient DB error would destroy irreplaceable training data on the strength
+    of a question we never got to ask.
+    """
+    try:
+        c = sqlite3.connect(_eph_path(eph_path))
+        c.execute("PRAGMA busy_timeout=5000")
+        try:
+            return {int(r[0]) for r in c.execute(
+                "SELECT DISTINCT memory_id FROM memory_deliveries WHERE session_id = ?",
+                (session_id,))}
+        finally:
+            c.close()
+    except sqlite3.Error:
+        return None
+
+
+def apply_fit_labels(pairs: list[tuple[int, int]], *, session_id: str,
+                     turn_index: Optional[int] = None,
+                     durable_path: Optional[str] = None,
+                     eph_path: Optional[str] = None) -> int:
+    """Persist pairwise preferences to delivery_fit_pairs. Fail-soft.
+
+    DURABLE DB, not ephemeral. These are the training labels the whole
+    relevance-grading design rests on, and they are expensive to collect — a
+    label needs an agent to have judged one specific turn's context, which
+    cannot be reconstructed afterwards. "Ephemeral" advertises that a file is
+    safe to delete, and everything else in there genuinely is rebuildable
+    (term_df recomputes, memory_deliveries is instrumentation). Irreplaceable
+    data does not belong behind that name.
+
+    Stored as pairs rather than folded into memory_deliveries.grade because a
+    preference is a relation between two deliveries, not a property of one —
+    flattening it to a per-row score would reintroduce the absolute scale this
+    replaces.
+
+    IDS ARE VALIDATED AGAINST WHAT WAS ACTUALLY DELIVERED. Measured on the rg
+    path, which reports its misses: 875 volunteered grades named a memory that
+    had never been delivered in that session, against 610 that landed — the
+    agent emits plausible-looking ids it was never shown, at a rate exceeding
+    the true signal. rg survives that because a non-matching UPDATE affects
+    zero rows; an INSERT has no such backstop, so unvalidated fit pairs would
+    accumulate fabricated training data in the durable DB and look like growth.
+    """
+    if not pairs or not session_id:
+        return 0
+
+    delivered = _delivered_ids(session_id, eph_path)
+    if delivered is None:
+        kept, dropped = list(pairs), []          # lookup failed: keep everything
+    else:
+        kept, dropped = [], []
+        for w, l in pairs:
+            (kept if w in delivered and l in delivered else dropped).append((w, l))
+    if not kept and not dropped:
+        return 0
+
+    try:
+        conn = sqlite3.connect(_durable_path(durable_path))
+    except sqlite3.Error:
+        return 0
+    # 30s, far longer than the 5s used elsewhere. This writes at most once per
+    # turn, so waiting is nearly free, while the row is an irreplaceable training
+    # label — an agent judgement of one specific turn's context that cannot be
+    # reconstructed later. Against a fail-soft except, too short a timeout
+    # discards the label silently and the loss reads as "no labels yet".
+    conn.execute("PRAGMA busy_timeout=30000")
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS delivery_fit_pairs ("
+            "  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, turn_index INTEGER,"
+            "  winner_id INTEGER NOT NULL, loser_id INTEGER NOT NULL,"
+            "  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fit_pairs_session "
+                     "ON delivery_fit_pairs(session_id, turn_index)")
+        if kept:
+            conn.executemany(
+                "INSERT INTO delivery_fit_pairs (session_id, turn_index, winner_id, loser_id) "
+                "VALUES (?,?,?,?)",
+                [(session_id, turn_index, w, l) for w, l in kept])
+        conn.commit()
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
+
+    if dropped:
+        # Only the OFFENDING ids, not their valid partners — a pair is rejected
+        # whole, but counting the good half as undelivered would overstate the
+        # fabrication rate this metric exists to measure.
+        _record_undelivered(
+            "fit_pair_dropped", session_id,
+            [i for p in dropped for i in p if i not in delivered], eph_path)
+    return len(kept)
+
+
+def sample_for_label(delivered: list[dict[str, Any]], k: int = 3,
+                     seed: Optional[str] = None) -> list[dict[str, Any]]:
+    """Pick k delivered entries at random to ask the agent about.
+
+    RANDOM, NOT ENGAGEMENT-SELECTED. The existing labels are all on entries the
+    agent noticed using, so the labelled set is selected on the outcome being
+    measured — useless for calibrating a gate, which must be judged on entries
+    it would have dropped. A uniform sample is the only way to get labels on
+    the entries nobody noticed. Seeded by session+turn so the same turn always
+    asks about the same ids (a retry must not resample).
+    """
+    if not delivered:
+        return []
+    import hashlib
+    import random
+    rnd = random.Random(hashlib.sha256((seed or "").encode()).hexdigest())
+    pool = [d for d in delivered if d.get("id") is not None]
+    if len(pool) <= k:
+        return list(pool)
+    return rnd.sample(pool, k)
+
+
 
 def parse_relevance_grades(raw: Any) -> list[tuple[int, int, bool]]:
     """Parse ["42:3", "17:0!"] -> [(42,3,False),(17,0,True)]. memory_id:grade,
@@ -342,19 +555,20 @@ def apply_relevance_grades(grades: list[tuple[int, int, bool]], *, session_id: s
             else:
                 dropped.append(int(mid))
         # Silent-drop visibility: a grade matches 0 rows when no delivery for
-        # (session_id, memory_id) exists — typically a compaction-chained session
-        # where the delivery was logged under the parent but the grade arrives
-        # under the child. Without this, the agent grades honestly yet the signal
-        # vanishes. Record it as a metric so --stats surfaces the loss.
+        # (session_id, memory_id) exists.
+        #
+        # This was previously annotated as "typically a compaction-chained
+        # session where the delivery was logged under the parent but the grade
+        # arrives under the child". The data does not support that: of 875
+        # dropped grades, only 15 were reachable by resolving the session chain.
+        # The UPDATE above already searches the WHOLE session, so a drop means
+        # the id was never delivered in this session at any turn — the agent
+        # emitted an id it was not shown. Do not "fix" this with chain matching;
+        # it recovers almost nothing and risks attaching a grade to an unrelated
+        # delivery of the same memory.
         if dropped:
-            try:
-                conn.execute(
-                    "INSERT INTO metrics (event, session_id, detail, value) VALUES (?, ?, ?, ?)",
-                    ("rg_grade_dropped", session_id,
-                     ",".join(str(m) for m in dropped[:20]), len(dropped)),
-                )
-            except sqlite3.Error:
-                pass
+            _record_undelivered("rg_grade_dropped", session_id, dropped,
+                                eph_path, conn=conn)
         conn.commit()
         return n
     except sqlite3.Error:
@@ -418,35 +632,102 @@ _ENG_STOPWORDS = frozenset((
 _ENG_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_\-]{2,}")
 
 
-def _engagement_tokens(text: str) -> set[str]:
-    """Lowercased alnum tokens of length >=3, minus stopwords. Hyphen/underscore
-    kept (identifiers like 'bge-reranker', 'ce_score' are exactly the distinctive
-    terms we want). Returns a set — engagement is presence-based, not frequency."""
+def _engagement_tokens(text: str, bigrams: bool = True) -> set[str]:
+    """Lowercased alnum tokens of length >=3, minus stopwords, plus adjacent
+    bigrams. Hyphen/underscore kept (identifiers like 'bge-reranker', 'ce_score'
+    are exactly the distinctive terms we want). Returns a set — engagement is
+    presence-based, not frequency.
+
+    Bigrams ("term_a term_b") are emitted alongside unigrams because shared
+    PHRASING is far stronger evidence of influence than shared topic words. They
+    need no special weighting: a bigram is rarer than either of its parts, so IDF
+    scores it higher automatically. term_idf.build() tokenizes through this same
+    function, so document frequencies cover bigrams by construction.
+    """
     if not text:
         return set()
-    return {t for t in _ENG_TOKEN_RE.findall(text.lower()) if t not in _ENG_STOPWORDS}
+    uni = [t for t in _ENG_TOKEN_RE.findall(text.lower()) if t not in _ENG_STOPWORDS]
+    out = set(uni)
+    if bigrams:
+        out.update(f"{a} {b}" for a, b in zip(uni, uni[1:]))
+    return out
+
+
+# Terms below this IDF are corpus-generic — the project's own vocabulary, which
+# appears in a response whether or not any given memory was used. Counting them
+# as engagement is what made standing-context layers look strongest precisely
+# where they are hardest to judge.
+GENERIC_IDF_FLOOR = 0.5
+
+# Cues that the response is DISPUTING a delivered memory rather than using it.
+# Overlap is necessary to contradict something, so a correction currently scores
+# as engagement — the two push a gate in opposite directions and must not be
+# collapsed. Cue-based and deliberately conservative: it flags candidates for
+# review, it is not a claim about semantic entailment.
+_POLARITY_CUES = re.compile(
+    r"\b(?:no longer|not (?:true|correct|the case|accurate)|superseded|outdated|"
+    r"was wrong|is wrong|incorrect|actually,? |instead of|contradicts?|"
+    r"stale|obsolete|deprecated|doesn'?t|does not|isn'?t|is not)\b", re.IGNORECASE)
+
+
+def detect_polarity(response_text: str, matched_terms: set) -> Optional[str]:
+    """'corrected' if the response disputes near a matched term, else 'used'.
+
+    Proximity-scoped: a negation anywhere in a long response says nothing about
+    THIS memory. Requires the cue within a sentence that also carries one of the
+    memory's distinctive terms. Returns None when nothing matched.
+    """
+    if not matched_terms or not response_text:
+        return None
+    for sent in re.split(r"(?<=[.!?\n])\s+", response_text):
+        low = sent.lower()
+        if not _POLARITY_CUES.search(sent):
+            continue
+        if any(t in low for t in matched_terms):
+            return "corrected"
+    return "used"
+
 
 
 def score_engagement(response_text: str, memory_text: str,
-                     prompt_text: str = "") -> tuple[Optional[int], float]:
+                     prompt_text: str = "", *, weighted: bool = True,
+                     eph_path: Optional[str] = None) -> tuple[Optional[int], float]:
     """Did `response_text` use `memory_text`? Returns (engaged, score).
 
     Distinctive terms = memory tokens that are NOT in the prompt (the memory's
     marginal contribution — terms shared with the prompt would be repeated whether
-    or not the memory helped, so crediting them confounds topic-match with use).
+    or not the memory helped, so crediting them confounds topic-match with use),
+    then dropped if corpus-generic (below GENERIC_IDF_FLOOR).
       * engaged = 1 if >=2 distinctive terms appear in the response (strong: one
         shared term is plausibly coincidental, two is not), else 0.
-      * score   = fraction of distinctive terms surfaced (0..1).
+      * score   = IDF-weighted fraction of distinctive terms surfaced (0..1), so a
+        rare identifier counts for more than a common one.
       * (None, -1.0) when there are NO distinctive terms (memory redundant with the
-        prompt) — undecidable, so no signal rather than a false 0."""
+        prompt, or wholly generic) — undecidable, so no signal rather than a false 0.
+
+    NOT GROUND TRUTH FOR ORIENTATION MATERIAL. Repo/Confluence ingest memories are
+    designed to point you at the right place, not to be quoted — they succeed
+    without appearing in the response at all. Low engagement is their expected
+    signature, not a defect, so this score must never be used to gate or retire
+    them. Agent `fit` labels are the trustworthy signal for those layers.
+    """
     mem = _engagement_tokens(memory_text)
     distinctive = mem - _engagement_tokens(prompt_text)
+    if distinctive and weighted:
+        from cairn import term_idf
+        distinctive = {t for t in distinctive
+                       if term_idf.idf(t, eph_path) >= GENERIC_IDF_FLOOR}
     if not distinctive:
         return None, -1.0
     matched = distinctive & _engagement_tokens(response_text)
-    score = len(matched) / len(distinctive)
+    if weighted:
+        from cairn import term_idf
+        w = {t: term_idf.idf(t, eph_path) for t in distinctive}
+        total = sum(w.values()) or 1.0
+        score = sum(w[t] for t in matched) / total
+    else:
+        score = len(matched) / len(distinctive)
     return (1 if len(matched) >= 2 else 0), score
-
 
 def _durable_path(durable_path: Optional[str]) -> str:
     if durable_path:
@@ -539,6 +820,12 @@ def apply_engagement(response_text: str, *, session_id: str,
                 dconn.close()
         except sqlite3.Error:
             return 0
+        # Once per call, not per row: polarity separates "used this" from
+        # "disputed this", which overlap alone cannot distinguish.
+        try:
+            conn.execute("ALTER TABLE memory_deliveries ADD COLUMN polarity TEXT")
+        except sqlite3.Error:
+            pass
         # Pass 1 — lexical distinctive-term overlap. Verdicts are held in `pending`
         # rather than written straight out, so the semantic pass below can revise
         # them before a single write loop commits the final answer.
@@ -548,7 +835,14 @@ def apply_engagement(response_text: str, *, session_id: str,
             if mt is None:
                 continue  # memory deleted since delivery — leave unscored
             engaged, score = score_engagement(response_text, mt, ctx or "")
-            pending.append([row_id, int(memory_id), ctx or "", engaged, score, "lexical"])
+            # Polarity is a lexical judgement over the distinctive terms the
+            # response actually reused, so it is computed here in pass 1 and
+            # carried through unchanged — the semantic pass revises the engaged
+            # verdict, not the stance.
+            _dist = _engagement_tokens(mt) - _engagement_tokens(ctx or "")
+            _pol = detect_polarity(response_text, _dist & _engagement_tokens(response_text))
+            pending.append([row_id, int(memory_id), ctx or "", engaged, score,
+                            "lexical", _pol])
 
         # Pass 2 — semantic second chance for rows the lexical pass called unengaged.
         # Recovers paraphrased use: the response applied the memory without reusing
@@ -578,14 +872,16 @@ def apply_engagement(response_text: str, *, session_id: str,
             pass
 
         n = 0
-        for row_id, _mid, _ctx, engaged, score, method in pending:
+        for row_id, _mid, _ctx, engaged, score, method, polarity in pending:
             try:
                 conn.execute(
                     "UPDATE memory_deliveries SET engaged = ?, engaged_score = ?, "
-                    "engaged_method = ? WHERE id = ?", (engaged, score, method, row_id),
+                    "engaged_method = ?, polarity = ? WHERE id = ?",
+                    (engaged, score, method, polarity, row_id),
                 )
             except sqlite3.OperationalError:
-                # Ephemeral DB predating engaged_method — score anyway, untagged.
+                # Ephemeral DB predating engaged_method/polarity — score anyway,
+                # untagged.
                 conn.execute(
                     "UPDATE memory_deliveries SET engaged = ?, engaged_score = ? WHERE id = ?",
                     (engaged, score, row_id),

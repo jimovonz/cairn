@@ -33,14 +33,22 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 def search(query, limit=10):
     conn = sqlite3.connect(DB_PATH); conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("""
+    sql = """
         SELECT m.id, m.type, m.topic, m.content, m.updated_at, m.keywords
         FROM memories_fts f
         JOIN memories m ON f.rowid = m.id
         WHERE memories_fts MATCH ? AND m.deleted_at IS NULL
         ORDER BY rank
         LIMIT ?
-    """, (query, limit)).fetchall()
+    """
+    try:
+        rows = conn.execute(sql, (query, limit)).fetchall()
+    except sqlite3.OperationalError:
+        # Punctuation in a bare token (project codes, file paths) parses as
+        # FTS5 syntax and RAISES rather than returning nothing. Retry with
+        # tokens quoted instead of surfacing a traceback to the caller.
+        from cairn import ftsquery
+        rows = conn.execute(sql, (ftsquery.sanitize(query), limit)).fetchall()
     conn.close()
     return rows
 
@@ -1642,13 +1650,42 @@ def check():
             tables = [r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()]
-            for t in ["memories", "sessions", "metrics", "hook_state", "memory_history"]:
+            # Probe each DB for ITS OWN tables. metrics/hook_state live in the
+            # ephemeral DB (init_db.EPHEMERAL_TABLES); asserting them against the
+            # durable DB reported two permanent false failures, and since
+            # install.sh prints its banner regardless the net effect was a
+            # perpetually-red check whose own advice ("run ./install.sh to fix")
+            # could never fix it. A check that always fails trains you to ignore
+            # the failure count, which costs more than the check earns.
+            for t in ["memories", "sessions", "memory_history"]:
                 if t in tables:
                     ok(f"Table '{t}' exists")
                 else:
                     fail(f"Table '{t}' missing")
+
+            # Ephemeral tables, sourced from the canonical tuple so this can never
+            # drift from what init_ephemeral actually creates.
+            try:
+                from cairn.config import EPHEMERAL_DB_PATH
+                from cairn.init_db import EPHEMERAL_TABLES
+                if os.path.exists(EPHEMERAL_DB_PATH):
+                    econn = sqlite3.connect(f"file:{EPHEMERAL_DB_PATH}?mode=ro", uri=True)
+                    etables = {r[0] for r in econn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")}
+                    econn.close()
+                    absent = [t for t in EPHEMERAL_TABLES if t not in etables]
+                    if absent:
+                        fail(f"Ephemeral tables missing: {', '.join(absent)}")
+                    else:
+                        ok(f"Ephemeral DB has all {len(EPHEMERAL_TABLES)} expected tables")
+                else:
+                    fail(f"Ephemeral DB not found at {EPHEMERAL_DB_PATH}")
+            except Exception as e:
+                fail(f"Ephemeral DB check failed: {type(e).__name__}: {e}")
+
             count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
             ok(f"{count} memories stored")
+
             missing_emb = conn.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NULL").fetchone()[0]
             if missing_emb == 0:
                 ok("All memories have embeddings")
@@ -1771,8 +1808,7 @@ def check():
 
     # 4. Daemon
     print("\nDaemon:")
-    pid_path = os.path.join(cairn_dir, ".daemon.pid")
-    sock_path = os.path.join(cairn_dir, ".daemon.sock")
+    from cairn.daemon import PID_PATH as pid_path, SOCKET_PATH as sock_path
     if os.path.exists(pid_path):
         try:
             with open(pid_path, encoding="utf-8") as f:

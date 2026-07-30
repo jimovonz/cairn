@@ -23,6 +23,10 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "cairn.db")
 # source of truth so the hook self-heal probe (hooks.hook_helpers.get_ephemeral_conn)
 # verifies the FULL set and can never silently fall behind a newly-added table —
 # the metrics-only probe is exactly how "no such table: hook_state" went unrepaired.
+# delivery_fit_pairs is deliberately NOT here — it holds agent fit labels, which
+# are training data and cannot be regenerated (a label requires an agent to have
+# judged one specific turn's context). It lives in the durable DB; everything in
+# this tuple is instrumentation or rebuildable derived state.
 EPHEMERAL_TABLES = ("metrics", "hook_state", "pair_assessments",
                     "pending_writes", "calibration_deliveries", "memory_deliveries")
 
@@ -647,11 +651,28 @@ def init():
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (15, 'ab_experiments table — automated write-side A/B assessment + changeover tracking')"
         )
+    _init_fit_pairs(conn)
     conn.commit()
     conn.close()
     print(f"Database initialized at {DB_PATH}")
 
+def _init_fit_pairs(conn):
+    """Agent relative-fit labels — durable, see apply_fit_labels for why."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS delivery_fit_pairs (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            turn_index INTEGER,
+            winner_id INTEGER NOT NULL,
+            loser_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_fit_pairs_session "
+                 "ON delivery_fit_pairs(session_id, turn_index)")
+
+
 def init_ephemeral(path=None):
+
     """Initialize the ephemeral DB (metrics, hook_state, pair_assessments)."""
     if path is None:
         from cairn.config import EPHEMERAL_DB_PATH

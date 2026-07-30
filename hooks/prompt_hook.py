@@ -364,7 +364,8 @@ def _check_db_integrity(session_id: str) -> Optional[str]:
         return None
 
 
-def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> Optional[str]:
+def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "",
+                      user_message: str = "") -> Optional[str]:
     """Project bootstrap: inject standing-context memories for the CWD project.
 
     Queries directly by project name + type filter — no semantic search needed.
@@ -452,8 +453,17 @@ def project_bootstrap(session_id: str, cwd: str, transcript_path: str = "") -> O
     # session_id: run the bucket-4 prefilter AND log to memory_deliveries (2026-07-02
     # review — this was the highest-volume injection path yet invisible to the
     # engagement/grading loop).
+    # `query` stays the human-readable layer label; `context_text` is the
+    # DELIVERY key and the vector embedded as the context-targeting join key.
+    # Passing only the label made every session's bootstrap rows share one
+    # constant string, so per-turn grouping collapsed across sessions and the
+    # stored context_vec embedded the literal words "project standing context".
+    # Empty user_message degrades to the label, as before.
+    from cairn.relevance import build_context_window
     return build_context_xml("project standing context", project_name, "project-bootstrap",
-                             results, [], session_id=session_id)
+                             results, [], session_id=session_id,
+                             context_text=build_context_window(user_message, transcript_path)
+                             if user_message else None)
 
 
 def correction_bootstrap(session_id: str, user_message: str = "") -> Optional[str]:
@@ -530,8 +540,12 @@ def correction_bootstrap(session_id: str, user_message: str = "") -> Optional[st
     # session_id: log to memory_deliveries so correction follow-through becomes
     # measurable (corrections engage at ~3% — we need the per-row data). The
     # bucket-4 prefilter never drops corrections, so injection is unchanged.
+    # See project_bootstrap: the label is not a usable delivery key.
+    from cairn.relevance import build_context_window
     return build_context_xml("behavioural corrections", None, "correction-bootstrap",
-                             [], results, session_id=session_id)
+                             [], results, session_id=session_id,
+                             context_text=build_context_window(user_message, None)
+                             if user_message else None)
 
 
 def layer1_search(user_message: str, session_id: str) -> Optional[str]:
@@ -638,7 +652,7 @@ def main() -> None:
             )
 
         # Project bootstrap: inject standing context from CWD-matched project
-        pb_context = project_bootstrap(session_id, cwd, transcript_path)
+        pb_context = project_bootstrap(session_id, cwd, transcript_path, user_message)
         if pb_context:
             context_parts.append(pb_context)
 
@@ -769,7 +783,7 @@ def main() -> None:
                     # so the LLM can write a delta rather than start from scratch.
                     _prior_handoff_snippet = ""
                     try:
-                        from hooks.hook_helpers import resolve_project, get_conn
+                        from hooks.hook_helpers import resolve_project
                         _proj = resolve_project(cwd, transcript_path)
                         if _proj:
                             _conn = get_conn()
@@ -1014,16 +1028,45 @@ def main() -> None:
     # it never fires on context that carries no gradable entries. Worded to lift
     # HONEST coverage only: grade what you used, omit the rest — a padded grade
     # is worse than a missing one for the cross-encoder it trains.
+    # Just-in-time relative-fit ask. The static rule in memory-system.md scrolls
+    # out of attention mid-session, which is why this echo exists at all.
+    #
+    # It replaces the previous "grade ONLY the ids you actually drew on" nudge.
+    # That instruction produced the labels' central defect: they were selected on
+    # engagement, i.e. on the outcome being measured, so they could never
+    # calibrate a gate — a gate must be judged on the entries it would have
+    # DROPPED, and nobody volunteers a label on those. Sampling uniformly and
+    # asking relatively fixes both the bias and the 0.5% coverage: a relative
+    # judgement is cheap and low-stakes, an absolute one is neither.
+    #
+    # Fires ONCE per turn over the complete injected set (build_context_xml runs
+    # per layer, so asking there would ask up to four times a turn and still miss
+    # the cross-layer comparison).
     grading_nudge = ""
     if injected_ids:
-        id_list = ",".join(str(i) for i in sorted(set(injected_ids)))
-        grading_nudge = (
-            f"\n\n[relevance grading] Memory ids shown above: {id_list}. In your [cm] "
-            f"block add rg:[\"id:grade\"] for ONLY the ids you actually drew on "
-            f"(0=noise, 1=weak, 2=relevant, 3=load-bearing; append ! if actively "
-            f"misleading). Omit ids you didn't use — a missing grade means \"no "
-            f"signal\", not zero. These train the cross-encoder gate, so grade honestly."
-        )
+        from cairn.config import FIT_SAMPLE_ENABLED, FIT_SAMPLE_K
+        from cairn.relevance import sample_for_label
+        uniq = sorted(set(injected_ids))
+        if FIT_SAMPLE_ENABLED and len(uniq) > 1:
+            samp = sample_for_label([{"id": i} for i in uniq], FIT_SAMPLE_K,
+                                    seed=f"{session_id}:{len(uniq)}:{uniq[0]}")
+            ids = ",".join(str(s["id"]) for s in samp)
+            grading_nudge = (
+                f"\n\n[relevance] Of these ids — {ids} — which fitted THIS turn best "
+                f"and which least? In your [cm] block add fit:{{\"best\":[id],"
+                f"\"worst\":[id]}}. Judge RELATIVELY: \"less useful here than the "
+                f"others\", not \"bad\". They are sampled at random, so some will be "
+                f"ones you never used — saying so is the point, not a failure. "
+                f"fit:{{}} means nothing stood out and is a real answer; omitting "
+                f"the field says you didn't consider it. Answer on impression."
+            )
+        else:
+            id_list = ",".join(str(i) for i in uniq)
+            grading_nudge = (
+                f"\n\n[relevance] Memory id shown above: {id_list}. If it was "
+                f"clearly load-bearing or clearly noise here, add rg:[\"id:grade\"] "
+                f"(0-3, ! if misleading). Otherwise omit."
+            )
 
     deliver_additional_context(
         session_id, "UserPromptSubmit",
