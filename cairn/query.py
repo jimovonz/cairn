@@ -1165,13 +1165,20 @@ def load_qualifying_strata(conn):
     such a DB may still contain both classes, and disqualifying everything there
     would be a stronger claim than the data supports.
     """
+    # Aggregate in SQL rather than pulling every delivery row into Python. Only
+    # the per-stratum class counts are needed, so this returns one row per
+    # stratum instead of ~24k rows, and is covered by idx_mem_deliv_engaged.
+    agg = ("SELECT COALESCE({m}, '(untagged)'), "
+           "SUM(engaged = 1), SUM(engaged = 0) "
+           "FROM memory_deliveries WHERE engaged IS NOT NULL GROUP BY 1")
     try:
-        rows = conn.execute(
-            "SELECT engaged_method, engaged FROM memory_deliveries"
-        ).fetchall()
+        rows = conn.execute(agg.format(m="engaged_method")).fetchall()
     except sqlite3.OperationalError:
-        rows = conn.execute("SELECT NULL, engaged FROM memory_deliveries").fetchall()
-    return _qualifying_strata(rows)
+        rows = conn.execute(agg.format(m="NULL")).fetchall()
+    # A stratum qualifies only with BOTH classes present — same rule as
+    # _qualifying_strata, which stays the pure form used where rows are already
+    # in memory.
+    return {m for m, pos, neg in rows if pos and neg}
 
 
 def _neutralise_unusable_engagement(engaged, engaged_score, method, qualifying):

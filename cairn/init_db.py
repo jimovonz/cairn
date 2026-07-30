@@ -822,6 +822,14 @@ def init_ephemeral(path=None):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_deliv_session ON memory_deliveries(session_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_deliv_memory ON memory_deliveries(memory_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_deliv_grade ON memory_deliveries(grade)")
+    # Time-window scans: signal liveness, marginal engagement and the deferred
+    # window all filter on delivered_at, which was a full table scan.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_deliv_delivered_at "
+                 "ON memory_deliveries(delivered_at)")
+    # Covering index for the qualifying-strata aggregate: SQLite can answer it
+    # from the index without touching the table.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_deliv_engaged "
+                 "ON memory_deliveries(engaged_method, engaged)")
     # Operational sync tables (relocated from the durable DB, schema v12). Both are
     # high-churn and recoverable, so they belong off the durable file:
     #   discovered_peers — LAN beacon cache, rewritten as beacons arrive.
