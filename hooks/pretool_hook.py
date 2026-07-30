@@ -46,19 +46,35 @@ MAX_GOTCHA_INJECTIONS = 3
 MAX_CONTEXT_INJECTIONS = 5
 
 
+# A code search is one of these invoked as a command in its own right. `rg` was
+# missing until 2026-07-30: this environment's routing policy mandates rg over
+# grep, so the detector was blind to a quarter of all symbol searches and the
+# hint simply never fired on them. The lookbehind keeps `--grep` (ccm-get's
+# retrieval filter) from reading as a code search.
+_SEARCH_CMD = re.compile(r'(?<![-\w])(?:rg|grep|egrep|fgrep)\b')
+_IDENT = r'[A-Za-z_][A-Za-z0-9_]{2,}'
+# Quoted pattern, optionally with a definition keyword: rg -n 'def target_fn'
+_SEARCH_QUOTED = re.compile(
+    r'''["'](?:(?:def|class|fn|func|function)\s+)?(''' + _IDENT + r''')["']''')
+# Bare pattern, skipping flag-only invocations: rg -n target_fn src/
+_SEARCH_BARE = re.compile(
+    r'(?<![-\w])(?:rg|grep|egrep|fgrep)\b(?:\s+-\S+)*\s+(' + _IDENT + r')(?:\s|$)')
+
+
 def _looks_like_code_search(command: str) -> Optional[str]:
-    """Return a candidate symbol name if the Bash command looks like a code-symbol grep."""
-    if "grep" not in command:
+    """Return a candidate symbol name if the Bash command looks like a code-symbol search.
+
+    Only the FIRST pipeline segment counts. A later `| grep foo` is a filter over
+    some other command's output — the user is narrowing a result set, not looking
+    for where a symbol lives — and hinting at the graph there is noise. That
+    over-firing was the mirror of the rg blind spot: the old detector missed the
+    mandated tool while firing on pipeline filters.
+    """
+    head = command.split('|')[0]
+    if not _SEARCH_CMD.search(head):
         return None
-    # grep with a quoted identifier-like pattern
-    m = re.search(r'\bgrep\b[^"\n]*["\']([A-Za-z_][A-Za-z0-9_]{2,})["\']', command)
-    if m:
-        return m.group(1)
-    # grep with an unquoted identifier before a space/end (skip flag-only invocations)
-    m = re.search(r'\bgrep\b(?:\s+-\S+)*\s+([A-Za-z_][A-Za-z0-9_]{2,})(?:\s|$)', command)
-    if m:
-        return m.group(1)
-    return None
+    m = _SEARCH_QUOTED.search(head) or _SEARCH_BARE.search(head)
+    return m.group(1) if m else None
 
 
 def _edit_intent_symbol(tool_name: str, tool_input: dict, edited_files: list):
