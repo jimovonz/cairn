@@ -112,6 +112,38 @@ def test_is_running_stale_pid():
     assert not os.path.exists(pid_path)  # Should clean up stale file
 
 
+# Verifies: a second daemon cannot start alongside a live one. run_server()
+# unlinks the socket and overwrites the PID file, so without this lock the
+# loser was left blocked in accept() holding ~1.6 GB until its idle timeout.
+def test_singleton_lock_blocks_second_daemon():
+    """Second acquisition of the daemon lock fails while the first is held."""
+    import subprocess as sp
+    lock_path = os.path.join(TEST_DIR, ".test_daemon_lock")
+
+    holder = sp.Popen([sys.executable, "-c", (
+        "import fcntl, os, sys, time\n"
+        f"fd = os.open({lock_path!r}, os.O_RDWR | os.O_CREAT, 0o644)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "sys.stdout.write('held\\n'); sys.stdout.flush()\n"
+        "time.sleep(30)\n"
+    )], stdout=sp.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        from cairn import daemon
+        with patch.object(daemon, "LOCK_PATH", lock_path):
+            assert daemon._acquire_singleton_lock() is False
+    finally:
+        holder.kill()
+        holder.wait()
+
+    # Once the holder is gone the lock is free again.
+    from cairn import daemon
+    with patch.object(daemon, "LOCK_PATH", lock_path):
+        assert daemon._acquire_singleton_lock() is True
+    os.close(daemon._SINGLETON_LOCK_FD)
+    daemon._SINGLETON_LOCK_FD = None
+
+
 # ============================================================
 # Context cache: semantic matching
 # ============================================================
