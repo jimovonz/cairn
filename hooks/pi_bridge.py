@@ -72,6 +72,45 @@ def _ensure_project(session, transcript, cwd):
         pass
 
 
+def cmd_bootstrap(a):
+    """Standing session context: project bootstrap + relevant past corrections.
+
+    Claude Code runs both of these inside prompt_hook's `if is_first_prompt(...)`
+    block, so they fire once per session and never again. There is no equivalent
+    hook here, so this facade is deliberately ungated: the CALLER must invoke it
+    only once per session. Calling it every turn would re-inject standing context
+    that is already in the conversation.
+
+    Both halves degrade to silence rather than failing: project_bootstrap returns
+    nothing for an unresolvable or generic project name (".", "/", "home", "tmp",
+    "temp"), and correction_bootstrap returns nothing when the embedder is down or
+    the prompt is empty.
+    """
+    _ensure_project(a.session, a.transcript, a.cwd)
+    query = a.query or _read_text(a.text_file)
+    parts = []
+    try:
+        from hooks.prompt_hook import correction_bootstrap, project_bootstrap
+    except Exception as e:
+        sys.stderr.write(f"cairn bootstrap import error: {e}\n")
+        return
+    try:
+        pb = project_bootstrap(a.session, a.cwd, a.transcript, query)
+        if pb:
+            parts.append(pb)
+    except Exception as e:
+        sys.stderr.write(f"cairn project_bootstrap error: {e}\n")
+    # Gated on cosine similarity to the first prompt, so it needs the query text.
+    try:
+        cb = correction_bootstrap(a.session, query)
+        if cb:
+            parts.append(cb)
+    except Exception as e:
+        sys.stderr.write(f"cairn correction_bootstrap error: {e}\n")
+    if parts:
+        sys.stdout.write("\n\n".join(parts))
+
+
 def cmd_retrieve(a):
     _ensure_project(a.session, a.transcript, a.cwd)
     query = a.query or _read_text(a.text_file)
@@ -203,7 +242,7 @@ def cmd_spec(_a):
 def main():
     p = argparse.ArgumentParser(description="Cairn pi bridge")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name in ("retrieve", "capture", "enforce"):
+    for name in ("retrieve", "capture", "enforce", "bootstrap"):
         sp = sub.add_parser(name)
         sp.add_argument("--session", default="")
         sp.add_argument("--transcript", default="")
@@ -213,7 +252,7 @@ def main():
         sp.add_argument("--continuation", type=int, default=0)
     sub.add_parser("spec")
     a = p.parse_args()
-    {"retrieve": cmd_retrieve, "capture": cmd_capture, "enforce": cmd_enforce, "spec": cmd_spec}[a.cmd](a)
+    {"retrieve": cmd_retrieve, "capture": cmd_capture, "enforce": cmd_enforce, "spec": cmd_spec, "bootstrap": cmd_bootstrap}[a.cmd](a)
 
 
 if __name__ == "__main__":
