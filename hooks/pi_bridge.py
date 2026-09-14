@@ -17,9 +17,15 @@ import argparse
 import re
 import os
 import sys
+from pathlib import Path
 
 # Make the cairn package + hooks importable when run as a standalone script.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# resolve() dereferences symlinks deliberately: this file gets installed by
+# symlinking into ~/.local/bin, and abspath() would leave sys.path pointing at the
+# symlink's directory instead of the cairn repo. Every "from hooks.*" import below
+# sits under a bare except, so that failure is silent -- subcommands would exit 0
+# with empty output and memory would appear to work while storing nothing.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def _read_text(path):
