@@ -116,14 +116,71 @@ def cmd_retrieve(a):
     query = a.query or _read_text(a.text_file)
     if not query.strip():
         return
+    # Mirror Claude Code's layering: layer 1 on the first prompt (threshold 0.30),
+    # layer 1.5 on every prompt after it (threshold 0.55, and enriched with the last
+    # assistant excerpt so short follow-ups still retrieve well). Previously this
+    # always called retrieve_context, which is the on-demand L3 path -- it returned
+    # results, but with neither the thresholds nor the ranking the other host uses.
+    # retrieve_context stays as the fallback so a broken import degrades to the old
+    # behaviour rather than to silence.
+    xml = None
     try:
-        from hooks.retrieval import retrieve_context
-        xml = retrieve_context(query, a.session)
+        if a.first:
+            from hooks.prompt_hook import layer1_search
+            xml = layer1_search(query, a.session)
+        else:
+            from hooks.prompt_hook import layer1_5_search
+            xml = layer1_5_search(query, a.session, a.transcript)
     except Exception as e:
-        sys.stderr.write(f"cairn retrieve error: {e}\n")
-        return
+        sys.stderr.write(f"cairn layer search error: {e}\n")
+        try:
+            from hooks.retrieval import retrieve_context
+            xml = retrieve_context(query, a.session)
+        except Exception as e2:
+            sys.stderr.write(f"cairn retrieve error: {e2}\n")
+            return
     if xml:
         sys.stdout.write(xml)
+
+
+def _staged_dir():
+    return Path(__file__).resolve().parent.parent / ".staged_context"
+
+
+def cmd_staged(a):
+    """Drain whatever the previous turn deferred to this prompt.
+
+    Two consume-on-read stores feed one channel. Layer-2 cross-project matches are
+    staged into hook_state by the stop hook; the behavioural reminders (deferred
+    bootstrap, thin-retrieval escalation, query-quality and relevance-grade nudges)
+    are written as {session}_*.txt files. Claude Code drains both in prompt_hook.
+    Nothing drained them on the pi side, so anything staged there just accumulated.
+
+    Globbing rather than naming each file deliberately: new reminder kinds get
+    picked up without touching this code.
+    """
+    parts = []
+    try:
+        from hooks.prompt_hook import load_staged_context
+        staged = load_staged_context(a.session)
+        if staged:
+            parts.append(staged)
+    except Exception as e:
+        sys.stderr.write(f"cairn staged(state) error: {e}\n")
+    if a.session:
+        try:
+            for path in sorted(_staged_dir().glob(f"{a.session}_*.txt")):
+                try:
+                    body = path.read_text(encoding="utf-8", errors="replace").strip()
+                    path.unlink()
+                except OSError:
+                    continue
+                if body:
+                    parts.append(body)
+        except Exception as e:
+            sys.stderr.write(f"cairn staged(files) error: {e}\n")
+    if parts:
+        sys.stdout.write("\n\n".join(parts))
 
 
 def cmd_capture(a):
@@ -146,6 +203,15 @@ def cmd_capture(a):
             )
         except Exception as e:
             sys.stderr.write(f"cairn insert error: {e}\n")
+    # Layer 2: stage cross-project keyword matches for the next prompt. The stop
+    # hook does this on the other host; without it nothing ever populated the
+    # staged channel here, so draining it would always have come back empty.
+    try:
+        if parsed.keywords and not a.continuation:
+            from hooks.retrieval import layer2_cross_project_search
+            layer2_cross_project_search(parsed.keywords, session_id=a.session)
+    except Exception as e:
+        sys.stderr.write(f"cairn layer2 staging error: {e}\n")
     if parsed.confidence_updates:
         try:
             apply_confidence_updates(parsed.confidence_updates, session_id=a.session)
@@ -242,7 +308,7 @@ def cmd_spec(_a):
 def main():
     p = argparse.ArgumentParser(description="Cairn pi bridge")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name in ("retrieve", "capture", "enforce", "bootstrap"):
+    for name in ("retrieve", "capture", "enforce", "bootstrap", "staged"):
         sp = sub.add_parser(name)
         sp.add_argument("--session", default="")
         sp.add_argument("--transcript", default="")
@@ -250,9 +316,11 @@ def main():
         sp.add_argument("--text-file", dest="text_file", default="")
         sp.add_argument("--query", default="")
         sp.add_argument("--continuation", type=int, default=0)
+        sp.add_argument("--first", action="store_true",
+                        help="first prompt of the session (selects layer 1 over layer 1.5)")
     sub.add_parser("spec")
     a = p.parse_args()
-    {"retrieve": cmd_retrieve, "capture": cmd_capture, "enforce": cmd_enforce, "spec": cmd_spec, "bootstrap": cmd_bootstrap}[a.cmd](a)
+    {"retrieve": cmd_retrieve, "capture": cmd_capture, "enforce": cmd_enforce, "spec": cmd_spec, "bootstrap": cmd_bootstrap, "staged": cmd_staged}[a.cmd](a)
 
 
 if __name__ == "__main__":
