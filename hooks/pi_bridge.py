@@ -14,6 +14,7 @@ Subcommands (all read the assistant/prompt text from a file to avoid shell quoti
   spec                                                      -> prints the [cm] memory-block format spec
 """
 import argparse
+import json
 import re
 import os
 import sys
@@ -297,6 +298,61 @@ def cmd_enforce(a):
             return
     # Otherwise: allow the stop (print nothing).
 
+def cmd_checkpoint(a):
+    """Mid-response capture nudge after a notable tool result.
+
+    Mirrors posttool_hook by importing its detection, its per-session budget and
+    its nudge text rather than reimplementing any of them, so the two hosts cannot
+    drift apart on what counts as high-signal.
+
+    --text-file carries {"tool": str, "input": {...}, "output": {...}} because tool
+    payloads do not survive argv. Prints the nudge, or nothing.
+    """
+    raw = _read_text(a.text_file)
+    if not raw.strip():
+        return
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return
+    try:
+        from cairn.config import CHECKPOINT_MAX_NOTES_PER_SESSION
+        from hooks.hook_helpers import load_hook_state, save_hook_state
+        from hooks.posttool_hook import NUDGE_TEXT, _is_high_signal_bash, _is_high_signal_edit
+    except Exception as e:
+        sys.stderr.write(f"cairn checkpoint import error: {e}\n")
+        return
+
+    # pi names its tools in lower case where Claude Code capitalises them.
+    tool = str(payload.get("tool") or "").lower()
+    tool_input = payload.get("input") or {}
+    tool_output = payload.get("output") or {}
+    try:
+        if tool in ("bash", "powershell"):
+            high, _reason = _is_high_signal_bash(tool_input, tool_output)
+        elif tool in ("edit", "write"):
+            high, _reason = _is_high_signal_edit(tool_input, tool_output)
+        else:
+            return
+    except Exception as e:
+        sys.stderr.write(f"cairn checkpoint detect error: {e}\n")
+        return
+    if not high:
+        return
+
+    # Per-session note budget. Past the cap the stop hook drops the note anyway,
+    # so every further nudge costs prompt and output tokens for nothing.
+    try:
+        nudge_total = int(load_hook_state(a.session, "checkpoint_nudge_total") or 0)
+        if nudge_total >= CHECKPOINT_MAX_NOTES_PER_SESSION:
+            return
+        save_hook_state(a.session, "checkpoint_nudge_total", str(nudge_total + 1))
+    except Exception as e:
+        sys.stderr.write(f"cairn checkpoint budget error: {e}\n")
+        return
+    sys.stdout.write(NUDGE_TEXT)
+
+
 def cmd_spec(_a):
     try:
         from hooks.prompt_hook import MEMORY_FORMAT_SPEC
@@ -308,7 +364,7 @@ def cmd_spec(_a):
 def main():
     p = argparse.ArgumentParser(description="Cairn pi bridge")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name in ("retrieve", "capture", "enforce", "bootstrap", "staged"):
+    for name in ("retrieve", "capture", "enforce", "bootstrap", "staged", "checkpoint"):
         sp = sub.add_parser(name)
         sp.add_argument("--session", default="")
         sp.add_argument("--transcript", default="")
@@ -320,7 +376,8 @@ def main():
                         help="first prompt of the session (selects layer 1 over layer 1.5)")
     sub.add_parser("spec")
     a = p.parse_args()
-    {"retrieve": cmd_retrieve, "capture": cmd_capture, "enforce": cmd_enforce, "spec": cmd_spec, "bootstrap": cmd_bootstrap, "staged": cmd_staged}[a.cmd](a)
+    {"retrieve": cmd_retrieve, "capture": cmd_capture, "enforce": cmd_enforce, "spec": cmd_spec, "bootstrap": cmd_bootstrap, "staged": cmd_staged,
+     "checkpoint": cmd_checkpoint}[a.cmd](a)
 
 
 if __name__ == "__main__":
