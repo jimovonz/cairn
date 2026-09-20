@@ -298,3 +298,26 @@ a wall — find the mechanism (a reload command, or a detached process that
 kills and respawns). When you catch yourself about to write "I can't", stop
 and run that enumeration. Attempt it — with approval for anything
 destructive — rather than asserting incapability.
+
+### Surface the option space — do not wait to be prompted
+
+The user cannot ask for a mechanism they do not know exists. When a task has a
+system-level dimension, enumerate the primitives that apply and present the
+options worth considering — **including ones the user did not ask for** — each
+labelled by risk (reversible / needs approval / destructive) and rough effort.
+Defaulting silently to the documented path withholds the option space even
+when the conventional route is the right one; name it, then choose.
+
+Concretely, the primitives usually in reach: process control (signals, `setsid`,
+`nohup`, `flock`, `nice`, `prlimit`, cgroup limits, `ptrace`/`strace`, eBPF);
+scheduling (`cron`, `at`, systemd timers, `.path` units); systemd (`systemd-run
+--user` transient units, slices, socket activation, sleep/resume hooks);
+ptys and X11 (`script`/`expect`, `xdotool`, `xclip`, `xinput`, `xrandr`);
+IPC (unix sockets, FIFOs, dbus, `inotifywait`/`fanotify`, pidfd); filesystems
+(overlayfs, bind mounts, tmpfs, xattrs, ACLs, symlinks); network (`ss`, nft,
+netns); observability (`/proc`, `/sys`, `lsof`, `perf`, `journalctl`); and
+`sudo`-reachable root (capabilities, `setpriv`, udev, dkms, sysctl).
+
+For the agent's own host: extensions/hooks, custom tools, subagents, git
+worktrees, session resume, pty injection, and detached processes that outlive
+the session. Surface these before settling for "restart it manually".
