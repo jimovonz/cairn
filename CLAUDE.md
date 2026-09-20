@@ -31,32 +31,14 @@ Query commands:
 
 ## Repo Ingestion
 
-Ingest a git repository into Cairn as portable knowledge entries:
+Ingesting a git repo into Cairn as portable knowledge entries (24 extractors, incremental diff, dependency-graph edges).
 
-- `.venv/bin/python ./cairn/ingest.py /path/to/repo` — extract, distill, and store (incremental if previously ingested)
-- `.venv/bin/python ./cairn/ingest.py /path/to/repo --dry-run` — preview without storing
-- `.venv/bin/python ./cairn/ingest.py /path/to/repo --project name` — override project name
-- `.venv/bin/python ./cairn/ingest.py /path/to/repo --full` — force full re-ingestion (skip incremental diff)
-- `.venv/bin/python ./cairn/ingest.py /path/to/repo --verbose` — show extraction details
-
-24 extractors: docs, deps, tree, config, schemas, entrypoints, HTTP routes, CLI args, exports, comments, TODOs, env vars, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI, tree-sitter AST (Python, JS, TS, TSX, Go, Rust, C, C++), dependency graph. Graph edges queryable via `.venv/bin/python ./cairn/query.py --deps <project>`.
-
+Detail: **`/skill:cairn-ingest`** — load it when ingesting a repository or working on the extractors/ingestion pipeline.
 ## Subagent & review memory capture
 
-Two complementary paths capture knowledge that would otherwise be lost.
+How subagent and code-review write-back capture memories (SubagentStop path, review_writeback.py, associated_files overrides, 0.85 dedup).
 
-**SubagentStop capture (general).** Subagents (Task tool) emit `[cm]` memory blocks into their *own* transcripts, which the main-session `Stop` hook never sees. A `SubagentStop` hook (registered in `templates/global-settings.json`, no matcher → all agent types) routes the subagent's final message into `hooks/stop_hook.py`. The existing `is_subagent` branch (detected via `agent_id` **or** `hook_event_name=="SubagentStop"`) stores volunteered entries opportunistically and **skips enforcement** (no re-prompting a subagent). It reads the subagent's own transcript via `agent_transcript_path` (`own_transcript`) for storage + `--context` excerpts, while `session_id`/`transcript_path` stay the parent session so memories chain to it. Entries dedup at cosine 0.85 like any other.
-
-**Review write-back (code-attached).** `cairn-review-writeback` (`cairn/review_writeback.py`) persists **durable review rationale** — the *why* that survives the fix (intentional couplings, accepted trade-offs, justified decisions captured at merge), **not raw transient bug findings** (a "PR has bug X" claim becomes false once fixed+merged and self-invalidates in cairn; default `type` is `decision` to nudge this) — keyed to the *target repo* and *changed file/symbol*, so `cairn-graph --knowledge SYMBOL` surfaces it later — it joins on `associated_files LIKE '%path%'` **and** an FTS `MATCH` on the symbol (FTS indexes topic/content/keywords/facts). Each finding sets explicit `associated_files=[abs, rel]` (a per-entry override added to `hooks/storage.insert_memories`, taking precedence over transcript-derived files) and carries the symbol in `content`/`keywords`/`facts`. It registers a synthetic `review-<project>-<commit>` session tagged to the target project (so project-scoped retrieval also surfaces findings), batches under `MAX_MEMORIES_PER_RESPONSE`, and dedups at cosine 0.85 (re-running a review is idempotent — no archiving).
-
-Input is JSON on stdin (or `--file`): `{repo, project?, commit?, findings:[{file, symbol?, line?, type?, topic?, content, severity?, pr?, keywords?}]}`. Flags: `--dry-run`, `--json`. Invoke it from a review's end-step, e.g.:
-
-| Situation | Agent invokes |
-|---|---|
-| A review surfaced a *durable* reason worth keeping (intentional coupling, justified trade-off, decision at merge) | pipe rationale JSON to `cairn-review-writeback` (resolve via `.venv/bin/`) |
-| Raw transient bug findings on an open PR | do NOT write back — they self-invalidate once the bug is fixed |
-| Want to preview the keyed memories first | add `--dry-run` |
-
+Detail: **`/skill:cairn-subagent-capture`** — load it when working on how subagent or review findings are captured.
 ## Code graph navigation (cairn-graph)
 
 `cairn-graph` is a zero-cost, no-LLM query layer over `.code-review-graph/graph.db` (built by the `code-review-graph` tool). **Prefer it over grep/file-reads for structural questions** — it's faster and structurally aware:
@@ -85,147 +67,29 @@ So every repo is graph-ready before first contact, independent of whether cairn 
 
 ## API proxy (artifact-free injection)
 
-`cairn/proxy/` is an opt-out bidirectional HTTP proxy between Claude Code and the Anthropic API. It injects retrieved context into outbound requests **without disturbing the cacheable prefix** (Anthropic prompt cache stays byte-exact — a prompt-cache integrity guard verifies this) and strips every Cairn artifact (`<memory>`/`[cm]` blocks, `<cairn_context>`, system reminders) from inbound responses, capturing the stripped artifacts via `sidecar.py` for the hook pipeline. It is the artifact-hiding alternative to tag-stripping: capture/injection keep working even if Claude Code changes its tag rendering.
+The opt-out bidirectional HTTP proxy that injects context and strips Cairn artifacts without disturbing the prompt cache.
 
-- `server.py` runs a detached daemon (`start`/`stop`/`restart`, port-specific PID file) on `127.0.0.1:8789` (`CAIRN_PROXY_PORT`). It `dup2`s fd0←/dev/null and fd1/fd2←log so it never holds an inherited stdout pipe open.
-- `install.sh` enables it **by default** (opt out with `CAIRN_PROXY_ENABLED=0`), installs a `c` shell launcher (marked, idempotent rc block — `c` routes through the proxy, bare `claude` stays direct), and a `*/5` keep-alive cron (`start` is idempotent).
-- Context is injected only on agentic requests.
-
+Detail: **`/skill:cairn-proxy`** — load it when working on the proxy or artifact injection/stripping.
 ## Dev-container support
 
-The daemon exposes a **TCP listener on port 47390** alongside its Unix socket so container shims can dial the host daemon via `cairn_recall` / `cairn_remember` opcodes. `cairn/container_injector.py` injects context inside the container, with an extension auto-installer and VSIX staging, so a containerised session reaches the same host cairn as the native session.
+How containerised sessions reach the host daemon (TCP listener + container injector).
 
+Detail: **`/skill:cairn-devcontainer`** — load it when working on dev-container support.
 ## Multi-node sync (v2)
 
-`cairn/sync/` is opt-in peer-to-peer LAN replication, **off by default** — set `CAIRN_SYNC_ENABLED=1` per node to opt in (wired into `install.sh`). When enabled the daemon runs the HTTPS sync server, UDP-broadcasts a LAN discovery beacon, and pulls from approved peers. Identity is an Ed25519 keypair; pairing is dashboard-authorized by public key; transport is signed + cert-pinned; replication is changeset-based with Lamport-clock last-write-wins. **Only a node's own memories are shared**, and raw session transcripts are never synced (a node may opt in to serving them behind its memories to approved peers via `CAIRN_SYNC_SHARE_SESSIONS=1`). Ports: HTTPS `CAIRN_SYNC_PORT=8787`, discovery `CAIRN_SYNC_DISCOVERY_PORT=47391`. See the Multi-User Architecture section of `ARCHITECTURE.md`.
+Opt-in peer-to-peer LAN replication (Ed25519 pairing, TLS pinning, Lamport LWW, port defaults).
 
+Detail: **`/skill:cairn-sync`** — load it when working on multi-node sync.
 ## Calibration system (Phases 1–7)
 
-Phase 1 shipped scaffolding (schema, extractor, stubbed CLI). Phase 2 ships the analyser: a single LLM pass per session over a cleaned transcript produces sectioned JSON across 13 bounded dimensions, writing 8 dimensions to `calibration_rows` and 5 to the existing `memories` table with `source_ref="analyser-session-arc"`. A post-pass scores effectiveness on prior `calibration_deliveries`. See `docs/spec-calibration-system.md` (especially Amendment 1) for the dimension list and design rationale.
+Calibration captures *how to interact with this user* (level, style, preferences), complementing Cairn knowledge which captures *what is known*. The schema, analyser, injector, self-modification, dashboard, and CLI are detailed in `docs/spec-calibration-system.md` and the **`/skill:cairn-calibration`** skill.
 
-Phase 2 commands:
-- `cairn-calibration-analyser analyse <jsonl> [--dry-run]` — analyse a single session
-- `cairn-calibration-analyser cron [--idle-minutes N] [--limit K]` — one cron pass: walks `~/.claude/projects/*/*.jsonl`, picks idle un-analysed sessions (idle ≥ `--idle-minutes`, default 15, so active sessions are left alone), runs the analyser on up to K of them (oldest first), per-session try/except so one failure doesn't block the rest
-- `cairn-calibration-analyser list-idle` — print idle un-analysed session paths
-
-The analyser invokes `claude -p` with `CAIRN_MODE=read-only` so the analyser pass doesn't itself trigger the Stop hook capture path; it also sets `CAIRN_NO_INJECT=1` to skip prompt-hook context injection (recall is noise for an analysis pass, and these passes dominated first-prompt injection volume). Defaults to `claude-sonnet-4-6` — the 13-dim sectioned output benefits from a mode-switching-capable model (per cairn entry 2087), and per-call cost is amortised across many future retrievals. Override via `--model` flag or `CAIRN_ANALYSER_MODEL` env var.
-
-**No per-dimension count caps** — per cairn entry 623 (format enforced mechanically, content enforced editorially), the analyser does not cap how many items each dimension emits. The model's editorial judgment governs quantity, guided by the prompt's "Quality > quantity. Never pad" rule. Two structural guards remain: (a) `ENVELOPE_CHARS_MAX` (60K chars) — `analyser_envelope_exceeded` metric fires above this; claude -p truncates upstream of us anyway (cairn entry 1734); (b) cosine-0.85 dedup at insert filters near-duplicates regardless of count.
-
-**Subagent filter** — sessions are skipped unless they have at least `MIN_SUBSTANTIVE_TURNS` (4) substantive turns AND `MIN_CLEANED_CHARS` (500) of cleaned content. This avoids spending Sonnet calls on heartbeat / compaction-child / subagent transcripts. `--force` bypasses.
-
-**Incremental analysis** — per-session state is recorded in `hook_state` under key `calibration_analyser_state` (last_turn_count, last_analysed_at, first_analysed_at). A previously-analysed session is re-eligible only when its turn count has grown by `INCREMENTAL_TURN_THRESHOLD` (10) turns. Re-runs pass the prior calibration rows to the LLM via the prompt ("PRIOR CALIBRATION ROWS FROM THIS SESSION — do NOT re-emit") and additionally apply mechanical cosine-similarity dedup at 0.85 against existing rows. Long-running multi-day sessions get periodic top-ups without paying per appended turn.
-
-**Dedup** — both write paths apply cosine-0.85 dedup before INSERT. `write_calibration_rows` dedups against the full non-archived `calibration_rows` set. `write_session_memories` dedups against prior analyser-written rows only (filtered by `source_ref="analyser-session-arc"`) — per-turn writes have write-time priority per cairn entry 3302 and are never blocked by an analyser duplicate.
-
-**Per-qf symmetric retrieval (schema v7)** — calibration retrieval scores each row as `max_i cos(prompt_embedding, qf_i_embedding)` using the `calibration_qf_embeddings` sidecar table. The previous single-vector design joined `content+kw+qf` into one row embedding, conflating third-person content with first-person qf phrasings — empirically this clustered prompt similarities at 0.20-0.36, below the 0.40 floor. Per-qf retrieval embeds each qf string individually at write time (analyser `write_calibration_rows`) and stores them in the sidecar (PK row_id+qf_index, FK ON DELETE CASCADE). Rows without sidecar entries fall back to the legacy single-vector cosine — graceful migration, no flag day. Backfill for existing rows: `python3 cairn/calibration_qf_backfill.py` (idempotent, local embedder, no LLM cost).
-
-**Anti-hedge prompt** — the analyser prompt forbids "may or may not", "possibly", "unclear if", and similar hedge phrasings. Emitting an empty array for a dimension is preferred over a hedged row.
-
-Effectiveness scoring updates `calibration_deliveries.outcome` AND bumps the corresponding counter (`followed_count` / `ignored_count` / `corrected_count`) on `calibration_rows`. Metrics: `analyser_session_processed` on success, `analyser_session_failed` with error preview on failure.
-
-**Phase 4 — agent natural-language → CLI patterns.** The CLI is *agent-invoked from intent, never user-typed*. When the user says something like the LHS column, invoke the RHS command:
-
-| User says | Agent invokes |
-|---|---|
-| "treat me as an expert in X" / "stop explaining basics" | `cairn-calibration mode --level expert` |
-| "I'm new to X, give more context" | `cairn-calibration mode --level novice` |
-| "forget that thing about X" / "stop reminding me about X" | `cairn-calibration mute <row_id>` (look up id via `--show-profile X`) |
-| "actually that rule is wrong" / "I never said that" | `cairn-calibration delete <row_id>` |
-| "for this session only, ..." | append `--session-only` to mute/disable/mode |
-| "turn off calibration" / "stop the priming" | `cairn-calibration disable` |
-| "what do you think I prefer?" / "show my profile" | `cairn-calibration --show-profile` |
-| "I prefer X" / "always do Y" / "never Z" | `cairn-calibration add --source explicit --content "..."` |
-| "anything you want me to review?" / "what's flagged?" | `cairn-calibration --review` |
-
-**Phase 5 — Calibration dashboard tab** (`http://localhost:5174/`) with 4 V1 panels: Profile (rows by source/confidence/pinned, follow rate per row), Effectiveness (per-row deliveries/follow%/ignore/correct, low-follow flagged), Review Queue (Tier 2 surfaced items with type/detail/age), Summary cards (total rows, deliveries, follow rate, review-queue count, flagged count). Endpoints: `/api/calibration/profile|effectiveness|review-queue|session/<id>`. All 12 metric events from spec §7 instrumented (`calibration_row_{written,delivered,followed,ignored,corrected,archived,promoted,superseded}`, `calibration_review_surfaced`, `calibration_dedup_filtered`, `analyser_session_{processed,failed}`).
-
-**Phase 6 — self-modification** (`cairn-calibration-selfmod`): Tier 1 autonomous — `auto_archive_low_follow` (≥10 deliv, <20% followed), `auto_promote_corroborated` (≥80% follow + ≥3 distinct sessions), `decay_unused` (multiplicative half-life decay per source tier). Tier 2 surfaced into `calibration_review_queue` — low-follow rephrase candidates (40–60% band), promotion candidates that missed auto-threshold. Tier 3 (analyser prompt, retrieval weights, system architecture) stays manual by design.
-
-**Phase 7 — CLAUDE.md import** (`cairn-calibration-import-claude-md [path]`): one-shot scanner for first-person preference statements ("I prefer X", "Always/Never Y", "Stop Z"). Idempotent via SHA tracking in `hook_state`. Seeds rows as pinned `explicit` with confidence 0.90.
-
-Foundation (Phase 1, still current):
-
-Calibration captures *how to interact with this user* (level, style, preferences) — complementing Cairn knowledge which captures *what is known*. Phase 1 laid the foundation — schema, transcript extractor, CLI — and the analyser, injector, self-modification, and dashboard are all now shipped (Phases 2–7 above). See `docs/spec-calibration-system.md` for the full design.
-
-Schema (created by `init_db.init` / `init_db.init_ephemeral`):
-- `calibration_rows` (durable DB) — id, content, kw, qf, source, confidence, pinned, layer, session_scope, supersession, archived_at, effectiveness counters, embedding
-- `calibration_deliveries` (ephemeral DB) — turn-indexed log of which rows were injected into which session/turn, with outcome scoring fields
-
-CLI commands (all implemented; agent-invoked from natural-language intent, never user-typed):
-- `python3 ./cairn/session_extract.py <jsonl>` — clean a session JSONL to user/assistant text only, dropping tool blocks, thinking, `<cairn_context>`, `<system-reminder>`, and `[cm]` link-defs. Flags: `--with-tools`, `--corrections-only`, `--turn-range A-B`, `--last-N-minutes N`, `--json`.
-- `cairn-calibration --show-profile [subject]` — show calibration profile
-- `cairn-calibration --review` — Tier 2 review queue
-- `cairn-calibration --history <row_id>` — supersession/archive history
-- `cairn-calibration add --source <explicit|correction|observation|meta-assessment> --content "..." [--scope X] [--pin]`
-- `cairn-calibration mute <row_id> [--session-only]` / `unmute <row_id>`
-- `cairn-calibration disable [--session-only]` / `enable`
-- `cairn-calibration mode --level <novice|expert> [--session-only]`
-- `cairn-calibration delete <row_id>`
-
-The CLI is **agent-invoked from natural-language intent**, never user-typed.
-
+**Load `/skill:cairn-calibration` when** working on `calibration_rows`/`calibration_deliveries`, the analyser, or the `cairn-calibration` CLI — or when the user asks to be treated as expert/novice, to mute/delete a calibration rule, to disable calibration, or to show their profile (the natural-language→command mapping lives in the skill).
 ## Read-side relevance grading & write-side A/B (docs/spec-memory-relevance-grading.md)
 
-**Ranking weights — check these before reasoning about ranking.** `config.SCORE_W_*` is the composite scorer's only input: similarity 0.50, keywords 0.15, scope 0.05, and **confidence 0.0 and recency 0.0 — both deliberately disabled** ("veracity is not a ranking signal"; "age is not a usefulness signal; obsolescence handled by supersession"). `confidence` is still computed, stored, updated by `cu` corroboration / `-!` contradiction, and surfaced as the `reliability` attribute — it simply carries no ranking weight. `_recency_decay()` and `RECENCY_HALF_LIFE_DAYS` likewise still compute, and nothing consumes them. Reading either code path without checking its weight gives the wrong answer about how retrieval ranks.
+Read-side relevance grading (deliveries, rg grades, engagement) and the write-side A/B experiment.
 
-**Read side — what gets injected, graded, and measured.** Every injected memory is logged to `memory_deliveries` (ephemeral DB) keyed by a cleaned recent-context window (`cairn/relevance.py:build_context_window`), with ranking provenance (`reranker_model`, `score_components`, `layer`, `scope`). Two labels accumulate per delivery:
-- **Agent-as-teacher grades** — the `rg` field in the `[cm]` block (`"id:grade"`, 0–3 + trailing `!` for hard-negative) is written back by `apply_relevance_grades`. (Behaviour already specified in the memory rules.)
-- **Behavioural engagement** (the PRIMARY, non-circular label) — at Stop time `apply_engagement` mechanically detects whether the response actually USED each delivered memory (distinctive-term overlap minus prompt terms) → `engaged` / `engaged_score`. Agent `rg` supplements it.
-
-A mechanical **bucket-4 prefilter** (`is_self_referential_meta`) drops self-referential meta-memories (gated by `RELEVANCE_PREFILTER_ENABLED`, **ON** since the 2026-07-02 review; corrections exempt). The cross-encoder reranker is device-aware (`config.resolve_reranker`): `BAAI/bge-reranker-base` (floor **0.015**, recalibrated 2026-07-07 from 3733 Opus `rg` labels — the earlier 0.10, calibrated 2026-07-02 from 9k `memory_deliveries`, dropped 56% of grade-3 load-bearing memories) on CUDA when `RERANKER_BGE_ENABLED` **and** the GPU has >= `RERANKER_MIN_VRAM_GB` (6 GB), else `cross-encoder/ms-marco-MiniLM-L-6-v2` (floor −3.0); the daemon owns the model and scores the recent-context window, so the hot hook path never imports torch. A **trained student** (`CROSS_ENCODER_STUDENT_PATH`, a local per-machine dir) overrides both when present — see "Phase 3 — trained cross-encoder student" below. Phases 1–3 are live; teacher-demotion (Phase 4) is still future work. **Intended automation for Phase 4**: reuse the `calibration_selfmod.py` / `ab_selfmod.py` self-mod cron pattern — label-volume-gated retrain, then a promotion gate before swapping the deployed model file. Note the deploy gate that actually shipped is **beat the incumbent**, not the spec's >~90% held-out agreement (`docs/spec-memory-relevance-grading.md` A.8), which is demoted to an `auto-promote-safe` flag.
-
-**Write side — generation quality.** Each agent-written memory is stamped with `config.GENERATION_PROMPT_VERSION` (the live value is machine-managed — `ab_selfmod` rewrites it on every promotion, so read `config.GENERATION_PROMPT_VERSION` rather than trusting a number quoted here) in `memories.source_ref` (the provenance join key; precedence `entry["source_ref"] > call param > NULL`). The live generation rules carry a dual-altitude **transferability** lever (generalised principle + specific anchor) and an **in-session duplicate-suppression** rule. Memory keywords **union** (not overwrite) on dedup, so re-encounters enrich findability.
-
-**Two A/B paths exist — do not conflate them:**
-- **LIVE per-prompt A/B** (`config.AB_TEST_ENABLED`, ON) — the real experiment. Each user prompt is randomly assigned **arm A** (control = current live rules) or **arm B** (control + one speculative variable from `config.AB_B_INSTRUCTION`, injected that turn). The prompt hook records the arm in `hook_state`; the Stop hook stamps that turn's memories with the arm's `source_ref` version (`config.AB_ARM_VERSIONS` — also machine-managed: `ab_selfmod` promotes B into A and queues a new candidate, so read the symbol, not a number quoted here). Subagents excluded; arm-B injection is post-cache (no cache disturbance). Compare arms with `.venv/bin/python cairn/query.py --delivery-stats` (engagement/grade grouped by generation version + reranker). To stop it: `AB_TEST_ENABLED=False`. To change what B tests: edit `AB_B_INSTRUCTION`.
-- **OFFLINE replay harness** (`cairn/ab_writeside.py`) — an analysis tool (not the live experiment, never run on the corpus yet): replays transcripts through prompt-A vs prompt-B → Opus 4.8 judge, BLIND + position-swapped + pairwise (findability / self-sufficiency / fitness), A/B unit = session cohort; metrics dedup rate / findability backtest / self-sufficiency cold-read. CLI: `.venv/bin/python cairn/ab_writeside.py replay|ab --limit N [--dry-run]`.
-
-### Phase 3 — trained cross-encoder student (shipped 2026-07-07)
-
-The read-side gate now has a trained student, not just instrumentation:
-
-- **`cairn/train_reranker.py`** — PAIRWISE fine-tune of a pretrained cross-encoder
-  (default `ms-marco-MiniLM`) on `training_data/relevance_silver.jsonl` via
-  `MarginRankingLoss` over `(query,memory)` logits; grades induce within-query order.
-  Held-out split is **by query** (`--min-gap 2` = train/eval on clear pairs only, since
-  adjacent grades dilute agreement to chance). The deploy gate is **beat the incumbent**
-  (`resolve_reranker()` scored on the SAME held-out pairs) by `--deploy-margin`, NOT an
-  arbitrary 90% (that's demoted to an `auto-promote-safe` flag). Saves to
-  `training_data/reranker-student/` only if it beats the incumbent.
-- **`cairn/calibrate_bge_floor.py`** — calibrates a suppression floor from the rg labels
-  (keep grade-3, drop grade-0). This surfaced and fixed a live bug: the bge floor `0.10`
-  was dropping 56% of load-bearing memories (now `0.015`).
-- **Deployment** — `config.resolve_reranker()` returns `CROSS_ENCODER_STUDENT_PATH`
-  (a LOCAL dir, offline-safe under `HF_HUB_OFFLINE`) when it exists, overriding the
-  pretrained base on any device. `training_data/` is gitignored, so the student is a
-  **per-machine** artifact — other nodes fall back to ms-marco gracefully until they have
-  their own. The student is PAIRWISE-trained (good ordering, compressed absolute scores),
-  so its floor is OFF (`CROSS_ENCODER_STUDENT_FLOOR=-100`) — it re-ranks via the
-  normalised blend without hard-suppressing; floor calibration is a follow-up.
-- **Status** — the first student beats the incumbent decisively (66.0% vs 39.6% held-out
-  pairwise agreement) and is live on this machine. It is NOT auto-promote-grade (<90%);
-  the lever to improve is MORE LABELS (per-delivery pool + other cairn instances), not
-  more epochs — 5 epochs (66.0%) did not beat 3 (67.0%): the student is data-limited.
-- **Engagement weak labels** — `train_reranker.py --engagement` merges behavioural
-  engagement observations (`memory_deliveries.engaged`) into the training pairs as
-  0/3 pseudo-grades, on top of the agent `rg` labels. Merged AFTER `split_by_query`,
-  so held-out stays pure agent-rg and the beat-the-incumbent deploy gate is never
-  judged on weak labels. Tunable via `--engagement-max-pairs` / `--engagement-min-pos`.
-  `ENGAGEMENT_MIN_POS_DEFAULT = 0.2`: the lexical overlap ratio runs median 0.110 /
-  p90 0.262, so the obvious-looking 0.5 admits ~1% of positives and starves the pool.
-  Note `engaged_score` is bimodal — semantic-second-chance rows store a cosine
-  (>= 0.55 by construction), lexical rows a much smaller overlap ratio.
-- **Semantic engagement backfill** — `.venv/bin/python cairn/backfill_semantic_engagement.py`
-  (`--dry-run`, `--limit`, `--json`) retro-scores historical deliveries, recovering the
-  response text from the session transcript since it is not stored on the delivery row.
-  Idempotent via the `engaged_method` tag (`lexical` / `semantic` / `semantic-backfill`) —
-  that column exists so the two measurement bases stay separable; **a rate computed across
-  untagged and tagged rows is invalid**. First run (2026-07-25): 981 examined, 26 rescued
-  (2.7%). The rescues look precise but low-recall — rescued rows average agent grade 2.17
-  vs 0.84 for non-rescued (n=6, too small to act on). Thresholds are NOT yet calibrated
-  against the grade labels; do that the way `calibrate_bge_floor.py` does, not by taste.
-
+Detail: **`/skill:cairn-relevance-grading`** — load it when reasoning about retrieval ranking, relevance labels, or the write-side A/B.
 ## Time handling (UTC storage, local display)
 
 Storage is **always UTC** (SQLite `CURRENT_TIMESTAMP` / `datetime('now')`); display
@@ -263,37 +127,9 @@ resolves `sqlite3 -> pysqlite3`.
 
 ## Active remediation programme (2026-07) — write-path gate
 
-**A staged remediation programme is running: `docs/spec-remediation-2026-07.md`.
-Read it before proposing or starting new Cairn work.**
+The 2026-07 write-path remediation programme and its gates.
 
-- **The gate is write-path only** (Amendment 1; the earlier blanket freeze is
-  retracted). Read-side work — thresholds, rerankers, retrieval, default-off
-  flags — ships freely, because a read-side error is bounded by the time it was
-  live. Write-path work (schema, corpus writes, archive/delete, replication)
-  lands only when its writes are **attributable** via `source_ref` and
-  **retractable in bulk** — a flag flipped off does not retract writes made
-  while it was on.
-- **Gates are data-volume, not date, based** — several stages need accumulated
-  `memory_deliveries` / `metrics` rows before they can be validated, so the
-  programme is applied over many sessions. Check the Status table in the spec
-  for the current stage before acting.
-- **Two measurement facts that invalidate naive analysis** (baseline
-  2026-07-26): 94.6% of `memory_deliveries` rows have **no negative class**
-  (untagged rows recorded only positives; non-engagement is indistinguishable
-  from never-scored), so never compute an engagement rate across
-  `engaged_method` strata — only the ~1,198 lexical rows carry a usable base
-  rate. And enforcement events (~24% of stop events) currently conflate hard
-  blocks with staged nudges.
-- **Subsystem tiers** are published in README (Subsystem maturity): supported /
-  experimental / frozen, with per-tier guarantees. Anything experimental that
-  writes to the durable store is off by default.
-- **Do not re-propose** items in the spec's Non-goals table — passive decay,
-  first-prompt suppression, student floor recalibration, semantic engagement
-  threshold tuning, and subsystem deletion are each rejected there with reasons.
-
-Update the spec's Status table in the same commit as any stage change, and
-append to its Amendment log rather than rewriting stages in place.
-
+Detail: **`/skill:cairn-remediation`** — load it when proposing or starting Cairn work that touches the write path.
 ## Git workflow
 
 All changes MUST be made on feature branches, not main. Branch naming: `feature/<short-description>` or `fix/<short-description>`. Merge to main only after testing.
