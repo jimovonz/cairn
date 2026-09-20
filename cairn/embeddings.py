@@ -991,15 +991,19 @@ def find_similar(
             # Both are close — keep at least 2
             limit = max(limit, 2)
 
-    # Diversity filter: greedily drop near-duplicates from results
+    # Diversity filter: greedily de-duplicate, keeping the NEWER of a colliding
+    # pair rather than the higher-scored one. Composite rank reflects relevance,
+    # not freshness, and recency weight is deliberately 0 -- so "highest
+    # composite" can be the older, superseded memory. The nightly contradiction
+    # scan is the only other resolver, leaving a window where a stale entry wins.
     from cairn.config import DIVERSITY_SIM_THRESHOLD
     diverse: list[dict[str, Any]] = []
     for r in filtered:
-        is_dup = False
-        for selected in diverse:
+        dup_idx = None
+        for i, selected in enumerate(diverse):
             # Same type+topic = duplicate
             if r.get("topic") == selected.get("topic") and r.get("type") == selected.get("type"):
-                is_dup = True
+                dup_idx = i
                 break
             # High content word overlap = likely duplicate
             r_words = set(r.get("content", "").lower().split())
@@ -1007,10 +1011,14 @@ def find_similar(
             if r_words and s_words:
                 overlap = len(r_words & s_words) / max(len(r_words | s_words), 1)
                 if overlap > DIVERSITY_SIM_THRESHOLD:
-                    is_dup = True
+                    dup_idx = i
                     break
-        if not is_dup:
+        if dup_idx is None:
             diverse.append(r)
+        elif str(r.get("updated_at") or "") > str(diverse[dup_idx].get("updated_at") or ""):
+            # Newer duplicate wins, replaced in place to preserve rank order.
+            r["diversity_replaced"] = diverse[dup_idx].get("id")
+            diverse[dup_idx] = r
 
     # Archived candidates (negative knowledge) gated relative to the best
     # active match — same rules as before, sourced from the single fetch.

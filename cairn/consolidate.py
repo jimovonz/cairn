@@ -267,8 +267,8 @@ def execute_consolidation(
     archived_reason = f"consolidated:{new_id}"
     for source_id in source_ids:
         conn.execute(
-            "UPDATE memories SET confidence = 0, archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (archived_reason, source_id)
+            "UPDATE memories SET confidence = 0, archived_reason = ?, superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (archived_reason, new_id, source_id)
         )
 
     conn.commit()
@@ -741,8 +741,8 @@ def execute_supersession(conn: sqlite3.Connection, superseded: list[dict]) -> in
         newer = c["newer"]
         reason = f"superseded: {c.get('reason', '')} (by #{newer['id']})"
         conn.execute(
-            "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (reason, older["id"])
+            "UPDATE memories SET archived_reason = ?, superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (reason, newer["id"], older["id"])
         )
         count += 1
         print(f"  Archived #{older['id']}: {reason[:100]}")
