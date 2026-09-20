@@ -50,3 +50,42 @@ def test_capture_writes_grades_engagement_and_provenance(monkeypatch, tmp_path):
     pb.cmd_capture(A())
     assert seen.get("source_ref") == "pi:m:genX"
     assert calls == {"grades": 1, "engagement": 1}
+
+
+def test_cc_tool_name_maps_pi_spellings():
+    assert pb._cc_tool_name("read") == "Read"
+    assert pb._cc_tool_name("edit") == "Edit"
+    assert pb._cc_tool_name("multi_edit") == "MultiEdit"
+    assert pb._cc_tool_name("Bash") == "Bash"  # already Claude Code spelling
+
+
+def test_extract_additional_context_unwraps_envelope():
+    import json
+    env = json.dumps({"hookSpecificOutput": {"additionalContext": "CAIRN GOTCHA: x"}})
+    assert pb._extract_additional_context(env) == "CAIRN GOTCHA: x"
+    assert pb._extract_additional_context("") == ""
+    assert pb._extract_additional_context("plain text") == "plain text"
+
+
+def test_cmd_pretool_prints_extracted_context(monkeypatch, tmp_path, capsys):
+    import json
+    import subprocess
+
+    f = tmp_path / "p.json"
+    f.write_text(json.dumps({"tool": "read", "input": {"file_path": "x.py"}}))
+
+    class R:
+        stdout = json.dumps({"hookSpecificOutput": {"additionalContext": "CAIRN GOTCHA: z"}})
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+
+    class A:
+        text_file = str(f)
+        session = "s"
+        transcript = ""
+        cwd = ""
+        model = ""
+
+    pb.cmd_pretool(A())
+    assert "CAIRN GOTCHA: z" in capsys.readouterr().out
