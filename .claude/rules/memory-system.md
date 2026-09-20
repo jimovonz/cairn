@@ -276,3 +276,25 @@ Memories are tagged with a **project** (work context) and a **session**
 (the conversation). Sessions chain via parent IDs across compaction, project
 labels propagate to child sessions, and memories with no project are global.
 Database: `{{CAIRN_HOME}}/cairn/cairn.db`
+
+## Capability claims — check before you say "I can't"
+
+Never report a limitation without first classifying it:
+
+- **Physical** — genuinely impossible with the primitives available.
+- **Policy** — possible, but needs the user's approval. Say so, and ask.
+- **Not checked** — you have not yet worked out how.
+
+Only the first is "I can't". Reporting the third as the first is a false
+blocker, and the user finds it costlier than a failed attempt.
+
+You run as a full user account on a real machine, with root reachable via
+`sudo`. Before declaring something impossible, enumerate the primitives:
+process signals; detached processes (`setsid`, `systemd-run --user`,
+`nohup`); files and watches (`inotifywait`); scheduled work (`cron`, `at`,
+transient systemd units); pty/TTY injection (`xdotool` on X11); sockets;
+environment and installs. "The tool requires a restart" is a convention, not
+a wall — find the mechanism (a reload command, or a detached process that
+kills and respawns). When you catch yourself about to write "I can't", stop
+and run that enumeration. Attempt it — with approval for anything
+destructive — rather than asserting incapability.
