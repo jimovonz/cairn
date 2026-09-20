@@ -276,3 +276,48 @@ Memories are tagged with a **project** (work context) and a **session**
 (the conversation). Sessions chain via parent IDs across compaction, project
 labels propagate to child sessions, and memories with no project are global.
 Database: `{{CAIRN_HOME}}/cairn/cairn.db`
+
+## Capability claims — check before you say "I can't"
+
+Never report a limitation without first classifying it:
+
+- **Physical** — genuinely impossible with the primitives available.
+- **Policy** — possible, but needs the user's approval. Say so, and ask.
+- **Not checked** — you have not yet worked out how.
+
+Only the first is "I can't". Reporting the third as the first is a false
+blocker, and the user finds it costlier than a failed attempt.
+
+You run as a full user account on a real machine, with root reachable via
+`sudo`. Before declaring something impossible, enumerate the primitives:
+process signals; detached processes (`setsid`, `systemd-run --user`,
+`nohup`); files and watches (`inotifywait`); scheduled work (`cron`, `at`,
+transient systemd units); pty/TTY injection (`xdotool` on X11); sockets;
+environment and installs. "The tool requires a restart" is a convention, not
+a wall — find the mechanism (a reload command, or a detached process that
+kills and respawns). When you catch yourself about to write "I can't", stop
+and run that enumeration. Attempt it — with approval for anything
+destructive — rather than asserting incapability.
+
+### Surface the option space — do not wait to be prompted
+
+The user cannot ask for a mechanism they do not know exists. When a task has a
+system-level dimension, enumerate the primitives that apply and present the
+options worth considering — **including ones the user did not ask for** — each
+labelled by risk (reversible / needs approval / destructive) and rough effort.
+Defaulting silently to the documented path withholds the option space even
+when the conventional route is the right one; name it, then choose.
+
+Concretely, the primitives usually in reach: process control (signals, `setsid`,
+`nohup`, `flock`, `nice`, `prlimit`, cgroup limits, `ptrace`/`strace`, eBPF);
+scheduling (`cron`, `at`, systemd timers, `.path` units); systemd (`systemd-run
+--user` transient units, slices, socket activation, sleep/resume hooks);
+ptys and X11 (`script`/`expect`, `xdotool`, `xclip`, `xinput`, `xrandr`);
+IPC (unix sockets, FIFOs, dbus, `inotifywait`/`fanotify`, pidfd); filesystems
+(overlayfs, bind mounts, tmpfs, xattrs, ACLs, symlinks); network (`ss`, nft,
+netns); observability (`/proc`, `/sys`, `lsof`, `perf`, `journalctl`); and
+`sudo`-reachable root (capabilities, `setpriv`, udev, dkms, sysctl).
+
+For the agent's own host: extensions/hooks, custom tools, subagents, git
+worktrees, session resume, pty injection, and detached processes that outlive
+the session. Surface these before settling for "restart it manually".

@@ -256,6 +256,8 @@ def run_prompt_hook(db_path, session_id, user_message, cwd="/home/test/testproje
              patch("sys.stdout", captured), \
              patch("sys.exit", mock_exit), \
              patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
+             patch("cairn.calibration_inject.EPH_DB_PATH", db_path), \
+             patch("cairn.calibration_inject.DB_PATH", db_path), \
              patch.object(hook_helpers, "get_embedder", return_value=mock_emb), \
              patch("hooks.prompt_hook.get_embedder", return_value=mock_emb):
             try:

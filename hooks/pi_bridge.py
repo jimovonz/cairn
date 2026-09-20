@@ -50,12 +50,13 @@ def _ensure_project(session, transcript, cwd):
     try:
         from hooks.stop_hook import register_session
         from hooks.hook_helpers import get_conn, resolve_project
-    except Exception:
+    except Exception as e:
+        sys.stderr.write(f"cairn ensure-project import error: {e}\n")
         return
     try:
         register_session(session, transcript or "")
-    except Exception:
-        pass
+    except Exception as e:
+        sys.stderr.write(f"cairn register_session error: {e}\n")
     if not cwd:
         return
     try:
@@ -69,8 +70,31 @@ def _ensure_project(session, transcript, cwd):
                     conn.commit()
         finally:
             conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        sys.stderr.write(f"cairn ensure-project error: {e}\n")
+
+
+def _pi_source_ref(model, session):
+    """Write provenance for pi-authored memories: pi:<model>:<gen-version>.
+
+    Mirrors stop_hook._arm_source_ref: the live generation version, or the A/B
+    arm's version when the experiment is on (the prompt hook records the arm in
+    hook_state). Without the version a pi memory is unattributable -- it cannot
+    be A/B'd or bulk-retracted, and the source_ref='pi' literal erased both the
+    version and the authoring model.
+    """
+    version = "unknown"
+    try:
+        from cairn import config as _c
+        version = getattr(_c, "GENERATION_PROMPT_VERSION", "unknown")
+        if getattr(_c, "AB_TEST_ENABLED", False) and session:
+            from hooks.hook_helpers import load_hook_state
+            arm = load_hook_state(session, "ab_arm")
+            if arm:
+                version = getattr(_c, "AB_ARM_VERSIONS", {}).get(arm, version)
+    except Exception as e:
+        sys.stderr.write(f"cairn source_ref resolve error: {e}\n")
+    return f"pi:{model or 'unknown'}:{version}"
 
 
 def cmd_bootstrap(a):
@@ -200,10 +224,37 @@ def cmd_capture(a):
     if parsed.entries:
         try:
             stored = insert_memories(
-                parsed.entries, session_id=a.session, transcript_path=a.transcript, source_ref="pi"
+                parsed.entries, session_id=a.session, transcript_path=a.transcript,
+                source_ref=_pi_source_ref(getattr(a, "model", ""), a.session),
             )
         except Exception as e:
             sys.stderr.write(f"cairn insert error: {e}\n")
+    # Relevance grades and the behavioural engagement label are the measurement
+    # apparatus -- the Claude Code Stop hook writes both (stop_hook.py
+    # apply_relevance_grades / apply_engagement). The pi bridge parsed the [cm]
+    # block but dropped them, so every pi turn widened an unlabelled slice of
+    # the store that cannot be backfilled later.
+    if parsed.relevance_grades:
+        try:
+            from cairn.relevance import apply_relevance_grades
+            apply_relevance_grades(list(parsed.relevance_grades), session_id=a.session)
+        except Exception as e:
+            sys.stderr.write(f"cairn relevance grade write-back error: {e}\n")
+    if parsed.fit_declared:
+        try:
+            from cairn.relevance import apply_fit_labels
+            apply_fit_labels(list(parsed.fit_pairs), session_id=a.session)
+        except Exception as e:
+            sys.stderr.write(f"cairn fit label write-back error: {e}\n")
+    if a.session:
+        try:
+            from cairn.relevance import apply_engagement
+            from cairn.session_extract import _clean_assistant_text
+            # Score the cleaned response so the [cm] tail the agent echoes while
+            # WRITING memories does not inflate the primary label (read/write parity).
+            apply_engagement(_clean_assistant_text(text), session_id=a.session)
+        except Exception as e:
+            sys.stderr.write(f"cairn engagement write-back error: {e}\n")
     # Layer 2: stage cross-project keyword matches for the next prompt. The stop
     # hook does this on the other host; without it nothing ever populated the
     # staged channel here, so draining it would always have come back empty.
@@ -216,8 +267,8 @@ def cmd_capture(a):
     if parsed.confidence_updates:
         try:
             apply_confidence_updates(parsed.confidence_updates, session_id=a.session)
-        except Exception:
-            pass
+        except Exception as e:
+            sys.stderr.write(f"cairn confidence update error: {e}\n")
     print(f"captured {stored}")
 
 
@@ -353,6 +404,79 @@ def cmd_checkpoint(a):
     sys.stdout.write(NUDGE_TEXT)
 
 
+# pi tool names are lower-case where Claude Code capitalises them; pretool_hook
+# dispatches on the Claude Code spelling.
+_PI_TOOL_TO_CC = {
+    "read": "Read", "edit": "Edit", "write": "Write",
+    "multiedit": "MultiEdit", "multi_edit": "MultiEdit", "powershell": "Bash",
+}
+
+
+def _cc_tool_name(tool):
+    return _PI_TOOL_TO_CC.get(str(tool or "").lower(), str(tool or ""))
+
+
+def _extract_additional_context(stdout):
+    """Pull the injected text out of pretool_hook's Claude Code JSON envelope.
+
+    The hook prints {"hookSpecificOutput": {"additionalContext": ...}} (or, when
+    the proxy is enabled, stages to a sidecar instead). Either way this returns
+    the plain text, or "" when the hook served nothing. A non-JSON payload is
+    passed through unchanged so a future format change degrades to visible text
+    rather than silence.
+    """
+    out = (stdout or "").strip()
+    if not out:
+        return ""
+    try:
+        return json.loads(out).get("hookSpecificOutput", {}).get("additionalContext", "") or ""
+    except Exception:
+        return out
+
+
+def cmd_pretool(a):
+    """File-keyed injection for a tool call: gotchas/corrections, then context,
+    then code-graph structure.
+
+    Reuses hooks/pretool_hook.py verbatim by feeding it the same JSON Claude Code
+    sends on stdin, so the two hosts cannot drift on what counts as a file-keyed
+    gotcha. The proxy is forced off in the child env so the hook prints its
+    envelope here instead of staging it to a sidecar no proxy will drain on pi.
+    """
+    raw = _read_text(a.text_file)
+    if not raw.strip():
+        return
+    try:
+        payload = json.loads(raw)
+    except Exception as e:
+        sys.stderr.write(f"cairn pretool payload error: {e}\n")
+        return
+    hook_input = {
+        "tool_name": _cc_tool_name(payload.get("tool") or payload.get("tool_name")),
+        "tool_input": payload.get("input") or payload.get("tool_input") or {},
+        "session_id": a.session,
+        "cwd": a.cwd or os.getcwd(),
+        "transcript_path": a.transcript,
+    }
+    hook = Path(__file__).resolve().parent / "pretool_hook.py"
+    env = dict(os.environ)
+    env["CAIRN_PROXY_ENABLED"] = "0"
+    import subprocess
+    try:
+        r = subprocess.run(
+            [sys.executable, str(hook)], input=json.dumps(hook_input),
+            capture_output=True, text=True, timeout=20, env=env,
+        )
+    except Exception as e:
+        sys.stderr.write(f"cairn pretool run error: {e}\n")
+        return
+    if r.stderr.strip():
+        sys.stderr.write(r.stderr)
+    text = _extract_additional_context(r.stdout)
+    if text.strip():
+        sys.stdout.write(text)
+
+
 def cmd_spec(_a):
     try:
         from hooks.prompt_hook import MEMORY_FORMAT_SPEC
@@ -364,20 +488,22 @@ def cmd_spec(_a):
 def main():
     p = argparse.ArgumentParser(description="Cairn pi bridge")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name in ("retrieve", "capture", "enforce", "bootstrap", "staged", "checkpoint"):
+    for name in ("retrieve", "capture", "enforce", "bootstrap", "staged", "checkpoint", "pretool"):
         sp = sub.add_parser(name)
         sp.add_argument("--session", default="")
         sp.add_argument("--transcript", default="")
         sp.add_argument("--cwd", default="")
         sp.add_argument("--text-file", dest="text_file", default="")
         sp.add_argument("--query", default="")
+        sp.add_argument("--model", default="",
+                        help="authoring model id, stamped into source_ref for provenance")
         sp.add_argument("--continuation", type=int, default=0)
         sp.add_argument("--first", action="store_true",
                         help="first prompt of the session (selects layer 1 over layer 1.5)")
     sub.add_parser("spec")
     a = p.parse_args()
     {"retrieve": cmd_retrieve, "capture": cmd_capture, "enforce": cmd_enforce, "spec": cmd_spec, "bootstrap": cmd_bootstrap, "staged": cmd_staged,
-     "checkpoint": cmd_checkpoint}[a.cmd](a)
+     "checkpoint": cmd_checkpoint, "pretool": cmd_pretool}[a.cmd](a)
 
 
 if __name__ == "__main__":
