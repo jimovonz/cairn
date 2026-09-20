@@ -202,7 +202,7 @@ def _daemon_vector_search(texts: list[str], n_base: int, min_sim: float,
     return None
 
 
-def _daemon_rerank(query: str, candidates: list[str], model: str = None):
+def _daemon_rerank(query: str, candidates: list[str], model: Optional[str] = None):
     """Re-rank candidates via the daemon's cross-encoder. Returns
     (scores, score_floor, model_name) or None. The daemon resolves the
     device-appropriate model + floor (bge on CUDA, ms-marco on CPU) and reports
@@ -1151,6 +1151,10 @@ def find_nearest(conn: sqlite3.Connection, text: str, limit: int = 1) -> list[di
             } for r in rows[:limit]]
 
     query_vec = embed(text)
+    if query_vec is None:
+        # Embedder down/failed. Returning no matches is the fail-soft choice:
+        # the alternative crashed in cosine_similarity below with a None vector.
+        return []
 
     vec_candidates: list[dict[str, Any]] = []
     if _load_vec(conn):
