@@ -1,0 +1,4 @@
+{
+  "stubPath": "typings",
+  "exclude": ["**/node_modules", "**/__pycache__", ".venv", ".code-review-graph"]
+}

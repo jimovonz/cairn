@@ -40,7 +40,8 @@ def fresh_db():
         deleted_at TIMESTAMP,
         synced_at TIMESTAMP,
         facts TEXT,
-        topic_embedding BLOB)""")
+        topic_embedding BLOB,
+        superseded_by INTEGER)""")
     conn.execute("""CREATE TABLE memory_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id INTEGER, content TEXT, session_id TEXT,
         changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")

@@ -47,12 +47,13 @@ def init():
         )
     """)
     # Migration: add columns to existing DB
-    for col, coltype in [("embedding", "BLOB"), ("session_id", "TEXT"), ("project", "TEXT"), ("confidence", "REAL DEFAULT 0.7"), ("source_start", "INTEGER"), ("source_end", "INTEGER"), ("archived_reason", "TEXT"), ("anchor_line", "INTEGER"), ("depth", "INTEGER"), ("associated_files", "TEXT"), ("keywords", "TEXT"), ("facts", "TEXT"), ("origin_id", "TEXT"), ("user_id", "TEXT"), ("updated_by", "TEXT"), ("team_id", "TEXT"), ("source_ref", "TEXT"), ("deleted_at", "TIMESTAMP"), ("synced_at", "TIMESTAMP"), ("push_suppressed", "INTEGER DEFAULT 0")]:
+    for col, coltype in [("embedding", "BLOB"), ("session_id", "TEXT"), ("project", "TEXT"), ("confidence", "REAL DEFAULT 0.7"), ("source_start", "INTEGER"), ("source_end", "INTEGER"), ("archived_reason", "TEXT"), ("anchor_line", "INTEGER"), ("depth", "INTEGER"), ("associated_files", "TEXT"), ("keywords", "TEXT"), ("facts", "TEXT"), ("origin_id", "TEXT"), ("user_id", "TEXT"), ("updated_by", "TEXT"), ("team_id", "TEXT"), ("source_ref", "TEXT"), ("deleted_at", "TIMESTAMP"), ("synced_at", "TIMESTAMP"), ("push_suppressed", "INTEGER DEFAULT 0"), ("superseded_by", "INTEGER")]:
         try:
             conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {coltype}")
         except sqlite3.OperationalError:
             pass  # Column already exists
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_superseded_by ON memories(superseded_by)")
     # Version history — preserves old content when memories are updated
     conn.execute("""
         CREATE TABLE IF NOT EXISTS memory_history (

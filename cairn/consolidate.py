@@ -104,15 +104,15 @@ def score_cluster_nli(cluster: list[dict]) -> list[dict]:
     # Check for bidirectional entailment
     entailment_graph: dict[int, set[int]] = {i: set() for i in range(len(cluster))}
     for k, (i, j) in enumerate(pair_indices):
-        fwd = scores[k * 2]
-        rev = scores[k * 2 + 1]
+        fwd: float | list[float] = scores[k * 2]
+        rev: float | list[float] = scores[k * 2 + 1]
         # Score format depends on model — some return 3 classes, some return scalar
         if isinstance(fwd, list):
-            fwd_entail = fwd[1]  # [contradiction, entailment, neutral]
-            rev_entail = rev[1]
+            fwd_entail = float(fwd[1])  # [contradiction, entailment, neutral]
+            rev_entail = float(rev[1])
         else:
-            fwd_entail = fwd
-            rev_entail = rev
+            fwd_entail = float(fwd)
+            rev_entail = float(rev)
 
         if fwd_entail >= NLI_ENTAILMENT_THRESHOLD and rev_entail >= NLI_ENTAILMENT_THRESHOLD:
             entailment_graph[i].add(j)
@@ -179,6 +179,7 @@ def generate_consolidated_content(cluster: list[dict]) -> Optional[str]:
 
         msg_payload = json.dumps({"type": "user", "message": {"role": "user",
             "content": [{"type": "text", "text": prompt}]}})
+        assert proc.stdin is not None and proc.stdout is not None  # both PIPE
         proc.stdin.write((msg_payload + "\n").encode())
         proc.stdin.flush()
 
@@ -267,8 +268,8 @@ def execute_consolidation(
     archived_reason = f"consolidated:{new_id}"
     for source_id in source_ids:
         conn.execute(
-            "UPDATE memories SET confidence = 0, archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (archived_reason, source_id)
+            "UPDATE memories SET confidence = 0, archived_reason = ?, superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (archived_reason, new_id, source_id)
         )
 
     conn.commit()
@@ -582,15 +583,15 @@ def score_contradictions_nli(pairs: list[dict]) -> list[dict]:
 
     confirmed = []
     for k, p in enumerate(pairs):
-        fwd = scores[k * 2]
-        rev = scores[k * 2 + 1]
+        fwd: float | list[float] = scores[k * 2]
+        rev: float | list[float] = scores[k * 2 + 1]
 
         if isinstance(fwd, list):
-            fwd_contra = fwd[0]  # [contradiction, entailment, neutral]
-            rev_contra = rev[0]
+            fwd_contra = float(fwd[0])  # [contradiction, entailment, neutral]
+            rev_contra = float(rev[0])
         else:
-            fwd_contra = fwd
-            rev_contra = rev
+            fwd_contra = float(fwd)
+            rev_contra = float(rev)
 
         # Either direction detecting contradiction is sufficient
         max_contra = max(fwd_contra, rev_contra)
@@ -653,6 +654,7 @@ def assess_contradictions_haiku(contradictions: list[dict]) -> list[dict]:
 
         msg_payload = json.dumps({"type": "user", "message": {"role": "user",
             "content": [{"type": "text", "text": prompt}]}})
+        assert proc.stdin is not None and proc.stdout is not None  # both PIPE
         proc.stdin.write((msg_payload + "\n").encode())
         proc.stdin.flush()
 
@@ -741,8 +743,8 @@ def execute_supersession(conn: sqlite3.Connection, superseded: list[dict]) -> in
         newer = c["newer"]
         reason = f"superseded: {c.get('reason', '')} (by #{newer['id']})"
         conn.execute(
-            "UPDATE memories SET archived_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (reason, older["id"])
+            "UPDATE memories SET archived_reason = ?, superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (reason, newer["id"], older["id"])
         )
         count += 1
         print(f"  Archived #{older['id']}: {reason[:100]}")
