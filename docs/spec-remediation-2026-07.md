@@ -471,3 +471,34 @@ class:
 
 The stage headings remain as topical grouping and dependency record. The
 Status table tracks stages; execution follows classes.
+
+### Amendment 3 — 2026-09-20: pi-host write-path parity + supersession audit key
+
+The pi host (`hooks/pi_bridge.py` + the `pi-cairn` extension) parsed the
+assistant's `[cm]` block but dropped the `rg` grades and never called
+`apply_engagement`, and it stamped every memory `source_ref="pi"` — erasing both
+the generation version and the authoring model. Every pi turn therefore widened
+an unlabelled, unattributable slice of the store, and neither can be backfilled.
+
+- **`cmd_capture` now writes the same labels as the Stop hook** —
+  `apply_relevance_grades`, `apply_fit_labels` and `apply_engagement` (cleaned
+  text, so the `[cm]` tail does not inflate the primary label) — and stamps
+  `source_ref = pi:<model>:<gen-version>` (A/B-arm-aware via `_pi_source_ref`).
+  This satisfies the write-path gate's *attributable* condition for pi writes.
+- The two remaining bare excepts (`register_session`, `apply_confidence_updates`)
+  now log to stderr.
+
+Also:
+
+- **`memories.superseded_by`** (nullable `INTEGER`, indexed) records the memory
+  that replaced an archived one, set by `consolidate.execute_supersession` and
+  the consolidation archive. `archived_reason` recorded *why*, not *what*; this
+  is the audit key for false supersessions and the integer join needed to turn
+  used-then-archived deliveries into negative labels (Stage 2S work, not yet
+  done).
+- **Read-side:** the diversity filter now keeps the **newer** of a colliding
+  pair rather than the higher composite score. Recency weight is deliberately 0
+  and the nightly contradiction scan is the only other resolver, so a superseded
+  memory could be injected and scored `engaged=1` for up to a day.
+
+Functional gate: full suite 1611 passed; `pi-cairn` 82 passed, `tsgo` clean.

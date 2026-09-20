@@ -821,7 +821,7 @@ When cairn injects context (any layer), the LLM receives:
 | `type`, `topic`, `project` | Memory metadata |
 | `date` | Last updated timestamp |
 | `confidence` | Veracity score (0.0–1.0) |
-| `score` | Composite retrieval score (similarity + recency + scope) |
+| `score` | Composite retrieval score (similarity + keyword_overlap + scope) |
 | `recency_days` | Days since last update |
 | `reliability` | `strong` (score≥0.6), `moderate` (≥0.4), `weak` (<0.4) |
 | `similarity` | Cosine similarity to query |
@@ -912,7 +912,7 @@ rrf_score = Σ 1/(k + rank_i)  across each search method that found this memory
 
 Where `k = RRF_K` (config, 60 — the standard constant that prevents a single high rank from dominating). A memory found by both methods gets contributions from both rank terms — dual-match memories naturally score higher than single-method matches.
 
-FTS5 uses Porter stemming and unicode61 tokenizer. Stopwords are filtered before building the OR-joined query. Each search path returns up to 20 candidates; RRF merges them, and the fused score replaces the old hardcoded 0.30 penalty for FTS-only results.
+FTS5 uses the default unicode61 tokenizer — the table is created with no `tokenize` clause, so there is no Porter stemming. Stopwords are filtered before building the OR-joined query. Each search path returns up to 20 candidates; RRF merges them, and the fused score replaces the old hardcoded 0.30 penalty for FTS-only results.
 
 ### Correction-file association
 
@@ -954,14 +954,15 @@ Critically, the LLM must **never ask the user** whether to check memory. The Sto
 Results are pre-ranked hook-side using a single composite score rather than passing multiple signals for the LLM to combine:
 
 ```
-score = 0.50 * similarity + 0.15 * keyword_overlap + 0.05 * recency_decay + 0.05 * scope_weight
+score = 0.50 * similarity + 0.15 * keyword_overlap + 0.05 * scope_weight
 ```
 
 Where:
 - `similarity` — cosine similarity between query and memory embeddings
 - `keyword_overlap` — overlap between query terms and memory keywords
-- `recency_decay` — exponential decay with 30-day half-life (`e^(-0.693 * age_days / 30)`)
 - `scope_weight` — 1.0 for current project, 0.3 for global
+
+Recency is deliberately **not** a ranking term (`SCORE_W_RECENCY = 0.0`): age is not a usefulness signal, and obsolescence is handled by supersession. `recency_days` is still emitted as a display attribute.
 
 Confidence is deliberately excluded from scoring (weight 0.0) — it represents veracity (corroboration), not query relevance. A memory can be highly corroborated but irrelevant to the current query, or uncorroborated but exactly what's needed.
 
@@ -982,11 +983,11 @@ Before injection, results pass through multiple quality filters (all configurabl
 | Gate | Default | Effect |
 |------|---------|--------|
 | **Low-info pre-filter** | context_need < 8 chars or all stopwords → skip | Prevents embedding generic queries like "help", "continue" |
-| **Garbage gate** | max_similarity < 0.35 → reject all | Prevents injection of irrelevant context |
-| **Borderline gate** | max_similarity < 0.45 AND top_score < 0.50 → reject | Eliminates weak-but-coherent matches that pass the garbage gate |
+| **Garbage gate** | max_similarity < 0.45 → reject all | Prevents injection of irrelevant context |
+| **Borderline gate** | per-entry similarity < 0.35 requires top_score ≥ 0.50 | Eliminates weak-but-coherent matches that pass the garbage gate |
 | **Adaptive threshold** | +0.05–0.10 boost if recent retrieval outcomes are poor | Self-tightening based on harmful/neutral rate over last 7 days |
 | **Relative filter** | similarity < 0.7 × max_similarity → drop | Removes tail noise, keeps only the locally relevant cluster |
-| **Diversity filter** | cosine > 0.9 to already-selected → drop | Deduplicates near-identical results |
+| **Diversity filter** | same type+topic, or content word overlap (Jaccard) > 0.85 vs already-selected → drop unless newer | Deduplicates near-identical results; keeps the newer of a colliding pair |
 | **Cross-encoder re-ranking** | joint (query, memory) scoring; score floor filter | Catches semantic relationships independent embeddings miss; blends with composite score |
 | **Dominance suppression** | if top1 - top2 < 0.05 → include both | Prevents false certainty from weak leaders |
 | **Weak-entry suppression** | top result score < 0.4 → don't inject | Prevents single weak matches from biasing answers |
