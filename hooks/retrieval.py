@@ -452,6 +452,12 @@ def retrieve_context(context_need: str, session_id: Optional[str] = None, max_pe
         project_results = [r for r in project_results if r["id"] not in already_served]
         global_results = [r for r in global_results if r["id"] not in already_served]
 
+    # Same-session gate: hybrid_search already drops live same-session rows, but
+    # apply it here too so the on-demand L3 path cannot diverge from the others.
+    from hooks.hook_helpers import _drop_live_same_session
+    project_results, global_results = _drop_live_same_session(
+        project_results, global_results, session_id)
+
     project_results = project_results[:max_project]
     global_results = global_results[:max_global]
 
@@ -572,7 +578,7 @@ def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str]
 
     try:
         rows = conn.execute(f"""
-            SELECT id, type, topic, content, updated_at, project, confidence, keywords, archived_reason
+            SELECT id, type, topic, content, updated_at, project, confidence, keywords, archived_reason, session_id
             FROM memories
             WHERE keywords IS NOT NULL
             AND ({where_kw})
@@ -590,7 +596,7 @@ def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str]
     kw_set = {k.strip().lower() for k in keywords_list if k.strip()}
     results = []
     for r in rows:
-        mem_id, mem_type, topic, content, updated_at, mem_project, confidence, mem_keywords, archived_reason = r
+        mem_id, mem_type, topic, content, updated_at, mem_project, confidence, mem_keywords, archived_reason, mem_session = r
         mem_kw_set = {k.strip().lower() for k in (mem_keywords or "").split(",") if k.strip()}
         overlap = len(kw_set & mem_kw_set)
         if overlap < L2_KEYWORD_MIN_OVERLAP:
@@ -606,6 +612,7 @@ def _keyword_match_search(conn, keywords_list: list[str], project: Optional[str]
             "score": overlap_ratio,
             "keyword_overlap": overlap,
             "archived_reason": archived_reason or "",
+            "session_id": mem_session,
         })
 
     results.sort(key=lambda x: (-x["keyword_overlap"], x["updated_at"] or ""), reverse=False)
@@ -667,7 +674,7 @@ def layer2_cross_project_search(keywords_list: list[str], session_id: Optional[s
 
     staged_xml = build_context_xml(
         f"cross-project keywords: {' '.join(keywords_list)[:60]}", project, "cross-project",
-        [], cross_project
+        [], cross_project, session_id=session_id
     )
 
     save_hook_state(session_id, "staged_context", staged_xml)

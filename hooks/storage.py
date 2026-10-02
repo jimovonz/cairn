@@ -350,6 +350,15 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     poisons it. Stamped at the call site that knows the writer, never blanket-
     defaulted in this shared sink (a forgetful caller then yields NULL, not a
     wrong version)."""
+    # Keep the session's compaction watermark fresh even on an empty batch.
+    # Compaction can happen between runs in autonomous operation, and the
+    # watermark is what tells the injection gate whether a same-session memory
+    # is still live (echo) or pre-compaction (recovery). Fail-open.
+    try:
+        hook_helpers.record_compaction_watermark(session_id, transcript_path)
+    except Exception:
+        pass
+
     if not entries:
         return 0
 
