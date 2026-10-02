@@ -488,6 +488,12 @@ def parse_gitmodules(text):
 def _git_refs(text):
     out = []
     for line in text.splitlines():
+        # Comments and Dockerfile LABELs mention repos (homepage, "see ...") without
+        # depending on them. `#` only starts a comment at line start or after
+        # whitespace; `repo.git#egg=x` fragments are part of the URL.
+        line = re.split(r"(?:^|\s)#", line, maxsplit=1)[0]
+        if re.match(r"\s*LABEL\b", line, re.I):
+            continue
         for m in _GH_REPO.finditer(line):
             ref = m.group(3)
             if not ref:
@@ -516,18 +522,31 @@ def parse_pyproject(text):
         import tomllib
         data = tomllib.loads(text)
     except Exception:
-        return _git_refs(text)
+        # Unstructured fallback: only lines that are plainly VCS requirements, so
+        # [project.urls] homepage links are not read as dependencies.
+        return _git_refs("\n".join(l for l in text.splitlines() if "git+" in l))
     deps = list((data.get("project") or {}).get("dependencies") or [])
     for group in ((data.get("project") or {}).get("optional-dependencies") or {}).values():
         deps += group
     poetry = ((data.get("tool") or {}).get("poetry") or {}).get("dependencies") or {}
     deps += [k for k in poetry if k.lower() != "python"]
+    deps += (data.get("build-system") or {}).get("requires") or []
+    # Dependency fields only; [project.urls] and friends are not dependencies.
+    vcs = [d for d in deps if isinstance(d, str)]
+    for spec in poetry.values():
+        if isinstance(spec, dict) and spec.get("git"):
+            vcs.append(f"{spec['git']}" + (f"@{spec['branch']}" if spec.get("branch") else ""))
+    for spec in (((data.get("tool") or {}).get("uv") or {}).get("sources") or {}).values():
+        if isinstance(spec, dict) and spec.get("git"):
+            vcs.append(f"{spec['git']}" + (f"@{spec['branch']}" if spec.get("branch") else ""))
     out = []
     for d in deps:
+        if not isinstance(d, str):
+            continue
         m = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9_.-]*)\s*(\[[^\]]*\])?\s*(.*)", d)
         if m and "github.com" not in d:
             out.append(("python", norm_dist(m.group(1)), m.group(3).strip() or None))
-    return out + _git_refs(text)
+    return out + _git_refs("\n".join(vcs))
 
 
 def parse_repos_file(text):
@@ -696,7 +715,11 @@ def main():
         stats(a.db)
     elif a.cmd == "deps":
         from cairn import config
-        for org in a.orgs or config.ORG_INDEX_ORGS:
+        orgs = a.orgs or config.ORG_INDEX_ORGS
+        if not orgs:
+            sys.exit("no orgs to harvest: pass --orgs or set ORG_INDEX_ORGS "
+                     "(and ORG_INDEX_ENABLED) in cairn config")
+        for org in orgs:
             build_deps(org, a.db)
     elif a.cmd == "consumers":
         consumers(a.db, a.target, org=a.org, as_json=a.json)

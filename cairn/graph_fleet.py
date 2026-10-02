@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -152,23 +153,25 @@ def _run(crg: str, args: list[str], timeout: int = 600) -> tuple[bool, str]:
         return False, str(e)
 
 
-def _daemon_state(crg: str) -> tuple[bool, set[str]]:
-    """(daemon_running, repos already in the watch config).
+def _daemon_state(crg: str) -> tuple[Optional[bool], str]:
+    """(daemon_running, status text). `daemon_running` is None when the state
+    could not be read.
 
     `crg daemon status` exits 0 whether or not the daemon is up, so liveness has
-    to be read from its output, not its return code. Its table lists the watch
-    config as `alias<spaces>path` rows.
+    to be read from its output, not its return code. The text is returned raw and
+    matched per repo by `_is_watched`: parsing the table into columns broke on
+    paths containing spaces or extra columns.
     """
     ok, out = _run(crg, ["daemon", "status"], timeout=15)
     if not ok:
-        return False, set()
-    running = "not running" not in out.lower()
-    registered: set[str] = set()
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[1].startswith("/"):
-            registered.add(parts[1].rstrip("/"))
-    return running, registered
+        return None, ""
+    return "not running" not in out.lower(), out
+
+
+def _is_watched(status_text: str, repo: str) -> bool:
+    """True if `repo` appears as a whole path in the daemon status output."""
+    path = repo.rstrip("/")
+    return re.search(r"(?<![\w./-])" + re.escape(path) + r"/?(?![\w./-])", status_text) is not None
 
 
 def _watch_daemon_enabled() -> bool:
@@ -199,7 +202,7 @@ def sweep(roots: Optional[list[str]] = None, *, build_missing: bool = True,
              "failed": [], "repos": repos}
     use_daemon = _watch_daemon_enabled()
     newly_registered = 0
-    daemon_running, already_watched = _daemon_state(crg) if use_daemon else (False, set())
+    daemon_running, watch_status = _daemon_state(crg) if use_daemon else (False, "")
 
     for repo in repos:
         present = _graph_db_present(repo)
@@ -228,14 +231,17 @@ def sweep(roots: Optional[list[str]] = None, *, build_missing: bool = True,
                 # the pre-sweep watch config instead. Counting every add as new
                 # made the restart below fire on every hourly sweep, and each
                 # restart leaked a full generation of watcher processes.
-                if repo.rstrip("/") not in already_watched:
+                if not _is_watched(watch_status, repo):
                     newly_registered += 1
 
     if use_daemon:
         # Ensure the daemon is up; restart only if we registered new repos this
         # sweep (a running daemon does not hot-load newly-added repos).
-        sub = "restart" if (daemon_running and newly_registered) else "start"
-        _run(crg, ["daemon", sub], timeout=30)
+        # Unknown state (status unreadable): do nothing rather than guess — a
+        # blind `start`/`restart` is what leaked watcher generations.
+        if daemon_running is not None:
+            sub = "restart" if (daemon_running and newly_registered) else "start"
+            _run(crg, ["daemon", sub], timeout=30)
 
     _record_sweep_state(stats)
 

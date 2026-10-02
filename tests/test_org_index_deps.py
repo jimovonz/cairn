@@ -95,3 +95,32 @@ def test_consumers_matches_exactly_despite_underscores(tmp_path, capsys):
     assert [r[1] for r in oi.consumers(db, "o/nav-msgs")] == ["geo"]
     assert [r[1] for r in oi.consumers(db, "vehicle_msgs")] == ["nav"]
     assert [r[1] for r in oi.consumers(db, "lib_slow_sync")] == ["tool"]
+
+
+def test_comments_labels_and_project_urls_are_not_dependencies():
+    assert oi.parse_requirements("# see https://github.com/x/y\nrequests>=2\n") == [
+        ("python", "requests", ">=2")]
+    assert oi.parse_requirements("git+https://github.com/o/r.git#egg=r\n") == [
+        ("git", "o/r", None)]
+    assert oi._git_refs('LABEL source="https://github.com/o/self"\n'
+                        "RUN git clone https://github.com/o/dep\n") == [("git", "o/dep", None)]
+    toml = ('[project]\nname="self"\ndependencies=["requests>=2"]\n'
+            '[project.urls]\nHomepage = "https://github.com/o/self"\n')
+    assert oi.parse_pyproject(toml) == [("python", "requests", ">=2")]
+
+
+def test_pyproject_vcs_dependency_fields_are_still_recorded():
+    toml = ('[project]\nname="a"\ndependencies=["lib @ git+https://github.com/o/lib.git@v1"]\n'
+            '[tool.uv.sources]\nother = { git = "https://github.com/o/other" }\n')
+    targets = {t for k, t, _ in oi.parse_pyproject(toml) if k == "git"}
+    assert targets == {"o/lib", "o/other"}
+
+
+def test_deps_without_configured_orgs_fails_loudly(monkeypatch, tmp_path):
+    import pytest
+    from cairn import config
+    monkeypatch.setattr(config, "ORG_INDEX_ORGS", [])
+    monkeypatch.setattr("sys.argv", ["org_index", "--db", str(tmp_path / "x.db"), "deps"])
+    with pytest.raises(SystemExit) as e:
+        oi.main()
+    assert "no orgs" in str(e.value)

@@ -1208,3 +1208,10 @@ class TestAssertedAbsenceWithoutCairn:
         tp = self._transcript(tmp_path, ["ls"])
         text = "Here is the error:\n```\nI don't have access to that project\n```\nAnyway."
         assert chk(text, tp, session_id="t") is None
+
+
+def test_absence_block_message_points_at_this_checkouts_query_py():
+    import re
+    src = open(os.path.join(os.path.dirname(__file__), "..", "hooks", "stop_hook.py")).read()
+    assert "/mnt/ssd" not in src
+    assert re.search(r'query_py = os\.path\.normpath', src)

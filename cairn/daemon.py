@@ -791,12 +791,31 @@ def _acquire_singleton_lock() -> bool:
     return True
 
 
+def _pid_is_cairn_daemon(pid: int) -> bool:
+    """False only when /proc proves `pid` is not a cairn daemon process.
+
+    Never SIGTERM a PID taken from a possibly-stale file without this check.
+    Where /proc is unavailable the check cannot be made, so it passes.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmdline = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+    except FileNotFoundError:
+        return os.path.isdir("/proc") is False
+    except OSError:
+        return True
+    return "run_server" in cmdline or "daemon.py" in cmdline
+
+
 def _stop_daemon() -> None:
     """SIGTERM the running daemon and wait for it to exit (best-effort)."""
     import time
     try:
         with open(PID_PATH, encoding="utf-8") as f:
             pid = int(f.read().strip())
+        if not _pid_is_cairn_daemon(pid):
+            # Stale PID file whose number was reused by an unrelated process.
+            return
         os.kill(pid, signal.SIGTERM)
     except Exception:
         return

@@ -1175,13 +1175,15 @@ def main() -> None:
             log(f"Absence asserted without cairn: {absence_result[:100]}")
             record_metric(session_id, "absence_without_cairn_blocked", absence_result[:80])
             increment_continuation(session_id)
+            query_py = os.path.normpath(os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "..", "cairn", "query.py"))
             result = {
                 "decision": "block",
                 "reason": (
                     f"You stated a capability is unavailable — \"{absence_result}\" — without "
                     "querying cairn in this turn. A filesystem or env-var search is not evidence "
                     "of absence: secrets live in mode-600 env files and knowledge lives in cairn. "
-                    "Run: python3 /mnt/ssd/Projects/cairn/cairn/query.py --semantic \"<the capability> | "
+                    f"Run: python3 {query_py} --semantic \"<the capability> | "
                     "how do I access <the capability>\" — then correct or confirm the claim."
                 )
             }

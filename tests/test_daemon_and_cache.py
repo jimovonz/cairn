@@ -443,6 +443,18 @@ def test_substantive_context_need_not_filtered():
     conn.close()
 
 
+def test_stop_daemon_does_not_signal_unrelated_pid(tmp_path):
+    """A stale PID file whose number now belongs to another process is never SIGTERMed."""
+    import cairn.daemon as d
+    pid_path = str(tmp_path / "daemon.pid")
+    with open(pid_path, "w") as f:
+        f.write(str(os.getpid()))  # this pytest/python process is not the cairn daemon
+    with patch.object(d, "PID_PATH", pid_path), patch.object(d.os, "kill") as kill:
+        d._stop_daemon()
+    kill.assert_not_called()
+    assert d._pid_is_cairn_daemon(99999999) is False
+
+
 def cleanup():
     shutil.rmtree(TEST_DIR, ignore_errors=True)
 
