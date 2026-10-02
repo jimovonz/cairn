@@ -9,7 +9,7 @@
   <img src="docs/social-preview.png" alt="Cairn — invisible memory capture, storage, and cross-session retrieval" width="640">
 </p>
 
-**Every Claude Code response distills what it learned into structured knowledge. The user never sees it. A hook captures it. A database stores it. The next session knows.**
+Each Claude Code response ends with a short structured block describing what the turn established. The user never sees it: a hook parses it out, stores it in SQLite, and injects relevant entries into later sessions.
 
 An opt-out local API proxy sits between Claude Code and the Anthropic API: it strips every Cairn artifact (`[cm]` blocks, `<cairn_context>`, system reminders) from the response stream server-side and re-injects context into the next request, so the prompt cache stays byte-exact and the user never sees the control channel. Without the proxy, Cairn falls back to relying on rendering quirks — angle bracket tags are stripped from the Claude Code CLI, markdown link definitions don't render in Copilot's chat panel — but the proxy is the durable mechanism.
 
@@ -17,58 +17,56 @@ No cloud. No API keys. No MCP. One SQLite file. Five hook types (Stop, UserPromp
 
 ---
 
-## What makes this different
+## Approach
 
 Most LLM memory systems treat memory as infrastructure *around* the LLM — capturing at session end, on compaction, via batch tools, or when the LLM calls an explicit tool. Retrieval fires at session start or when the user's prompt happens to match something stored.
 
-Cairn delivers **per-turn granular knowledge capture and retrieval**, making the LLM an active participant in its own memory lifecycle on every single turn:
+Cairn moves that work into the turn itself. On every response the model:
 
-- **Every response** → the LLM distills what it learned into structured, portable knowledge
-- **Every response** → the LLM self-assesses whether it has sufficient context and requests retrieval if not
-- **Every response** → keywords are extracted and cross-project knowledge is staged for the next turn
+- distills what the turn established into structured, portable knowledge
+- self-assesses whether it has sufficient context, and requests retrieval if not
+- emits keywords, which stage cross-project knowledge for the next turn
 
-All three are enforced mechanically. The LLM cannot forget to participate. No other memory system operates this way.
+All three are enforced by hooks rather than requested in a prompt, so participation does not depend on the model remembering to opt in.
 
-**The LLM is the knowledge author — at zero extra cost.** Knowledge is distilled as part of every response, not via a separate LLM call. Other systems run a second Claude invocation after the session to extract memories. Cairn's memory block is invisible tail content appended to the normal response — the same tokens that answer the user also distill the knowledge. No extra API calls, no added latency, no background processes for extraction.
+**The model authors the knowledge inside its reply.** Knowledge is distilled as part of every response rather than by a separate LLM call afterwards. Cairn's memory block is invisible tail content appended to the normal response — the same tokens that answer the user also distill the knowledge. No extra API calls, no added latency, no background processes for extraction.
 
 **The knowledge channel is invisible.** The user sees a clean response. The hook infrastructure sees structured entries with type, topic, confidence signals, and retrieval requests. The LLM writes to a channel the user can't see.
 
 **The LLM controls the retrieval loop.** It declares when it lacks context. A Stop hook searches the database, injects results, and re-prompts — all before the response reaches the user. The LLM also rates what it gets back — corroborating, flagging irrelevance, or annotating contradictions — building a veracity signal across sessions.
 
-**Enforcement is mechanical, not advisory.** A Stop hook fires after every response. No memory block? Blocked and re-prompted. Says it's incomplete? Blocked and continued. Needs context? Blocked, searched, injected, continued. The LLM can't forget to participate.
+**Enforcement is mechanical.** A Stop hook fires after every response. No memory block? Blocked and re-prompted. Says it's incomplete? Blocked and continued. Needs context? Blocked, searched, injected, continued. The LLM can't forget to participate.
 
-### How it compares
+### Related approaches
 
-Surveyed the top 30 GitHub "claude memory" repos (April 2026) plus the two most prominent dedicated memory systems (Claude-Mem, Mem0). The landscape breaks into four approaches:
+A review of the top 30 GitHub "claude memory" repos (April 2026) plus Claude-Mem
+and Mem0 found four recurring designs, each with different tradeoffs:
 
-| Approach | Examples | Limitation |
-|----------|----------|------------|
-| File-based / markdown | claude-memory-engine, claude-memory-extractor | No semantic search, no dedup, no retrieval loop |
-| Session-end capture | claude-memory-plugin, claude-mem | Memory extracted after the session; requires extra LLM calls |
-| SDK / API layer | Mem0 | Requires 2+ extra LLM calls per add(); no Claude Code hook integration |
-| MCP tool-call | claude-memory-mcp, claude_memory | LLM must explicitly invoke retrieval; passive otherwise |
+| Approach | Examples | Capture point |
+|----------|----------|---------------|
+| File-based / markdown | claude-memory-engine, claude-memory-extractor | Written to files; retrieval by file read |
+| Session-end capture | claude-memory-plugin, claude-mem | Extracted after the session, in a separate pass |
+| SDK / API layer | Mem0 | Extraction calls made by the host application |
+| MCP tool-call | claude-memory-mcp, claude_memory | When the model chooses to invoke the tool |
 
-Two differences are structural rather than incremental:
+Cairn sits in a different spot on that axis: it captures on every turn, because
+the memory block is tail content of the reply the model is already writing, so
+there is no second pass to pay for. The tradeoff is that it depends on the model
+emitting a well-formed block, which is why a hook checks for one and re-prompts
+when it is missing.
 
-**Knowledge is distilled inside the normal response.** The memory block is
-invisible tail content of the answer itself, so the tokens that respond to you
-also author the knowledge. Every alternative pays for a separate extraction
-pass, which is what confines them to session-end or explicit-tool granularity.
-This is what makes per-turn capture affordable.
-
-**Compliance is enforced mechanically, not requested.** A Stop hook inspects the
-response and blocks completion when the memory block is missing or the LLM
-declared itself incomplete. Systems that state the requirement in a prompt and
-hope are relying on the one thing LLMs do unreliably.
+Whether per-turn capture is worth that coupling depends on the workload. For
+long-running work in one codebase it has been worth it here; for occasional
+one-shot sessions the simpler designs above are likely a better fit.
 
 Everything else Cairn does — hybrid FTS5 + vector search, a veracity feedback
 loop, structured memory types, verbatim transcript recovery — exists elsewhere in
 some form, and is a matter of degree rather than kind.
 
-Scope of the survey: the top 30 GitHub "claude memory" repos as of **April
+Scope of the review: the top 30 GitHub "claude memory" repos as of **April
 2026**, plus Claude-Mem and Mem0. It was a documentation review, not a hands-on
-benchmark, projects move fast, and the two claims above are the ones worth
-holding Cairn to.
+benchmark, and projects move fast — treat the table as a rough map, not a
+current scorecard.
 
 **Session 1** — casual conversation in `~/temp`:
 ```
@@ -89,7 +87,7 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Cross-session memory** — decisions, preferences, facts, corrections, people, projects, skills, workflows
 - **Per-turn memory authoring** — the LLM writes structured memories on every response, enforced mechanically; no separate capture step
 - **Per-turn context self-assessment** — the LLM declares when it lacks context on every response; the system retrieves and re-prompts automatically
-- **Five retrieval layers** — CWD-based project bootstrap, proactive first-prompt push, per-prompt mid-session injection, cross-project keyword surfacing, LLM-requested pull, plus gotcha injection on file access
+- **Five retrieval layers** — CWD-based project bootstrap, proactive first-prompt push, per-prompt mid-session injection, cross-project keyword surfacing, LLM-requested pull, plus gotcha injection on file access; a same-session gate withholds memories whose originating turn is still in context
 - **Hybrid FTS5 + vector search with RRF** — exact keyword matches (error codes, function names) fused with semantic similarity via Reciprocal Rank Fusion; dual-method matches ranked higher than single-method
 - **Type-prefix fan-out** — query expansion that searches with each memory type prefix (fact, decision, correction, etc.) and takes the max similarity per memory; closes the embedding gap between bare queries and type-prefixed stored memories
 - **Veracity tracking** — confidence represents corroboration, not retrieval rank; `+` corroborates, `-!` annotates contradictions with reasons that persist for future sessions
@@ -106,7 +104,7 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Contradiction handling** — same-topic updates suppress the old entry; negation heuristics dampen conflicting memories; `-!` annotations preserve why something was wrong
 - **Correction-file association** — when a correction is stored, surrounding file paths are automatically extracted from the transcript and linked; future access to those files injects the correction proactively
 - **Gotcha injection** — PreToolUse hook surfaces corrections and relevant context before Read/Edit/Write tool calls on associated files
-- **Dual-platform support** — works with both Claude Code CLI (`<memory>` tags, stripped from terminal) and VS Code Copilot Chat (`[cm]:` markdown link definitions, invisible in chat panel); transcript adapter normalizes both formats transparently
+- **Multi-host support** — Claude Code CLI (`<memory>` tags, stripped from terminal), VS Code Copilot Chat (`[cm]:` markdown link definitions, invisible in chat panel), and the pi agent via a CLI bridge (`hooks/pi_bridge.py`); a transcript adapter normalizes the formats and all hosts share one memory store. See Host bridges below
 - **Compact memory format** — dual-format parser supports both verbose (`- type: fact`) and compact (`fact/topic: content [k: kw1, kw2]`) memory blocks
 - **Completeness enforcement** — `complete: false` blocks stop and re-prompts with remaining work; trailing intent detection blocks when the LLM promises action without following through
 - **Bootstrap enforcement** — forces context checks every N turns to build the habit of cairn-first reasoning
@@ -116,7 +114,7 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Multi-query decomposition** — `|` separator in `find_similar` and `query.py --semantic` runs each subquery independently and merges by best score; tight semantic vectors per topic instead of one blurred embedding
 - **Type-aware scope bias** — `person` and `preference` memory types ignore the project scope penalty so biographical/cross-cutting facts about the user surface in any session, not just the project where they were captured
 - **Project label override** — `CAIRN_PROJECT=name claude` overrides the cwd-based default for catch-all directories or benchmark isolation
-- **Verbatim session recovery** — every memory links back to the exact conversation that produced it; `--context <id>` retrieves the verbatim transcript excerpt from the original session — the actual words spoken, not a summary or reconstruction. No other surveyed system provides this.
+- **Verbatim session recovery** — every memory links back to the exact conversation that produced it; `--context <id>` retrieves the verbatim transcript excerpt from the original session — the actual words spoken, not a summary or reconstruction.
 - **Self-improving** — retrieval outcome feedback adaptively tightens thresholds when results are poor
 - **Memory audit** — `/cairn audit` reviews session memories for accuracy, enriches thin entries, fills gaps; background agent (`audit_agent.py`) reads transcripts via `claude -p` for automated review
 - **Archive over delete** — superseded and incorrect memories are archived with reasons, preserving the learning trail of rejected approaches and mistakes
@@ -143,7 +141,7 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Multi-node sync (v2, opt-in)** — peer-to-peer LAN replication in `cairn/sync/`: Ed25519 keypair identity, UDP-broadcast discovery, dashboard-authorized public-key pairing, signed + cert-pinned HTTPS transport, and changeset replication with Lamport-clock last-write-wins. Nodes share only their own memories; raw session transcripts are never synced. Wired into `install.sh` but **off by default** — opt in per node with `CAIRN_SYNC_ENABLED=1`. See the Multi-User Architecture section of [ARCHITECTURE.md](ARCHITECTURE.md)
 - **Calibration system (Phases 1–7)** — a complementary track that captures *how to interact with this user* (level, style, preferences); a per-session analyser, agent-invoked CLI, self-modification passes, and a dashboard tab. See the Calibration section below
 - **Relevance grading (agent-as-teacher)** — every injected memory is logged to a `memory_deliveries` table with full ranking provenance (reranker model, score components, layer, scope); the main agent grades each surfaced memory 0–3 (+ hard-negative) in the `[cm]` block's `rg` field, and a behavioural engagement signal mechanically detects whether the response actually *used* each memory via distinctive-term overlap (the primary, non-circular label). Read-side foundation for a future trained cross-encoder gate
-- **GPU-aware reranker** — the cross-encoder defaults to `ms-marco-MiniLM-L-6-v2` (logit floor −3.0) on every device; when `RERANKER_BGE_ENABLED` is set and CUDA is present it swaps to `BAAI/bge-reranker-base` (sigmoid floor 0.0005). The daemon owns the model so the hot hook path never imports torch; the cross-encoder scores a cleaned recent-context window, not the bare prompt
+- **GPU-aware reranker** — the cross-encoder defaults to `ms-marco-MiniLM-L-6-v2` (logit floor −3.0) on every device; when `RERANKER_BGE_ENABLED` is set and CUDA is present it swaps to `BAAI/bge-reranker-base` (sigmoid floor **0.015**, recalibrated from Opus grade labels) on a GPU with at least `RERANKER_MIN_VRAM_GB` (6 GB). The daemon owns the model so the hot hook path never imports torch; the cross-encoder scores a cleaned recent-context window, not the bare prompt
 - **Write-side generation provenance** — every agent-written memory is stamped with `GENERATION_PROMPT_VERSION` in `source_ref`, so downstream usefulness (grades, engagement) is attributable to the generation rules that produced it; `cairn/ab_writeside.py` is an offline A/B harness that replays the transcript corpus through two generation prompts and judges them blind, position-swapped, and pairwise with Opus 4.8
 
 ## Quick start
@@ -250,6 +248,12 @@ Every LLM response ends with a `<memory>` block using angle bracket tags. Claude
 | **Bootstrapping** | Every N turns without pull | Forces a `context: insufficient` declaration to build the habit |
 | **Gotcha injection** | Before Read/Edit/Write tool calls | PreToolUse hook surfaces corrections linked to the file being accessed |
 
+Every layer passes through a **same-session gate**. A memory written earlier in
+the current session is withheld while the turn that produced it is still in the
+model's context — re-injecting it there would just echo the session back at
+itself. Once a compaction watermark shows that turn has been cut, the memory
+becomes the only surviving copy and the gate releases it.
+
 ### Veracity system
 
 Confidence represents **veracity** — how well-corroborated a memory is across sessions. It is *not* used in retrieval scoring (similarity, recency, and scope handle ranking).
@@ -286,11 +290,42 @@ Two feedback loops close the gap between *what gets injected* and *what was usef
 - **Behavioural engagement** (`score_engagement`/`apply_engagement`) — the Stop hook mechanically checks whether the response *used* each delivered memory, by counting the memory's distinctive terms (its tokens minus the prompt's) that resurface in the response. This is the primary, non-circular signal.
 - **Agent-as-teacher grades** — the main agent grades each surfaced memory 0–3 (plus a hard-negative flag) in the `[cm]` block's `rg` field; parsed and written back (`parse_relevance_grades`/`apply_relevance_grades`) to supplement engagement.
 
-An optional bucket-4 prefilter (`is_self_referential_meta`, gated by `RELEVANCE_PREFILTER_ENABLED`, off by default, corrections exempt) drops self-referential meta-memories. The reranker is GPU-aware (`config.resolve_reranker`): `ms-marco-MiniLM-L-6-v2` by default, `BAAI/bge-reranker-base` on CUDA when `RERANKER_BGE_ENABLED`. Phases 1–3 are implemented: instrumentation, agent labels, and a trained cross-encoder student (`cairn/train_reranker.py`) that beat the incumbent on held-out pairwise agreement and is deployed by `config.resolve_reranker()` when present. Teacher-demotion (Phase 4) is still future work.
+An optional bucket-4 prefilter (`is_self_referential_meta`, gated by `RELEVANCE_PREFILTER_ENABLED`, **ON** since the 2026-07-02 review, corrections exempt) drops self-referential meta-memories. The reranker is GPU-aware (`config.resolve_reranker`): `ms-marco-MiniLM-L-6-v2` by default, `BAAI/bge-reranker-base` on CUDA when `RERANKER_BGE_ENABLED`. Phases 1–3 are implemented: instrumentation, agent labels, and a trained cross-encoder student (`cairn/train_reranker.py`) that beat the incumbent on held-out pairwise agreement and is deployed by `config.resolve_reranker()` when present. Teacher-demotion (Phase 4) is still future work.
 
 **The student is a per-machine artifact.** `training_data/` is gitignored, so a fresh clone has no student and falls back to pretrained `ms-marco-MiniLM-L-6-v2` — retrieval still works, but the trained gate is absent until that machine trains its own. Any quoted student-vs-incumbent figure describes the machine it was measured on. Cross-model comparisons drawn from live delivery logs are additionally time-confounded (a model change is a flag day, not a randomised assignment), so they are not promotion evidence. See `docs/spec-memory-relevance-grading.md` and `docs/spec-remediation-2026-07.md`.
 
-**Write side.** Every agent-written memory is stamped with `GENERATION_PROMPT_VERSION` (`genA-v4`) in `source_ref`, so downstream usefulness is attributable to the generation rules that produced it. The live rules carry a dual-altitude transferability lever (capture the generalised cross-project principle, anchored by the specific instance). `cairn/ab_writeside.py` is an offline A/B harness: it replays the transcript corpus through two generation prompts (A = control, B = control + one speculative lever) and judges them with Opus 4.8 — blind, position-swapped, and pairwise on findability / self-sufficiency / fitness, with the session cohort as the A/B unit (CLI: `replay`/`ab`). Separately, a **live per-prompt A/B** (`AB_TEST_ENABLED`, on) randomly assigns each prompt to arm A (control) or arm B (control + one speculative variable, `AB_B_INSTRUCTION`), stamps each memory with its arm in `source_ref` (`genA-v4` vs `genB-v2`), and compares outcomes by arm via `query.py --delivery-stats` (engagement/grade per generation version + reranker).
+**Write side.** Every agent-written memory is stamped with the current `GENERATION_PROMPT_VERSION` in `source_ref`, so downstream usefulness is attributable to the generation rules that produced it. The live rules carry a dual-altitude transferability lever (capture the generalised cross-project principle, anchored by the specific instance). `cairn/ab_writeside.py` is an offline A/B harness: it replays the transcript corpus through two generation prompts (A = control, B = control + one speculative lever) and judges them with Opus 4.8 — blind, position-swapped, and pairwise on findability / self-sufficiency / fitness, with the session cohort as the A/B unit (CLI: `replay`/`ab`). Separately, a **live per-prompt A/B** (`AB_TEST_ENABLED`, on) randomly assigns each prompt to arm A (control) or arm B (control + one speculative variable, `AB_B_INSTRUCTION`), stamps each memory with its arm in `source_ref` (the `genA-*` / `genB-*` version pair from `AB_ARM_VERSIONS`, which `ab_selfmod` rewrites on promotion), and compares outcomes by arm via `query.py --delivery-stats` (engagement/grade per generation version + reranker).
+
+## Host bridges
+
+The capture, storage and retrieval engine does not know which agent it is
+serving. Only the wiring differs per host.
+
+| Host | Wiring | Entry point |
+|------|--------|-------------|
+| Claude Code | Hooks in `~/.claude/settings.json` | `hooks/{prompt,pretool,posttool,stop}_hook.py` |
+| VS Code Copilot Chat | Same hooks; transcript adapter normalises the format | `hooks/transcript_adapter.py` |
+| pi | A TypeScript extension that shells out to a CLI bridge | `hooks/pi_bridge.py` |
+
+`hooks/pi_bridge.py` exposes the pipeline as subcommands — `bootstrap`,
+`retrieve`, `staged`, `capture`, `enforce`, `checkpoint`, `pretool` and `spec` —
+which a separate pi extension (`pi-cairn`, not part of this repo) invokes around
+each turn. Tool payloads are passed via `--text-file` rather than argv,
+because they do not survive the command line.
+
+The bridge deliberately *reuses* the Claude Code hooks rather than
+reimplementing them: `pretool` feeds `pretool_hook.py` the same JSON Claude Code
+sends on stdin, and `checkpoint` imports `posttool_hook`'s detection, nudge text
+and per-session budget. The two hosts therefore cannot drift on what counts as a
+file-keyed gotcha or a high-signal tool result.
+
+Memories written through the bridge are stamped `pi:<model>:<generation-version>`
+in `source_ref`, so pi-authored entries stay attributable and can be retracted in
+bulk. Entries are shared, not partitioned: a memory written in pi surfaces in a
+later Claude Code session and vice versa. `.pi/settings.json` points pi at
+`.claude/skills`, so both hosts read one copy of the skill bodies.
+
+The extension is inert unless `PI_CAIRN` is set; the `pi` launcher defaults it on.
 
 ## Architecture
 
@@ -310,11 +345,14 @@ cairn/
 ├── install.sh              # One-command installer
 ├── uninstall.sh            # Clean removal
 ├── pyproject.toml          # Package metadata and dependencies
-├── CLAUDE.md               # Project-local LLM instructions
+├── CLAUDE.md               # Project-local LLM instructions (index; detail in skills)
 ├── .claude/
 │   ├── settings.json       # Project-local hooks
-│   └── rules/
-│       └── memory-system.md  # Full system rules for the LLM
+│   ├── rules/
+│   │   └── memory-system.md  # Full system rules for the LLM
+│   └── skills/             # Per-subsystem detail, loaded on demand
+├── .pi/
+│   └── settings.json       # Points pi at .claude/skills so both hosts share one copy
 ├── cairn/
 │   ├── config.py           # All tunable parameters (env var overrides)
 │   ├── init_db.py          # Schema and migrations
@@ -513,7 +551,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, retrieval improvements, test 
 
 ## Testing
 
-1296 tests across 85 test files. Most tests use mock vectors and patched DB paths — no embedding model required. Quality benchmarks (`test_retrieval_quality*.py`, `test_query_expansion.py`) use real embeddings for ground-truth validation and skip gracefully in CI. The table below is a representative selection covering the core retrieval/memory suite plus the proxy, calibration, code-graph, and review write-back subsystems; see `tests/` for the full set.
+1656 tests across 106 test files. Most tests use mock vectors and patched DB paths — no embedding model required. Quality benchmarks (`test_retrieval_quality*.py`, `test_query_expansion.py`) use real embeddings for ground-truth validation and skip gracefully in CI. The table below is a representative selection covering the core retrieval/memory suite plus the proxy, calibration, code-graph, and review write-back subsystems; see `tests/` for the full set.
 
 ```bash
 cd ~/cairn
@@ -530,6 +568,7 @@ cd ~/cairn
 | `test_stop_hook.py` | 34 | Stop hook main(): register_session, auto_label_project, storage, blocking, metrics |
 | `test_hook_e2e.py` | 16 | Stop hook main() with patched stdin: storage, blocking, sessions, metrics |
 | `test_prompt_hook.py` | 24 | Layer 1/1.5/2: first-prompt detection, per-prompt injection, staged context |
+| `test_same_session_gate.py` | 13 | Same-session gate: compaction watermark parsing, live-vs-recoverable rows, fail-open |
 | `test_project_bootstrap.py` | 8 | CWD-based project bootstrap: standing context injection, type filtering, archived exclusion |
 | `test_pretool_hook.py` | 8 | PreToolUse gotcha injection: find_memories_for_file and main() |
 | `test_storage.py` | 12 | Memory storage, deduplication, confidence updates, quality gates |

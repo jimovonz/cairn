@@ -898,6 +898,38 @@ The LLM explicitly requests context by declaring `context: insufficient` with a 
 
 File matching is by exact path or basename (for when the same file is referenced with a different absolute path). Archived/superseded corrections are skipped. Injection is capped at 3 entries per file access. All memory types (not just corrections) can be file-associated; corrections are highlighted as gotchas, others as general file context.
 
+### Same-session gate
+
+Every layer filters its candidates through a same-session gate in
+`hooks/hook_helpers.py` before injection.
+
+A memory written earlier in the current session is redundant while the turn that
+produced it is still in the model's context — injecting it there spends tokens
+re-stating something the model can already see, and in the observed failure the
+session steadily echoed its own output back at itself. The same memory becomes
+valuable the moment compaction cuts that turn, because the stored entry is then
+the only surviving copy.
+
+The gate distinguishes the two cases with a compaction watermark:
+
+- `_is_compaction_record()` / `last_compaction_ts()` scan the transcript for the
+  host's compaction marker and return when the cut happened.
+- `record_compaction_watermark()` persists that timestamp per session in
+  `hook_state`, so later turns do not rescan the whole transcript.
+- `_drop_live_same_session()` drops a row only when its `session_id` matches the
+  current session *and* its `updated_at` is at or after the watermark. Anything
+  older survives, because compaction has already cut the turn that wrote it.
+
+With no watermark the session has not been compacted yet, so every same-session
+row is still live in context and all of them are dropped. The gate never touches
+memories from other sessions.
+
+It fails open in both directions: an unknown session id, a missing watermark
+lookup or an unparseable timestamp leaves results untouched rather than
+over-dropping. Each suppression is counted in the `same_session_suppressed`
+metric, tagged `live (no compaction)` or `pre-compaction recovery`, so the two
+cases stay distinguishable in the dashboard.
+
 ### Hybrid FTS5 + Vector Search with RRF
 
 `hooks/retrieval.py` uses Reciprocal Rank Fusion to merge FTS5 keyword search and semantic vector search results.
@@ -1407,6 +1439,44 @@ Consolidation and contradiction detection are *mechanical* — they merge near-d
 **Flow.** `audit_agent.py [session_id]` (or the most-recent session with unaudited memories, via `find_session`) collects every memory for that session above the watermark, reconstructs the relevant transcript segment from the earliest such memory's timestamp (`get_transcript_segment`), and builds a prompt instructing the agent to: (1) review each memory against the transcript — enrich the *accurate-but-thin* (`--update <id>` adding the why / alternatives / outcome), correct the inaccurate, `--archive` the superseded; (2) **find gaps** — decisions, user corrections, rejected approaches, facts, or preferences that were discussed but never captured, adding each with `--add`; (3) advance the watermark; (4) report. It is launched with `claude -p --allowedTools Bash`, a 120 s timeout, and `CAIRN_MODE=read-only` in the environment so the agent's own turns do not recursively trigger the Stop-hook capture path while it edits memories through `query.py`.
 
 **Incremental watermark.** Per-session progress is a *memory-id* watermark, not a timestamp: `hook_state[session_id]["last_audit_id"]`. `get_unaudited` returns only memories with `id > last_audit_id`; `query.py --audit <session_id>` advances it to the current max. So each run audits only memories created since the last pass, and `find_session` scans the 10 most-recently-active sessions for any with `id > last_audit_id`.
+
+## Host Bridges (Claude Code, Copilot, pi)
+
+The engine is host-agnostic; only the wiring differs. Claude Code and Copilot
+invoke `hooks/*_hook.py` directly through `settings.json` (Copilot's transcript
+format is normalised by `hooks/transcript_adapter.py`). The pi agent has no
+equivalent hook system, so `hooks/pi_bridge.py` exposes the same pipeline as a
+CLI that a pi extension shells out to:
+
+| Subcommand | Called | Returns |
+|------------|--------|---------|
+| `bootstrap` | First prompt of a session | Project standing context |
+| `retrieve` | Each subsequent prompt | Per-prompt context |
+| `staged` | Each prompt | Deferred cross-project / reminder channel |
+| `pretool` | Before a tool call | File-keyed gotchas, context, graph structure |
+| `checkpoint` | After a tool call | The mid-response capture nudge, or nothing |
+| `capture` | End of turn | Parses the `[cm]` block and stores entries |
+| `enforce` | End of turn | Blocking text when the block is missing |
+| `spec` | Session start | The memory-block instructions for the system prompt |
+
+Two design constraints shape it:
+
+**No reimplementation.** `pretool` constructs the exact stdin JSON Claude Code
+would send and subprocesses `pretool_hook.py`; `checkpoint` imports
+`posttool_hook`'s `_is_high_signal_bash` / `_is_high_signal_edit`, its
+`NUDGE_TEXT` and its per-session budget. Detection logic exists once, so the
+hosts cannot diverge on what counts as a gotcha or a notable result. The child
+runs with `CAIRN_PROXY_ENABLED=0` so the hook prints its envelope for the bridge
+to relay, rather than staging it to a sidecar that no proxy would drain on pi.
+
+**Attribution.** Entries written through the bridge carry
+`pi:<model>:<generation-version>` in `source_ref`. The memory store itself is
+shared — a pi-authored memory is retrieved by a later Claude Code session on
+equal terms — but provenance stays queryable and bulk-retractable.
+
+Tool payloads travel by `--text-file`, not argv. pi lower-cases its tool names
+where Claude Code capitalises them, so `_PI_TOOL_TO_CC` maps them before
+dispatch. The whole extension is inert unless `PI_CAIRN` is set.
 
 ## API Proxy (artifact-free injection)
 
