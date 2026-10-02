@@ -519,7 +519,10 @@ def parse_requirements(text):
 
 def parse_pyproject(text):
     try:
-        import tomllib
+        try:
+            import tomllib  # Python 3.11+
+        except ImportError:
+            import tomli as tomllib
         data = tomllib.loads(text)
     except Exception:
         # Unstructured fallback: only lines that are plainly VCS requirements, so
