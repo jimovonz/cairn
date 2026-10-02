@@ -1,4 +1,4 @@
-"""CLAUDE.md must not drift from cairn/config.py.
+"""The prose docs must not drift from cairn/config.py.
 
 Every wrong claim I made about retrieval in one session traced to reading the
 docs instead of the config: the prefilter was documented "default off" while
@@ -14,6 +14,7 @@ invalidation. Two rules:
      GENERATION_PROMPT_VERSION on every promotion, so any number written in
      prose is wrong by the next cron run. Point at the symbol instead.
 """
+import glob
 import os
 import re
 
@@ -21,13 +22,22 @@ import pytest
 
 from cairn import config as C
 
-DOC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "CLAUDE.md")
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# The prose lives in CLAUDE.md and in the on-demand skills it delegates to.
+# Scan both: a section moving from one to the other must not take its drift
+# check with it.
+DOCS = [os.path.join(_ROOT, "CLAUDE.md")] + sorted(
+    glob.glob(os.path.join(_ROOT, ".claude", "skills", "*", "SKILL.md")))
 
 
 @pytest.fixture(scope="module")
 def doc():
-    with open(DOC, encoding="utf-8") as f:
-        return f.read()
+    parts = []
+    for path in DOCS:
+        with open(path, encoding="utf-8") as f:
+            parts.append(f.read())
+    return "\n".join(parts)
 
 
 @pytest.mark.parametrize("pattern,actual,label", [
@@ -41,17 +51,17 @@ def doc():
 ])
 def test_documented_value_matches_config(doc, pattern, actual, label):
     m = re.search(pattern, doc)
-    assert m, f"CLAUDE.md no longer states {label} in the expected form ({pattern!r})"
+    assert m, f"No doc states {label} in the expected form ({pattern!r})"
     assert abs(float(m.group(1)) - float(actual)) < 1e-9, (
-        f"CLAUDE.md says {label}={m.group(1)} but config.py has {actual}")
+        f"Docs say {label}={m.group(1)} but config.py has {actual}")
 
 
 def test_prefilter_flag_documented_state_matches(doc):
     on = re.search(r"RELEVANCE_PREFILTER_ENABLED`, \*\*ON\*\*", doc)
     off = re.search(r"RELEVANCE_PREFILTER_ENABLED`, default off", doc)
-    assert not (on and off), "CLAUDE.md states both ON and off for the prefilter"
+    assert not (on and off), "Docs state both ON and off for the prefilter"
     assert bool(on) == bool(C.RELEVANCE_PREFILTER_ENABLED), (
-        f"CLAUDE.md says prefilter {'ON' if on else 'off'} but config has "
+        f"Docs say prefilter {'ON' if on else 'off'} but config has "
         f"{C.RELEVANCE_PREFILTER_ENABLED}")
 
 
@@ -59,6 +69,6 @@ def test_machine_managed_version_not_frozen_in_prose(doc):
     """ab_selfmod rewrites this on promotion; a quoted number is wrong by design."""
     frozen = re.findall(r"`(gen[AB]-v\d+)`", doc)
     assert not frozen, (
-        f"CLAUDE.md hardcodes machine-managed generation version(s) {frozen}. "
+        f"Docs hardcode machine-managed generation version(s) {frozen}. "
         "ab_selfmod rewrites GENERATION_PROMPT_VERSION on every promotion — "
         "reference the config symbol instead of quoting a value.")
