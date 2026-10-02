@@ -24,11 +24,12 @@ from cairn import config as C
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The prose lives in CLAUDE.md and in the on-demand skills it delegates to.
-# Scan both: a section moving from one to the other must not take its drift
-# check with it.
-DOCS = [os.path.join(_ROOT, "CLAUDE.md")] + sorted(
-    glob.glob(os.path.join(_ROOT, ".claude", "skills", "*", "SKILL.md")))
+# The prose lives in CLAUDE.md, in the on-demand skills it delegates to, and in
+# README.md. Scan all three: a section moving between them must not take its
+# drift check with it, and README.md quoted a stale reranker floor and a frozen
+# genA-vN for several releases precisely because it was not scanned.
+DOCS = ([os.path.join(_ROOT, "CLAUDE.md"), os.path.join(_ROOT, "README.md")]
+        + sorted(glob.glob(os.path.join(_ROOT, ".claude", "skills", "*", "SKILL.md"))))
 
 
 @pytest.fixture(scope="module")
