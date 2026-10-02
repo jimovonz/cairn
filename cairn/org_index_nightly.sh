@@ -6,7 +6,7 @@
 #   2. cross-repo interface registry (reads local graphs kept fresh by graph_fleet)
 #   3. cairn location-claim verification (writes a drift report)
 set -uo pipefail
-CAIRN=/mnt/ssd/Projects/cairn
+CAIRN="${CAIRN_HOME:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}"
 PY="$CAIRN/.venv/bin/python3"
 CC="$CAIRN/cairn"
 REPORTS="$CC/reports"; mkdir -p "$REPORTS" "$CAIRN/logs"
