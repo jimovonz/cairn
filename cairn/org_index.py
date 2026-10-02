@@ -24,6 +24,10 @@ Subcommands:
     stranded  report unmerged branches with unique commits, ranked by staleness
     branches  list indexed branches for one repo with ahead/behind/status
     stats     summary of what is indexed
+    deps      harvest dependency declarations (package.xml, .gitmodules,
+              requirements, pyproject, Dockerfiles, .repos) into a
+              reverse-dependency table
+    consumers who declares a dependency on a package or repo
 """
 import argparse
 import json
@@ -393,6 +397,234 @@ def stats(db_path):
                          "status IN ('ahead','diverged') AND ahead_by>0", (o,)).fetchone()[0]
         print(f"{o}: repos={r}  branches={b}  files={f}  stranded={st}")
 
+# ------------------------------------------------------------------ dependencies
+#
+# The reverse-dependency layer: who depends on what, from each repo's own
+# declarations on its default branch. Per-repo files are the truth; this table
+# is the derived cross-repo join, rebuilt nightly and never hand-maintained.
+# Blob contents are cached by sha (immutable), so a nightly run fetches only
+# files that changed.
+
+import base64
+import re
+import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
+
+DEPS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS blobs (
+    sha     TEXT PRIMARY KEY,
+    content TEXT
+);
+CREATE TABLE IF NOT EXISTS dependencies (
+    org     TEXT NOT NULL,
+    repo    TEXT NOT NULL,   -- the declaring repo
+    path    TEXT NOT NULL,   -- the file that declares it
+    kind    TEXT NOT NULL,   -- provides | ros | python | submodule | git
+    target  TEXT NOT NULL,   -- package name, dist name, or owner/repo
+    detail  TEXT             -- depend tag, version spec, submodule path, or ref
+);
+CREATE INDEX IF NOT EXISTS idx_deps_target ON dependencies(kind, target);
+CREATE INDEX IF NOT EXISTS idx_deps_repo ON dependencies(org, repo);
+"""
+
+_ROS_DEPEND_TAGS = {"depend", "build_depend", "exec_depend", "build_export_depend",
+                    "test_depend", "run_depend", "buildtool_depend"}
+_GH_REPO = re.compile(r"github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?"
+                      r"(?:@([A-Za-z0-9_./-]+))?(?=[\s\"'#]|$)")
+_REQ_LINE = re.compile(r"^\s*[\"']?([A-Za-z0-9][A-Za-z0-9_.-]*)\s*(\[[^\]]*\])?\s*([<>=!~].*?)?[\"',]*\s*$")
+
+
+def _dep_file_kind(basename):
+    if basename == "package.xml":
+        return "package.xml"
+    if basename == ".gitmodules":
+        return "gitmodules"
+    if basename == "pyproject.toml":
+        return "pyproject"
+    if re.match(r"requirements.*\.txt$", basename):
+        return "requirements"
+    if basename.startswith("Dockerfile") or basename.endswith(".dockerfile"):
+        return "dockerfile"
+    if basename.endswith(".repos"):
+        return "repos"
+    return None
+
+
+def norm_dist(name):
+    """PEP 503 normalisation: 'Foo_Bar.baz' -> 'foo-bar-baz'."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def parse_package_xml(text):
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return []
+    out = []
+    name = (root.findtext("name") or "").strip()
+    if name:
+        out.append(("provides", name, None))
+    for el in root:
+        if el.tag in _ROS_DEPEND_TAGS and el.text and el.text.strip() != name:
+            out.append(("ros", el.text.strip(), el.tag))
+    return out
+
+
+def parse_gitmodules(text):
+    out, path = [], None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("[submodule"):
+            path = None
+        elif line.startswith("path"):
+            path = line.split("=", 1)[1].strip()
+        elif line.startswith("url"):
+            m = _GH_REPO.search(line.split("=", 1)[1].strip() + " ")
+            if m:
+                out.append(("submodule", f"{m.group(1)}/{m.group(2)}".lower(), path))
+    return out
+
+
+def _git_refs(text):
+    out = []
+    for line in text.splitlines():
+        for m in _GH_REPO.finditer(line):
+            ref = m.group(3)
+            if not ref:
+                b = re.search(r"(?:-b|--branch)[ =]([A-Za-z0-9_./-]+)", line)
+                ref = b and b.group(1)
+            out.append(("git", f"{m.group(1)}/{m.group(2)}".lower(), ref))
+    return out
+
+
+def parse_requirements(text):
+    out = []
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or line.startswith("-") or "://" in line and "@" not in line:
+            continue
+        if "git+" in line or "github.com" in line:
+            continue
+        m = _REQ_LINE.match(line)
+        if m:
+            out.append(("python", norm_dist(m.group(1)), (m.group(3) or "").strip() or None))
+    return out + _git_refs(text)
+
+
+def parse_pyproject(text):
+    try:
+        import tomllib
+        data = tomllib.loads(text)
+    except Exception:
+        return _git_refs(text)
+    deps = list((data.get("project") or {}).get("dependencies") or [])
+    for group in ((data.get("project") or {}).get("optional-dependencies") or {}).values():
+        deps += group
+    poetry = ((data.get("tool") or {}).get("poetry") or {}).get("dependencies") or {}
+    deps += [k for k in poetry if k.lower() != "python"]
+    out = []
+    for d in deps:
+        m = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9_.-]*)\s*(\[[^\]]*\])?\s*(.*)", d)
+        if m and "github.com" not in d:
+            out.append(("python", norm_dist(m.group(1)), m.group(3).strip() or None))
+    return out + _git_refs(text)
+
+
+def parse_repos_file(text):
+    try:
+        import yaml
+        data = yaml.safe_load(text) or {}
+    except Exception:
+        return []
+    out = []
+    for spec in (data.get("repositories") or {}).values():
+        m = _GH_REPO.search(str((spec or {}).get("url", "")) + " ")
+        if m:
+            out.append(("git", f"{m.group(1)}/{m.group(2)}".lower(), (spec or {}).get("version")))
+    return out
+
+
+_PARSERS = {"package.xml": parse_package_xml, "gitmodules": parse_gitmodules,
+            "requirements": parse_requirements, "pyproject": parse_pyproject,
+            "dockerfile": _git_refs, "repos": parse_repos_file}
+
+
+def _fetch_blob(org, repo, sha):
+    obj = gh_obj(f"repos/{org}/{repo}/git/blobs/{sha}")
+    if not obj or obj.get("encoding") != "base64":
+        return sha, None
+    try:
+        return sha, base64.b64decode(obj["content"]).decode("utf-8", "replace")
+    except (ValueError, KeyError):
+        return sha, None
+
+
+def build_deps(org, db_path, verbose=True, workers=8):
+    """Harvest dependency declarations from every indexed default branch."""
+    con = connect(db_path)
+    con.executescript(DEPS_SCHEMA)
+    rows = con.execute(
+        "SELECT f.repo, f.path, f.basename, f.blob_sha FROM files f "
+        "JOIN repos r ON r.org=f.org AND r.name=f.repo "
+        "WHERE f.org=? AND f.branch=r.default_branch AND r.archived=0", (org,)).fetchall()
+    files = [(repo, path, kind, sha) for repo, path, base, sha in rows
+             if sha and (kind := _dep_file_kind(base))]
+    have = {s for (s,) in con.execute("SELECT sha FROM blobs")}
+    todo = {}
+    for repo, path, kind, sha in files:
+        if sha not in have:
+            todo.setdefault(sha, repo)
+    if verbose:
+        print(f"deps {org}: {len(files)} declaration file(s), {len(todo)} blob(s) to fetch")
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for sha, content in pool.map(lambda kv: _fetch_blob(org, kv[1], kv[0]), todo.items()):
+            if content is not None:
+                con.execute("INSERT OR REPLACE INTO blobs(sha, content) VALUES (?,?)", (sha, content))
+    con.commit()
+    blobs = dict(con.execute("SELECT sha, content FROM blobs"))
+    con.execute("DELETE FROM dependencies WHERE org=?", (org,))
+    n = 0
+    for repo, path, kind, sha in files:
+        text = blobs.get(sha)
+        if text is None:
+            continue
+        for dkind, target, detail in _PARSERS[kind](text):
+            con.execute("INSERT INTO dependencies(org, repo, path, kind, target, detail) "
+                        "VALUES (?,?,?,?,?,?)", (org, repo, path, dkind, target, detail))
+            n += 1
+    con.commit()
+    if verbose:
+        print(f"deps {org}: {n} declaration(s) recorded")
+    return n
+
+
+def consumers(db_path, target, org=None, as_json=False):
+    """Who depends on TARGET: a ROS package, a Python dist, or a repo (ORG/REPO
+    or bare REPO, matched as a submodule or a git ref)."""
+    con = connect(db_path)
+    con.executescript(DEPS_SCHEMA)
+    # Exact matches only: LIKE would treat the '_' in ROS package names as a
+    # wildcard and match 'nav_msgs' against the repo 'nav-msgs'.
+    repo = target.lower()
+    params = [target, norm_dist(target), repo, "/" + repo, len(repo) + 1]
+    q = ("SELECT org, repo, path, kind, target, detail FROM dependencies WHERE "
+         "((kind='ros' AND target=?) OR (kind='python' AND target=?) OR "
+         "(kind IN ('submodule','git') AND (target=? OR substr(target, -?) = ?)))")
+    params = params[:3] + [params[4], params[3]]
+    if org:
+        q += " AND org=?"
+        params.append(org)
+    rows = con.execute(q + " ORDER BY org, repo, path", params).fetchall()
+    if as_json:
+        print(json.dumps([dict(zip(("org", "repo", "path", "kind", "target", "detail"), r))
+                          for r in rows], indent=2))
+        return rows
+    if not rows:
+        print(f"No declared consumers of '{target}'.")
+    for o, repo, path, kind, tgt, detail in rows:
+        print(f"{o+'/'+repo:40} {kind:9} {path}" + (f"  ({detail})" if detail else ""))
+    return rows
+
 # -------------------------------------------------------------------------- main
 
 def main():
@@ -429,6 +661,15 @@ def main():
 
     sub.add_parser("stats", help="index summary")
 
+    d = sub.add_parser("deps", help="harvest dependency declarations from default branches")
+    d.add_argument("--orgs", nargs="*", default=None,
+                   help="orgs to harvest (default: cairn config ORG_INDEX_ORGS)")
+
+    c = sub.add_parser("consumers", help="who declares a dependency on a package or repo")
+    c.add_argument("target", help="ROS package, Python dist, or [ORG/]REPO")
+    c.add_argument("--org", default=None)
+    c.add_argument("--json", action="store_true")
+
     a = ap.parse_args()
     if a.cmd == "build":
         from cairn import config
@@ -453,6 +694,12 @@ def main():
         branches(a.db, a.repo, org=a.org)
     elif a.cmd == "stats":
         stats(a.db)
+    elif a.cmd == "deps":
+        from cairn import config
+        for org in a.orgs or config.ORG_INDEX_ORGS:
+            build_deps(org, a.db)
+    elif a.cmd == "consumers":
+        consumers(a.db, a.target, org=a.org, as_json=a.json)
 
 if __name__ == "__main__":
     main()
