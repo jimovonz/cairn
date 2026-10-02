@@ -689,6 +689,12 @@ def _filter_by_ce_floor(rows, floor, arm_assigned):
     if arm_assigned:
         return list(rows)
     above = [r for r in rows if r["ce_score"] >= floor]
+    if not above and rows:
+        # Every candidate failed the floor; fall back to the top embedding-ranked
+        # one rather than emptying the result (a hard empty regressed recall in
+        # test_retrieval_quality.py). Count it so real delivery data can drive a
+        # future floor recalibration instead of a blind exclude-or-not guess.
+        _record_embed_metric("rerank_floor_emptied", len(rows))
     return above if above else list(rows[:1])
 
 

@@ -374,7 +374,7 @@ CROSS_ENCODER_SCORE_FLOOR_CUDA = 0.015  # recalibrated 2026-07-07 from 3733 Opus
 # model + its -3.0 floor on EVERY device. ms-marco still loads on the GPU when CUDA
 # is present (sentence-transformers auto-selects the device) — i.e. ms-marco-on-GPU,
 # still ~12x faster than CPU, but with the floor we actually trust.
-RERANKER_BGE_ENABLED = True   # enabled: CUDA available; floor loose (0.0005) pending rg calibration
+RERANKER_BGE_ENABLED = True   # enabled: CUDA available
 # bge needs a FAST discrete GPU, not just any CUDA device. Measured: bge-reranker-base
 # is 444ms on a 3.9GB Quadro T2000 (Turing laptop) vs 62ms on an RTX 4070 — and fp16
 # is WORSE on the T2000 (1885ms, poor Turing fp16 throughput). ms-marco is 72ms there.
