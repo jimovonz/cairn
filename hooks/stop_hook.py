@@ -131,7 +131,7 @@ def _snapshot_excerpts(session_id: str, transcript_path: str, assistant_message:
         )
     conn.commit()
     conn.close()
-from hooks.enforcement import check_trailing_intent, check_deferral, check_declined_without_trying, check_correction_triggers, get_continuation_count, increment_continuation, reset_continuation
+from hooks.enforcement import check_trailing_intent, check_deferral, check_declined_without_trying, check_asserted_absence_without_cairn, check_correction_triggers, get_continuation_count, increment_continuation, reset_continuation
 
 # Appended to block reasons that are purely about memory format — the user already saw the
 # response in interactive mode, so restating it is wasteful.  Only used for format/density
@@ -1158,6 +1158,31 @@ def main() -> None:
                     f"Your response ends with a stated intent to act: \"{intent_result}\". "
                     "Either follow through now, or remove the promise. "
                     "If you genuinely have nothing more to do, add 'intent: resolved' to your <memory> block."
+                )
+            }
+            _emit_decision(session_id, result)
+            sys.exit(0)
+
+    # Asserted-absence detection — block claiming a capability/credential does not exist
+    # without having consulted cairn in this turn. Distinct from check_declined_without_trying,
+    # which passes as long as ANY tool ran: the recorded failures all ran several Bash searches
+    # (env vars, dotfile paths) and still concluded wrongly, because they searched the filesystem
+    # instead of the index that actually knows.
+    if not is_continuation and not is_subagent:
+        absence_result: Optional[str] = check_asserted_absence_without_cairn(
+            text, transcript_path, session_id=session_id)
+        if absence_result:
+            log(f"Absence asserted without cairn: {absence_result[:100]}")
+            record_metric(session_id, "absence_without_cairn_blocked", absence_result[:80])
+            increment_continuation(session_id)
+            result = {
+                "decision": "block",
+                "reason": (
+                    f"You stated a capability is unavailable — \"{absence_result}\" — without "
+                    "querying cairn in this turn. A filesystem or env-var search is not evidence "
+                    "of absence: secrets live in mode-600 env files and knowledge lives in cairn. "
+                    "Run: python3 /mnt/ssd/Projects/cairn/cairn/query.py --semantic \"<the capability> | "
+                    "how do I access <the capability>\" — then correct or confirm the claim."
                 )
             }
             _emit_decision(session_id, result)
