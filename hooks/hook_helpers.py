@@ -9,7 +9,7 @@ import logging.handlers
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from types import ModuleType
 from typing import Any, Optional
 
@@ -529,6 +529,164 @@ def save_injected_ids(session_id: str, new_ids: list[int]) -> None:
     save_hook_state(session_id, "retrieved_ids", json.dumps(merged))
 
 
+# --- Same-session gating (echo vs post-compaction recovery) ---
+#
+# A memory written in the current session is redundant while the turn that
+# produced it is still in the model's context. Compaction replaces that part of
+# the conversation with a summary and drops the originals; after that the memory
+# is the only surviving copy, and re-injecting it is recovery, not echo. The
+# watermark is the timestamp of the last compaction: same-session entries at or
+# after it are still live and are dropped; entries strictly before it may be
+# recovered. With no compaction on record the whole session is live, so every
+# same-session entry is dropped -- which is the overwhelmingly common case.
+
+def _norm_ts(ts: Optional[str]) -> Optional[str]:
+    """Normalize an ISO8601 or SQLite timestamp to 'YYYY-MM-DD HH:MM:SS' (UTC)."""
+    if not ts or not isinstance(ts, str):
+        return None
+    raw = ts.strip()
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            dt = datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _is_compaction_record(rec: dict[str, Any]) -> bool:
+    """Whether a transcript record is a compaction cut.
+
+    pi writes type "compaction"; the adapter may surface a CLI summary as
+    "compaction_summary". Claude Code marks its post-compaction summary message
+    with a boolean (isCompactSummary); tolerate both the camel and snake
+    spellings. A wrong guess is a no-op, not a false positive, because a record
+    without one of these keys simply falls through.
+    """
+    if rec.get("type") in ("compaction", "compaction_summary"):
+        return True
+    return bool(rec.get("isCompactSummary") or rec.get("is_compact_summary"))
+
+
+def last_compaction_ts(transcript_path: Optional[str]) -> Optional[str]:
+    """Timestamp of the most recent compaction record in the transcript, or None.
+
+    Fail-open: an unreadable or unparseable transcript yields None.
+    """
+    if not transcript_path:
+        return None
+    latest: Optional[str] = None
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if "compact" not in line.lower():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(rec, dict) or not _is_compaction_record(rec):
+                    continue
+                ts = _norm_ts(rec.get("timestamp") or rec.get("ts"))
+                if ts and (latest is None or ts > latest):
+                    latest = ts
+    except OSError:
+        return None
+    return latest
+
+
+def record_compaction_watermark(session_id: Optional[str],
+                                transcript_path: Optional[str]) -> None:
+    """Cache the session's last compaction timestamp in hook_state.
+
+    Incremental: only bytes appended since the last scan are read, so the cost
+    is proportional to one turn's records, not the whole (multi-MB) transcript.
+    A partial trailing line is left for the next pass; a shrinking file is
+    treated as a rotation and rescanned from the start.
+    """
+    if not session_id or not transcript_path:
+        return
+    try:
+        size = os.path.getsize(transcript_path)
+        offset = int(load_hook_state(session_id, "compaction_scan_offset") or 0)
+    except OSError:
+        return
+    except (TypeError, ValueError):
+        offset = 0
+    if offset > size:
+        offset = 0  # rotated or truncated -> rescan
+    if size == offset:
+        return
+    latest: Optional[str] = None
+    consumed = offset
+    try:
+        with open(transcript_path, "rb") as f:
+            f.seek(offset)
+            for raw in f:
+                if not raw.endswith(b"\n"):
+                    break  # partial trailing line; retry next pass
+                consumed += len(raw)
+                if b"compact" not in raw.lower():
+                    continue
+                try:
+                    rec = json.loads(raw.decode("utf-8", "replace"))
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(rec, dict) or not _is_compaction_record(rec):
+                    continue
+                ts = _norm_ts(rec.get("timestamp") or rec.get("ts"))
+                if ts and (latest is None or ts > latest):
+                    latest = ts
+    except OSError:
+        return
+    try:
+        if latest:
+            save_hook_state(session_id, "compaction_ts", latest)
+        save_hook_state(session_id, "compaction_scan_offset", str(consumed))
+    except Exception:
+        pass
+
+
+def _drop_live_same_session(project_results: list[dict[str, Any]],
+                            global_results: list[dict[str, Any]],
+                            session_id: Optional[str],
+                            watermark: Optional[str] = None,
+                            ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Drop same-session memories that are still in the live context.
+
+    Fail-open in both directions: an unknown session or an unparseable timestamp
+    leaves results untouched rather than over-dropping. Only a memory whose
+    session_id matches AND which post-dates the compaction watermark is dropped;
+    anything else survives.
+    """
+    if not session_id:
+        return project_results, global_results
+    if watermark is None:
+        try:
+            watermark = load_hook_state(session_id, "compaction_ts")
+        except Exception:
+            watermark = None
+
+    def _keep(r: dict[str, Any]) -> bool:
+        if r.get("session_id") != session_id:
+            return True
+        if not watermark:
+            return False  # no compaction yet -> the producing turn is live
+        return (_norm_ts(r.get("updated_at")) or "") < watermark
+
+    kept_p = [r for r in project_results if _keep(r)]
+    kept_g = [r for r in global_results if _keep(r)]
+    dropped = (len(project_results) - len(kept_p)) + (len(global_results) - len(kept_g))
+    if dropped:
+        record_metric(session_id, "same_session_suppressed",
+                      "pre-compaction recovery" if watermark else "live (no compaction)",
+                      dropped)
+    return kept_p, kept_g
+
+
 # --- XML formatting helpers ---
 
 def recency_days(updated_at: str) -> int:
@@ -735,6 +893,11 @@ def build_context_xml(query: str, project: Optional[str], layer: str,
     window). All layers now pass session_id — including project/correction
     bootstrap (2026-07-02: they were the highest-volume path yet invisible to the
     engagement/grading loop)."""
+    # Same-session gate (all layers): drop a memory written in this session while
+    # its producing turn is still in context. Must run before the suppression
+    # steps so they see the final set. See _drop_live_same_session.
+    project_results, global_results = _drop_live_same_session(
+        project_results, global_results, session_id)
     # Correctness dedup (all layers): drop a superseded entry when its superseder
     # is already in the same result set — see _suppress_superseded_pairs.
     project_results, global_results = _suppress_superseded_pairs(

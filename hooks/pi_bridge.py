@@ -138,6 +138,15 @@ def cmd_bootstrap(a):
 
 def cmd_retrieve(a):
     _ensure_project(a.session, a.transcript, a.cwd)
+    # Refresh the compaction watermark before searching: in autonomous operation a
+    # compaction can land between the last capture and this prompt, which changes
+    # whether a same-session memory is echo or recovery. Cheap after the first
+    # pass (size-guarded). Fail-open.
+    try:
+        from hooks.hook_helpers import record_compaction_watermark
+        record_compaction_watermark(a.session, a.transcript)
+    except Exception:
+        pass
     query = a.query or _read_text(a.text_file)
     if not query.strip():
         return
