@@ -54,7 +54,7 @@ def _record_sweep_state(stats: dict) -> None:
         print(f"(could not record sweep state: {exc})", file=sys.stderr)
 
 # Directory names never worth graphing — skip to save build time/noise.
-_SKIP_DIRS = {"node_modules", ".venv", "venv", "__pycache__", ".cache", "vendor"}
+_SKIP_DIRS = {"node_modules", ".venv", "venv", "__pycache__", ".cache", "vendor", ".worktrees"}
 # Skip graphing submodules larger than this many tracked files — vendor trees
 # like a Linux kernel (~80k files) or u-boot are huge, pointless to symbol-graph,
 # and stall the sweep. In-house libs are tiny (e.g. ugv-nav-msgs ~70 files).
@@ -152,6 +152,25 @@ def _run(crg: str, args: list[str], timeout: int = 600) -> tuple[bool, str]:
         return False, str(e)
 
 
+def _daemon_state(crg: str) -> tuple[bool, set[str]]:
+    """(daemon_running, repos already in the watch config).
+
+    `crg daemon status` exits 0 whether or not the daemon is up, so liveness has
+    to be read from its output, not its return code. Its table lists the watch
+    config as `alias<spaces>path` rows.
+    """
+    ok, out = _run(crg, ["daemon", "status"], timeout=15)
+    if not ok:
+        return False, set()
+    running = "not running" not in out.lower()
+    registered: set[str] = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].startswith("/"):
+            registered.add(parts[1].rstrip("/"))
+    return running, registered
+
+
 def _watch_daemon_enabled() -> bool:
     # Opt-in. The watch daemon adds real-time freshness but is fragile (doesn't
     # always persist when spawned outside a login shell) and churns on volatile
@@ -180,6 +199,7 @@ def sweep(roots: Optional[list[str]] = None, *, build_missing: bool = True,
              "failed": [], "repos": repos}
     use_daemon = _watch_daemon_enabled()
     newly_registered = 0
+    daemon_running, already_watched = _daemon_state(crg) if use_daemon else (False, set())
 
     for repo in repos:
         present = _graph_db_present(repo)
@@ -203,13 +223,18 @@ def sweep(roots: Optional[list[str]] = None, *, build_missing: bool = True,
             ok, _ = _run(crg, ["daemon", "add", repo, "--alias", os.path.basename(repo)], timeout=30)
             if ok:
                 stats["registered"] += 1
-                newly_registered += 1
+                # `daemon add` is idempotent and exits 0 for an already-watched
+                # repo, so its exit code is not change-detection — diff against
+                # the pre-sweep watch config instead. Counting every add as new
+                # made the restart below fire on every hourly sweep, and each
+                # restart leaked a full generation of watcher processes.
+                if repo.rstrip("/") not in already_watched:
+                    newly_registered += 1
 
     if use_daemon:
         # Ensure the daemon is up; restart only if we registered new repos this
         # sweep (a running daemon does not hot-load newly-added repos).
-        running, _ = _run(crg, ["daemon", "status"], timeout=15)
-        sub = "restart" if (running and newly_registered) else "start"
+        sub = "restart" if (daemon_running and newly_registered) else "start"
         _run(crg, ["daemon", sub], timeout=30)
 
     _record_sweep_state(stats)
