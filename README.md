@@ -84,65 +84,91 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 
 ## Features
 
-- **Cross-session memory** — decisions, preferences, facts, corrections, people, projects, skills, workflows
+### Capture
+
 - **Per-turn memory authoring** — the LLM writes structured memories on every response, enforced mechanically; no separate capture step
 - **Per-turn context self-assessment** — the LLM declares when it lacks context on every response; the system retrieves and re-prompts automatically
-- **Five retrieval layers** — CWD-based project bootstrap, proactive first-prompt push, per-prompt mid-session injection, cross-project keyword surfacing, LLM-requested pull, plus gotcha injection on file access; a same-session gate withholds memories whose originating turn is still in context
-- **Hybrid FTS5 + vector search with RRF** — exact keyword matches (error codes, function names) fused with semantic similarity via Reciprocal Rank Fusion; dual-method matches ranked higher than single-method
-- **Type-prefix fan-out** — query expansion that searches with each memory type prefix (fact, decision, correction, etc.) and takes the max similarity per memory; closes the embedding gap between bare queries and type-prefixed stored memories
-- **Veracity tracking** — confidence represents corroboration, not retrieval rank; `+` corroborates, `-!` annotates contradictions with reasons that persist for future sessions
-- **Cross-encoder re-ranking** — after diversity filtering, a cross-encoder (`ms-marco-MiniLM-L-6-v2`) jointly scores (query, memory) pairs, catching semantic relationships that independent embeddings miss; blended with composite score at configurable weight
-- **Memory consolidation** — automated pipeline merges duplicate memories using NLI entailment scoring, with Haiku generating consolidated entries; runs daily via cron
-- **Contradiction detection** — NLI-based contradiction scoring with Haiku assessment identifies superseded memories and auto-archives them; also detects plan→implementation pairs (older intent confirmed built by a newer memory) and archives the stale plan as EXECUTED; incremental via pair assessment cache
-- **Session handoff digest** — every 10 turns the LLM emits a structured session summary (branch, in-progress work, decisions, blockers, next action) as a project memory; the next session resumes from it via project bootstrap
-- **Semantic search** — local embeddings via `all-MiniLM-L6-v2` with sqlite-vec indexed vector search; no API key required
-- **Project bootstrap** — on session start, injects standing-context memories (preferences, facts, project state) for the current working directory; gives Claude project awareness from CWD alone, independent of prompt content
-- **Per-prompt context injection** — on every subsequent prompt, searches for relevant past context mid-conversation; catches cases where relevant memories exist but the LLM didn't know to ask
-- **Project scoping** — memories auto-labelled by working directory, retrievable per-project or globally
-- **Invisible** — metadata tags are stripped from user display; the system operates transparently
-- **Quality gates** — 10 configurable filters including garbage, borderline, relative, dominance, diversity, and cross-encoder re-ranking
-- **Contradiction handling** — same-topic updates suppress the old entry; negation heuristics dampen conflicting memories; `-!` annotations preserve why something was wrong
-- **Correction-file association** — when a correction is stored, surrounding file paths are automatically extracted from the transcript and linked; future access to those files injects the correction proactively
-- **Gotcha injection** — PreToolUse hook surfaces corrections and relevant context before Read/Edit/Write tool calls on associated files
-- **Multi-host support** — Claude Code CLI, VS Code Copilot Chat, and the pi agent via a CLI bridge (`hooks/pi_bridge.py`). All three write the same `[cm]` block and share one memory store; a transcript adapter normalizes the differing transcript formats. See Host bridges below
 - **Compact memory format** — dual-format parser supports both verbose (`- type: fact`) and compact (`fact/topic: content [k: kw1, kw2]`) memory blocks
 - **Completeness enforcement** — `complete: false` blocks stop and re-prompts with remaining work; trailing intent detection blocks when the LLM promises action without following through
+- **Content enforcement** — strict metadata validation, content density checks, anti-fabrication rules
+- **Correction-file association** — when a correction is stored, surrounding file paths are automatically extracted from the transcript and linked; future access to those files injects the correction proactively
+- **Session handoff digest** — every 10 turns the LLM emits a structured session summary (branch, in-progress work, decisions, blockers, next action) as a project memory; the next session resumes from it via project bootstrap
+- **Subagent mode** — automatic detection via `agent_id` in hook input; keeps bootstrap + L1 context injection, skips enforcement/L1.5/L2; stop hook opportunistically stores volunteered memories without blocking
+- **Subagent memory capture** — a `SubagentStop` hook routes a subagent's final `[cm]` block (invisible to the parent `Stop` hook) into storage, chained to the parent session, enforcement skipped
+
+### Retrieval
+
+- **Five retrieval layers** — CWD-based project bootstrap, proactive first-prompt push, per-prompt mid-session injection, cross-project keyword surfacing, LLM-requested pull, plus gotcha injection on file access; a same-session gate withholds memories whose originating turn is still in context
+- **Project bootstrap** — on session start, injects standing-context memories (preferences, facts, project state) for the current working directory; gives Claude project awareness from CWD alone, independent of prompt content
+- **Per-prompt context injection** — on every subsequent prompt, searches for relevant past context mid-conversation; catches cases where relevant memories exist but the LLM didn't know to ask
+- **Gotcha injection** — PreToolUse hook surfaces corrections and relevant context before Read/Edit/Write tool calls on associated files
+- **Hybrid FTS5 + vector search with RRF** — exact keyword matches (error codes, function names) fused with semantic similarity via Reciprocal Rank Fusion; dual-method matches ranked higher than single-method
+- **Semantic search** — local embeddings via `all-MiniLM-L6-v2` with sqlite-vec indexed vector search; no API key required
+- **Type-prefix fan-out** — query expansion that searches with each memory type prefix (fact, decision, correction, etc.) and takes the max similarity per memory; closes the embedding gap between bare queries and type-prefixed stored memories
+- **Multi-query decomposition** — `|` separator in `find_similar` and `query.py --semantic` runs each subquery independently and merges by best score; tight semantic vectors per topic instead of one blurred embedding
+- **Cross-encoder re-ranking** — after diversity filtering, a cross-encoder (`ms-marco-MiniLM-L-6-v2`) jointly scores (query, memory) pairs, catching semantic relationships that independent embeddings miss; blended with composite score at configurable weight
+- **GPU-aware reranker** — the cross-encoder defaults to `ms-marco-MiniLM-L-6-v2` (logit floor −3.0) on every device; when `RERANKER_BGE_ENABLED` is set and CUDA is present it swaps to `BAAI/bge-reranker-base` (sigmoid floor **0.015**, recalibrated from Opus grade labels) on a GPU with at least `RERANKER_MIN_VRAM_GB` (6 GB). The daemon owns the model so the hot hook path never imports torch; the cross-encoder scores a cleaned recent-context window, not the bare prompt
+- **Quality gates** — 10 configurable filters including garbage, borderline, relative, dominance, diversity, and cross-encoder re-ranking
+- **Type-aware scope bias** — `person` and `preference` memory types ignore the project scope penalty so biographical/cross-cutting facts about the user surface in any session, not just the project where they were captured
+- **Self-improving** — retrieval outcome feedback adaptively tightens thresholds when results are poor
+
+### Retrieval enforcement
+
 - **Bootstrap enforcement** — forces context checks every N turns to build the habit of cairn-first reasoning
 - **Active bootstrap trigger** — pattern-based detection of knowledge questions ("what did we decide", "remind me about", "what aspect of my X") fires an immediate context check, not just on the N-turn timer
 - **Thin-retrieval escalation** — when push retrieval returns too few or too-weak results, the next stop hook stages a reminder forcing the LLM to run `query.py` directly or re-declare with a refined need; catches the failure mode where the LLM trusts an empty push as authoritative absence
 - **Query-quality enforcement** — detects phoned-in `context_need` declarations that don't reference the substantive terms from the user's question; staged reminder asks for a refined declaration
-- **Multi-query decomposition** — `|` separator in `find_similar` and `query.py --semantic` runs each subquery independently and merges by best score; tight semantic vectors per topic instead of one blurred embedding
-- **Type-aware scope bias** — `person` and `preference` memory types ignore the project scope penalty so biographical/cross-cutting facts about the user surface in any session, not just the project where they were captured
+
+### Keeping memories true
+
+- **Veracity tracking** — confidence represents corroboration, not retrieval rank; `+` corroborates, `-!` annotates contradictions with reasons that persist for future sessions
+- **Contradiction handling** — same-topic updates suppress the old entry; negation heuristics dampen conflicting memories; `-!` annotations preserve why something was wrong
+- **Contradiction detection** — NLI-based contradiction scoring with Haiku assessment identifies superseded memories and auto-archives them; also detects plan→implementation pairs (older intent confirmed built by a newer memory) and archives the stale plan as EXECUTED; incremental via pair assessment cache
+- **Memory consolidation** — automated pipeline merges duplicate memories using NLI entailment scoring, with Haiku generating consolidated entries; runs daily via cron
+- **Archive over delete** — superseded and incorrect memories are archived with reasons, preserving the learning trail of rejected approaches and mistakes
+- **Annotation audit trail** — every confidence feedback event (`+`, `-`, `-!`) logged to `memory_annotation_log` with reason and session, enabling post-hoc review of how memory confidence evolved
+- **Memory audit** — `/cairn audit` reviews session memories for accuracy, enriches thin entries, fills gaps; background agent (`audit_agent.py`) reads transcripts via `claude -p` for automated review
+
+### Organisation and recovery
+
+- **Cross-session memory** — decisions, preferences, facts, corrections, people, projects, skills, workflows
+- **Project scoping** — memories auto-labelled by working directory, retrievable per-project or globally
 - **Project label override** — `CAIRN_PROJECT=name claude` overrides the cwd-based default for catch-all directories or benchmark isolation
 - **Verbatim session recovery** — every memory links back to the exact conversation that produced it; `--context <id>` retrieves the verbatim transcript excerpt from the original session — the actual words spoken, not a summary or reconstruction.
-- **Self-improving** — retrieval outcome feedback adaptively tightens thresholds when results are poor
-- **Memory audit** — `/cairn audit` reviews session memories for accuracy, enriches thin entries, fills gaps; background agent (`audit_agent.py`) reads transcripts via `claude -p` for automated review
-- **Archive over delete** — superseded and incorrect memories are archived with reasons, preserving the learning trail of rejected approaches and mistakes
-- **Content enforcement** — strict metadata validation, content density checks, anti-fabrication rules
+- **Excerpt snapshots** — stop hook auto-captures the assistant message as source context; `--context <id>` reads the excerpt first for instant recovery without transcript search
+
+### Hosts and transport
+
+- **Multi-host support** — Claude Code CLI, VS Code Copilot Chat, and the pi agent via a CLI bridge (`hooks/pi_bridge.py`). All three write the same `[cm]` block and share one memory store; a transcript adapter normalizes the differing transcript formats. See Host bridges below
+- **Invisible** — metadata tags are stripped from user display; the system operates transparently
+- **API proxy (artifact-free, default on)** — an opt-out bidirectional proxy (`cairn/proxy/`) that injects context and strips every Cairn artifact (`<memory>`/`[cm]` blocks, `<cairn_context>`, system reminders) from the request/response stream, so the model receives memory but the prompt stays byte-exact for Anthropic prompt caching; runs on `127.0.0.1:8789`, fronted by a `c` launcher and a `*/5` keep-alive cron. Opt out with `CAIRN_PROXY_ENABLED=0`
+- **Dev-container support** — the daemon exposes a TCP listener (port 47390) with `cairn_recall`/`cairn_remember` opcodes plus a container injector and extension auto-installer, so containerised sessions reach the host cairn
+- **Multi-node sync (v2, opt-in)** — peer-to-peer LAN replication in `cairn/sync/`: Ed25519 keypair identity, UDP-broadcast discovery, dashboard-authorized public-key pairing, signed + cert-pinned HTTPS transport, and changeset replication with Lamport-clock last-write-wins. Nodes share only their own memories; raw session transcripts are never synced. Wired into `install.sh` but **off by default** — opt in per node with `CAIRN_SYNC_ENABLED=1`. See the Multi-User Architecture section of [ARCHITECTURE.md](ARCHITECTURE.md)
+
+### Code awareness
+
+- **Code-graph navigation (`cairn-graph`)** — zero-cost, no-LLM query layer over a `code-review-graph` symbol graph: locate symbols, callers/callees, blast radius, tests, and context packs. Surfaced automatically into sessions as a session-start orientation block (Tier 1) and per-file structural context on Read/Edit (Tier 2)
+- **Graph fleet** — an hourly cron + first-contact prompt hook keep every git repo under the configured roots graph-ready, so structural context is available before first contact, independent of whether Cairn has been active there. A per-prompt **HEAD-change check** also catches mid-session branch switches / pulls / rebases and kicks a background incremental update, so the graph follows you across branches without waiting for the next sweep
+- **Review write-back (`cairn-review-writeback`)** — persists durable review rationale (the *why* that survives the fix) keyed to the target repo and changed file/symbol, surfaced later via `cairn-graph --knowledge`
+- **Repo ingestion** — mechanistic extraction + Haiku distillation turns any git repo into portable knowledge entries; 24 extractors cover docs, deps, configs, schemas, HTTP routes, CLI args, exports, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI, plus tree-sitter AST parsing (8 languages) and dependency graph analysis
+- **Incremental re-ingestion** — section-level fingerprinting detects what changed since last ingestion; only changed sections are sent to Haiku, unchanged memories preserved; `--full` forces complete re-ingestion; extractor version tracking triggers re-processing when extractor logic changes
+- **Org-index (prototype)** — org-wide git index with three components: `org_index.py` walks every repo × branch via `gh api` (no clones) to answer "where is file X on any branch" and flag stranded/unmerged work going stale; `interface_registry.py` tracks cross-repo `IMPORTS_FROM` edges from each repo's code graph to answer "who consumes shared module X"; `cairn_verify.py` cross-checks Cairn location-claim memories against the locatability index to catch stale file-path claims
+
+### Measurement and adaptation
+
+- **Relevance grading (agent-as-teacher)** — every injected memory is logged to a `memory_deliveries` table with full ranking provenance (reranker model, score components, layer, scope); the main agent grades each surfaced memory 0–3 (+ hard-negative) in the `[cm]` block's `rg` field, and a behavioural engagement signal mechanically detects whether the response actually *used* each memory via distinctive-term overlap (the primary, non-circular label). Read-side foundation for a future trained cross-encoder gate
+- **Write-side generation provenance** — every agent-written memory is stamped with `GENERATION_PROMPT_VERSION` in `source_ref`, so downstream usefulness (grades, engagement) is attributable to the generation rules that produced it; `cairn/ab_writeside.py` is an offline A/B harness that replays the transcript corpus through two generation prompts and judges them blind, position-swapped, and pairwise with Opus 4.8
+- **Calibration system (Phases 1–7)** — a complementary track that captures *how to interact with this user* (level, style, preferences); a per-session analyser, agent-invoked CLI, self-modification passes, and a dashboard tab. See the Calibration section below
+
+### Operations
+
 - **Health check** — `--check` validates the full chain (DB, hooks, daemon, embeddings, rules) post-install
 - **Self-healing embeddings** — auto-starts daemon and backfills when memories are stored without embeddings
 - **Web dashboard** — browser-based UI at `localhost:8420` for monitoring and management; overview stats, memory browser with search, session explorer with transcript viewer, retrieval metrics, embedding performance, token usage estimates, per-session generated-vs-consumed memory flow, retention dashboard with excerpt snapshots, session triage, config editor
 - **Systemic health monitoring** — tracks persistent failures across daemon, embedding, and hook subsystems; writes `.impaired` sentinel file on degradation triggering a visible warning in the LLM's prompt; desktop notifications via `notify-send`; health pill in dashboard
 - **Ephemeral DB split** — transient operational data (metrics, hook state, pair assessments) isolated in a separate `cairn-ephemeral.db` to contain corruption blast radius away from durable memories
-- **Annotation audit trail** — every confidence feedback event (`+`, `-`, `-!`) logged to `memory_annotation_log` with reason and session, enabling post-hoc review of how memory confidence evolved
-- **Excerpt snapshots** — stop hook auto-captures the assistant message as source context; `--context <id>` reads the excerpt first for instant recovery without transcript search
-- **Subagent mode** — automatic detection via `agent_id` in hook input; keeps bootstrap + L1 context injection, skips enforcement/L1.5/L2; stop hook opportunistically stores volunteered memories without blocking
 - **Embedding instrumentation** — per-call timing for daemon, local model, vector search, brute-force search, and fan-out expansion; surfaced in dashboard metrics panel
-- **Repo ingestion** — mechanistic extraction + Haiku distillation turns any git repo into portable knowledge entries; 24 extractors cover docs, deps, configs, schemas, HTTP routes, CLI args, exports, protobuf, CMake flags, event interfaces, DB tables, C/C++ headers, ROS2 interfaces, CAN DBC, Yocto/BitBake, device tree, Docker/CI, plus tree-sitter AST parsing (8 languages) and dependency graph analysis
-- **Incremental re-ingestion** — section-level fingerprinting detects what changed since last ingestion; only changed sections are sent to Haiku, unchanged memories preserved; `--full` forces complete re-ingestion; extractor version tracking triggers re-processing when extractor logic changes
 - **Env var overrides** — any config value tunable via `CAIRN_<NAME>=value` without editing source
-- **API proxy (artifact-free, default on)** — an opt-out bidirectional proxy (`cairn/proxy/`) that injects context and strips every Cairn artifact (`<memory>`/`[cm]` blocks, `<cairn_context>`, system reminders) from the request/response stream, so the model receives memory but the prompt stays byte-exact for Anthropic prompt caching; runs on `127.0.0.1:8789`, fronted by a `c` launcher and a `*/5` keep-alive cron. Opt out with `CAIRN_PROXY_ENABLED=0`
-- **Code-graph navigation (`cairn-graph`)** — zero-cost, no-LLM query layer over a `code-review-graph` symbol graph: locate symbols, callers/callees, blast radius, tests, and context packs. Surfaced automatically into sessions as a session-start orientation block (Tier 1) and per-file structural context on Read/Edit (Tier 2)
-- **Graph fleet** — an hourly cron + first-contact prompt hook keep every git repo under the configured roots graph-ready, so structural context is available before first contact, independent of whether Cairn has been active there. A per-prompt **HEAD-change check** also catches mid-session branch switches / pulls / rebases and kicks a background incremental update, so the graph follows you across branches without waiting for the next sweep
-- **Review write-back (`cairn-review-writeback`)** — persists durable review rationale (the *why* that survives the fix) keyed to the target repo and changed file/symbol, surfaced later via `cairn-graph --knowledge`
-- **Org-index (prototype)** — org-wide git index with three components: `org_index.py` walks every repo × branch via `gh api` (no clones) to answer "where is file X on any branch" and flag stranded/unmerged work going stale; `interface_registry.py` tracks cross-repo `IMPORTS_FROM` edges from each repo's code graph to answer "who consumes shared module X"; `cairn_verify.py` cross-checks Cairn location-claim memories against the locatability index to catch stale file-path claims
-- **Subagent memory capture** — a `SubagentStop` hook routes a subagent's final `[cm]` block (invisible to the parent `Stop` hook) into storage, chained to the parent session, enforcement skipped
-- **Dev-container support** — the daemon exposes a TCP listener (port 47390) with `cairn_recall`/`cairn_remember` opcodes plus a container injector and extension auto-installer, so containerised sessions reach the host cairn
-- **Multi-node sync (v2, opt-in)** — peer-to-peer LAN replication in `cairn/sync/`: Ed25519 keypair identity, UDP-broadcast discovery, dashboard-authorized public-key pairing, signed + cert-pinned HTTPS transport, and changeset replication with Lamport-clock last-write-wins. Nodes share only their own memories; raw session transcripts are never synced. Wired into `install.sh` but **off by default** — opt in per node with `CAIRN_SYNC_ENABLED=1`. See the Multi-User Architecture section of [ARCHITECTURE.md](ARCHITECTURE.md)
-- **Calibration system (Phases 1–7)** — a complementary track that captures *how to interact with this user* (level, style, preferences); a per-session analyser, agent-invoked CLI, self-modification passes, and a dashboard tab. See the Calibration section below
-- **Relevance grading (agent-as-teacher)** — every injected memory is logged to a `memory_deliveries` table with full ranking provenance (reranker model, score components, layer, scope); the main agent grades each surfaced memory 0–3 (+ hard-negative) in the `[cm]` block's `rg` field, and a behavioural engagement signal mechanically detects whether the response actually *used* each memory via distinctive-term overlap (the primary, non-circular label). Read-side foundation for a future trained cross-encoder gate
-- **GPU-aware reranker** — the cross-encoder defaults to `ms-marco-MiniLM-L-6-v2` (logit floor −3.0) on every device; when `RERANKER_BGE_ENABLED` is set and CUDA is present it swaps to `BAAI/bge-reranker-base` (sigmoid floor **0.015**, recalibrated from Opus grade labels) on a GPU with at least `RERANKER_MIN_VRAM_GB` (6 GB). The daemon owns the model so the hot hook path never imports torch; the cross-encoder scores a cleaned recent-context window, not the bare prompt
-- **Write-side generation provenance** — every agent-written memory is stamped with `GENERATION_PROMPT_VERSION` in `source_ref`, so downstream usefulness (grades, engagement) is attributable to the generation rules that produced it; `cairn/ab_writeside.py` is an offline A/B harness that replays the transcript corpus through two generation prompts and judges them blind, position-swapped, and pairwise with Opus 4.8
 
 ## Quick start
 
