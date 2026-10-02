@@ -104,7 +104,7 @@ The user never asked Claude to remember the bird. Never asked it to look anythin
 - **Contradiction handling** — same-topic updates suppress the old entry; negation heuristics dampen conflicting memories; `-!` annotations preserve why something was wrong
 - **Correction-file association** — when a correction is stored, surrounding file paths are automatically extracted from the transcript and linked; future access to those files injects the correction proactively
 - **Gotcha injection** — PreToolUse hook surfaces corrections and relevant context before Read/Edit/Write tool calls on associated files
-- **Multi-host support** — Claude Code CLI (`<memory>` tags, stripped from terminal), VS Code Copilot Chat (`[cm]:` markdown link definitions, invisible in chat panel), and the pi agent via a CLI bridge (`hooks/pi_bridge.py`); a transcript adapter normalizes the formats and all hosts share one memory store. See Host bridges below
+- **Multi-host support** — Claude Code CLI, VS Code Copilot Chat, and the pi agent via a CLI bridge (`hooks/pi_bridge.py`). All three write the same `[cm]` block and share one memory store; a transcript adapter normalizes the differing transcript formats. See Host bridges below
 - **Compact memory format** — dual-format parser supports both verbose (`- type: fact`) and compact (`fact/topic: content [k: kw1, kw2]`) memory blocks
 - **Completeness enforcement** — `complete: false` blocks stop and re-prompts with remaining work; trailing intent detection blocks when the LLM promises action without following through
 - **Bootstrap enforcement** — forces context checks every N turns to build the habit of cairn-first reasoning
@@ -225,18 +225,13 @@ Memories are tagged with the project name and git commit SHA for provenance. Re-
 
 ### The invisible metadata mechanism
 
-Every LLM response ends with a `<memory>` block using angle bracket tags. Claude Code strips these from the displayed output — the user sees a clean response. But the Stop hook has full access to the structured data.
+Every LLM response ends with a `[cm]` block: a markdown link definition, which renders to nothing. The user sees a clean response; the Stop hook gets the structured data.
 
 ```
-<memory>
-- type: decision
-- topic: auth-approach
-- content: Use JWT for stateless auth, no server sessions
-- keywords: authentication, JWT, session
-- source_messages: 15-22
-- complete: true
-</memory>
+[cm]: # '{"e":[{"t":"decision","to":"auth-approach","c":"Use JWT for stateless auth, no server sessions"}],"ok":true,"ctx":"s","kw":["authentication","JWT","session"]}'
 ```
+
+With the proxy on, the block is stripped from the response stream before it is displayed or stored, so invisibility does not depend on how a given client renders it. The parser also accepts a `<memory>` tag form, in both verbose and compact layouts.
 
 ### Five retrieval layers
 
@@ -455,7 +450,7 @@ Notable subsystem toggles (all `CAIRN_<NAME>` env overrides; defaults from `cair
 | Decision | Rationale |
 |----------|-----------|
 | **No MCP** | Claude Code has direct filesystem access — MCP adds a protocol layer for capabilities already available natively |
-| **Push + pull retrieval** | Both: context is injected automatically (first-prompt, per-prompt, project/correction bootstrap), *and* the LLM can declare `context: insufficient` to pull more mid-conversation. An earlier version of this table said "pull-based" — that described a design that predates automatic injection |
+| **Push + pull retrieval** | Both: context is injected automatically (first-prompt, per-prompt, project/correction bootstrap), *and* the LLM can declare `context: insufficient` to pull more mid-conversation |
 | **Local models** | No API keys, no network latency, no ongoing costs. 3 local models: embedding, cross-encoder re-ranking, NLI for consolidation |
 | **Veracity over ranking** | Confidence tracks corroboration, not retrieval relevance — similarity and recency handle ranking |
 | **Invisible tags** | User sees clean output; hook infrastructure sees structured metadata — no UX compromise |
@@ -508,11 +503,11 @@ other people.
 
 ## Limitations
 
-**Claude Code only.** Cairn is tightly coupled to Claude Code's hook system and tag-stripping behaviour. It will not work with Cursor, VS Code agents, other LLMs, or the Claude web interface. This is by design — the architecture exploits Claude Code's specific capabilities rather than targeting a lowest common denominator.
+**Narrow host support.** Cairn needs a host that exposes turn-level hooks or an equivalent extension point, which it has on Claude Code, VS Code Copilot Chat and the pi agent (see Host bridges). There is no adapter for Cursor, other agents, or the Claude web interface. This is by design — the architecture uses a host's specific extension points rather than targeting a lowest common denominator.
 
-**LLM cooperation is imperfect.** The system depends on the LLM reliably producing well-formed `<memory>` blocks and accurately declaring when it needs context. In practice, the LLM sometimes answers "I don't know" before the hook can inject memories, or produces generic memories instead of extracting specific facts. Mechanical enforcement (the Stop hook) catches most failures but adds a re-prompt turn when it does.
+**LLM cooperation is imperfect.** The system depends on the LLM reliably producing well-formed `[cm]` blocks and accurately declaring when it needs context. In practice, the LLM sometimes answers "I don't know" before the hook can inject memories, or produces generic memories instead of extracting specific facts. Mechanical enforcement (the Stop hook) catches most failures but adds a re-prompt turn when it does.
 
-**Tag invisibility is behaviour-dependent.** The invisible metadata relies on Claude Code stripping angle bracket tags from rendered output. If Anthropic changes this rendering behaviour, memory blocks would become visible to users. The system would still function but the clean UX would degrade.
+**Invisibility degrades without the proxy.** With the proxy on (the default), Cairn artifacts are stripped from the response stream, so what the user sees does not depend on client rendering. Set `CAIRN_PROXY_ENABLED=0` and invisibility falls back to the host not rendering the block — a markdown link definition renders to nothing, and the Claude Code terminal strips angle-bracket tags. If a host changes how it renders either, blocks become visible in that fallback mode. The system still functions; the clean UX degrades.
 
 **Distillation is lossy.** Memories are one-line summaries. The `--context` command can recover the full conversation around any memory, but only while Claude Code retains the transcript file. Claude Code's `cleanupPeriodDays` setting (default 30) controls how long transcripts are kept — increase it if you need longer context recovery. After cleanup, the one-line summary persists permanently.
 
@@ -522,7 +517,7 @@ Things that can go wrong and how the system handles them:
 
 | Failure | What happens | Mitigation |
 |---------|-------------|------------|
-| LLM forgets the `<memory>` block | Stop hook blocks the response and re-prompts "add a memory block" | User sees a brief pause; the re-prompt is invisible |
+| LLM forgets the `[cm]` block | Stop hook blocks the response and re-prompts "add a memory block" | User sees a brief pause; the re-prompt is invisible |
 | LLM answers before checking memory | User sees "I don't know" then a correction after the hook injects context | Layer 1 (first-prompt push) proactively injects on the first message to prevent this |
 | Embedding daemon not running | Memories stored without embeddings; dedup and semantic search degraded | Auto-start attempted; background backfill triggers automatically when missing embeddings detected |
 | Hook crashes | Fail-open design: crash → exit 0 → response reaches user normally | Crash logged to metrics; no user impact |
