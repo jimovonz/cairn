@@ -24,11 +24,13 @@ from cairn import config as C
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The prose lives in CLAUDE.md, in the on-demand skills it delegates to, and in
-# README.md. Scan all three: a section moving between them must not take its
-# drift check with it, and README.md quoted a stale reranker floor and a frozen
-# genA-vN for several releases precisely because it was not scanned.
-DOCS = ([os.path.join(_ROOT, "CLAUDE.md"), os.path.join(_ROOT, "README.md")]
+# Every prose source that quotes a constant, scanned together: CLAUDE.md, the
+# on-demand skills it delegates to, README.md and ARCHITECTURE.md. A section
+# moving between them must not take its drift check with it. Both README.md and
+# ARCHITECTURE.md carried stale values for several releases precisely because
+# they were not scanned.
+DOCS = ([os.path.join(_ROOT, "CLAUDE.md"), os.path.join(_ROOT, "README.md"),
+         os.path.join(_ROOT, "ARCHITECTURE.md")]
         + sorted(glob.glob(os.path.join(_ROOT, ".claude", "skills", "*", "SKILL.md"))))
 
 
@@ -42,7 +44,9 @@ def doc():
 
 
 @pytest.mark.parametrize("pattern,actual,label", [
-    (r"similarity ([0-9.]+)", C.SCORE_W_SIMILARITY, "SCORE_W_SIMILARITY"),
+    # Anchored on the following weight so it cannot match an unrelated
+    # similarity threshold (e.g. the 0.6-0.95 dedup band in ARCHITECTURE.md).
+    (r"similarity ([0-9.]+), keywords", C.SCORE_W_SIMILARITY, "SCORE_W_SIMILARITY"),
     (r"keywords ([0-9.]+)", C.SCORE_W_KEYWORDS, "SCORE_W_KEYWORDS"),
     (r"scope ([0-9.]+)", C.SCORE_W_SCOPE, "SCORE_W_SCOPE"),
     (r"confidence ([0-9.]+) and recency", C.SCORE_W_CONFIDENCE, "SCORE_W_CONFIDENCE"),
@@ -51,10 +55,16 @@ def doc():
     (r"RERANKER_MIN_VRAM_GB` \((\d+) GB\)", C.RERANKER_MIN_VRAM_GB, "RERANKER_MIN_VRAM_GB"),
 ])
 def test_documented_value_matches_config(doc, pattern, actual, label):
-    m = re.search(pattern, doc)
-    assert m, f"No doc states {label} in the expected form ({pattern!r})"
-    assert abs(float(m.group(1)) - float(actual)) < 1e-9, (
-        f"Docs say {label}={m.group(1)} but config.py has {actual}")
+    # EVERY occurrence must match, not just the first. Checking only the first
+    # made the guard vacuous for later files: ARCHITECTURE.md's config table
+    # said CROSS_ENCODER_SCORE_FLOOR was 0.0 (really -3.0) while an earlier,
+    # correct mention satisfied the search.
+    found = [m.group(1) for m in re.finditer(pattern, doc)]
+    assert found, f"No doc states {label} in the expected form ({pattern!r})"
+    wrong = [v for v in found if abs(float(v) - float(actual)) >= 1e-9]
+    assert not wrong, (
+        f"Docs say {label}={wrong} but config.py has {actual} "
+        f"(all occurrences found: {found})")
 
 
 def test_prefilter_flag_documented_state_matches(doc):
