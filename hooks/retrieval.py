@@ -167,6 +167,7 @@ def hybrid_search(
     exclude_ids: Optional[set[int]] = None,
     rerank: bool = True,
     rerank_query: Optional[str] = None,
+    allow_slow: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float]:
     """Hybrid semantic + FTS5 search with RRF fusion.
 
@@ -194,7 +195,8 @@ def hybrid_search(
             # (which doubled the whole pipeline incl. the cross-encoder) is gone.
             all_results = emb.find_similar(conn, query, threshold=threshold,
                                            limit=limit * 2, current_project=project,
-                                           rerank=rerank, rerank_query=rerank_query)
+                                           rerank=rerank, rerank_query=rerank_query,
+                                           allow_slow=allow_slow)
             rank = 0
             for r in all_results:
                 if session_id and r.get("session_id") == session_id:
