@@ -706,6 +706,7 @@ def find_similar(
     current_project: Optional[str] = None,
     rerank: bool = True,
     rerank_query: Optional[str] = None,
+    allow_slow: bool = True,
 ) -> list[dict[str, Any]]:
     """Find memories similar to the given text with full quality filtering.
 
@@ -752,7 +753,7 @@ def find_similar(
             for sq in subqueries:
                 sub_results = find_similar(conn, sq, threshold=threshold,
                                            limit=limit, current_project=current_project,
-                                           rerank=rerank)
+                                           rerank=rerank, allow_slow=allow_slow)
                 for r in sub_results:
                     existing = merged.get(r["id"])
                     if not existing or r["score"] > existing["score"]:
@@ -830,7 +831,14 @@ def find_similar(
                                          current_project, r["type"], kw_ov),
             })
     else:
-        vecs = embed_batch(variant_texts)
+        # allow_slow=False (hot hook path): if the daemon is down, return no
+        # candidates rather than blocking on a 10-30s in-process model load +
+        # full-table scan. The daemon auto-start (kicked in _daemon_embed) warms
+        # it for the next turn; skipping one turn of injection is invisible,
+        # whereas a 30s block trips the UserPromptSubmit hook timeout and the
+        # harness DISCARDS all injected context. CLI/daemon/dashboard callers
+        # keep allow_slow=True (default).
+        vecs = embed_batch(variant_texts, allow_slow=allow_slow)
         if vecs is None:
             return []
         V = _np.stack(vecs).astype(_np.float32)
