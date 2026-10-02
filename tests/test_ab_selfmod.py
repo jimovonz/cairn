@@ -243,6 +243,89 @@ def test_assess_grade_ignored_below_min_graded_n():
     assert "grade-promote" not in (result["decision_reason"] or "")
 
 
+def _seed_fit_pairs(durable, winner_version, loser_version, count):
+    """Insert `count` head-to-head fit pairs won by winner_version."""
+    d = sqlite3.connect(durable)
+    d.execute(
+        "CREATE TABLE IF NOT EXISTS delivery_fit_pairs ("
+        "  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, turn_index INTEGER,"
+        "  winner_id INTEGER NOT NULL, loser_id INTEGER NOT NULL,"
+        "  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+    for _ in range(count):
+        w = _seed_memory(d, winner_version)
+        l = _seed_memory(d, loser_version)
+        d.execute(
+            "INSERT INTO delivery_fit_pairs (session_id, winner_id, loser_id) VALUES (?, ?, ?)",
+            ("sess", w, l))
+    d.commit()
+    d.close()
+
+
+# Verifies: cross-arm fit pairs decide a dead-band experiment. This is the gate
+# that replaced the rg-grade path after `fit` became the primary relevance ask
+# and rg volume collapsed, leaving experiments permanently inconclusive.
+def test_assess_fit_promotes_when_engagement_within_band():
+    durable, eph, td = _fresh_dbs()
+    _seed_arm(durable, eph, "genA-v4", n=40, engaged_count=15)
+    _seed_arm(durable, eph, "genB-v2", n=40, engaged_count=15)
+    _seed_fit_pairs(durable, "genB-v2", "genA-v4", 24)   # B wins 24
+    _seed_fit_pairs(durable, "genA-v4", "genB-v2", 6)    # A wins 6 -> B at 80%
+    row = _insert_row(durable, _row())
+    config_path = _fresh_config(td)
+    with patch.object(sm, "CONFIG_PATH", config_path):
+        result = sm.assess_experiment(row, db_path=durable, eph_path=eph, dry_run=False)
+    assert result["status"] == "promoted"
+    assert "fit-promote" in result["decision_reason"]
+    assert result["fit_wins_b"] == 24 and result["fit_wins_a"] == 6
+
+
+def test_assess_fit_rejects_when_engagement_within_band():
+    durable, eph, td = _fresh_dbs()
+    _seed_arm(durable, eph, "genA-v4", n=40, engaged_count=15)
+    _seed_arm(durable, eph, "genB-v2", n=40, engaged_count=15)
+    _seed_fit_pairs(durable, "genA-v4", "genB-v2", 24)
+    _seed_fit_pairs(durable, "genB-v2", "genA-v4", 6)
+    row = _insert_row(durable, _row())
+    config_path = _fresh_config(td)
+    with patch.object(sm, "CONFIG_PATH", config_path):
+        result = sm.assess_experiment(row, db_path=durable, eph_path=eph, dry_run=False)
+    assert result["status"] == "rejected"
+    assert "fit-reject" in result["decision_reason"]
+
+
+def test_assess_fit_ignored_below_min_pairs():
+    durable, eph, td = _fresh_dbs()
+    _seed_arm(durable, eph, "genA-v4", n=40, engaged_count=15)
+    _seed_arm(durable, eph, "genB-v2", n=40, engaged_count=15)
+    _seed_fit_pairs(durable, "genB-v2", "genA-v4", 10)   # unanimous but too few
+    row = _insert_row(durable, _row())
+    config_path = _fresh_config(td)
+    with patch.object(sm, "CONFIG_PATH", config_path):
+        result = sm.assess_experiment(row, db_path=durable, eph_path=eph, dry_run=False)
+    assert result["status"] == "inconclusive"
+    assert "fit-promote" not in (result["decision_reason"] or "")
+    # Still reported below min-N, so the approach to threshold is observable.
+    assert result["fit_wins_b"] == 10
+
+
+# Verifies: same-arm pairs carry no arm signal. Counting them would dilute the
+# win rate toward 0.5 by however much each arm was sampled against itself.
+def test_fit_stats_ignores_same_arm_pairs():
+    durable, eph, td = _fresh_dbs()
+    _seed_fit_pairs(durable, "genB-v2", "genB-v2", 50)
+    _seed_fit_pairs(durable, "genA-v4", "genA-v4", 50)
+    _seed_fit_pairs(durable, "genB-v2", "genA-v4", 3)
+    wins_a, wins_b, rate = sm._fit_stats(durable, "genA-v4", "genB-v2")
+    assert (wins_a, wins_b, rate) == (0, 3, 1.0)
+
+
+# Verifies: an install that never collected a fit label degrades to the grade
+# path rather than raising on the missing table.
+def test_fit_stats_missing_table_returns_empty():
+    durable, eph, td = _fresh_dbs()
+    assert sm._fit_stats(durable, "genA-v4", "genB-v2") == (0, 0, None)
+
+
 def test_dry_run_never_touches_config():
     durable, eph, td = _fresh_dbs()
     _seed_arm(durable, eph, "genA-v4", n=40, engaged_count=8)

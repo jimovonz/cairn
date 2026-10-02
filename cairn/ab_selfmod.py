@@ -74,6 +74,22 @@ AB_MIN_GRADED_PER_ARM = 40
 AB_PROMOTE_GRADE_GAP = 0.05
 AB_REJECT_GRADE_GAP = -0.20
 
+# Fit-based tie-breaker — the same role as the grade gate above, reading the
+# label that replaced rg. Making `fit` the primary relevance ask drained the
+# rg grades this gate depends on (roughly 160/wk to single digits), which left
+# experiments permanently inconclusive: engagement lands in the dead band and
+# neither tie-breaker has data. A fit pair is strictly better evidence than a
+# grade for THIS question — it is a direct head-to-head between two delivered
+# memories, so a cross-arm pair is a vote for one arm over the other with the
+# turn held constant. Same-arm pairs carry no arm signal and are ignored.
+#
+# Thresholded on the win rate rather than a gap because the quantity is already
+# a proportion. Min-N is per-comparison (not per-arm) since each pair
+# contributes one vote to exactly one side.
+AB_MIN_FIT_PAIRS = 25
+AB_PROMOTE_FIT_RATE = 0.65
+AB_REJECT_FIT_RATE = 0.35
+
 
 def _open(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
@@ -102,6 +118,40 @@ def _emit_metric(event: str, detail: dict,
 # ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
+
+def _fit_stats(db_path: str, version_a: str, version_b: str) -> tuple[int, int, Optional[float]]:
+    """Head-to-head fit votes between the two arms.
+
+    Returns (wins_a, wins_b, win_rate_b). Both delivery_fit_pairs and memories
+    live in the durable DB, so this is a plain join — no cross-database work.
+
+    Counts only CROSS-arm pairs. A pair whose winner and loser are both from
+    the same arm says nothing about which arm is better, and including them
+    would dilute the rate toward 0.5 in proportion to how much each arm
+    happened to be sampled against itself. Pairs touching a memory from
+    neither arm (unversioned, ingest, analyser) are likewise irrelevant here.
+    """
+    conn = _open(db_path)
+    try:
+        row = conn.execute(
+            "SELECT "
+            "  SUM(mw.source_ref = ? AND ml.source_ref = ?), "
+            "  SUM(mw.source_ref = ? AND ml.source_ref = ?) "
+            "FROM delivery_fit_pairs p "
+            "JOIN memories mw ON mw.id = p.winner_id "
+            "JOIN memories ml ON ml.id = p.loser_id",
+            (version_a, version_b, version_b, version_a),
+        ).fetchone()
+    except sqlite3.Error:
+        # Table absent on an install that has never collected a fit label.
+        return 0, 0, None
+    finally:
+        conn.close()
+
+    wins_a, wins_b = int(row[0] or 0), int(row[1] or 0)
+    total = wins_a + wins_b
+    return wins_a, wins_b, (wins_b / total if total else None)
+
 
 def _arm_stats(db_path: str, eph_path: str, version: str) -> tuple[int, Optional[float], int, Optional[float]]:
     """Delivery count + engaged% for memories stamped with `version` in
@@ -405,13 +455,30 @@ def assess_experiment(row: dict, db_path: Optional[str] = None,
 
     status, reason = _ab_decision(n_a, pct_a, n_b, pct_b)
 
-    # Grade-based tie-breaker: engagement% landed inside the dead band, but the
-    # agent relevance-grade (0-3) is the more comprehensive signal. When both
-    # arms have enough graded deliveries, let a clear grade gap decide. Only
-    # applies to "inconclusive" — an arm still "running" (insufficient or
-    # unmeasurable engagement) must not be decided on grades alone. Runs before
-    # the compliance gate, so a grade-based promotion is still subject to the
-    # meta-compliance veto below.
+    # Two tie-breakers, consulted only when engagement lands inside the dead
+    # band. Both run before the compliance gate, so either promotion is still
+    # subject to the meta-compliance veto below, and neither may decide an arm
+    # still "running" (insufficient or unmeasurable engagement).
+    #
+    # Fit goes first. It is the live label — rg is legacy and its volume has
+    # collapsed — and a cross-arm fit pair is a direct head-to-head with the
+    # turn held constant, whereas avg_grade compares two independently-scored
+    # populations. The grade gate below stays as the fallback for the
+    # historical labels already collected under the absolute scale.
+    fit_a, fit_b, fit_rate = _fit_stats(db_path, row["base_version"], row["candidate_version"])
+    fit_n = fit_a + fit_b
+    if status == "inconclusive" and fit_n >= AB_MIN_FIT_PAIRS and fit_rate is not None:
+        if fit_rate >= AB_PROMOTE_FIT_RATE:
+            status = "promoted"
+            reason = (f"{reason} | fit-promote: B won {fit_b}/{fit_n} head-to-head "
+                      f"({fit_rate:.0%} >= {AB_PROMOTE_FIT_RATE:.0%})")
+        elif fit_rate <= AB_REJECT_FIT_RATE:
+            status = "rejected"
+            reason = (f"{reason} | fit-reject: B won {fit_b}/{fit_n} head-to-head "
+                      f"({fit_rate:.0%} <= {AB_REJECT_FIT_RATE:.0%})")
+
+    # Grade fallback: a clear avg-grade gap decides when both arms have enough
+    # graded deliveries and fit could not reach its own min-N.
     if status == "inconclusive" and gn_a >= AB_MIN_GRADED_PER_ARM and gn_b >= AB_MIN_GRADED_PER_ARM:
         grade_gap = (grade_b or 0.0) - (grade_a or 0.0)
         if grade_gap >= AB_PROMOTE_GRADE_GAP:
@@ -465,6 +532,11 @@ def assess_experiment(row: dict, db_path: Optional[str] = None,
               "engaged_pct_a": pct_a, "engaged_pct_b": pct_b, "decision_reason": reason,
               "graded_a": gn_a, "graded_b": gn_b,
               "avg_grade_a": grade_a, "avg_grade_b": grade_b,
+              # Reported even when below AB_MIN_FIT_PAIRS: "how close is the fit
+              # gate to having enough pairs" is the number to watch while the
+              # label base rebuilds, and it is invisible if only the deciding
+              # case is logged.
+              "fit_wins_a": fit_a, "fit_wins_b": fit_b, "fit_win_rate_b": fit_rate,
               **compliance}
 
     if dry_run:
