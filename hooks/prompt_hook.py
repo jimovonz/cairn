@@ -283,6 +283,7 @@ def layer1_5_search(user_message: str, session_id: str,
             query, conn, project=project, session_id=session_id,
             threshold=L1_5_SIM_THRESHOLD, limit=L1_5_MAX_RESULTS,
             exclude_ids=_li(session_id), rerank=True, rerank_query=_ctx,
+            allow_slow=False,  # hot path: daemon-only, never block on model load
         )
         conn.close()
     except Exception as e:
@@ -568,6 +569,7 @@ def layer1_search(user_message: str, session_id: str) -> Optional[str]:
             threshold=L1_SIM_THRESHOLD, limit=L1_MAX_RESULTS,
             exclude_ids=_li(session_id),
             rerank_query=build_context_window(user_message, None),
+            allow_slow=False,  # hot path: daemon-only, never block on model load
         )
         conn.close()
     except Exception as e:

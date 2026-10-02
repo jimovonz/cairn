@@ -409,6 +409,72 @@ def check_declined_without_trying(text: str, transcript_path: str,
     return matched_phrase
 
 
+# --- Asserted absence without consulting cairn ---
+
+# Deliberately NARROW: only capability/access/credential claims, never data claims.
+# "No blackbox files on disk" is a legitimate finding from a filesystem search; "I don't
+# have Jira access" is a claim about this environment's capabilities, and cairn is the
+# only authoritative index of those. Broadening these patterns to cover data absence
+# would fire on ordinary search results and get the whole check ignored.
+_ABSENCE_PATTERNS: list[re.Pattern] = [
+    re.compile(r"no (?:\w+ )?credentials?\b.{0,30}(?:exist|available|found|configured|set)", re.IGNORECASE),
+    re.compile(r"(?:there (?:is|are) )?no (?:api )?(?:token|key)s?\b.{0,25}(?:exist|available|found|configured)", re.IGNORECASE),
+    re.compile(r"i (?:don.t|do not) have (?:access|credentials|a token|permission) (?:to|for)", re.IGNORECASE),
+    re.compile(r"(?:no|without) (?:access|credentials) (?:to|for) \w+", re.IGNORECASE),
+    re.compile(r"not (?:available|configured|set up|accessible) (?:in|from) th(?:is|e current) environment", re.IGNORECASE),
+    re.compile(r"no (?:mcp server|integration|tooling|cli) (?:for|configured)", re.IGNORECASE),
+    re.compile(r"i (?:can.t|cannot) (?:access|reach|read) .{0,40}(?:from here|without credentials)", re.IGNORECASE),
+]
+
+def check_asserted_absence_without_cairn(text: str, transcript_path: str,
+                                          session_id: str = "") -> Optional[str]:
+    """Detect claiming a capability/credential is absent without consulting cairn.
+
+    Four recorded false negatives of exactly this shape (Atlassian credentials declared
+    missing while ~/.config/confluence_sync.env sat there) motivated this check. Prompt-
+    level instruction had already failed each time, so enforcement moves to the harness.
+
+    Cost of a false positive: one extra turn running a query that is cheap anyway.
+    Cost of a false negative: the user is told a capability does not exist when it does.
+    """
+    from hooks.hook_helpers import record_metric
+
+    try:
+        cleaned = re.sub(r"<memory>.*?</memory>", "", text, flags=re.DOTALL)
+        cleaned = re.sub(r"^\[(?:cm|cairn-memory)\]:\s*#\s*'.*'$", "", cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r"```.*?```", "", cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r"`[^`]+`", "", cleaned).strip()
+
+        matched = None
+        for pat in _ABSENCE_PATTERNS:
+            m = pat.search(cleaned)
+            if m:
+                matched = m.group()
+                break
+        if not matched:
+            return None
+
+        # Reuse the canonical helper rather than re-deriving "did this turn search cairn".
+        # It anchors on the last REAL user turn (_is_real_user_turn), so system reminders and
+        # tool results cannot be mistaken for the turn boundary — a subtlety a hand-rolled
+        # backward scan gets wrong. It returns False when the transcript is unreadable, which
+        # is right for its own caller but would make THIS check block on missing evidence, so
+        # the unreadable case is screened out above and treated as "cannot tell -> allow".
+        from hooks.hook_helpers import cairn_query_invoked_this_turn
+        if not transcript_path or not os.path.exists(transcript_path):
+            return None  # fail OPEN: never block because evidence is unavailable
+        if cairn_query_invoked_this_turn(transcript_path):
+            record_metric(session_id, "absence_claim_with_cairn", matched[:80])
+            return None
+
+        log(f"Asserted absence without cairn: '{matched[:60]}'")
+        record_metric(session_id, "absence_without_cairn", matched[:80])
+        return matched[:100]
+    except Exception as e:  # never let this check break the hook
+        log(f"absence check error (failing open): {e}")
+        return None
+
+
 # --- Correction trigger matching ---
 
 def check_correction_triggers(text: str, session_id: str = "") -> Optional[tuple[str, str]]:

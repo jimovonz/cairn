@@ -86,3 +86,42 @@ def test_sweep_noop_without_crg(tmp_path):
     with patch.object(graph_fleet, "_resolve_crg", return_value=None):
         stats = graph_fleet.sweep([str(tmp_path)], verbose=False)
     assert stats == {"error": "crg-not-found"}
+
+
+def test_is_watched_matches_whole_paths_with_spaces_and_extra_columns():
+    status = "alias1   /work/my repo   active\nalias2   /work/repo-two\n"
+    assert graph_fleet._is_watched(status, "/work/my repo")
+    assert graph_fleet._is_watched(status, "/work/repo-two/")
+    assert not graph_fleet._is_watched(status, "/work/repo")  # prefix of another path
+
+
+def test_sweep_skips_daemon_lifecycle_when_status_unreadable(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAIRN_GRAPH_WATCH", "1")
+    _mk_repo(tmp_path, "r1")
+    calls = []
+
+    def fake_run(c, a, timeout=600):
+        calls.append(a)
+        return (False, "") if a[:2] == ["daemon", "status"] else (True, "")
+
+    with patch.object(graph_fleet, "_resolve_crg", return_value="/fake/crg"), \
+         patch.object(graph_fleet, "_graph_db_present", return_value=True), \
+         patch.object(graph_fleet, "_run", side_effect=fake_run):
+        graph_fleet.sweep([str(tmp_path)], verbose=False)
+    assert not [c for c in calls if c[:1] == ["daemon"] and c[1] in ("start", "restart")]
+
+
+def test_sweep_does_not_restart_when_repo_already_watched(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAIRN_GRAPH_WATCH", "1")
+    repo = _mk_repo(tmp_path, "my repo")
+    calls = []
+
+    def fake_run(c, a, timeout=600):
+        calls.append(a)
+        return (True, f"alias  {repo}  extra\n") if a[:2] == ["daemon", "status"] else (True, "")
+
+    with patch.object(graph_fleet, "_resolve_crg", return_value="/fake/crg"), \
+         patch.object(graph_fleet, "_graph_db_present", return_value=True), \
+         patch.object(graph_fleet, "_run", side_effect=fake_run):
+        graph_fleet.sweep([str(tmp_path)], verbose=False)
+    assert not [c for c in calls if c[:2] == ["daemon", "restart"]]

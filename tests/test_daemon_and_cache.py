@@ -112,6 +112,38 @@ def test_is_running_stale_pid():
     assert not os.path.exists(pid_path)  # Should clean up stale file
 
 
+# Verifies: a second daemon cannot start alongside a live one. run_server()
+# unlinks the socket and overwrites the PID file, so without this lock the
+# loser was left blocked in accept() holding ~1.6 GB until its idle timeout.
+def test_singleton_lock_blocks_second_daemon():
+    """Second acquisition of the daemon lock fails while the first is held."""
+    import subprocess as sp
+    lock_path = os.path.join(TEST_DIR, ".test_daemon_lock")
+
+    holder = sp.Popen([sys.executable, "-c", (
+        "import fcntl, os, sys, time\n"
+        f"fd = os.open({lock_path!r}, os.O_RDWR | os.O_CREAT, 0o644)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "sys.stdout.write('held\\n'); sys.stdout.flush()\n"
+        "time.sleep(30)\n"
+    )], stdout=sp.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        from cairn import daemon
+        with patch.object(daemon, "LOCK_PATH", lock_path):
+            assert daemon._acquire_singleton_lock() is False
+    finally:
+        holder.kill()
+        holder.wait()
+
+    # Once the holder is gone the lock is free again.
+    from cairn import daemon
+    with patch.object(daemon, "LOCK_PATH", lock_path):
+        assert daemon._acquire_singleton_lock() is True
+    os.close(daemon._SINGLETON_LOCK_FD)
+    daemon._SINGLETON_LOCK_FD = None
+
+
 # ============================================================
 # Context cache: semantic matching
 # ============================================================
@@ -409,6 +441,18 @@ def test_substantive_context_need_not_filtered():
     assert prefiltered == 0, "Substantive context_need should NOT be pre-filtered"
     assert requested >= 1, "Substantive context_need should trigger context_requested metric"
     conn.close()
+
+
+def test_stop_daemon_does_not_signal_unrelated_pid(tmp_path):
+    """A stale PID file whose number now belongs to another process is never SIGTERMed."""
+    import cairn.daemon as d
+    pid_path = str(tmp_path / "daemon.pid")
+    with open(pid_path, "w") as f:
+        f.write(str(os.getpid()))  # this pytest/python process is not the cairn daemon
+    with patch.object(d, "PID_PATH", pid_path), patch.object(d.os, "kill") as kill:
+        d._stop_daemon()
+    kill.assert_not_called()
+    assert d._pid_is_cairn_daemon(99999999) is False
 
 
 def cleanup():

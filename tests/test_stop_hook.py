@@ -1154,3 +1154,64 @@ def test_main_subagent_no_block_no_enforcement():
     assert code == 0
     assert result is None
     conn.close()
+
+
+class TestAssertedAbsenceWithoutCairn:
+    """Claiming a capability/credential is absent without consulting cairn.
+
+    Motivated by four recorded false negatives of the same shape: Atlassian
+    credentials declared missing while ~/.config/confluence_sync.env sat there.
+    Each of those turns DID call tools -- env scans and dotfile listings -- which is
+    why check_declined_without_trying never fired. Only a cairn query counts here.
+    """
+
+    @staticmethod
+    def _transcript(tmp_path, commands):
+        import json
+        lines = [json.dumps({"type": "user", "message": {"role": "user",
+                 "content": [{"type": "text", "text": "do a thing"}]}})]
+        for c in commands:
+            lines.append(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                "content": [{"type": "tool_use", "name": "Bash", "input": {"command": c}}]}}))
+        p = tmp_path / "t.jsonl"
+        p.write_text("\n".join(lines))
+        return str(p)
+
+    CLAIM = "I have no Jira access from here. No Atlassian credentials exist in the environment."
+
+    def test_fires_when_only_filesystem_searched(self, tmp_path):
+        from hooks.enforcement import check_asserted_absence_without_cairn as chk
+        tp = self._transcript(tmp_path, ["env | grep -i jira", "ls ~/.atlassian"])
+        assert chk(self.CLAIM, tp, session_id="t") is not None
+
+    def test_quiet_when_cairn_queried(self, tmp_path):
+        from hooks.enforcement import check_asserted_absence_without_cairn as chk
+        tp = self._transcript(tmp_path, [
+            "python3 /mnt/ssd/Projects/cairn/cairn/query.py --semantic 'jira creds'"])
+        assert chk(self.CLAIM, tp, session_id="t") is None
+
+    def test_data_absence_is_not_a_capability_claim(self, tmp_path):
+        """A filesystem finding must not fire this, or the check gets ignored."""
+        from hooks.enforcement import check_asserted_absence_without_cairn as chk
+        tp = self._transcript(tmp_path, ["find / -name 'blackbox_*'"])
+        text = "No blackbox files exist anywhere on the box. All 20 containers were swept."
+        assert chk(text, tp, session_id="t") is None
+
+    def test_fails_open_when_transcript_unreadable(self, tmp_path):
+        """Never block because evidence is unavailable."""
+        from hooks.enforcement import check_asserted_absence_without_cairn as chk
+        assert chk(self.CLAIM, "/nonexistent/x.jsonl", session_id="t") is None
+        assert chk(self.CLAIM, "", session_id="t") is None
+
+    def test_claim_inside_code_block_is_ignored(self, tmp_path):
+        from hooks.enforcement import check_asserted_absence_without_cairn as chk
+        tp = self._transcript(tmp_path, ["ls"])
+        text = "Here is the error:\n```\nI don't have access to that project\n```\nAnyway."
+        assert chk(text, tp, session_id="t") is None
+
+
+def test_absence_block_message_points_at_this_checkouts_query_py():
+    import re
+    src = open(os.path.join(os.path.dirname(__file__), "..", "hooks", "stop_hook.py")).read()
+    assert "/mnt/ssd" not in src
+    assert re.search(r'query_py = os\.path\.normpath', src)

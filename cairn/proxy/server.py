@@ -280,8 +280,14 @@ def run_proxy(port: int, debug: bool) -> None:
             session_id = get_session_id(dict(request.headers))
             body = await request.read()
 
-            skip = {"host", "content-length", "transfer-encoding", "connection"}
+            skip = {"host", "content-length", "transfer-encoding", "connection",
+                    "accept-encoding"}
             headers = {k: v for k, v in request.headers.items() if k.lower() not in skip}
+            # Never forward the client's Accept-Encoding: it may ask for brotli/zstd,
+            # which aiohttp can only decode with optional codecs installed. We strip
+            # content-encoding from the response anyway, so pin the upstream hop to
+            # the encodings aiohttp always handles natively.
+            headers["Accept-Encoding"] = "gzip, deflate"
 
             # Cairn request injection (only message-create calls; fail-open).
             is_messages = request.method == "POST" and "/v1/messages" in request.path

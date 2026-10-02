@@ -55,6 +55,11 @@ _RUNTIME_DIR = os.path.join(_RUNTIME_BASE, f"cairn-{_INSTALL_KEY}")
 os.makedirs(_RUNTIME_DIR, exist_ok=True)
 SOCKET_PATH = os.path.join(_RUNTIME_DIR, "daemon.sock")
 PID_PATH = os.path.join(_RUNTIME_DIR, "daemon.pid")
+# Single-instance lock. run_server() unlinks SOCKET_PATH and overwrites PID_PATH
+# on startup, so two concurrent starts silently hijack each other's socket and
+# leave the loser resident (~1.6 GB) until its 30-min idle timeout. An exclusive
+# flock held for the process lifetime makes that impossible regardless of caller.
+LOCK_PATH = os.path.join(_RUNTIME_DIR, "daemon.lock")
 
 # cairn package is on sys.path via pip install -e .
 
@@ -575,6 +580,14 @@ def _start_tcp_listener(emb, port: int) -> None:
 
 def run_server():
     """Start the daemon server."""
+    # Refuse to start alongside a live daemon. Without this the unlink below
+    # would steal the running daemon's socket, and the PID write further down
+    # would steal its identity — leaving it blocked in accept() on an orphaned
+    # socket, holding ~1.6 GB until its 30-min idle timeout.
+    if not _acquire_singleton_lock():
+        print("Another cairn daemon holds the lock — not starting.")
+        return
+
     # Clean up stale socket
     if os.path.exists(SOCKET_PATH):
         os.unlink(SOCKET_PATH)
@@ -759,12 +772,50 @@ def _serving_healthy() -> bool:
     return _proto_current() and _embed_healthy() and _rerank_healthy()
 
 
+_SINGLETON_LOCK_FD = None
+
+
+def _acquire_singleton_lock() -> bool:
+    """Take the exclusive daemon lock, or return False if another daemon holds it.
+
+    The fd is stashed in a module global so the lock lives as long as the
+    process (flock is released on close, including implicitly at exit)."""
+    global _SINGLETON_LOCK_FD
+    import fcntl
+    try:
+        fd = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    _SINGLETON_LOCK_FD = fd
+    return True
+
+
+def _pid_is_cairn_daemon(pid: int) -> bool:
+    """False only when /proc proves `pid` is not a cairn daemon process.
+
+    Never SIGTERM a PID taken from a possibly-stale file without this check.
+    Where /proc is unavailable the check cannot be made, so it passes.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmdline = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+    except FileNotFoundError:
+        return os.path.isdir("/proc") is False
+    except OSError:
+        return True
+    return "run_server" in cmdline or "daemon.py" in cmdline
+
+
 def _stop_daemon() -> None:
     """SIGTERM the running daemon and wait for it to exit (best-effort)."""
     import time
     try:
         with open(PID_PATH, encoding="utf-8") as f:
             pid = int(f.read().strip())
+        if not _pid_is_cairn_daemon(pid):
+            # Stale PID file whose number was reused by an unrelated process.
+            return
         os.kill(pid, signal.SIGTERM)
     except Exception:
         return
@@ -848,9 +899,12 @@ if __name__ == "__main__":
         # and quiet on the happy path.
         if is_running() and _serving_healthy():
             sys.exit(0)
-        if is_running():
-            print("serving unhealthy (proto/embed/rerank) — restarting daemon.")
-            _stop_daemon()
+        # Stop unconditionally, not only when is_running() says so: a probe can
+        # fail transiently (busy daemon, 10s send_request timeout) while the
+        # process is very much alive, and spawning on top of it is what leaked
+        # orphans. _stop_daemon() is a no-op when there is nothing to stop.
+        print("serving unhealthy (proto/embed/rerank) — restarting daemon.")
+        _stop_daemon()
         import subprocess, time
         cairn_dir = os.path.dirname(os.path.abspath(__file__))
         subprocess.Popen(
@@ -859,7 +913,10 @@ if __name__ == "__main__":
              "from cairn.daemon import run_server; run_server()"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True)
-        for _ in range(20):
+        # Cold start loads the embedding model and the cross-encoder; 20s was
+        # shorter than that, so a healthy restart still reported failure and the
+        # next cron pass restarted it again.
+        for _ in range(120):
             time.sleep(1)
             if is_running() and _serving_healthy():
                 print("daemon healthy.")
