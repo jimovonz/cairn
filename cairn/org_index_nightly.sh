@@ -48,6 +48,9 @@ if gh auth status >/dev/null 2>&1; then
     if "$PY" "$CC/org_index.py" build; then
         "$PY" "$CC/org_index.py" stranded --stale-days 90 > "$REPORTS/stranded.txt" \
             && echo "locatability: ok -> $REPORTS/stranded.txt"
+        # Reverse dependencies from each repo's declarations; fetches only
+        # declaration files whose blob changed since the last run.
+        "$PY" "$CC/org_index.py" deps && echo "dependencies: ok"
     fi
 else
     echo "WARN: gh not authenticated in this env — skipping org_index build (locatability left stale)"
