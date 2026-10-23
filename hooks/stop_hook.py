@@ -1251,6 +1251,24 @@ def main() -> None:
             _emit_decision(session_id, result)
             sys.exit(0)
 
+    # Jev quality gate: answer last turn's flags (one-shot re-prompt), then queue
+    # this turn's entries for assessment in a detached process. Check before
+    # spawning so the new assessment cannot overwrite the obligation being checked.
+    if not is_subagent:
+        try:
+            from cairn import jev_gate
+            jev_reason = jev_gate.check_obligation(session_id, text, entries)
+            if jev_reason:
+                record_metric(session_id, "jev_gate_blocked")
+                increment_continuation(session_id)
+                _emit_decision(session_id, {"decision": "block", "reason": jev_reason})
+                sys.exit(0)
+            jev_gate.spawn_assess(session_id, transcript_path, entries or [])
+        except SystemExit:
+            raise
+        except Exception as exc:
+            log(f"jev gate failed open: {exc}")
+
     # Collect mid-response memory notes from the transcript
     _captured_notes = []
     try:

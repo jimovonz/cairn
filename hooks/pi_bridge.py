@@ -186,7 +186,13 @@ def cmd_retrieve(a):
                           f"{type(e).__name__}: {str(e)[:120]}")
         except Exception:
             pass
-    out = "\n\n".join(part for part in (xml, cal) if part)
+    jev = ""
+    try:
+        from cairn.jev_gate import pending_reminder
+        jev = pending_reminder(a.session)
+    except Exception as e:
+        sys.stderr.write(f"cairn jev gate reminder error: {e}\n")
+    out = "\n\n".join(part for part in (xml, cal, jev) if part)
     if out:
         sys.stdout.write(out)
 
@@ -418,6 +424,19 @@ def cmd_enforce(a):
         if reason:
             print(reason)
             return
+
+    # 6. Jev quality gate, as stop_hook.py: answer last turn's flags, then queue
+    # this turn's entries. Runs on continuation too, so a re-prompted answer is
+    # logged and the obligation clears.
+    try:
+        from cairn import jev_gate
+        reason = jev_gate.check_obligation(a.session, text, parsed.entries)
+        if reason:
+            print(reason)
+            return
+        jev_gate.spawn_assess(a.session, a.transcript, parsed.entries or [])
+    except Exception as e:
+        sys.stderr.write(f"cairn jev gate error: {e}\n")
     # Otherwise: allow the stop (print nothing).
 
 

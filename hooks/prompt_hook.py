@@ -1004,6 +1004,15 @@ def main() -> None:
         record_metric(session_id, "calibration_inject_failed",
                       f"{type(_e).__name__}: {str(_e)[:120]}")
 
+    # Jev quality gate: last turn's flagged entries, shown once. Fails open.
+    try:
+        from cairn.jev_gate import pending_reminder
+        jev_note = pending_reminder(session_id)
+        if jev_note:
+            context_parts.append(jev_note)
+    except Exception as _e:
+        log(f"jev gate reminder failed open: {_e}")
+
     if not context_parts:
         sys.exit(0)
 
