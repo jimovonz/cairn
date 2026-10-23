@@ -41,9 +41,11 @@ def _fake(block_quality="good", omission=0.1, user_correction=0.1, stale=None):
                      "durable": {"choice": "transient" if "PID" in state else "durable"},
                      "kind": {"choice": "fact"}, "standalone": {"noul": 0.9}}, 0.001, 0.4)
         if "quality" in questions:
+            sig = {k: {"noul": 0.9 if k in ("s_deferral", "s_future_instruction") else 0.1}
+                   for k in questions if k.startswith("s_")}
             return ({"quality": {"choice": block_quality, "probabilities": {block_quality: 0.9}},
                      "omission": {"noul": omission}, "user_correction": {"noul": user_correction},
-                     "task": {"choice": "debug"}}, 0.001, 0.4)
+                     "task": {"choice": "debug"}, **sig}, 0.001, 0.4)
         return ({k: {"noul": (stale or {}).get(k, 0.1)} for k in questions}, 0.001, 0.4)
     return ask
 
@@ -54,6 +56,9 @@ def wired(gate, monkeypatch):
     monkeypatch.setattr(jg, "turn_state", lambda p: "USER PROMPT: x\n[assistant] did things")
     monkeypatch.setattr(jg, "turn_number", lambda p: 4)
     monkeypatch.setattr(jg, "delivered_memories", lambda s: [])
+    monkeypatch.setattr(jg, "delivered_calibration", lambda s: [])
+    monkeypatch.setattr(jg, "regex_checks", lambda text, path: {"deferral": True, "declined": False})
+    monkeypatch.setattr(jg, "final_response", lambda path: "done")
     monkeypatch.setattr(jg, "_ask", _fake())
     return gate
 
@@ -217,3 +222,40 @@ def test_secret_detector_ignores_ids_and_hashes():
     assert not jg.has_secret("branch l5-strengthen-the-retrieval-gate-for-now-x")
     assert jg.has_secret("key d52jOr9CHf9pWPyH047hY1rDZyu4geEt7FMONgb9")
     assert jg.has_secret("password: Alpine99!x")
+
+
+def test_turn_signals_and_regex_twins_logged_and_reported(wired):
+    jg.assess("s", "t.jsonl", [{"type": "fact", "topic": "ok", "content": "fine"}])
+    b = _log()[0]["block"]
+    assert b["signals"]["deferral"] == 0.9 and b["signals"]["frustration"] == 0.1
+    assert b["uncaptured_instruction"] is True          # instruction given, no preference entry
+    r = jg.report()
+    assert r["regex_vs_jev"]["deferral"] == {"both": 1, "regex_only": 0, "jev_only": 0, "neither": 0}
+    assert r["regex_vs_jev"]["declined"]["neither"] == 1
+    assert r["turn_signals"]["deferral"]["rate"] == 1.0
+
+
+def test_delivered_memories_and_calibration_judged(wired, monkeypatch):
+    monkeypatch.setattr(jg, "delivered_memories", lambda s: [{"id": 7, "type": "fact", "topic": "t", "content": "c"}])
+    monkeypatch.setattr(jg, "delivered_calibration", lambda s: [{"id": 3, "content": "be brief"}])
+    monkeypatch.setattr(jg, "_ask", _fake(stale={"u7": 0.8, "r7": 0.9, "a3": 0.9, "c3": 0.7}))
+    monkeypatch.setattr(jg, "_engaged_label", lambda m: True)
+    monkeypatch.setattr(jg, "_analyser_outcome", lambda c: False)
+    jg.assess("s", "t.jsonl", [])
+    d = next(r for r in _log() if r["event"] == "delivered_judged")
+    assert d["memories"] == [{"id": 7, "stale": 0.1, "used": 0.8, "relevant": 0.9}]
+    assert d["calibration"] == [{"row_id": 3, "applies": 0.9, "followed": 0.7}]
+    r = jg.report()
+    assert r["retrieval"]["used_vs_engaged"]["both"] == 1
+    assert r["calibration_follow"]["jev_vs_analyser"]["jev_only"] == 1
+
+
+def test_turn_state_can_target_an_earlier_turn(tmp_path):
+    rec = lambda role, text: {"type": "message", "message": {"role": role, "content": [{"type": "text", "text": text}]}}
+    lines = [{"type": "session", "version": 3, "id": "x", "cwd": "/"},
+             rec("user", "first prompt"), rec("assistant", "first answer"),
+             rec("user", "second prompt"), rec("assistant", "second answer")]
+    p = tmp_path / "t.jsonl"
+    p.write_text("\n".join(json.dumps(l) for l in lines))
+    s = jg.turn_state(str(p), turn_no=1)
+    assert "first answer" in s and "second" not in s
