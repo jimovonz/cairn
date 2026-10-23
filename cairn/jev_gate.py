@@ -78,15 +78,18 @@ def _key() -> Optional[str]:
         return None
 
 
-def _ask(key: str, state: str) -> Optional[dict]:
+def _ask(key: str, state: str) -> tuple[Optional[dict], float, float]:
+    """(verdict, cost_usd, latency_s); verdict is None on any failure."""
     body = json.dumps({"model": MODEL, "state": state, "questions": QUESTION}).encode()
     req = urllib.request.Request(URL, data=body, headers={
         "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    t0 = time.time()
     try:
         r = json.loads(urllib.request.urlopen(req, timeout=CALL_TIMEOUT_S).read())
-        return (r.get("answers") or {}).get("verdict")
+        cost = float((r.get("usage") or {}).get("cost") or 0.0)
+        return (r.get("answers") or {}).get("verdict"), cost, round(time.time() - t0, 2)
     except Exception:
-        return None
+        return None, 0.0, round(time.time() - t0, 2)
 
 
 def unsupported_p(verdict: Optional[dict]) -> float:
@@ -134,10 +137,23 @@ def turn_state(transcript_path: str, per_result: int = 1500) -> str:
         per_result //= 2
 
 
-# --- capture side (turn N) --------------------------------------------------
+def turn_number(transcript_path: str) -> int:
+    """1-based index of the last real user turn: the position used to test
+    whether first-pass quality changes over a session."""
+    from hooks.hook_helpers import _is_real_user_turn
+    from hooks.transcript_adapter import iter_normalized_entries
+    n = 0
+    for entry in iter_normalized_entries(transcript_path):
+        msg = entry.get("message") or {}
+        if isinstance(msg, dict) and msg.get("role") == "user" and _is_real_user_turn(msg):
+            n += 1
+    return n
+
 
 def assess(session_id: str, transcript_path: str, entries: list[dict]) -> list[dict]:
-    """Score each entry; save the flagged ones as this session's obligation."""
+    """Score each entry; save the flagged ones as this session's obligation.
+    Every score is logged (flagged or not) with the turn locator, so precision,
+    the threshold curve and turn-position trends can be computed later."""
     key = _key()
     if not key or not entries:
         return []
@@ -148,19 +164,27 @@ def assess(session_id: str, transcript_path: str, entries: list[dict]) -> list[d
 
     def one(e):
         line = f"{e.get('type')}/{e.get('topic')}: {e.get('content')}"
-        state = f"{turn}\n\nENTRY UNDER REVIEW: {redact(line)}"
-        return e, _ask(key, state)
+        return e, *_ask(key, f"{turn}\n\nENTRY UNDER REVIEW: {redact(line)}")
 
     with cf.ThreadPoolExecutor(min(8, len(entries))) as ex:
         scored = list(ex.map(one, entries))
-    flagged = [{"type": e.get("type"), "topic": e.get("topic"), "content": e.get("content"),
-                "p": round(unsupported_p(v), 3)}
-               for e, v in scored if v is not None and unsupported_p(v) >= THRESHOLD]
-    _log({"event": "assessed", "session": session_id, "entries": len(entries),
-          "scored": sum(v is not None for _, v in scored), "flagged": flagged})
+    scores = [{"type": e.get("type"), "topic": e.get("topic"), "content": e.get("content"),
+               "p": round(unsupported_p(v), 3), "choice": v.get("choice"),
+               "flagged": unsupported_p(v) >= THRESHOLD}
+              for e, v, _, _ in scored if v is not None]
+    flagged = [{k: s[k] for k in ("type", "topic", "content", "p")} for s in scores if s["flagged"]]
+    _log({"event": "assessed", "session": session_id, "transcript": transcript_path,
+          "turn": turn_number(transcript_path), "threshold": THRESHOLD, "entries": len(entries),
+          "failed": len(entries) - len(scores), "scores": scores,
+          "cost": round(sum(c for _, _, c, _ in scored), 6),
+          "latency_max": max((l for _, _, _, l in scored), default=0)})
     from hooks.hook_helpers import record_metric, save_hook_state
     record_metric(session_id, "jev_gate_assessed", None, len(entries))
     if flagged:
+        prior = _load(session_id)
+        if prior:   # a newer flag set replaces one that was never answered
+            _log({"event": "expired_unshown" if not prior.get("shown") else "expired_unanswered",
+                  "session": session_id, "flags": prior.get("flagged")})
         save_hook_state(session_id, STATE_KEY, json.dumps({"flagged": flagged, "shown": False,
                                                            "at": time.time()}))
         record_metric(session_id, "jev_gate_flagged", None, len(flagged))
@@ -274,6 +298,156 @@ def _log(record: dict) -> None:
         pass
 
 
+# --- effectiveness: spot-check labels and report ---------------------------
+
+JEV_GATE_LABELS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jev_gate_labels.jsonl")
+
+
+def _records(path: str) -> list[dict]:
+    try:
+        return [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def _scored_rows() -> list[dict]:
+    """One row per scored entry across all assessments."""
+    rows = []
+    for r in _records(JEV_GATE_LOG):
+        if r.get("event") == "assessed":
+            for s in r.get("scores") or []:
+                rows.append(dict(s, session=r["session"], transcript=r.get("transcript"),
+                                 turn=r.get("turn"), ts=r.get("ts")))
+    return rows
+
+
+def _row_key(r: dict) -> str:
+    return f"{r['session']}|{r.get('turn')}|{r['topic']}"
+
+
+def _evidence(row: dict, n: int = 6) -> list[str]:
+    """Turn lines sharing the most words with the entry: where to look."""
+    try:
+        lines = turn_state(row["transcript"], per_result=4000).splitlines()
+    except Exception:
+        return []
+    words = {w for w in re.findall(r"[\w.-]{3,}", row["content"].lower())}
+    ranked = sorted(lines, key=lambda l: -len(words & set(re.findall(r"[\w.-]{3,}", l.lower()))))
+    return [l[:300] for l in ranked[:n]]
+
+
+def spotcheck(n: int = 20, seed: Optional[int] = None) -> int:
+    """Show n flagged entries plus n//4 unflagged controls beside the turn
+    lines that bear on them; on a terminal, record the user's verdict.
+    Labels are the only ground truth: a model's opinion would measure
+    agreement, not accuracy."""
+    import random
+    done = {l["key"] for l in _records(JEV_GATE_LABELS)}
+    rows = [r for r in _scored_rows() if _row_key(r) not in done and r.get("transcript")]
+    rng = random.Random(seed)
+    flagged = [r for r in rows if r["flagged"]]
+    controls = [r for r in rows if not r["flagged"]]
+    picks = rng.sample(flagged, min(n, len(flagged))) + rng.sample(controls, min(max(1, n // 4), len(controls)))
+    rng.shuffle(picks)   # blind: the verdict is asked before the flag is shown
+    interactive = sys.stdin.isatty()
+    for i, r in enumerate(picks, 1):
+        print(f"\n[{i}/{len(picks)}] {r['type']}/{r['topic']}: {r['content']}")
+        for line in _evidence(r):
+            print(f"    | {line}")
+        if not interactive:
+            print(f"    jev p={r['p']} flagged={r['flagged']}")
+            continue
+        ans = input("    Does a detail contradict or go beyond the turn? [y]es / [n]o / [s]kip / [q]uit: ").strip().lower()
+        if ans == "q":
+            break
+        if ans in ("y", "n"):
+            with open(JEV_GATE_LABELS, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"key": _row_key(r), "p": r["p"], "flagged": r["flagged"],
+                                    "label": "defect" if ans == "y" else "fine",
+                                    "ts": datetime.now(timezone.utc).isoformat(timespec="seconds")}) + "\n")
+        print(f"    jev p={r['p']} flagged={r['flagged']}")
+    return 0
+
+
+def _deliveries(session: str, topic: str) -> tuple[int, int]:
+    """(times delivered, times engaged) for the memory stored from this entry."""
+    try:
+        from hooks.hook_helpers import get_conn, get_ephemeral_conn
+        with get_conn() as conn:
+            ids = [i for (i,) in conn.execute(
+                "SELECT id FROM memories WHERE session_id = ? AND topic = ?", (session, topic))]
+        if not ids:
+            return 0, 0
+        q = ",".join("?" * len(ids))
+        with get_ephemeral_conn() as eph:
+            d, e = eph.execute(
+                f"SELECT COUNT(*), COALESCE(SUM(engaged), 0) FROM memory_deliveries "
+                f"WHERE memory_id IN ({q})", ids).fetchone()
+        return int(d), int(e)
+    except Exception:
+        return 0, 0
+
+
+def report() -> dict:
+    """Effectiveness summary. Precision (from user labels) and coverage (from
+    labelled unflagged controls) are reported separately and never merged."""
+    import statistics as st
+    log = _records(JEV_GATE_LOG)
+    rows = _scored_rows()
+    assessed = [r for r in log if r.get("event") == "assessed"]
+    outcomes = {k: sum(r.get("event") == k for r in log)
+                for k in ("rebutted", "corrected", "unanswered_reprompted", "ignored",
+                          "expired_unshown", "expired_unanswered")}
+    answered = outcomes["rebutted"] + outcomes["corrected"] + outcomes["ignored"]
+    out = {
+        "turns_assessed": len(assessed),
+        "entries_scored": len(rows),
+        "failed_calls": sum(r.get("failed", 0) for r in assessed),
+        "flag_rate": round(sum(r["flagged"] for r in rows) / len(rows), 3) if rows else None,
+        "cost_usd": round(sum(r.get("cost", 0) for r in assessed), 4),
+        "latency_max_median_s": st.median([r.get("latency_max", 0) for r in assessed]) if assessed else None,
+        "outcomes": outcomes,
+        "rebuttal_rate": round(outcomes["rebutted"] / answered, 3) if answered else None,
+    }
+    # Reflexive rebuttal check: rebuttal rate in the first vs second half of answered flags.
+    ans_events = [r["event"] for r in log if r.get("event") in ("rebutted", "corrected", "ignored")]
+    if len(ans_events) >= 10:
+        h = len(ans_events) // 2
+        out["rebuttal_rate_first_vs_second_half"] = [
+            round(ans_events[:h].count("rebutted") / h, 3),
+            round(ans_events[h:].count("rebutted") / (len(ans_events) - h), 3)]
+    # First-pass quality by turn position (the in-session ratchet question).
+    buckets = {"1-3": (1, 3), "4-10": (4, 10), "11-25": (11, 25), "26+": (26, 10**9)}
+    out["by_turn_position"] = {
+        name: {"n": len(g), "mean_p": round(st.mean(r["p"] for r in g), 3),
+               "flag_rate": round(sum(r["flagged"] for r in g) / len(g), 3)}
+        for name, (lo, hi) in buckets.items()
+        for g in [[r for r in rows if r.get("turn") and lo <= r["turn"] <= hi]] if g}
+    # Precision and coverage from user labels.
+    labels = _records(JEV_GATE_LABELS)
+    lf = [l for l in labels if l["flagged"]]
+    lc = [l for l in labels if not l["flagged"]]
+    out["precision_labelled_flags"] = (
+        {"n": len(lf), "precision": round(sum(l["label"] == "defect" for l in lf) / len(lf), 3)} if lf else None)
+    out["defects_among_labelled_unflagged"] = (
+        {"n": len(lc), "rate": round(sum(l["label"] == "defect" for l in lc) / len(lc), 3)} if lc else None)
+    out["threshold_curve"] = {
+        str(t): {"flag_rate": round(sum(r["p"] >= t for r in rows) / len(rows), 3) if rows else None,
+                 "labelled_precision": (lambda g: round(sum(l["label"] == "defect" for l in g) / len(g), 3)
+                                        if g else None)([l for l in labels if l["p"] >= t])}
+        for t in (0.5, 0.6, 0.7, 0.8, 0.9)}
+    # Downstream use: are flagged / corrected entries retrieved and engaged with?
+    def use(pairs):
+        ds = [_deliveries(s, t) for s, t in pairs]
+        return {"n": len(ds), "delivered": sum(d > 0 for d, _ in ds), "engaged": sum(e > 0 for _, e in ds)}
+    flagged_pairs = {(r["session"], r["topic"]) for r in rows if r["flagged"]}
+    corrected_pairs = {(r["session"], r["flag"]["topic"]) for r in log if r.get("event") == "corrected"}
+    clean_pairs = list({(r["session"], r["topic"]) for r in rows if not r["flagged"]})[:200]
+    out["downstream_use"] = {"flagged": use(flagged_pairs), "corrected": use(corrected_pairs),
+                             "unflagged_sample": use(clean_pairs)}
+    return out
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["assess"]:
@@ -284,16 +458,11 @@ def main(argv=None) -> int:
             pass
         return 0
     if argv[:1] == ["report"]:
-        counts: dict = {}
-        try:
-            for line in open(JEV_GATE_LOG, encoding="utf-8"):
-                ev = json.loads(line).get("event")
-                counts[ev] = counts.get(ev, 0) + 1
-        except FileNotFoundError:
-            pass
-        print(json.dumps(counts, indent=2))
+        print(json.dumps(report(), indent=2))
         return 0
-    print("usage: python -m cairn.jev_gate {assess|report}", file=sys.stderr)
+    if argv[:1] == ["spotcheck"]:
+        return spotcheck(int(argv[1]) if len(argv) > 1 else 20)
+    print("usage: python -m cairn.jev_gate {assess|report|spotcheck [N]}", file=sys.stderr)
     return 2
 
 

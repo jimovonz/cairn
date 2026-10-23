@@ -72,3 +72,4 @@ exports/
 # Session capture scratch — local debugging artefacts, not repo content
 scratch_captures/
 cairn/jev_gate_log.jsonl
+cairn/jev_gate_labels.jsonl
