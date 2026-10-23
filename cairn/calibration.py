@@ -161,7 +161,7 @@ def cmd_show_profile(args) -> int:
 
 def cmd_review(args) -> int:
     """Surface Tier 2 review-queue items: low-follow rows flagged for
-    archive (>=10 deliveries, <20% followed), and rows already auto-
+    archive (>=10 resolved outcomes, <20% followed), and rows already auto-
     archived by Phase 6 Tier 1 for reference."""
     conn = _open(DB_PATH)
     try:
@@ -169,8 +169,10 @@ def cmd_review(args) -> int:
             "SELECT id, content, delivered_count, followed_count, "
             "ignored_count, corrected_count "
             "FROM calibration_rows "
-            "WHERE archived_at IS NULL AND delivered_count >= 10 "
-            "AND (followed_count * 1.0 / delivered_count) < 0.20 "
+            "WHERE archived_at IS NULL "
+            "AND (followed_count + ignored_count + corrected_count) >= 10 "
+            "AND (followed_count * 1.0 / "
+            "(followed_count + ignored_count + corrected_count)) < 0.20 "
             "ORDER BY delivered_count DESC"
         ).fetchall()
         recent_archives = conn.execute(

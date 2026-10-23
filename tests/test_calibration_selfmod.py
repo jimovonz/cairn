@@ -49,8 +49,10 @@ def _seed(conn, **kw):
 def test_auto_archive_archives_below_threshold():
     durable, eph, td = _fresh_dbs()
     conn = sqlite3.connect(durable)
-    bad = _seed(conn, delivered_count=15, followed_count=2)  # 13.3%
-    ok = _seed(conn, delivered_count=15, followed_count=10)  # 66.7%
+    bad = _seed(conn, delivered_count=15, followed_count=2,
+                ignored_count=13)  # 13.3%
+    ok = _seed(conn, delivered_count=15, followed_count=10,
+               ignored_count=5)  # 66.7%
     conn.commit()
     conn.close()
     with patch.object(sm, "DB_PATH", durable):
@@ -69,18 +71,31 @@ def test_auto_archive_archives_below_threshold():
 def test_auto_archive_respects_minimum_deliveries():
     durable, eph, td = _fresh_dbs()
     conn = sqlite3.connect(durable)
-    _seed(conn, delivered_count=5, followed_count=0)
+    _seed(conn, delivered_count=5, followed_count=0, ignored_count=5)
     conn.commit()
     conn.close()
     with patch.object(sm, "DB_PATH", durable):
         archived = sm.auto_archive_low_follow()
-    assert archived == []  # below min deliveries threshold
+    assert archived == []  # below min resolved-outcomes threshold
+
+
+def test_auto_archive_ignores_unresolved_deliveries():
+    # Deliveries are counted at injection; outcomes arrive later from the
+    # analyser. Pending outcomes must not read as "not followed".
+    durable, eph, td = _fresh_dbs()
+    conn = sqlite3.connect(durable)
+    pending = _seed(conn, delivered_count=48, followed_count=2)
+    conn.commit()
+    conn.close()
+    with patch.object(sm, "DB_PATH", durable):
+        archived = sm.auto_archive_low_follow()
+    assert pending not in archived
 
 
 def test_auto_archive_idempotent():
     durable, eph, td = _fresh_dbs()
     conn = sqlite3.connect(durable)
-    _seed(conn, delivered_count=15, followed_count=0)
+    _seed(conn, delivered_count=15, followed_count=0, ignored_count=15)
     conn.commit()
     conn.close()
     with patch.object(sm, "DB_PATH", durable):
@@ -113,6 +128,39 @@ def test_auto_promote_requires_min_sessions():
          patch.object(sm, "EPH_DB_PATH", eph):
         promoted = sm.auto_promote_corroborated()
     assert promoted == []
+
+
+def test_auto_promote_queues_non_explicit_row():
+    # Analyser inferences must not pin themselves: a deference-style
+    # observation is trivially "followed", so it goes to review instead.
+    durable, eph, td = _fresh_dbs()
+    conn = sqlite3.connect(durable)
+    rid = _seed(conn, source="observation", delivered_count=10,
+                followed_count=9)
+    conn.commit()
+    conn.close()
+    econn = sqlite3.connect(eph)
+    for sid in ("s1", "s2", "s3", "s4"):
+        econn.execute(
+            "INSERT INTO calibration_deliveries "
+            "(session_id, turn_index, row_id, outcome) VALUES (?, ?, ?, ?)",
+            (sid, 0, rid, "followed"))
+    econn.commit()
+    econn.close()
+    with patch.object(sm, "DB_PATH", durable), \
+         patch.object(sm, "EPH_DB_PATH", eph):
+        first = sm.auto_promote_corroborated()
+        second = sm.auto_promote_corroborated()
+    assert first == [] and second == []
+    conn = sqlite3.connect(durable)
+    pinned = conn.execute(
+        "SELECT pinned FROM calibration_rows WHERE id = ?", (rid,)).fetchone()[0]
+    queued = conn.execute(
+        "SELECT COUNT(*) FROM calibration_review_queue WHERE row_id = ? "
+        "AND suggestion_type = ?", (rid, sm.SURFACE_PROMOTION_CANDIDATE)).fetchone()[0]
+    conn.close()
+    assert pinned == 0
+    assert queued == 1  # not re-queued on the second pass
 
 
 def test_auto_promote_pins_corroborated_row():
@@ -274,7 +322,8 @@ def test_resolve_review_item_marks_resolved():
 def test_run_all_orchestrates_all_passes():
     durable, eph, td = _fresh_dbs()
     conn = sqlite3.connect(durable)
-    archive_me = _seed(conn, delivered_count=15, followed_count=2)
+    archive_me = _seed(conn, delivered_count=15, followed_count=2,
+                       ignored_count=13)
     surface_me = _seed(conn, delivered_count=10, followed_count=5)
     conn.commit()
     conn.close()

@@ -344,8 +344,8 @@ def test_review_surfaces_low_follow_rows(capsys):
     conn = sqlite3.connect(durable)
     conn.execute(
         "INSERT INTO calibration_rows (content, source, confidence, "
-        "delivered_count, followed_count) VALUES "
-        "('row-A', 'explicit', 0.7, 15, 2)")  # follow=13.3% (below 20%)
+        "delivered_count, followed_count, ignored_count) VALUES "
+        "('row-A', 'explicit', 0.7, 15, 2, 13)")  # follow=13.3% (below 20%)
     conn.execute(
         "INSERT INTO calibration_rows (content, source, confidence, "
         "delivered_count, followed_count) VALUES "
