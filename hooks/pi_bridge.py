@@ -172,9 +172,23 @@ def cmd_retrieve(a):
             xml = retrieve_context(query, a.session)
         except Exception as e2:
             sys.stderr.write(f"cairn retrieve error: {e2}\n")
-            return
-    if xml:
-        sys.stdout.write(xml)
+    # Calibration profile, as prompt_hook injects it for Claude Code: priming
+    # rows, independent of the layer results above. Fails open.
+    cal = ""
+    try:
+        from cairn.calibration_inject import inject_for_prompt
+        cal = inject_for_prompt(query, a.session)
+    except Exception as e:
+        sys.stderr.write(f"cairn calibration error: {e}\n")
+        try:
+            from hooks.hook_helpers import record_metric
+            record_metric(a.session, "calibration_inject_failed",
+                          f"{type(e).__name__}: {str(e)[:120]}")
+        except Exception:
+            pass
+    out = "\n\n".join(part for part in (xml, cal) if part)
+    if out:
+        sys.stdout.write(out)
 
 
 def _staged_dir():
@@ -217,6 +231,38 @@ def cmd_staged(a):
         sys.stdout.write("\n\n".join(parts))
 
 
+def _store_turn_notes(text, final_entries, a) -> int:
+    from cairn.config import CHECKPOINT_MAX_NOTES_PER_SESSION
+    from hooks.hook_helpers import load_hook_state, record_metric, save_hook_state
+    from hooks.parser import parse_memory_notes
+    from hooks.storage import insert_memories
+    # Valid types only: a quoted template ("type/topic: ...") or a mention in
+    # prose parses as a note but is not one.
+    valid = {"fact", "correction", "decision", "skill", "preference",
+             "project", "workflow", "person"}
+    notes = [n for n in parse_memory_notes(text) if n["type"] in valid]
+    if not notes:
+        return 0
+    seen = {(e.get("type", ""), e.get("topic", "")) for e in (final_entries or [])}
+    unique = []
+    for note in notes:
+        key = (note["type"], note["topic"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(note)
+    already = int(load_hook_state(a.session, "memory_notes_stored") or 0)
+    budget = max(0, CHECKPOINT_MAX_NOTES_PER_SESSION - already)
+    if not unique or not budget:
+        return 0
+    count = insert_memories(
+        unique[:budget], session_id=a.session, transcript_path=a.transcript,
+        source_ref=_pi_source_ref(getattr(a, "model", ""), a.session),
+    )
+    save_hook_state(a.session, "memory_notes_stored", str(already + count))
+    record_metric(a.session, "memory_notes_stored", None, count)
+    return count
+
+
 def cmd_capture(a):
     text = _read_text(a.text_file)
     if not text.strip():
@@ -238,6 +284,14 @@ def cmd_capture(a):
             )
         except Exception as e:
             sys.stderr.write(f"cairn insert error: {e}\n")
+    # Mid-response memory notes: the checkpoint nudge invites them, but until now
+    # nothing here stored them. Same rules as stop_hook.collect_memory_notes,
+    # scoped to this turn's text (which is all of the turn's assistant messages):
+    # dedupe against the final block by (type, topic), session cap. Fail-open.
+    try:
+        stored += _store_turn_notes(text, parsed.entries, a)
+    except Exception as e:
+        sys.stderr.write(f"cairn memory note error: {e}\n")
     # Relevance grades and the behavioural engagement label are the measurement
     # apparatus -- the Claude Code Stop hook writes both (stop_hook.py
     # apply_relevance_grades / apply_engagement). The pi bridge parsed the [cm]
@@ -356,7 +410,67 @@ def cmd_enforce(a):
         if xml:
             print(f"CAIRN CONTEXT:\n{xml}")
             return
+
+    # 5. Behavioural checks, same functions and order as stop_hook.py. Skipped on
+    # continuation there too, so each gets one re-prompt per user prompt.
+    if not is_continuation:
+        reason = _behavioural_reason(text, parsed, a)
+        if reason:
+            print(reason)
+            return
     # Otherwise: allow the stop (print nothing).
+
+
+def _behavioural_reason(text, parsed, a):
+    """First failing stop_hook behavioural check, as its re-prompt text, or None.
+    Fail-open per check: an error in one never blocks the stop."""
+    from hooks import enforcement as enf
+    from hooks.hook_helpers import record_metric
+
+    def run(check, *args, **kw):
+        try:
+            return check(*args, **kw)
+        except Exception as e:
+            sys.stderr.write(f"cairn {check.__name__} error: {e}\n")
+            return None
+
+    if parsed.intent == "resolved":
+        record_metric(a.session, "trailing_intent_resolved_escape")
+    else:
+        hit = run(enf.check_trailing_intent, text, session_id=a.session)
+        if hit:
+            record_metric(a.session, "trailing_intent_blocked", hit)
+            return (f"Your response ends with a stated intent to act: \"{hit}\". "
+                    "Either follow through now, or remove the promise. "
+                    "If you genuinely have nothing more to do, add 'intent: resolved' to your [cm] block.")
+    hit = run(enf.check_asserted_absence_without_cairn, text, a.transcript, session_id=a.session)
+    if hit:
+        record_metric(a.session, "absence_without_cairn_blocked", hit[:80])
+        return (f"You stated a capability is unavailable — \"{hit}\" — without querying cairn "
+                "in this turn. A filesystem or env-var search is not evidence of absence. "
+                "Run cairn_query for the capability, then correct or confirm the claim.")
+    hit = run(enf.check_deferral, text, complete=bool(parsed.complete), session_id=a.session)
+    if hit:
+        record_metric(a.session, "deferral_blocked", hit[:80])
+        return ("Your response contains scope-deferral language — inventing session boundaries, "
+                "deferring work to 'next session', or framing remaining work as 'multi-session scope'. "
+                "There are no session limits. Either continue the work now, or set ok:false with "
+                "rem: describing what remains.")
+    hit = run(enf.check_declined_without_trying, text, a.transcript, session_id=a.session)
+    if hit:
+        record_metric(a.session, "declined_without_trying_blocked", hit)
+        return (f"Your response appears to decline an action without attempting it: \"{hit}\". "
+                "Before telling the user they need to do something themselves, try it first. "
+                "If you've confirmed it genuinely can't be done from here, explain what you tried.")
+    hit = run(enf.check_correction_triggers, text, session_id=a.session)
+    if hit:
+        phrase, correction = hit
+        record_metric(a.session, "correction_trigger_blocked", phrase[:80])
+        return ("Your response matched a known behavioural correction pattern.\n\n"
+                f"Pattern: \"{phrase}\"\nCorrection: {correction}\n\n"
+                "Review your response and adjust if this correction applies. "
+                "If it doesn't apply here, proceed as-is.")
+    return None
 
 def cmd_checkpoint(a):
     """Mid-response capture nudge after a notable tool result.
@@ -414,11 +528,9 @@ def cmd_checkpoint(a):
 
 
 # pi tool names are lower-case where Claude Code capitalises them; pretool_hook
-# dispatches on the Claude Code spelling.
-_PI_TOOL_TO_CC = {
-    "read": "Read", "edit": "Edit", "write": "Write",
-    "multiedit": "MultiEdit", "multi_edit": "MultiEdit", "powershell": "Bash",
-}
+# dispatches on the Claude Code spelling. One map, shared with the transcript
+# adapter (it previously lacked "bash", so Bash-keyed pretool context never fired).
+from hooks.transcript_adapter import _PI_TO_CLI_TOOL_NAMES as _PI_TOOL_TO_CC
 
 
 def _cc_tool_name(tool):

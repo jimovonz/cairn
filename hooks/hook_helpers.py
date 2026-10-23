@@ -231,6 +231,9 @@ def _is_query_py_probe(block) -> bool:
     """True when a tool-use block is a substantive query.py knowledge probe."""
     if not isinstance(block, dict):
         return False
+    # pi exposes Cairn search as its own cairn_query tool rather than via Bash.
+    if block.get("type") == "tool_use" and block.get("name") == "cairn_query":
+        return True
     if block.get("type") != "tool_use" or block.get("name") != "Bash":
         return False
     cmd = block.get("input", {}).get("command", "")
