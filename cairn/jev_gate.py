@@ -122,25 +122,9 @@ def redact(s: str) -> str:
     return s
 
 
-# Stricter than redaction: redacting an id before it leaves the machine is
-# harmless, but flagging one as a secret re-prompts for nothing. Excludes
-# UUIDs, hex hashes/SHAs and hyphenated slugs or ids.
-_KNOWN_PREFIX = re.compile(r"\b(AIza[0-9A-Za-z_-]{30,}|AKIA[0-9A-Z]{16}|(sk|pk|rk)[-_](live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{16,}"
-                           r"|gh[opsu]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{16,}|xox[bap]-[A-Za-z0-9-]{10,})")
-_KV = re.compile(r"(?i)\b(api[_-]?key|token|secret|password|passwd|client[_-]?secret)\b\s*[:=]\s*[\"']?[^\s\"',;]{6,}")
-_LONG = re.compile(r"(?<![\w-])[A-Za-z0-9_]{28,}(?![\w-])")
-
-
-def has_secret(s: str) -> bool:
-    if _KNOWN_PREFIX.search(s) or _KV.search(s):
-        return True
-    for m in _LONG.finditer(s):
-        tok = m.group(0)
-        if re.fullmatch(r"[0-9a-fA-F]+", tok):
-            continue   # SHA / hash
-        if re.search(r"[a-z]", tok) and re.search(r"[A-Z]", tok) and re.search(r"\d", tok):
-            return True   # mixed-case alphanumeric: key-shaped
-    return False
+# One detector for Cairn: capture-time extraction (cairn/secrets.py) and this
+# fallback flag agree on what a secret is.
+from cairn.secrets import has_secret  # noqa: E402
 
 
 def _key() -> Optional[str]:
@@ -304,7 +288,7 @@ def assess(session_id: str, transcript_path: str, entries: list[dict]) -> list[d
             continue
         if kind == "entry":
             mismatch = _noul(ans, "mismatch") or 0.0
-            scores.append({"type": e.get("type"), "topic": e.get("topic"), "content": e.get("content"),
+            scores.append({"type": e.get("type"), "topic": e.get("topic"), "content": redact(str(e.get("content"))),
                            "p": mismatch, "verdict_p": round(unsupported_p(ans.get("verdict")), 3),
                            "choice": _choice(ans, "verdict"), "durable": _choice(ans, "durable"),
                            "kind_pred": _choice(ans, "kind"), "standalone": _noul(ans, "standalone"),
@@ -324,7 +308,7 @@ def assess(session_id: str, transcript_path: str, entries: list[dict]) -> list[d
     # Secrets are checked locally even if the entry call failed.
     for e in entries:
         if has_secret(str(e.get("content"))) and not any(s["topic"] == e.get("topic") for s in scores):
-            scores.append({"type": e.get("type"), "topic": e.get("topic"), "content": e.get("content"),
+            scores.append({"type": e.get("type"), "topic": e.get("topic"), "content": redact(str(e.get("content"))),
                            "p": None, "secret": True, "flagged": False})
 
     flags = [{"kind": "secret", "type": s["type"], "topic": s["topic"], "content": redact(str(s["content"]))}

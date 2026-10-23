@@ -123,6 +123,11 @@ def _snapshot_excerpts(session_id: str, transcript_path: str, assistant_message:
         return
     lines = assistant_message.split("\n")
     excerpt = "\n".join(lines[:SOURCE_EXCERPT_LINES * 2])
+    try:   # excerpts are verbatim response text: same pointer rule as memories
+        from cairn.secrets import extract
+        excerpt, _ = extract(excerpt)
+    except Exception:
+        pass
     for (mem_id,) in rows:
         conn.execute(
             "INSERT OR IGNORE INTO memory_source_excerpt (memory_id, session_id, transcript_path, excerpt) "

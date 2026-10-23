@@ -362,6 +362,16 @@ def insert_memories(entries: list[dict[str, str]], session_id: Optional[str] = N
     if not entries:
         return 0
 
+    # Secrets never enter the store: values move to the mode-600 secrets file
+    # and the entry keeps a $NAME pointer (cairn/secrets.py). Fail-open.
+    try:
+        from cairn.secrets import extract_entry
+        for e in entries:
+            if extract_entry(e):
+                log(f"Secret value moved to the secrets store for entry {e.get('topic')!r}")
+    except Exception as exc:
+        log(f"secret extraction failed open: {exc}")
+
     from cairn.config import MAX_MEMORIES_PER_RESPONSE
 
     # Write throttling: cap entries per response, keep highest-value ones
