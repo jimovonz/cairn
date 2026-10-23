@@ -122,8 +122,25 @@ def redact(s: str) -> str:
     return s
 
 
+# Stricter than redaction: redacting an id before it leaves the machine is
+# harmless, but flagging one as a secret re-prompts for nothing. Excludes
+# UUIDs, hex hashes/SHAs and hyphenated slugs or ids.
+_KNOWN_PREFIX = re.compile(r"\b(AIza[0-9A-Za-z_-]{30,}|AKIA[0-9A-Z]{16}|(sk|pk|rk)[-_](live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{16,}"
+                           r"|gh[opsu]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{16,}|xox[bap]-[A-Za-z0-9-]{10,})")
+_KV = re.compile(r"(?i)\b(api[_-]?key|token|secret|password|passwd|client[_-]?secret)\b\s*[:=]\s*[\"']?[^\s\"',;]{6,}")
+_LONG = re.compile(r"(?<![\w-])[A-Za-z0-9_]{28,}(?![\w-])")
+
+
 def has_secret(s: str) -> bool:
-    return redact(s) != s
+    if _KNOWN_PREFIX.search(s) or _KV.search(s):
+        return True
+    for m in _LONG.finditer(s):
+        tok = m.group(0)
+        if re.fullmatch(r"[0-9a-fA-F]+", tok):
+            continue   # SHA / hash
+        if re.search(r"[a-z]", tok) and re.search(r"[A-Z]", tok) and re.search(r"\d", tok):
+            return True   # mixed-case alphanumeric: key-shaped
+    return False
 
 
 def _key() -> Optional[str]:

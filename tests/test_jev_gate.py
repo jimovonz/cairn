@@ -209,3 +209,11 @@ def test_turn_state_reads_pi_transcript_from_last_prompt(tmp_path):
     s = jg.turn_state(str(p))
     assert "new prompt" in s and "old prompt" not in s
     assert "[tool call] Bash" in s and "[tool result] file.txt" in s and "found file.txt" in s
+
+
+def test_secret_detector_ignores_ids_and_hashes():
+    assert not jg.has_secret("session f62c3c6d-fe31-4a1b-9c2d-1234567890ab")
+    assert not jg.has_secret("commit 070cdb0d2355aa77b1c3e5f7a9b1c3d5e7f9a1b3")
+    assert not jg.has_secret("branch l5-strengthen-the-retrieval-gate-for-now-x")
+    assert jg.has_secret("key d52jOr9CHf9pWPyH047hY1rDZyu4geEt7FMONgb9")
+    assert jg.has_secret("password: Alpine99!x")
