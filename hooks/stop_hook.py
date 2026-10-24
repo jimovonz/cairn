@@ -31,7 +31,7 @@ import sys
 import os
 from typing import Optional
 
-from hooks.hook_helpers import log, get_conn, get_ephemeral_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery, restore_stripped_cm
+from hooks.hook_helpers import log, get_conn, get_ephemeral_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery, restore_stripped_cm, stage_cm_partial_notice
 from hooks.parser import (parse_memory_block, parse_memory_notes, linkdef_error_locus,
                           linkdef_diagnosis)
 from hooks.hash_verify import compute_response_hash
@@ -462,6 +462,10 @@ def main() -> None:
         record_metric(session_id, "linkdef_recovered", parsed.recovery)
     entries, complete, remaining = parsed.entries, parsed.complete, parsed.remaining
     context, context_need = parsed.context, parsed.context_need
+    # Partly recovered: some entries were dropped. Tell the next prompt
+    # instead of re-prompting now (the good entries are already kept).
+    if "partial" in (getattr(parsed, "recovery", None) or ""):
+        stage_cm_partial_notice(session_id, text)
     confidence_updates, retrieval_outcome = parsed.confidence_updates, parsed.retrieval_outcome
     keywords, intent = parsed.keywords, parsed.intent
     hash_claimed = parsed.hash_claimed

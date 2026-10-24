@@ -282,6 +282,14 @@ def cmd_capture(a):
         sys.stderr.write(f"cairn capture import error: {e}\n")
         return
     parsed = parse_memory_block(text)
+    if "partial" in (getattr(parsed, "recovery", None) or ""):
+        # Some entries were dropped by a malformed block: tell the next prompt
+        # (drained from .staged_context) rather than re-prompting now.
+        try:
+            from hooks.hook_helpers import stage_cm_partial_notice
+            stage_cm_partial_notice(a.session, text)
+        except Exception as e:
+            sys.stderr.write(f"cairn cm partial notice error: {e}\n")
     stored = 0
     if parsed.entries:
         try:

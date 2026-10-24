@@ -73,3 +73,4 @@ exports/
 scratch_captures/
 cairn/jev_gate_log.jsonl
 cairn/jev_gate_labels.jsonl
+cairn/cm_parse_failures.jsonl

@@ -1066,6 +1066,27 @@ def strip_seen_entries(xml: str, session_id: str) -> Optional[str]:
 
 
 # --- proxy-aware delivery ----------------------------------------------------
+def stage_cm_partial_notice(session_id: str, text: str) -> None:
+    """A [cm] block was only partly recovered (some entries dropped). Stage a
+    one-shot notice for the next prompt rather than spending a turn now; both
+    hosts drain <session>_*.txt files from .staged_context."""
+    if not session_id:
+        return
+    try:
+        from hooks.parser import linkdef_error_locus
+        locus = linkdef_error_locus(text) or ""
+        msg = ("<cairn_cm_notice>Your previous turn's [cm] block was malformed; only some entries could be "
+               f"recovered. {locus} In this turn's [cm] block, re-add any durable entry from that turn that "
+               "is missing.</cairn_cm_notice>")
+        staged = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".staged_context")
+        os.makedirs(staged, exist_ok=True)
+        with open(os.path.join(staged, f"{session_id}_cm_partial.txt"), "w", encoding="utf-8") as f:
+            f.write(msg)
+        record_metric(session_id, "cm_partial_notice_staged")
+    except Exception as exc:
+        log(f"cm partial notice failed: {exc}")
+
+
 def deliver_additional_context(session_id: str, hook_event_name: str, text: str) -> None:
     """Deliver injected context to the session.
 

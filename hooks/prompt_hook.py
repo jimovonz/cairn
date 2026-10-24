@@ -973,6 +973,18 @@ def main() -> None:
         except Exception as e:
             log(f"Failed to load rg-grading nudge: {e}")
 
+    # Malformed-[cm] notice (deferred from the previous stop hook — non-blocking).
+    _cm_notice = os.path.join(staged_dir, f"{session_id}_cm_partial.txt")
+    if os.path.exists(_cm_notice):
+        try:
+            with open(_cm_notice, "r") as f:
+                _t = f.read().strip()
+            os.remove(_cm_notice)
+            if _t:
+                context_parts.append(_t)
+        except Exception as e:
+            log(f"Failed to load cm partial notice: {e}")
+
     # Content-density reminder (deferred from previous stop hook — non-blocking).
     # Consume-once: remove after injecting so it never re-serves on later prompts.
     density_reminder_file = os.path.join(staged_dir, f"{session_id}_density_reminder.txt")
