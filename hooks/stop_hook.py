@@ -1256,6 +1256,22 @@ def main() -> None:
             _emit_decision(session_id, result)
             sys.exit(0)
 
+    # Missed context: the reply shows missing information and the turn did not
+    # search Cairn -> re-prompt to search it. Cairn use is checked mechanically;
+    # Jev judges the reply (synchronous, 4s cap, fails open). One per prompt.
+    if not is_continuation and not is_subagent:
+        try:
+            from cairn import jev_gate as _jg
+            ctx_reason = _jg.context_check(session_id, transcript_path, text)
+            if ctx_reason:
+                increment_continuation(session_id)
+                _emit_decision(session_id, {"decision": "block", "reason": ctx_reason})
+                sys.exit(0)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            log(f"context check failed open: {exc}")
+
     # Jev quality gate: answer last turn's flags (one-shot re-prompt), then queue
     # this turn's entries for assessment in a detached process. Check before
     # spawning so the new assessment cannot overwrite the obligation being checked.

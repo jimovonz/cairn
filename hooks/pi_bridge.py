@@ -489,7 +489,8 @@ def _behavioural_reason(text, parsed, a):
                 f"Pattern: \"{phrase}\"\nCorrection: {correction}\n\n"
                 "Review your response and adjust if this correction applies. "
                 "If it doesn't apply here, proceed as-is.")
-    return None
+    from cairn import jev_gate
+    return run(jev_gate.context_check, a.session, a.transcript, text)
 
 def cmd_checkpoint(a):
     """Mid-response capture nudge after a notable tool result.

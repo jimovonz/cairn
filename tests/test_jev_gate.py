@@ -259,3 +259,48 @@ def test_turn_state_can_target_an_earlier_turn(tmp_path):
     p.write_text("\n".join(json.dumps(l) for l in lines))
     s = jg.turn_state(str(p), turn_no=1)
     assert "first answer" in s and "second" not in s
+
+
+# --- missed-context check ---------------------------------------------------
+
+@pytest.fixture
+def ctx(gate, monkeypatch):
+    import hooks.hook_helpers as hh
+    monkeypatch.setattr(jg, "_key", lambda: "k")
+    monkeypatch.setattr(jg, "turn_state", lambda *a, **k: "[USER PROMPT] check my email")
+    monkeypatch.setattr(jg, "turn_number", lambda p: 3)
+    state = {"used": False, "p": 0.9, "asked": 0}
+    monkeypatch.setattr(hh, "cairn_query_invoked_this_turn", lambda p: state["used"])
+    def ask(key, st, q):
+        state["asked"] += 1
+        assert "[cm]" not in st          # memory block stripped from the reply
+        return ({"q": {"noul": state["p"]}}, 0.0001, 0.4)
+    monkeypatch.setattr(jg, "_ask", ask)
+    return state
+
+
+REPLY = "I don't have access to your Gmail. Could you tell me how you connect?\n\n[cm]: # '{\"ok\":true}'"
+
+
+def test_context_check_fires_when_missing_and_cairn_unused(ctx):
+    reason = jg.context_check("s", "t.jsonl", REPLY)
+    assert reason and "Search it now" in reason
+    rec = _log()[-1]
+    assert rec["event"] == "context_check" and rec["fired"] is True and rec["turn"] == 3
+
+
+def test_context_check_skips_jev_when_cairn_was_queried(ctx):
+    ctx["used"] = True
+    assert jg.context_check("s", "t.jsonl", REPLY) is None
+    assert ctx["asked"] == 0
+
+
+def test_context_check_below_threshold_is_logged_not_fired(ctx):
+    ctx["p"] = 0.5
+    assert jg.context_check("s", "t.jsonl", REPLY) is None
+    assert _log()[-1]["fired"] is False
+
+
+def test_context_check_can_be_switched_off(ctx, monkeypatch):
+    monkeypatch.setenv("CAIRN_CONTEXT_CHECK", "0")
+    assert jg.context_check("s", "t.jsonl", REPLY) is None and ctx["asked"] == 0

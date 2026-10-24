@@ -603,6 +603,65 @@ def check_obligation(session_id: str, text: str, entries: Optional[list[dict]]) 
     return None
 
 
+# --- missed-context check (synchronous, at the stop) -------------------------
+
+CONTEXT_THRESHOLD = float(os.environ.get("CAIRN_CONTEXT_CHECK_THRESHOLD", "0.8"))
+CONTEXT_TIMEOUT_S = 4
+_MEMORY_FRAME = ("The assistant has a searchable memory of the user's past sessions: earlier decisions, how their systems "
+                 "are set up, where credentials live, project history and the user's preferences. ")
+CONTEXT_Q = {"q": {"type": "noul", "instructions": (
+    "Does the assistant's reply show that it lacked information or context it needed: it guessed or assumed, asked the "
+    "user for something it could have found, said it lacks access, a credential or knowledge, or gave a generic answer "
+    "where the user's own specifics were needed?")}}
+
+
+def context_check(session_id: str, transcript_path: str, reply: str) -> Optional[str]:
+    """Re-prompt reason when the reply shows missing context AND the turn did
+    not query Cairn; else None. Cairn use is checked mechanically first, so
+    Jev is only asked when it could matter. Calibration (2026-10-24, replies
+    labelled by the user's next message): AUC 0.82; at 0.8, 3/5 real misses
+    and 2% of controls. Fails open."""
+    if not enabled() or os.environ.get("CAIRN_CONTEXT_CHECK", "1") in ("0", "false", "no"):
+        return None
+    reply = re.sub(r"(?m)^\[(?:cm|cairn-memory)\]: #.*$", "", reply or "")   # the memory block is not the answer
+    if not reply.strip() or not transcript_path:
+        return None
+    from hooks.hook_helpers import cairn_query_invoked_this_turn, record_metric
+    if cairn_query_invoked_this_turn(transcript_path):
+        return None
+    key = _key()
+    if not key:
+        return None
+    prompt = ""
+    try:
+        for line in turn_state(transcript_path, per_result=0).splitlines():
+            if line.startswith("[USER PROMPT]"):
+                prompt = line[len("[USER PROMPT] "):]
+                break
+    except Exception:
+        pass
+    state = redact(f"{_MEMORY_FRAME}\n\nUSER REQUEST:\n{prompt[:1500]}\n\nASSISTANT'S REPLY:\n{reply[-5000:]}")
+    global CALL_TIMEOUT_S
+    saved, CALL_TIMEOUT_S = CALL_TIMEOUT_S, CONTEXT_TIMEOUT_S
+    try:
+        ans, cost, lat = _ask(key, state, CONTEXT_Q)
+    finally:
+        CALL_TIMEOUT_S = saved
+    p = _noul(ans, "q")
+    fired = p is not None and p >= CONTEXT_THRESHOLD
+    _log({"event": "context_check", "session": session_id, "transcript": transcript_path,
+          "turn": turn_number(transcript_path), "p": p, "threshold": CONTEXT_THRESHOLD,
+          "fired": fired, "cost": cost, "latency": lat})
+    record_metric(session_id, "context_check_fired" if fired else "context_check_clear", None, p or 0)
+    if not fired:
+        return None
+    query_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "query.py")
+    return ("Your reply shows missing information or context (a guess, an assumption, a question to the user, or a "
+            "claim of no access or knowledge), and this turn did not search Cairn. Search it now, e.g. "
+            f"python3 {query_py} --semantic \"<the topic> | <what you were missing>\" (in pi: the cairn_query tool), "
+            "then revise your answer. If Cairn has nothing relevant, say so briefly and keep your answer.")
+
+
 def _log(record: dict) -> None:
     try:
         record["ts"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
