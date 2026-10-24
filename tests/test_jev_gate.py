@@ -211,7 +211,9 @@ def test_judge_turn_is_one_call_and_logs_all_events(judge):
     j = jg.judge_turn("s", "t.jsonl", "Done.", [{"type": "fact", "topic": "a", "content": "fine"},
                                                 {"type": "fact", "topic": "b", "content": "wrong number"}])
     assert judge["calls"] == 1
-    assert [f["topic"] for f in j.flags] == ["b"] and j.reprompt is None
+    assert j.flags == [] and j.reprompt is None          # detail is logged, not enforced
+    scored = next(r for r in _log() if r["event"] == "assessed")["scores"]
+    assert {x["topic"]: x["flagged"] for x in scored} == {"a": False, "b": True}
     events = [r["event"] for r in _log()]
     assert {"stop_check", "context_check", "assessed"} <= set(events)
     assessed = next(r for r in _log() if r["event"] == "assessed")
@@ -267,3 +269,9 @@ def test_assess_delivered_logs_memory_calibration_and_entry_signals(judge, monke
     assert d["calibration"] == [{"row_id": 3, "applies": 0.9, "followed": 0.7}]
     assert d["entries"][0]["topic"] == "x" and "standalone" in d["entries"][0]
     assert jg.report()["stale_candidates_top"] == [{"id": 7, "max_p": 0.75, "times": 1}]
+
+
+def test_detail_enforcement_can_be_restored(judge, monkeypatch):
+    monkeypatch.setenv("CAIRN_JEV_DETAIL_ENFORCE", "1")
+    j = jg.judge_turn("s", "t.jsonl", "Done.", [{"type": "fact", "topic": "b", "content": "wrong number"}])
+    assert [f["kind"] for f in j.flags] == ["detail"]

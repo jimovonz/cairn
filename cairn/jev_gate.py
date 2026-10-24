@@ -655,8 +655,13 @@ def judge_turn(session_id: str, transcript_path: str, reply: str, entries: Optio
                                            and not any(x.get("type") in ("preference", "workflow") for x in entries))
     flags = [{"kind": "secret", "type": s["type"], "topic": s["topic"], "content": s["content"]}
              for s in scores if s["secret"]]
-    flags += [{"kind": "detail", "type": s["type"], "topic": s["topic"], "content": s["content"], "p": s["p"]}
-              for s in scores if s["flagged"] and not s["secret"]]
+    # Entry-detail scores are logged, not enforced: 0/4 live flags were valid
+    # (long, dense, correct entries) and each cost a rebuttal turn plus meta
+    # memories. CAIRN_JEV_DETAIL_ENFORCE=1 restores enforcement if spot-check
+    # labels ever show real detail errors.
+    if os.environ.get("CAIRN_JEV_DETAIL_ENFORCE", "0") in ("1", "true", "yes"):
+        flags += [{"kind": "detail", "type": s["type"], "topic": s["topic"], "content": s["content"], "p": s["p"]}
+                  for s in scores if s["flagged"] and not s["secret"]]
     if block["flagged"]:
         flags.append({"kind": "block", "type": "block", "topic": "_block",
                       "content": "empty although the turn had durable content" if block["empty"]
