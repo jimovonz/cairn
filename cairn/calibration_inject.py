@@ -53,6 +53,7 @@ DEFAULT_TOP_K = 5
 # delivery — see _retrieve_candidates max-cos path. Single-vector cosine on
 # row.embedding is only the fallback for rows without qf embeddings.
 SIMILARITY_FLOOR = 0.40
+WEAK_BAND_CEILING = 0.45   # below this a non-pinned row also needs a keyword in common
 W_SIMILARITY = 0.55
 W_KW_OVERLAP = 0.20
 W_CONFIDENCE = 0.15
@@ -216,6 +217,13 @@ def retrieve_calibration(user_message: str, session_id: str,
         # Pinned rows always bypass the floor.
         if sim is not None and sim < similarity_floor \
                 and not row.get("pinned"):
+            continue
+        # Weak band: a non-pinned row just above the floor must also share a
+        # keyword with the prompt. Off-domain rows (engine tuning, news
+        # coverage) were reaching unrelated design sessions at 0.40-0.45; the
+        # follow signal cannot separate them (~91% "followed" in every band).
+        if sim is not None and sim < WEAK_BAND_CEILING and not row.get("pinned") \
+                and _kw_overlap(prompt_tokens, row.get("kw") or "") <= 0:
             continue
         row["score"] = _score_row(prompt_vec, row, prompt_tokens)
         scored.append(row)

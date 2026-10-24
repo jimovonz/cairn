@@ -95,6 +95,8 @@ SCORE_W_CONFIDENCE = 0.0        # Disabled — veracity is not a ranking signal
 SCORE_W_KEYWORDS = 0.15         # Keyword overlap between query terms and memory keywords
 SCORE_W_RECENCY = 0.0           # Disabled — age is not a usefulness signal; obsolescence handled by supersession
 SCORE_W_SCOPE = 0.05
+SCORE_GLOBAL_SIM_FACTOR = 0.85  # global (other-project) similarity is scaled, not out-voted by a flat project bonus
+SCOPE_SIM_MARGIN = 0.20         # a project hit this far below the best global hit does not take a slot
 
 # Source-utility prior — additive adjustment on the fused hybrid-search score,
 # keyed by memories.source_ref. Analyser-written rows engage at ~46% vs ~83% for
@@ -217,7 +219,8 @@ WEAK_ENTRY_SCORE_FLOOR = 0.4           # Top score below this triggers weak-entr
 MAX_MEMORIES_PER_RESPONSE = 5      # Max memory entries stored per LLM response — drop lowest-confidence excess
 
 # === Loop protection ===
-MAX_CONTINUATIONS = 3              # Hard cap on consecutive re-prompts per session
+MAX_CONTINUATIONS = 2              # Hard cap on re-prompts per turn, shared by every check (reset at each allowed stop)
+CTX_BLOCK_MIN_SIM = 0.55           # ctx:i retrieval forces a continuation only at this top similarity; weaker results go with the next prompt
 
 # === Staged context ===
 STAGED_CONTEXT_RETENTION_DAYS = 7   # Days to keep staged cross-project context for session resumption

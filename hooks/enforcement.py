@@ -285,6 +285,19 @@ def check_trailing_intent(text: str, session_id: str = "") -> Optional[str]:
     return None
 
 
+_AWAITS_USER = re.compile(
+    r"(?i)^\s*(user:|await(ing)?\s+(the\s+)?user|wait(ing)?\s+(on|for)\s+(the\s+)?user|"
+    r"pending\s+(the\s+)?user|needs?\s+(the\s+)?user'?s?\s+(decision|approval|go-?ahead|input|answer)|"
+    r"user\s+(decision|approval|to\s+(decide|approve|confirm|choose)))")
+
+
+def awaits_user(remaining: Optional[str]) -> bool:
+    """True when the declared remainder is a decision only the user can make
+    (e.g. "Await user approval to ...", "user: pick A or B"). Such a turn is
+    finished from the agent's side; re-prompting it only produces filler."""
+    return bool(remaining) and bool(_AWAITS_USER.search(remaining))
+
+
 # --- Continuation counting (SQLite-backed) ---
 
 def get_continuation_count(session_id: str) -> int:

@@ -780,8 +780,9 @@ def format_entry(r: dict[str, Any]) -> str:
         loc = _loc_attr(r["id"])
     except Exception:
         loc = ""
+    earlier = f' earlier="{r["_earlier"]}"' if r.get("_earlier") else ""
     return (
-        f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}"{loc}>'
+        f'  <entry id="{r["id"]}" days="{days}" sim="{sim:.2f}"{loc}{earlier}>'
         f'{content}</entry>'
     )
 
@@ -819,6 +820,58 @@ def _relevance_prefilter(project_results, global_results, session_id):
 
     return ([r for r in project_results if _keep(r)],
             [r for r in global_results if _keep(r)])
+
+
+def _collapse_topic_snapshots(project_results, global_results, session_id=None):
+    """Keep only the newest live entry per (type, topic) and note how many
+    earlier snapshots it stands for. Repeated status reports of one evolving
+    thing otherwise fill the slots with near-identical history. Superseded
+    entries are never collapsed: they carry what was tried and why it was
+    dropped."""
+    def key(r):
+        return (str(r.get("type") or "").lower(), str(r.get("topic") or "").strip().lower(),
+                str(r.get("project") or ""))
+
+    def words(r):
+        return set(re.findall(r"[a-z0-9]{3,}", str(r.get("content") or "").lower()))
+
+    live = [r for r in project_results + global_results
+            if not (r.get("archived") or r.get("archived_reason")) and r.get("topic")]
+    newest: dict = {}
+    counts: dict = {}
+    for r in sorted(live, key=lambda x: -(x.get("id") or 0)):
+        k = key(r)
+        if k not in newest:
+            newest[k] = r
+            counts[k] = 1
+            continue
+        # Same type, topic and project, and overlapping content: an earlier
+        # snapshot of the same thing. A shared generic topic with different
+        # content is a different fact and is kept.
+        a, b = words(newest[k]), words(r)
+        if a and b and len(a & b) / len(a | b) >= 0.4:
+            counts[k] += 1
+        else:
+            r["_distinct"] = True
+    collapsed = 0
+
+    def keep(r):
+        nonlocal collapsed
+        if r.get("archived") or r.get("archived_reason") or not r.get("topic") or r.pop("_distinct", False):
+            return True
+        k = key(r)
+        if newest[k] is r:
+            if counts[k] > 1:
+                r["_earlier"] = counts[k] - 1
+            return True
+        collapsed += 1
+        return False
+
+    pr = [r for r in project_results if keep(r)]
+    gr = [r for r in global_results if keep(r)]
+    if collapsed and session_id:
+        record_metric(session_id, "topic_snapshots_collapsed", None, collapsed)
+    return pr, gr
 
 
 def _suppress_superseded_pairs(project_results, global_results, session_id=None):
@@ -904,6 +957,8 @@ def build_context_xml(query: str, project: Optional[str], layer: str,
     # Correctness dedup (all layers): drop a superseded entry when its superseder
     # is already in the same result set — see _suppress_superseded_pairs.
     project_results, global_results = _suppress_superseded_pairs(
+        project_results, global_results, session_id)
+    project_results, global_results = _collapse_topic_snapshots(
         project_results, global_results, session_id)
     project_results, global_results = _push_suppression_filter(
         project_results, global_results, session_id)

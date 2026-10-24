@@ -554,3 +554,19 @@ def test_arm_source_ref(eph, monkeypatch):
     monkeypatch.setattr(config, "AB_TEST_ENABLED", False)
     save_hook_state("s", "ab_arm", "B")
     assert stop_hook._arm_source_ref("s") == config.GENERATION_PROMPT_VERSION
+
+
+def test_topic_snapshots_collapse_only_same_thing():
+    from hooks.hook_helpers import _collapse_topic_snapshots
+    base = {"type": "project", "topic": "audit", "project": "x"}
+    old = dict(base, id=1, content="audit status: 12 findings open, 3 fixed in parser and storage")
+    new = dict(base, id=5, content="audit status: 12 findings open, 9 fixed in parser and storage")
+    other = dict(base, id=3, content="unrelated release checklist for the dashboard")
+    sup = dict(base, id=2, content="audit status: 12 findings open", archived_reason="superseded (by #5)")
+    pr, _ = _collapse_topic_snapshots([old, new, other, sup], [])
+    ids = [r["id"] for r in pr]
+    assert 1 not in ids and 5 in ids and 3 in ids and 2 in ids
+    assert new["_earlier"] == 1
+    cross = dict(base, id=9, project="y", content=new["content"])
+    pr, gr = _collapse_topic_snapshots([new], [cross])
+    assert [r["id"] for r in gr] == [9]     # other project: never collapsed

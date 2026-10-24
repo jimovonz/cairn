@@ -401,8 +401,9 @@ def cmd_enforce(a):
             print(" ".join(parts))
             return
 
-    # 3. Marked incomplete.
-    if parsed.complete is False:
+    # 3. Marked incomplete (a remainder that only awaits the user ends the turn).
+    from hooks.enforcement import awaits_user
+    if parsed.complete is False and not awaits_user(parsed.remaining):
         print(f"Response marked incomplete. Continue with: {parsed.remaining or '(complete the remaining work)'}")
         return
 

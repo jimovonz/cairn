@@ -149,7 +149,7 @@ AMEND_ONLY_SUFFIX = (
 from hooks.retrieval import (retrieve_context, layer2_cross_project_search,
                         load_context_cache, save_context_cache, is_context_cached, add_to_context_cache,
                         CONTEXT_CACHE_SIM_THRESHOLD)
-from cairn.config import MAX_CONTINUATIONS, WEAK_ENTRY_SCORE_FLOOR, CONTEXT_BOOTSTRAP_INTERVAL, CHECKPOINT_MAX_NOTES_PER_SESSION, GENERATION_PROMPT_VERSION
+from cairn.config import MAX_CONTINUATIONS, CTX_BLOCK_MIN_SIM, WEAK_ENTRY_SCORE_FLOOR, CONTEXT_BOOTSTRAP_INTERVAL, CHECKPOINT_MAX_NOTES_PER_SESSION, GENERATION_PROMPT_VERSION
 
 
 def collect_memory_notes(transcript_path: str, session_id: str,
@@ -871,8 +871,19 @@ def main() -> None:
 
                         # Central dedup gate — strip entries already injected
                         retrieved = strip_seen_entries(retrieved, session_id) or ""
+                        _sims = [float(s) for s in re.findall(r'sim="([0-9.]+)"', retrieved)]
                         if not retrieved:
                             log(f"All entries already seen for: {context_need[:50]}...")
+                        elif _sims and max(_sims) < CTX_BLOCK_MIN_SIM and getattr(
+                                __import__("cairn.config", fromlist=["x"]), "PROXY_ENABLED", False):
+                            # Only a strong match is worth a forced extra turn (which re-reads
+                            # the whole conversation and arrives after the answer is written).
+                            # Weaker results ride along with the next prompt instead.
+                            from cairn.proxy import sidecar as _sidecar
+                            _sidecar.append_prompt_context(session_id, f"CAIRN CONTEXT:\n{retrieved}")
+                            record_metric(session_id, "context_deferred_to_next_prompt", context_need[:100],
+                                          max(_sims))
+                            log(f"L3 context deferred to next prompt (top sim {max(_sims):.2f})")
                         else:
                             # Track newly injected IDs
                             injected_ids = [int(i) for i in re.findall(r'id="(\d+)"', retrieved)]
@@ -1120,6 +1131,14 @@ def main() -> None:
     # contradiction_scan.py provide the same safety net without blocking.
     # See memories #959, #928, #888, #897 for the full history.
     # The retrieved_ids tracking is kept for future use if a better heuristic is found.
+
+    # Waiting on the user is not incomplete work: a remainder that names a
+    # pending user decision ends the turn instead of forcing a contentless
+    # continuation (observed: "Await user approval to ..." re-prompted 3 times).
+    from hooks.enforcement import awaits_user
+    if complete is False and awaits_user(remaining):
+        record_metric(session_id, "incomplete_awaiting_user", (remaining or "")[:80])
+        complete = True
 
     # Check completeness — complete must be explicitly True to pass.
     # If omitted (None) or False, treat as incomplete.

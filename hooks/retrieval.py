@@ -30,7 +30,7 @@ import re
 from cairn.config import (L3_PROJECT_SIM_THRESHOLD, L3_GLOBAL_SIM_WITH_PROJECT,
                      L3_GLOBAL_SIM_WITHOUT_PROJECT, L3_PROJECT_QUALITY_FLOOR,
                      L3_MAX_PROJECT_RESULTS, L3_MAX_GLOBAL_RESULTS,
-                     WEAK_ENTRY_SCORE_FLOOR, RRF_K, GLOBAL_HARD_FLOOR,
+                     WEAK_ENTRY_SCORE_FLOOR, RRF_K, GLOBAL_HARD_FLOOR, SCOPE_SIM_MARGIN,
                      REFERENCE_MIN_SIMILARITY, ORG_INDEX_ENABLED)
 
 
@@ -311,12 +311,18 @@ def hybrid_search(
     global_results: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
 
+    # A project hit far weaker than the best global hit is dropped rather than
+    # taking a slot on scope alone (decision 2067: low-similarity project
+    # entries were displacing strong global ones).
+    best_global = max((r.get("similarity", 0) for r in fused
+                       if r.get("_source") != "fts" and not (project and r.get("project") == project)), default=0.0)
     for r in fused:
         mid = r["id"]
         if mid in seen_ids:
             continue
         sim = r.get("similarity", 0)
-        if project and r.get("project") == project and sim >= effective_threshold:
+        if project and r.get("project") == project and sim >= effective_threshold \
+                and sim >= best_global - SCOPE_SIM_MARGIN:
             project_results.append(r)
             seen_ids.add(mid)
 
