@@ -153,7 +153,8 @@ def test_enforce_blocks_trailing_intent(monkeypatch, tmp_path, capsys):
     f.write_text("I checked the config. Let me now run the migration.\n\n"
                  '[cm]: # \'{"ok":true,"ctx":"s","kw":["a"]}\'')
     import cairn.jev_gate as jg   # the premature-stop decision is the Jev stop check
-    monkeypatch.setattr(jg, "stop_check", lambda *a, **k: "Your reply names work that still remains")
+    j = jg.Judgement(); j.stop_reason = "Your reply names work that still remains"
+    monkeypatch.setattr(jg, "judge_turn", lambda *a, **k: j)
     a = _Args()
     a.text_file = str(f)
     pb.cmd_enforce(a)

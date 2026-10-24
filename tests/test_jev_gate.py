@@ -30,108 +30,10 @@ def _flag(state, topics, shown=True, kind="detail"):
         {"kind": kind, "type": "fact", "topic": t, "content": f"{t} detail", "p": 0.9} for t in topics], "shown": shown})
 
 
-def _fake(block_quality="good", omission=0.1, user_correction=0.1, stale=None):
-    """Answers keyed by which question set was asked."""
-    def ask(key, state, questions):
-        if "mismatch" in questions:
-            bad = "wrong" in state.split("ENTRY UNDER REVIEW:")[-1]
-            return ({"verdict": {"choice": "unsupported" if bad else "supported",
-                                 "probabilities": {"supported": 0.05 if bad else 0.9, "inferred": 0.05}},
-                     "mismatch": {"noul": 0.95 if bad else 0.1},
-                     "durable": {"choice": "transient" if "PID" in state else "durable"},
-                     "kind": {"choice": "fact"}, "standalone": {"noul": 0.9}}, 0.001, 0.4)
-        if "quality" in questions:
-            sig = {k: {"noul": 0.9 if k in ("s_deferral", "s_future_instruction") else 0.1}
-                   for k in questions if k.startswith("s_")}
-            return ({"quality": {"choice": block_quality, "probabilities": {block_quality: 0.9}},
-                     "omission": {"noul": omission}, "user_correction": {"noul": user_correction},
-                     "task": {"choice": "debug"}, **sig}, 0.001, 0.4)
-        return ({k: {"noul": (stale or {}).get(k, 0.1)} for k in questions}, 0.001, 0.4)
-    return ask
-
-
 @pytest.fixture
-def wired(gate, monkeypatch):
-    monkeypatch.setattr(jg, "_key", lambda: "k")
-    monkeypatch.setattr(jg, "turn_state", lambda p: "USER PROMPT: x\n[assistant] did things")
-    monkeypatch.setattr(jg, "turn_number", lambda p: 4)
-    monkeypatch.setattr(jg, "delivered_memories", lambda s: [])
-    monkeypatch.setattr(jg, "delivered_calibration", lambda s: [])
-    monkeypatch.setattr(jg, "regex_checks", lambda text, path: {"deferral": True, "declined": False})
-    monkeypatch.setattr(jg, "final_response", lambda path: "done")
-    monkeypatch.setattr(jg, "_ask", _fake())
-    return gate
-
-
 def test_redact_strips_api_keys():
     s = jg.redact("Metlink key d52jOr9CHf9pWPyH047hY1rDZyu4geEt7FMONgb9 token=abc123 path /home/x/y.py")
     assert "d52jOr9" not in s and "abc123" not in s and "/home/x/y.py" in s
-
-
-def test_entry_detail_flag_uses_mismatch_threshold(wired):
-    flags = jg.assess("s", "t.jsonl", [{"type": "fact", "topic": "ok", "content": "fine"},
-                                       {"type": "fact", "topic": "bad", "content": "wrong number"}])
-    assert [(f["kind"], f["topic"]) for f in flags] == [("detail", "bad")]
-    rec = _log()[0]
-    assert {s["topic"]: s["flagged"] for s in rec["scores"]} == {"ok": False, "bad": True}
-    assert rec["turn"] == 4 and rec["block"]["task"] == "debug" and rec["cost"] == 0.003
-
-
-def test_log_only_entry_signals_recorded(wired):
-    jg.assess("s", "t.jsonl", [{"type": "fact", "topic": "state", "content": "running as PID 4411"}])
-    s = _log()[0]["scores"][0]
-    assert s["durable"] == "transient" and s["kind_pred"] == "fact" and s["standalone"] == 0.9
-
-
-def test_empty_block_flagged_only_when_omission_high(wired, monkeypatch):
-    monkeypatch.setattr(jg, "_ask", _fake(block_quality="generic_or_lazy", omission=0.2))
-    assert jg.assess("s", "t.jsonl", []) == []          # empty but nothing durable missed
-    monkeypatch.setattr(jg, "_ask", _fake(block_quality="generic_or_lazy", omission=0.7))
-    flags = jg.assess("s", "t.jsonl", [])
-    assert [f["kind"] for f in flags] == ["block"]
-
-
-def test_nonempty_lazy_block_flagged(wired, monkeypatch):
-    monkeypatch.setattr(jg, "_ask", _fake(block_quality="misses_finding"))
-    flags = jg.assess("s", "t.jsonl", [{"type": "fact", "topic": "ok", "content": "fine"}])
-    assert [f["kind"] for f in flags] == ["block"] and "not captured" in flags[0]["content"]
-
-
-def test_secret_flag_is_local_and_redacted(wired):
-    flags = jg.assess("s", "t.jsonl", [{"type": "fact", "topic": "keys",
-                                        "content": "key d52jOr9CHf9pWPyH047hY1rDZyu4geEt7FMONgb9"}])
-    assert flags[0]["kind"] == "secret" and "d52jOr9" not in flags[0]["content"]
-    assert "d52jOr9" not in jg.pending_reminder("s")
-
-
-def test_uncaptured_correction_logged_not_enforced(wired, monkeypatch):
-    monkeypatch.setattr(jg, "_ask", _fake(user_correction=0.9))
-    assert jg.assess("s", "t.jsonl", [{"type": "fact", "topic": "ok", "content": "fine"}]) == []
-    assert _log()[0]["block"]["uncaptured_correction"] is True
-
-
-def test_stale_candidates_logged(wired, monkeypatch):
-    monkeypatch.setattr(jg, "delivered_memories", lambda s: [
-        {"id": 7, "type": "fact", "topic": "old", "content": "port is 8080"},
-        {"id": 9, "type": "fact", "topic": "still", "content": "uses sqlite"}])
-    monkeypatch.setattr(jg, "_ask", _fake(stale={"m7": 0.92}))
-    jg.assess("s", "t.jsonl", [])
-    st = next(r for r in _log() if r["event"] == "stale_candidates")
-    assert st["memories"][0] == {"id": 7, "p": 0.92}
-    assert jg.report()["stale_candidates_top"] == [{"id": 7, "max_p": 0.92, "times": 1}]
-
-
-def test_new_flags_log_the_obligation_they_replace(wired):
-    _flag(wired, ["old"], shown=False)
-    jg.assess("s", "t.jsonl", [{"type": "fact", "topic": "new", "content": "wrong"}])
-    assert "expired_unshown" in [r["event"] for r in _log()]
-
-
-def test_assess_fails_open_without_key(gate, monkeypatch):
-    monkeypatch.setattr(jg, "_key", lambda: None)
-    monkeypatch.setattr(jg, "turn_state", lambda p: "x")
-    assert jg.assess("s", "t", [{"type": "fact", "topic": "a", "content": "b"}]) == []
-    assert ("s", jg.STATE_KEY) not in gate
 
 
 def test_reminder_shown_once(gate):
@@ -224,32 +126,6 @@ def test_secret_detector_ignores_ids_and_hashes():
     assert jg.has_secret("password: Alpine99!x")
 
 
-def test_turn_signals_and_regex_twins_logged_and_reported(wired):
-    jg.assess("s", "t.jsonl", [{"type": "fact", "topic": "ok", "content": "fine"}])
-    b = _log()[0]["block"]
-    assert b["signals"]["deferral"] == 0.9 and b["signals"]["frustration"] == 0.1
-    assert b["uncaptured_instruction"] is True          # instruction given, no preference entry
-    r = jg.report()
-    assert r["regex_vs_jev"]["deferral"] == {"both": 1, "regex_only": 0, "jev_only": 0, "neither": 0}
-    assert r["regex_vs_jev"]["declined"]["neither"] == 1
-    assert r["turn_signals"]["deferral"]["rate"] == 1.0
-
-
-def test_delivered_memories_and_calibration_judged(wired, monkeypatch):
-    monkeypatch.setattr(jg, "delivered_memories", lambda s: [{"id": 7, "type": "fact", "topic": "t", "content": "c"}])
-    monkeypatch.setattr(jg, "delivered_calibration", lambda s: [{"id": 3, "content": "be brief"}])
-    monkeypatch.setattr(jg, "_ask", _fake(stale={"u7": 0.8, "r7": 0.9, "a3": 0.9, "c3": 0.7}))
-    monkeypatch.setattr(jg, "_engaged_label", lambda m: True)
-    monkeypatch.setattr(jg, "_analyser_outcome", lambda c: False)
-    jg.assess("s", "t.jsonl", [])
-    d = next(r for r in _log() if r["event"] == "delivered_judged")
-    assert d["memories"] == [{"id": 7, "stale": 0.1, "used": 0.8, "relevant": 0.9}]
-    assert d["calibration"] == [{"row_id": 3, "applies": 0.9, "followed": 0.7}]
-    r = jg.report()
-    assert r["retrieval"]["used_vs_engaged"]["both"] == 1
-    assert r["calibration_follow"]["jev_vs_analyser"]["jev_only"] == 1
-
-
 def test_turn_state_can_target_an_earlier_turn(tmp_path):
     rec = lambda role, text: {"type": "message", "message": {"role": role, "content": [{"type": "text", "text": text}]}}
     lines = [{"type": "session", "version": 3, "id": "x", "cwd": "/"},
@@ -259,83 +135,6 @@ def test_turn_state_can_target_an_earlier_turn(tmp_path):
     p.write_text("\n".join(json.dumps(l) for l in lines))
     s = jg.turn_state(str(p), turn_no=1)
     assert "first answer" in s and "second" not in s
-
-
-# --- missed-context check ---------------------------------------------------
-
-@pytest.fixture
-def ctx(gate, monkeypatch):
-    import hooks.hook_helpers as hh
-    monkeypatch.setattr(jg, "_key", lambda: "k")
-    monkeypatch.setattr(jg, "turn_state", lambda *a, **k: "[USER PROMPT] check my email")
-    monkeypatch.setattr(jg, "turn_number", lambda p: 3)
-    state = {"used": False, "p": 0.9, "asked": 0}
-    monkeypatch.setattr(hh, "cairn_query_invoked_this_turn", lambda p: state["used"])
-    def ask(key, st, q):
-        state["asked"] += 1
-        assert "[cm]" not in st          # memory block stripped from the reply
-        return ({"q": {"noul": state["p"]}}, 0.0001, 0.4)
-    monkeypatch.setattr(jg, "_ask", ask)
-    return state
-
-
-REPLY = "I don't have access to your Gmail. Could you tell me how you connect?\n\n[cm]: # '{\"ok\":true}'"
-
-
-def test_context_check_fires_when_missing_and_cairn_unused(ctx):
-    reason = jg.context_check("s", "t.jsonl", REPLY)
-    assert reason and "Search it now" in reason
-    rec = _log()[-1]
-    assert rec["event"] == "context_check" and rec["fired"] is True and rec["turn"] == 3
-
-
-def test_context_check_skips_jev_when_cairn_was_queried(ctx):
-    ctx["used"] = True
-    assert jg.context_check("s", "t.jsonl", REPLY) is None
-    assert ctx["asked"] == 0
-
-
-def test_context_check_below_threshold_is_logged_not_fired(ctx):
-    ctx["p"] = 0.5
-    assert jg.context_check("s", "t.jsonl", REPLY) is None
-    assert _log()[-1]["fired"] is False
-
-
-def test_context_check_can_be_switched_off(ctx, monkeypatch):
-    monkeypatch.setenv("CAIRN_CONTEXT_CHECK", "0")
-    assert jg.context_check("s", "t.jsonl", REPLY) is None and ctx["asked"] == 0
-
-
-# --- premature-stop check, follow-up labels, correction capture -------------
-
-@pytest.fixture
-def stop(gate, monkeypatch):
-    monkeypatch.setattr(jg, "_key", lambda: "k")
-    monkeypatch.setattr(jg, "turn_state", lambda *a, **k: "[USER PROMPT] implement the rest")
-    monkeypatch.setattr(jg, "turn_number", lambda p: 5)
-    monkeypatch.setattr(jg, "regex_checks", lambda text, path: {"unkept_promise": False})
-    s = {"a": 0.7, "b": 0.6, "calls": 0}
-    def ask(key, st, q):
-        s["calls"] += 1
-        if "offers" in q:
-            return ({"q": {"noul": s["b"]}, "offers": {"noul": 0.8}, "ending": {"choice": "offers_to_continue"}}, 0.0001, 0.4)
-        return ({"q": {"noul": s["a"]}}, 0.0001, 0.4)
-    monkeypatch.setattr(jg, "_ask", ask)
-    return s
-
-
-def test_stop_check_fires_on_mean_and_logs_legacy(stop):
-    reason = jg.stop_check("s", "t.jsonl", "Done. Remaining: wire the CLI. Want me to do that?")
-    assert reason and "carry on" in reason and stop["calls"] == 2
-    rec = _log()[-1]
-    assert rec["event"] == "stop_check" and rec["p"] == 0.65 and rec["legacy_fired"] is False
-    assert rec["ending"] == "offers_to_continue" and rec["fired"] is True
-
-
-def test_stop_check_below_threshold_logged_only(stop):
-    stop["a"], stop["b"] = 0.3, 0.4
-    assert jg.stop_check("s", "t.jsonl", "All done; tests pass.") is None
-    assert _log()[-1]["fired"] is False
 
 
 @pytest.mark.parametrize("prompt,label", [
@@ -377,3 +176,94 @@ def test_report_scores_checks_against_user_labels(gate, monkeypatch):
     s = v["stop_check"]
     assert s["auc_vs_premature_stop"] == 1.0 and s["fired_then_premature_stop"] == 2
     assert s["legacy_fired_then_no_complaint"] == 1
+
+
+# --- the single combined judgement at the stop ------------------------------
+
+@pytest.fixture
+def judge(gate, monkeypatch):
+    import hooks.hook_helpers as hh
+    monkeypatch.setattr(jg, "_key", lambda: "k")
+    monkeypatch.setattr(jg, "turn_state", lambda *a, **k: "[USER PROMPT] fix it\n[assistant] fixed it")
+    monkeypatch.setattr(jg, "turn_number", lambda p: 7)
+    monkeypatch.setattr(jg, "regex_checks", lambda text, path: {"unkept_promise": False})
+    s = {"calls": 0, "cairn_used": False, "states": [],
+         "ans": {"stop_a": 0.2, "stop_b": 0.2, "ctx": 0.1, "omission": 0.1, "quality": "good"}}
+    monkeypatch.setattr(hh, "cairn_query_invoked_this_turn", lambda p: s["cairn_used"])
+    def ask(key, state, q):
+        s["calls"] += 1; s["states"].append(state)
+        a = {}
+        for k, spec in q.items():
+            if spec["type"] == "noul":
+                v = s["ans"].get(k, 0.1)
+                if k.startswith("e") and k[1:].isdigit():
+                    v = 0.95 if "wrong" in state.split(f"ENTRY {int(k[1:]) + 1}:")[1].split("\n")[0] else 0.1
+                a[k] = {"noul": v}
+            else:
+                c = s["ans"].get(k) or next(iter(spec["criteria"]))
+                a[k] = {"choice": c, "probabilities": {c: 0.9}}
+        return a, 0.0002, 0.5
+    monkeypatch.setattr(jg, "_ask", ask)
+    return s
+
+
+def test_judge_turn_is_one_call_and_logs_all_events(judge):
+    j = jg.judge_turn("s", "t.jsonl", "Done.", [{"type": "fact", "topic": "a", "content": "fine"},
+                                                {"type": "fact", "topic": "b", "content": "wrong number"}])
+    assert judge["calls"] == 1
+    assert [f["topic"] for f in j.flags] == ["b"] and j.reprompt is None
+    events = [r["event"] for r in _log()]
+    assert {"stop_check", "context_check", "assessed"} <= set(events)
+    assessed = next(r for r in _log() if r["event"] == "assessed")
+    assert assessed["combined"] and assessed["turn"] == 7 and assessed["block"]["regex"] == {"unkept_promise": False}
+    assert "ENTRY 2: fact/b: wrong number" in judge["states"][0] and "ASSISTANT'S FINAL REPLY" in judge["states"][0]
+
+
+def test_judge_turn_stop_and_context_reprompts(judge):
+    judge["ans"].update(stop_a=0.7, stop_b=0.6, ctx=0.9)
+    j = jg.judge_turn("s", "t.jsonl", "Remaining: X. Want me to?", [])
+    assert j.stop_reason and j.context_reason and "carry on" in j.reprompt and "search Cairn" in j.reprompt
+
+
+def test_judge_turn_context_needs_cairn_unused_and_stop_respects_intent(judge):
+    judge["ans"].update(stop_a=0.9, stop_b=0.9, ctx=0.95)
+    judge["cairn_used"] = True
+    j = jg.judge_turn("s", "t.jsonl", "reply", [], intent_resolved=True)
+    assert j.reprompt is None
+
+
+def test_judge_turn_block_and_secret_flags(judge):
+    judge["ans"].update(omission=0.7)
+    assert [f["kind"] for f in jg.judge_turn("s", "t.jsonl", "r", []).flags] == ["block"]
+    judge["ans"].update(omission=0.1, quality="misses_finding")
+    flags = jg.judge_turn("s", "t.jsonl", "r", [{"type": "fact", "topic": "k",
+                                                 "content": "key d52jOr9CHf9pWPyH047hY1rDZyu4geEt7FMONgb9"}]).flags
+    assert {f["kind"] for f in flags} == {"secret", "block"}
+    assert all("d52jOr9" not in f["content"] for f in flags)
+
+
+def test_judge_turn_fails_open(judge, monkeypatch):
+    monkeypatch.setattr(jg, "_ask", lambda *a, **k: (None, 0.0, 4.0))
+    j = jg.judge_turn("s", "t.jsonl", "r", [{"type": "fact", "topic": "a", "content": "b"}])
+    assert j.reprompt is None and j.flags == [] and _log()[-1]["event"] == "judge_failed"
+    monkeypatch.setattr(jg, "_key", lambda: None)
+    assert jg.judge_turn("s", "t.jsonl", "r", []).reprompt is None
+
+
+def test_save_flags_sets_obligation_and_logs_replaced(gate):
+    _flag(gate, ["old"], shown=False)
+    jg.save_flags("s", [{"kind": "detail", "type": "fact", "topic": "new", "content": "c", "p": 0.9}])
+    assert json.loads(gate[("s", jg.STATE_KEY)])["flagged"][0]["topic"] == "new"
+    assert _log()[-1]["event"] == "expired_unshown"
+
+
+def test_assess_delivered_logs_memory_calibration_and_entry_signals(judge, monkeypatch):
+    monkeypatch.setattr(jg, "delivered_memories", lambda s: [{"id": 7, "type": "fact", "topic": "t", "content": "c"}])
+    monkeypatch.setattr(jg, "delivered_calibration", lambda s: [{"id": 3, "content": "be brief"}])
+    judge["ans"].update({"u7": 0.8, "r7": 0.9, "m7": 0.75, "a3": 0.9, "c3": 0.7})
+    jg.assess_delivered("s", "t.jsonl", [{"type": "fact", "topic": "x", "content": "y"}])
+    d = next(r for r in _log() if r["event"] == "delivered_judged")
+    assert d["memories"] == [{"id": 7, "stale": 0.75, "used": 0.8, "relevant": 0.9}]
+    assert d["calibration"] == [{"row_id": 3, "applies": 0.9, "followed": 0.7}]
+    assert d["entries"][0]["topic"] == "x" and "standalone" in d["entries"][0]
+    assert jg.report()["stale_candidates_top"] == [{"id": 7, "max_p": 0.75, "times": 1}]

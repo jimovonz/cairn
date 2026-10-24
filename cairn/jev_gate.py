@@ -343,125 +343,6 @@ def delivered_memories(session_id: str) -> list[dict]:
 
 # --- capture side (turn N) --------------------------------------------------
 
-def assess(session_id: str, transcript_path: str, entries: list[dict]) -> list[dict]:
-    """Score the turn's entries, block and delivered memories; save enforced
-    flags as this session's obligation; log every score."""
-    key = _key()
-    turn = redact(turn_state(transcript_path))
-    if not key or not turn.strip():
-        return []
-    entries = [e for e in (entries or []) if e.get("content")][:MAX_ENTRIES]
-    block_text = "\n".join(f"{i+1}. {redact(_entry_line(e))}" for i, e in enumerate(entries)) \
-        or "(no entries: the block is empty)"
-    memories = delivered_memories(session_id)
-    cal_rows = delivered_calibration(session_id)
-
-    jobs = [("entry", e, (f"{turn}\n\nTURN LINES MOST RELATED TO THE ENTRY:\n"
-                          + "\n".join(related_lines(turn, str(e.get("content"))))
-                          + f"\n\nENTRY UNDER REVIEW: {redact(_entry_line(e))}"), ENTRY_Q) for e in entries]
-    jobs.append(("block", None, f"{turn}\n\nMEMORY BLOCK the assistant wrote for this turn:\n{block_text}", BLOCK_Q))
-    if memories or cal_rows:
-        dq = {}
-        for m in memories:
-            line = redact(_entry_line(m))[:1200]
-            dq[f"m{m['id']}"] = {"type": "noul", "instructions": (
-                "Does the turn above show that this stored memory is now wrong or outdated? Memory: " + line)}
-            dq[f"u{m['id']}"] = {"type": "noul", "instructions": (
-                "Did the assistant's response in the turn above make use of this memory? Memory: " + line)}
-            dq[f"r{m['id']}"] = {"type": "noul", "instructions": (
-                "Is this memory relevant to what the user asked in the turn above? Memory: " + line)}
-        for c in cal_rows:
-            g = redact(str(c["content"]))[:1000]
-            dq[f"a{c['id']}"] = {"type": "noul", "instructions": (
-                "Does this guidance apply to anything the assistant did in the turn above? Guidance: " + g)}
-            dq[f"c{c['id']}"] = {"type": "noul", "instructions": (
-                "Did the assistant's behaviour in the turn above follow this guidance? Guidance: " + g)}
-        jobs.append(("delivered", None, turn, dq))
-
-    with cf.ThreadPoolExecutor(min(8, len(jobs))) as ex:
-        results = list(ex.map(lambda j: (j, *_ask(key, j[2], j[3])), jobs))
-
-    scores, block, stale, cost, lat, failed = [], None, [], 0.0, 0.0, 0
-    delivered, calibration = [], []
-    for (kind, e, _, _), ans, c, l in results:
-        cost += c
-        lat = max(lat, l)
-        if ans is None:
-            failed += 1
-            continue
-        if kind == "entry":
-            mismatch = _noul(ans, "mismatch") or 0.0
-            scores.append({"type": e.get("type"), "topic": e.get("topic"), "content": redact(str(e.get("content"))),
-                           "p": mismatch, "verdict_p": round(unsupported_p(ans.get("verdict")), 3),
-                           "choice": _choice(ans, "verdict"), "durable": _choice(ans, "durable"),
-                           "kind_pred": _choice(ans, "kind"), "standalone": _noul(ans, "standalone"),
-                           "secret": has_secret(str(e.get("content"))), "flagged": mismatch >= THRESHOLD})
-        elif kind == "block":
-            q = _choice(ans, "quality")
-            omission = _noul(ans, "omission") or 0.0
-            lazy = (omission >= OMISSION_THRESHOLD) if not entries else q in ("generic_or_lazy", "misses_finding")
-            block = {"quality": q, "probs": ((ans.get("quality") or {}).get("probabilities")),
-                     "omission": omission, "user_correction": _noul(ans, "user_correction"),
-                     "task": _choice(ans, "task"), "empty": not entries, "flagged": lazy,
-                     "uncaptured_correction": bool((_noul(ans, "user_correction") or 0) >= 0.7
-                                                   and not any(x.get("type") == "correction" for x in entries)),
-                     "signals": {k: _noul(ans, f"s_{k}") for k in TURN_SIGNALS}}
-            block["uncaptured_instruction"] = bool((block["signals"].get("future_instruction") or 0) >= 0.7
-                                                   and not any(x.get("type") in ("preference", "workflow")
-                                                               for x in entries))
-        else:
-            stale = sorted(({"id": m["id"], "p": _noul(ans, f"m{m['id']}")} for m in memories),
-                           key=lambda s: -(s["p"] or 0))
-            delivered = [{"id": m["id"], "stale": _noul(ans, f"m{m['id']}"), "used": _noul(ans, f"u{m['id']}"),
-                          "relevant": _noul(ans, f"r{m['id']}")} for m in memories]
-            calibration = [{"row_id": c["id"], "applies": _noul(ans, f"a{c['id']}"),
-                            "followed": _noul(ans, f"c{c['id']}")} for c in cal_rows]
-
-    if block is not None:   # regex Stop-hook checks on the same response, for the twin comparison
-        try:
-            block["regex"] = regex_checks(final_response(transcript_path), transcript_path)
-        except Exception:
-            block["regex"] = {}
-
-    # Secrets are checked locally even if the entry call failed.
-    for e in entries:
-        if has_secret(str(e.get("content"))) and not any(s["topic"] == e.get("topic") for s in scores):
-            scores.append({"type": e.get("type"), "topic": e.get("topic"), "content": redact(str(e.get("content"))),
-                           "p": None, "secret": True, "flagged": False})
-
-    flags = [{"kind": "secret", "type": s["type"], "topic": s["topic"], "content": redact(str(s["content"]))}
-             for s in scores if s.get("secret")]
-    flags += [{"kind": "detail", "type": s["type"], "topic": s["topic"], "content": s["content"], "p": s["p"]}
-              for s in scores if s.get("flagged") and not s.get("secret")]
-    if block and block["flagged"]:
-        flags.append({"kind": "block", "type": "block", "topic": "_block",
-                      "content": "empty although the turn had durable content" if block["empty"]
-                      else ("generic or boilerplate" if block["quality"] == "generic_or_lazy"
-                            else "a durable finding from the turn is not captured")})
-
-    _log({"event": "assessed", "session": session_id, "transcript": transcript_path,
-          "turn": turn_number(transcript_path), "threshold": THRESHOLD, "entries": len(entries),
-          "failed": failed, "scores": scores, "block": block, "flags": flags,
-          "cost": round(cost, 6), "latency_max": lat})
-    _add_cost(cost)
-    if stale:
-        _log({"event": "stale_candidates", "session": session_id, "memories": stale})
-    if delivered or calibration:
-        _log({"event": "delivered_judged", "session": session_id, "turn": turn_number(transcript_path),
-              "memories": delivered, "calibration": calibration})
-    from hooks.hook_helpers import record_metric, save_hook_state
-    record_metric(session_id, "jev_gate_assessed", None, len(entries))
-    if flags:
-        prior = _load(session_id)
-        if prior:   # a newer flag set replaces one that was never answered
-            _log({"event": "expired_unshown" if not prior.get("shown") else "expired_unanswered",
-                  "session": session_id, "flags": prior.get("flagged")})
-        save_hook_state(session_id, STATE_KEY, json.dumps({"flagged": flags, "shown": False,
-                                                           "at": time.time()}))
-        record_metric(session_id, "jev_gate_flagged", None, len(flags))
-    return flags
-
-
 def _add_cost(usd: float) -> None:
     """Accumulate today's (UTC) Jev spend into JEV_COST_FILE.
 
@@ -498,7 +379,7 @@ def spawn_assess(session_id: str, transcript_path: str, entries: list[dict]) -> 
                               "entries": [{k: e.get(k) for k in ("type", "topic", "content")}
                                           for e in (entries or [])]})
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        p = subprocess.Popen([sys.executable, "-m", "cairn.jev_gate", "assess"], cwd=root,
+        p = subprocess.Popen([sys.executable, "-m", "cairn.jev_gate", "assess-delivered"], cwd=root,
                              stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)
         p.stdin.write(payload.encode())
@@ -615,53 +496,6 @@ CONTEXT_Q = {"q": {"type": "noul", "instructions": (
     "where the user's own specifics were needed?")}}
 
 
-def context_check(session_id: str, transcript_path: str, reply: str) -> Optional[str]:
-    """Re-prompt reason when the reply shows missing context AND the turn did
-    not query Cairn; else None. Cairn use is checked mechanically first, so
-    Jev is only asked when it could matter. Calibration (2026-10-24, replies
-    labelled by the user's next message): AUC 0.82; at 0.8, 3/5 real misses
-    and 2% of controls. Fails open."""
-    if not enabled() or os.environ.get("CAIRN_CONTEXT_CHECK", "1") in ("0", "false", "no"):
-        return None
-    reply = re.sub(r"(?m)^\[(?:cm|cairn-memory)\]: #.*$", "", reply or "")   # the memory block is not the answer
-    if not reply.strip() or not transcript_path:
-        return None
-    from hooks.hook_helpers import cairn_query_invoked_this_turn, record_metric
-    if cairn_query_invoked_this_turn(transcript_path):
-        return None
-    key = _key()
-    if not key:
-        return None
-    prompt = ""
-    try:
-        for line in turn_state(transcript_path, per_result=0).splitlines():
-            if line.startswith("[USER PROMPT]"):
-                prompt = line[len("[USER PROMPT] "):]
-                break
-    except Exception:
-        pass
-    state = redact(f"{_MEMORY_FRAME}\n\nUSER REQUEST:\n{prompt[:1500]}\n\nASSISTANT'S REPLY:\n{reply[-5000:]}")
-    global CALL_TIMEOUT_S
-    saved, CALL_TIMEOUT_S = CALL_TIMEOUT_S, CONTEXT_TIMEOUT_S
-    try:
-        ans, cost, lat = _ask(key, state, CONTEXT_Q)
-    finally:
-        CALL_TIMEOUT_S = saved
-    p = _noul(ans, "q")
-    fired = p is not None and p >= CONTEXT_THRESHOLD
-    _log({"event": "context_check", "session": session_id, "transcript": transcript_path,
-          "turn": turn_number(transcript_path), "p": p, "threshold": CONTEXT_THRESHOLD,
-          "fired": fired, "cost": cost, "latency": lat})
-    record_metric(session_id, "context_check_fired" if fired else "context_check_clear", None, p or 0)
-    if not fired:
-        return None
-    query_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "query.py")
-    return ("Your reply shows missing information or context (a guess, an assumption, a question to the user, or a "
-            "claim of no access or knowledge), and this turn did not search Cairn. Search it now, e.g. "
-            f"python3 {query_py} --semantic \"<the topic> | <what you were missing>\" (in pi: the cairn_query tool), "
-            "then revise your answer. If Cairn has nothing relevant, say so briefly and keep your answer.")
-
-
 # --- premature-stop check (synchronous, at the stop) -------------------------
 
 STOP_THRESHOLD = float(os.environ.get("CAIRN_STOP_CHECK_THRESHOLD", "0.57"))
@@ -683,58 +517,217 @@ STOP_QB = {"q": {"type": "noul", "instructions": (
                             "clarification": "it asks a genuine clarifying question"}}}
 
 
-def stop_check(session_id: str, transcript_path: str, reply: str, intent_resolved: bool = False) -> Optional[str]:
-    """Re-prompt reason when the reply names work it could do and stops anyway.
-    Mean of two parallel Jev nouls: reply-only "names remaining work but
-    presents as finished", and "under the user's rule, stopped when it should
-    have carried on" (with the prompt). Replaces the regex/embedding
-    trailing-intent check, which caught 1/25 real stops; at 0.57 this caught
-    5/25 at 2% false (labels: the user's continue/do it/why stop). The old
-    check still runs, logged only, for comparison. Fails open."""
+def _turn_prompt(turn: str) -> str:
+    return next((l[len("[USER PROMPT] "):] for l in turn.splitlines() if l.startswith("[USER PROMPT]")), "")
+
+
+class Judgement:
+    """Result of the one synchronous Jev call at the stop."""
+    def __init__(self):
+        self.stop_reason: Optional[str] = None
+        self.context_reason: Optional[str] = None
+        self.flags: list[dict] = []
+
+    @property
+    def reprompt(self) -> Optional[str]:
+        parts = [r for r in (self.stop_reason, self.context_reason) if r]
+        return "\n\n".join(parts) or None
+
+
+def judge_turn(session_id: str, transcript_path: str, reply: str, entries: Optional[list[dict]],
+               intent_resolved: bool = False) -> Judgement:
+    """Every turn-level question in ONE Jev call, at the stop.
+
+    One combined state (the user's rule and memory framing, the turn, the
+    memory block entry by entry with each entry's most related turn lines,
+    and the final reply) answers the premature-stop, missed-context,
+    per-entry detail, block-quality and turn-signal questions. On 30 real
+    turns this tracked the separate calls closely (r 0.87-0.97; same
+    decision at the live thresholds in 57/58 entries, 29-30/30 stop, 28/30
+    context) at 63% lower cost. Logs the same events as before (stop_check,
+    context_check, assessed) so report and the follow-up labels still apply.
+    Flags for the next turn are returned, not saved: the caller saves them
+    after checking the previous turn's obligation. Fails open."""
+    j = Judgement()
+    if not enabled():
+        return j
     reply = re.sub(r"(?m)^\[(?:cm|cairn-memory)\]: #.*$", "", reply or "").strip()
-    if not enabled() or os.environ.get("CAIRN_STOP_CHECK", "1") in ("0", "false", "no") or not reply:
-        return None
     key = _key()
-    if not key:
-        return None
-    prompt = ""
     try:
-        for line in turn_state(transcript_path, per_result=0).splitlines():
-            if line.startswith("[USER PROMPT]"):
-                prompt = line[len("[USER PROMPT] "):]
-                break
+        turn = redact(turn_state(transcript_path)) if transcript_path else ""
     except Exception:
-        pass
-    a_state = redact(f"ASSISTANT'S FINAL REPLY:\n{reply[-6000:]}")
-    b_state = redact(f"{_STOP_RULE}\n\nUSER REQUEST:\n{prompt[:1500]}\n\nASSISTANT'S FINAL REPLY:\n{reply[-6000:]}")
+        turn = ""
+    if not key or not (turn.strip() or reply):
+        return j
+    entries = [e for e in (entries or []) if e.get("content")][:MAX_ENTRIES]
+    sections = "\n\n".join(
+        f"ENTRY {i+1}: {redact(_entry_line(e))}\nTURN LINES MOST RELATED TO ENTRY {i+1}:\n"
+        + "\n".join(related_lines(turn, str(e.get("content")), n=6)) for i, e in enumerate(entries)) \
+        or "(no entries: the block is empty)"
+    state = (f"{_STOP_RULE}\n{_MEMORY_FRAME}\n\nTHE TURN:\n{turn}\n\n"
+             f"MEMORY BLOCK the assistant wrote for this turn, entry by entry:\n{sections}\n\n"
+             f"ASSISTANT'S FINAL REPLY:\n{redact(reply[-6000:])}")
+    q = {}
+    for i in range(len(entries)):
+        q[f"e{i}"] = {"type": "noul", "instructions": (
+            f"Does any specific detail in ENTRY {i+1} (a number, name, path, or the direction of a conclusion) "
+            "differ from what the turn shows?")}
+        q[f"d{i}"] = {**ENTRY_Q["durable"], "instructions": f"How long does ENTRY {i+1} stay true and useful?"}
+    q.update(BLOCK_Q)
+    q.update({
+        "stop_a": {"type": "noul", "instructions": (
+            "Considering only the ASSISTANT'S FINAL REPLY: does it name work that still needs doing while presenting "
+            "the task as finished or the turn as complete?")},
+        "stop_b": {"type": "noul", "instructions": (
+            "Under the user's rule above, did the assistant's final reply stop or ask when it should have carried on "
+            "with the work?")},
+        "offers": STOP_QB["offers"], "ending": STOP_QB["ending"],
+        "ctx": {"type": "noul", "instructions": (
+            "Does the assistant's final reply show that it lacked information or context it needed: it guessed or "
+            "assumed, asked the user for something it could have found, said it lacks access, a credential or "
+            "knowledge, or gave a generic answer where the user's own specifics were needed?")},
+    })
     global CALL_TIMEOUT_S
     saved, CALL_TIMEOUT_S = CALL_TIMEOUT_S, CONTEXT_TIMEOUT_S
     try:
-        with cf.ThreadPoolExecutor(2) as ex:
-            fa, fb = ex.submit(_ask, key, a_state, STOP_QA), ex.submit(_ask, key, b_state, STOP_QB)
-            (ans_a, ca, la), (ans_b, cb, lb) = fa.result(), fb.result()
+        ans, cost, lat = _ask(key, state, q)
     finally:
         CALL_TIMEOUT_S = saved
-    pa, pb = _noul(ans_a, "q"), _noul(ans_b, "q")
-    p = None if pa is None or pb is None else round((pa + pb) / 2, 3)
+    _add_cost(cost)
+    turn_no = turn_number(transcript_path) if transcript_path else None
+    if ans is None:
+        _log({"event": "judge_failed", "session": session_id, "turn": turn_no, "latency": lat})
+        return j
+    from hooks.hook_helpers import cairn_query_invoked_this_turn, record_metric
     try:
-        legacy = regex_checks(reply, transcript_path).get("unkept_promise")
+        legacy = regex_checks(reply, transcript_path)
     except Exception:
-        legacy = None
-    fired = p is not None and p >= STOP_THRESHOLD and not intent_resolved
-    _log({"event": "stop_check", "session": session_id, "transcript": transcript_path,
-          "turn": turn_number(transcript_path), "p": p, "p_reply": pa, "p_rule": pb,
-          "offers": _noul(ans_b, "offers"), "ending": _choice(ans_b, "ending"), "legacy_fired": legacy,
-          "intent_resolved": intent_resolved, "threshold": STOP_THRESHOLD, "fired": fired,
-          "cost": round(ca + cb, 6), "latency": max(la, lb)})
-    from hooks.hook_helpers import record_metric
-    record_metric(session_id, "stop_check_fired" if fired else "stop_check_clear", None, p or 0)
-    if not fired:
-        return None
-    return ("Your reply names work that still remains and stops there. Unless the next step is irreversible or "
-            "outward-facing (delete, push, publish, send) or a genuine choice only the user can make, carry on and do "
-            "it now. If you must stop, say exactly what decision you need. If nothing remains, add 'int: resolved' "
-            "to your [cm] block.")
+        legacy = {}
+
+    # premature stop
+    pa, pb = _noul(ans, "stop_a"), _noul(ans, "stop_b")
+    p_stop = None if pa is None or pb is None else round((pa + pb) / 2, 3)
+    stop_fired = p_stop is not None and p_stop >= STOP_THRESHOLD and not intent_resolved \
+        and os.environ.get("CAIRN_STOP_CHECK", "1") not in ("0", "false", "no")
+    _log({"event": "stop_check", "session": session_id, "transcript": transcript_path, "turn": turn_no,
+          "p": p_stop, "p_reply": pa, "p_rule": pb, "offers": _noul(ans, "offers"), "ending": _choice(ans, "ending"),
+          "legacy_fired": legacy.get("unkept_promise"), "intent_resolved": intent_resolved,
+          "threshold": STOP_THRESHOLD, "fired": stop_fired, "combined": True})
+    record_metric(session_id, "stop_check_fired" if stop_fired else "stop_check_clear", None, p_stop or 0)
+    if stop_fired:
+        j.stop_reason = ("Your reply names work that still remains and stops there. Unless the next step is "
+                         "irreversible or outward-facing (delete, push, publish, send) or a genuine choice only the "
+                         "user can make, carry on and do it now. If you must stop, say exactly what decision you "
+                         "need. If nothing remains, add 'int: resolved' to your [cm] block.")
+
+    # missed context (acts only when the turn made no Cairn query)
+    p_ctx = _noul(ans, "ctx")
+    cairn_used = bool(transcript_path) and cairn_query_invoked_this_turn(transcript_path)
+    ctx_fired = p_ctx is not None and p_ctx >= CONTEXT_THRESHOLD and not cairn_used \
+        and os.environ.get("CAIRN_CONTEXT_CHECK", "1") not in ("0", "false", "no")
+    _log({"event": "context_check", "session": session_id, "transcript": transcript_path, "turn": turn_no,
+          "p": p_ctx, "cairn_used": cairn_used, "threshold": CONTEXT_THRESHOLD, "fired": ctx_fired,
+          "combined": True})
+    record_metric(session_id, "context_check_fired" if ctx_fired else "context_check_clear", None, p_ctx or 0)
+    if ctx_fired:
+        query_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "query.py")
+        j.context_reason = ("Your reply shows missing information or context (a guess, an assumption, a question to "
+                            "the user, or a claim of no access or knowledge), and this turn did not search Cairn. "
+                            f"Search it now, e.g. python3 {query_py} --semantic \"<the topic> | <what you were "
+                            "missing>\" (in pi: the cairn_query tool), then revise your answer. If Cairn has nothing "
+                            "relevant, say so briefly and keep your answer.")
+
+    # entries, block, signals -> next-turn obligation
+    scores = []
+    for i, e in enumerate(entries):
+        p = _noul(ans, f"e{i}")
+        scores.append({"type": e.get("type"), "topic": e.get("topic"), "content": redact(str(e.get("content"))),
+                       "p": p, "durable": _choice(ans, f"d{i}"), "secret": has_secret(str(e.get("content"))),
+                       "flagged": p is not None and p >= THRESHOLD})
+    quality, omission = _choice(ans, "quality"), _noul(ans, "omission") or 0.0
+    block = {"quality": quality, "probs": ((ans.get("quality") or {}).get("probabilities")), "omission": omission,
+             "user_correction": _noul(ans, "user_correction"), "task": _choice(ans, "task"), "empty": not entries,
+             "flagged": (omission >= OMISSION_THRESHOLD) if not entries else quality in ("generic_or_lazy", "misses_finding"),
+             "signals": {k: _noul(ans, f"s_{k}") for k in TURN_SIGNALS}, "regex": legacy}
+    block["uncaptured_correction"] = bool((block["user_correction"] or 0) >= 0.7
+                                          and not any(x.get("type") == "correction" for x in entries))
+    block["uncaptured_instruction"] = bool((block["signals"].get("future_instruction") or 0) >= 0.7
+                                           and not any(x.get("type") in ("preference", "workflow") for x in entries))
+    flags = [{"kind": "secret", "type": s["type"], "topic": s["topic"], "content": s["content"]}
+             for s in scores if s["secret"]]
+    flags += [{"kind": "detail", "type": s["type"], "topic": s["topic"], "content": s["content"], "p": s["p"]}
+              for s in scores if s["flagged"] and not s["secret"]]
+    if block["flagged"]:
+        flags.append({"kind": "block", "type": "block", "topic": "_block",
+                      "content": "empty although the turn had durable content" if block["empty"]
+                      else ("generic or boilerplate" if quality == "generic_or_lazy"
+                            else "a durable finding from the turn is not captured")})
+    _log({"event": "assessed", "session": session_id, "transcript": transcript_path, "turn": turn_no,
+          "threshold": THRESHOLD, "entries": len(entries), "failed": 0, "scores": scores, "block": block,
+          "flags": flags, "cost": round(cost, 6), "latency_max": lat, "combined": True, "questions": len(q)})
+    record_metric(session_id, "jev_gate_assessed", None, len(entries))
+    j.flags = flags
+    return j
+
+
+def save_flags(session_id: str, flags: list[dict]) -> None:
+    """Save this turn's enforced flags as the next turn's obligation."""
+    if not (enabled() and session_id and flags):
+        return
+    from hooks.hook_helpers import record_metric, save_hook_state
+    prior = _load(session_id)
+    if prior:   # a newer flag set replaces one that was never answered
+        _log({"event": "expired_unshown" if not prior.get("shown") else "expired_unanswered",
+              "session": session_id, "flags": prior.get("flagged")})
+    save_hook_state(session_id, STATE_KEY, json.dumps({"flagged": flags, "shown": False, "at": time.time()}))
+    record_metric(session_id, "jev_gate_flagged", None, len(flags))
+
+
+def assess_delivered(session_id: str, transcript_path: str, entries: list[dict]) -> None:
+    """Background, log-only: delivered memories (stale / used / relevant),
+    delivered calibration rows (applies / followed) and per-entry type and
+    standalone signals, in one call. Needs DB lookups, so it stays off the
+    stop path."""
+    key = _key()
+    turn = redact(turn_state(transcript_path)) if transcript_path else ""
+    if not key or not turn.strip():
+        return
+    entries = [e for e in (entries or []) if e.get("content")][:MAX_ENTRIES]
+    memories = delivered_memories(session_id)[:6]
+    cal_rows = delivered_calibration(session_id)[:5]
+    dq = {}
+    for m in memories:
+        line = redact(_entry_line(m))[:1200]
+        dq[f"m{m['id']}"] = {"type": "noul", "instructions": f"Does the turn above show that this stored memory is now wrong or outdated? Memory: {line}"}
+        dq[f"u{m['id']}"] = {"type": "noul", "instructions": f"Did the assistant's response in the turn above make use of this memory? Memory: {line}"}
+        dq[f"r{m['id']}"] = {"type": "noul", "instructions": f"Is this memory relevant to what the user asked in the turn above? Memory: {line}"}
+    for c in cal_rows:
+        g = redact(str(c["content"]))[:1000]
+        dq[f"a{c['id']}"] = {"type": "noul", "instructions": f"Does this guidance apply to anything the assistant did in the turn above? Guidance: {g}"}
+        dq[f"c{c['id']}"] = {"type": "noul", "instructions": f"Did the assistant's behaviour in the turn above follow this guidance? Guidance: {g}"}
+    for i, e in enumerate(entries):
+        line = redact(_entry_line(e))
+        dq[f"k{i}"] = {**ENTRY_Q["kind"], "instructions": f"Which memory type best fits this entry? Entry: {line}"}
+        dq[f"s{i}"] = {"type": "noul", "instructions": (
+            "Could someone with no access to this conversation understand this entry without guessing what 'this', "
+            f"'the fix' or similar references mean? Entry: {line}")}
+    if not dq:
+        return
+    ans, cost, lat = _ask(key, turn, dq)
+    _add_cost(cost)
+    if ans is None:
+        return
+    turn_no = turn_number(transcript_path)
+    stale = sorted(({"id": m["id"], "p": _noul(ans, f"m{m['id']}")} for m in memories), key=lambda s: -(s["p"] or 0))
+    if stale:
+        _log({"event": "stale_candidates", "session": session_id, "memories": stale})
+    _log({"event": "delivered_judged", "session": session_id, "turn": turn_no, "cost": round(cost, 6),
+          "memories": [{"id": m["id"], "stale": _noul(ans, f"m{m['id']}"), "used": _noul(ans, f"u{m['id']}"),
+                        "relevant": _noul(ans, f"r{m['id']}")} for m in memories],
+          "calibration": [{"row_id": c["id"], "applies": _noul(ans, f"a{c['id']}"),
+                           "followed": _noul(ans, f"c{c['id']}")} for c in cal_rows],
+          "entries": [{"topic": e.get("topic"), "type": e.get("type"), "kind_pred": _choice(ans, f"k{i}"),
+                       "standalone": _noul(ans, f"s{i}")} for i, e in enumerate(entries)]})
 
 
 # --- the user's next message as a label for the previous turn ---------------
@@ -1158,10 +1151,10 @@ def spotcheck_signals(n: int = 10, seed: Optional[int] = None) -> int:
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if argv[:1] == ["assess"]:
+    if argv[:1] == ["assess-delivered"]:
         try:
             p = json.loads(sys.stdin.read())
-            assess(p["session"], p["transcript"], p["entries"])
+            assess_delivered(p["session"], p["transcript"], p["entries"])
         except Exception:
             pass
         return 0
@@ -1172,7 +1165,7 @@ def main(argv=None) -> int:
         return spotcheck_signals(int(argv[1]) if len(argv) > 1 else 10)
     if argv[:1] == ["spotcheck"]:
         return spotcheck(int(argv[1]) if len(argv) > 1 else 20)
-    print("usage: python -m cairn.jev_gate {assess|report|spotcheck [N]|spotcheck-signals [N]}", file=sys.stderr)
+    print("usage: python -m cairn.jev_gate {assess-delivered|report|spotcheck [N]|spotcheck-signals [N]}", file=sys.stderr)
     return 2
 
 

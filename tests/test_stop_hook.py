@@ -942,7 +942,7 @@ def test_main_multiple_entries_stored_with_metrics():
 # Verifies: high cosine similarity on trailing sentence triggers trailing intent block
 @pytest.mark.adversarial
 def test_main_trailing_intent_blocks():
-    # The premature-stop decision is now the Jev stop check (cairn/jev_gate.stop_check);
+    # The premature-stop decision is now the Jev stop check (cairn/jev_gate.judge_turn);
     # simulate it firing and verify the hook blocks and records the metric.
     db_path, conn = fresh_db()
     import hooks.hook_helpers as hh
@@ -972,7 +972,7 @@ def test_main_trailing_intent_blocks():
              patch("sys.stdout", captured_output), \
              patch("sys.exit", mock_exit), \
              patch.object(hh, "get_embedder", return_value=mock_emb), patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
-             patch("cairn.jev_gate.stop_check", return_value="Your reply names work that still remains and stops there. If nothing remains, add 'int: resolved' to your [cm] block."):
+             patch("cairn.jev_gate.judge_turn", return_value=_stop_judgement()):
             try:
                 stop_hook.main()
             except SystemExit:
@@ -1218,3 +1218,12 @@ def test_absence_block_message_points_at_this_checkouts_query_py():
     src = open(os.path.join(os.path.dirname(__file__), "..", "hooks", "stop_hook.py")).read()
     assert "/mnt/ssd" not in src
     assert re.search(r'query_py = os\.path\.normpath', src)
+
+
+def _stop_judgement():
+    """A turn judgement whose premature-stop question fired (cairn/jev_gate.judge_turn)."""
+    from cairn.jev_gate import Judgement
+    j = Judgement()
+    j.stop_reason = ("Your reply names work that still remains and stops there. "
+                     "If nothing remains, add 'int: resolved' to your [cm] block.")
+    return j

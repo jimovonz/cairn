@@ -418,8 +418,25 @@ def cmd_enforce(a):
             print(f"CAIRN CONTEXT:\n{xml}")
             return
 
-    # 5. Behavioural checks, same functions and order as stop_hook.py. Skipped on
-    # continuation there too, so each gets one re-prompt per user prompt.
+    # 5. One Jev call judges the whole turn, as stop_hook.py: premature stop,
+    # missed context, entry detail, block quality, turn signals. Re-prompts on
+    # the first stop only; flags are saved after the obligation check below.
+    judgement = None
+    try:
+        from cairn import jev_gate
+        judgement = jev_gate.judge_turn(a.session, a.transcript, text, parsed.entries,
+                                        intent_resolved=(parsed.intent == "resolved"))
+        if judgement.reprompt and not is_continuation:
+            from hooks.hook_helpers import record_metric
+            if judgement.stop_reason:
+                record_metric(a.session, "trailing_intent_blocked", "jev_judge_turn")
+            print(judgement.reprompt)
+            return
+    except Exception as e:
+        sys.stderr.write(f"cairn turn judgement error: {e}\n")
+
+    # Remaining behavioural checks, same functions and order as stop_hook.py.
+    # Skipped on continuation there too, so each gets one re-prompt per prompt.
     if not is_continuation:
         reason = _behavioural_reason(text, parsed, a)
         if reason:
@@ -436,7 +453,9 @@ def cmd_enforce(a):
         if reason:
             print(reason)
             return
-        jev_gate.spawn_assess(a.session, a.transcript, parsed.entries or [])
+        if judgement is not None:
+            jev_gate.save_flags(a.session, judgement.flags)
+        jev_gate.spawn_assess(a.session, a.transcript, parsed.entries or [])   # delivered memories, background
     except Exception as e:
         sys.stderr.write(f"cairn jev gate error: {e}\n")
     # Otherwise: allow the stop (print nothing).
@@ -455,15 +474,8 @@ def _behavioural_reason(text, parsed, a):
             sys.stderr.write(f"cairn {check.__name__} error: {e}\n")
             return None
 
-    from cairn import jev_gate
     if parsed.intent == "resolved":
         record_metric(a.session, "trailing_intent_resolved_escape")
-    else:
-        # Jev premature-stop check (the old trailing-intent check runs inside it, logged only)
-        reason = run(jev_gate.stop_check, a.session, a.transcript, text)
-        if reason:
-            record_metric(a.session, "trailing_intent_blocked", "jev_stop_check")
-            return reason
     hit = run(enf.check_asserted_absence_without_cairn, text, a.transcript, session_id=a.session)
     if hit:
         record_metric(a.session, "absence_without_cairn_blocked", hit[:80])
@@ -491,7 +503,7 @@ def _behavioural_reason(text, parsed, a):
                 f"Pattern: \"{phrase}\"\nCorrection: {correction}\n\n"
                 "Review your response and adjust if this correction applies. "
                 "If it doesn't apply here, proceed as-is.")
-    return run(jev_gate.context_check, a.session, a.transcript, text)
+    return None
 
 def cmd_checkpoint(a):
     """Mid-response capture nudge after a notable tool result.
