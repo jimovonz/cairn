@@ -6,7 +6,8 @@ CM = "\n\n[cm]: # '{\"ok\":true}'"
 
 
 def _clean(session):
-    for suf in ("_inject_bootstrap.txt", "_inject_prompt.txt", "_cm_capture.jsonl"):
+    for suf in ("_inject_bootstrap.txt", "_inject_prompt.txt", "_cm_capture.jsonl", "_turn_context.json",
+                "_directive.txt"):
         try:
             os.unlink(sidecar._path(session, suf))
         except FileNotFoundError:
@@ -98,3 +99,83 @@ def test_append_prompt_context_dedup_whole_entries_only(tmp_session="pytest-dedu
     sidecar.append_prompt_context(tmp_session, "ine2")
     assert sidecar.consume_prompt_context(tmp_session) == "CTX-A\nline2\nCTX-B\nine2"
     _clean(tmp_session)
+
+
+# --- per-prompt context persists for the whole turn ---------------------------
+# Claude Code rebuilds history on every model call; context the proxy added to
+# the first call of a turn used to vanish after the first tool use.
+
+TOOLS = [{"name": "Bash", "description": "run"}]
+
+
+def _req(messages):
+    return json.dumps({"system": [{"type": "text", "text": "Sys"}], "tools": TOOLS, "messages": messages}).encode()
+
+
+def _prompt(text):
+    return {"role": "user", "content": [{"type": "text", "text": text}]}
+
+
+def _call(i):
+    return {"role": "assistant", "content": [{"type": "tool_use", "id": f"t{i}", "name": "Bash", "input": {}}]}
+
+
+def _result(i):
+    return {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": "ok"}]}
+
+
+def test_context_reappended_on_every_call_of_the_turn():
+    s = "pytest-turn-ctx-1"
+    _clean(s)
+    sidecar.append_prompt_context(s, "TURN-CTX")
+    turn = [_prompt("fix it")]
+    first = json.loads(server._rewrite_request(_req(turn), s))
+    assert "TURN-CTX" in json.dumps(first["messages"][-1])
+    for i in range(3):   # later calls in the same turn: context sits at the end, prompt untouched
+        turn = turn + [_call(i), _result(i)]
+        later = json.loads(server._rewrite_request(_req(turn), s))
+        assert "TURN-CTX" in json.dumps(later["messages"][-1])
+        assert "TURN-CTX" not in json.dumps(later["messages"][:-1])   # cached prefix unchanged
+    _clean(s)
+
+
+def test_new_prompt_ends_the_turn_context():
+    s = "pytest-turn-ctx-2"
+    _clean(s)
+    sidecar.append_prompt_context(s, "OLD-CTX")
+    turn = [_prompt("first question")]
+    server._rewrite_request(_req(turn), s)
+    turn = turn + [{"role": "assistant", "content": "answer"}, _prompt("second question")]   # nothing staged
+    data = json.loads(server._rewrite_request(_req(turn), s))
+    assert "OLD-CTX" not in json.dumps(data)
+    _clean(s)
+
+
+def test_history_rewrite_ends_the_turn_context():
+    s = "pytest-turn-ctx-3"
+    _clean(s)
+    sidecar.append_prompt_context(s, "CTX")
+    server._rewrite_request(_req([_call(0), _result(0), _prompt("q")]), s)
+    compacted = [_prompt("summary of earlier conversation"), _call(1), _result(1)]   # different prompt at a new index
+    data = json.loads(server._rewrite_request(_req(compacted), s))
+    assert "CTX" not in json.dumps(data)
+    _clean(s)
+
+
+def test_directive_reappended_but_logged_once():
+    s = "pytest-turn-ctx-4"
+    _clean(s)
+    sidecar.append_prompt_directive(s, "use the code graph")
+    turn = [_prompt("where is X?")]
+    server._rewrite_request(_req(turn), s)
+    log_before = sidecar.directive_log_path(s)
+    n = sum(1 for _ in open(log_before)) if os.path.exists(log_before) else 0
+    turn = turn + [_call(0), _result(0)]
+    data = json.loads(server._rewrite_request(_req(turn), s))
+    assert "use the code graph" in json.dumps(data["messages"][-1])
+    assert (sum(1 for _ in open(log_before)) if os.path.exists(log_before) else 0) == n
+    _clean(s)
+    try:
+        os.unlink(log_before)
+    except FileNotFoundError:
+        pass
