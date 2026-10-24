@@ -662,6 +662,147 @@ def context_check(session_id: str, transcript_path: str, reply: str) -> Optional
             "then revise your answer. If Cairn has nothing relevant, say so briefly and keep your answer.")
 
 
+# --- premature-stop check (synchronous, at the stop) -------------------------
+
+STOP_THRESHOLD = float(os.environ.get("CAIRN_STOP_CHECK_THRESHOLD", "0.57"))
+_STOP_RULE = ("The user wants the assistant to do any work it can do itself without asking. Stopping to ask is right "
+              "only for irreversible or outward-facing actions (delete, push, publish, send) or a genuine choice "
+              "between options.")
+STOP_QA = {"q": {"type": "noul", "instructions": (
+    "Does the reply name work that still needs doing while presenting the task as finished or the turn as complete?")}}
+STOP_QB = {"q": {"type": "noul", "instructions": (
+    "Under the user's rule above, did the assistant stop or ask when it should have carried on with the work?")},
+    # logged only
+    "offers": {"type": "noul", "instructions": (
+        "Does the reply end by offering, or asking permission, to do work the user has already asked for or plainly wants?")},
+    "ending": {"type": "choice", "instructions": "How does the assistant's reply end?",
+               "criteria": {"complete": "the request is fully done and nothing remains",
+                            "needs_user_decision": "a real choice only the user can make, or an irreversible action needing approval",
+                            "remaining_work_listed": "it lists remaining work it could do but stops anyway",
+                            "offers_to_continue": "it offers or asks to carry on with work that was already requested",
+                            "clarification": "it asks a genuine clarifying question"}}}
+
+
+def stop_check(session_id: str, transcript_path: str, reply: str, intent_resolved: bool = False) -> Optional[str]:
+    """Re-prompt reason when the reply names work it could do and stops anyway.
+    Mean of two parallel Jev nouls: reply-only "names remaining work but
+    presents as finished", and "under the user's rule, stopped when it should
+    have carried on" (with the prompt). Replaces the regex/embedding
+    trailing-intent check, which caught 1/25 real stops; at 0.57 this caught
+    5/25 at 2% false (labels: the user's continue/do it/why stop). The old
+    check still runs, logged only, for comparison. Fails open."""
+    reply = re.sub(r"(?m)^\[(?:cm|cairn-memory)\]: #.*$", "", reply or "").strip()
+    if not enabled() or os.environ.get("CAIRN_STOP_CHECK", "1") in ("0", "false", "no") or not reply:
+        return None
+    key = _key()
+    if not key:
+        return None
+    prompt = ""
+    try:
+        for line in turn_state(transcript_path, per_result=0).splitlines():
+            if line.startswith("[USER PROMPT]"):
+                prompt = line[len("[USER PROMPT] "):]
+                break
+    except Exception:
+        pass
+    a_state = redact(f"ASSISTANT'S FINAL REPLY:\n{reply[-6000:]}")
+    b_state = redact(f"{_STOP_RULE}\n\nUSER REQUEST:\n{prompt[:1500]}\n\nASSISTANT'S FINAL REPLY:\n{reply[-6000:]}")
+    global CALL_TIMEOUT_S
+    saved, CALL_TIMEOUT_S = CALL_TIMEOUT_S, CONTEXT_TIMEOUT_S
+    try:
+        with cf.ThreadPoolExecutor(2) as ex:
+            fa, fb = ex.submit(_ask, key, a_state, STOP_QA), ex.submit(_ask, key, b_state, STOP_QB)
+            (ans_a, ca, la), (ans_b, cb, lb) = fa.result(), fb.result()
+    finally:
+        CALL_TIMEOUT_S = saved
+    pa, pb = _noul(ans_a, "q"), _noul(ans_b, "q")
+    p = None if pa is None or pb is None else round((pa + pb) / 2, 3)
+    try:
+        legacy = regex_checks(reply, transcript_path).get("unkept_promise")
+    except Exception:
+        legacy = None
+    fired = p is not None and p >= STOP_THRESHOLD and not intent_resolved
+    _log({"event": "stop_check", "session": session_id, "transcript": transcript_path,
+          "turn": turn_number(transcript_path), "p": p, "p_reply": pa, "p_rule": pb,
+          "offers": _noul(ans_b, "offers"), "ending": _choice(ans_b, "ending"), "legacy_fired": legacy,
+          "intent_resolved": intent_resolved, "threshold": STOP_THRESHOLD, "fired": fired,
+          "cost": round(ca + cb, 6), "latency": max(la, lb)})
+    from hooks.hook_helpers import record_metric
+    record_metric(session_id, "stop_check_fired" if fired else "stop_check_clear", None, p or 0)
+    if not fired:
+        return None
+    return ("Your reply names work that still remains and stops there. Unless the next step is irreversible or "
+            "outward-facing (delete, push, publish, send) or a genuine choice only the user can make, carry on and do "
+            "it now. If you must stop, say exactly what decision you need. If nothing remains, add 'int: resolved' "
+            "to your [cm] block.")
+
+
+# --- the user's next message as a label for the previous turn ---------------
+
+_CORRECTION = re.compile(r"(?i)^\W*(wtf|what the f|ffs|seriously\?|are you (kidding|serious)|why (the hell|tf|on earth)|"
+                         r"no[,!.] |nope|that'?s (not|wrong)|you('ve| have)? (ignored|missed|not)|i (already )?(said|told you)|"
+                         r"again\?!)")
+_STOP_NUDGE = re.compile(r"(?i)^\W*(continue|carry on|keep going|go on|go ahead|proceed|do it|do them|do all|y|yes|yep|"
+                         r"build (it|all|them)[^.]{0,20}|implement( the rest| it| them)?|why (did|do) you stop.*|you stopped.*)\W*$")
+_CAIRN_NUDGE = re.compile(r"(?i)\b(use|search|check|query|consult|look (in|at))\b[^.?!\n]{0,12}\bcairn\b|"
+                          r"did you (not )?(even )?(search|check|query|use|consult)[^?\n]{0,10}cairn|"
+                          r"instructions to use cairn|explicit(ly)? instruct")
+CORRECTION_KEY = "correction_pending"
+
+
+def classify_followup(prompt: str) -> Optional[str]:
+    head = (prompt or "").strip()
+    if not head:
+        return None
+    if _CAIRN_NUDGE.search(head[:300]):
+        return "missed_context"
+    if _STOP_NUDGE.match(head[:120]):
+        return "premature_stop"
+    if _CORRECTION.search(head[:80]):
+        return "corrected"
+    return "no_complaint"
+
+
+def label_previous_turn(session_id: str, prompt: str) -> Optional[str]:
+    """Log the user's new prompt as a label for this session's previous turn,
+    and arm the correction-capture requirement when it is a correction. The
+    label joins, by session and time, to the stop/context/assess events logged
+    for that turn, so `report` can score every signal against the user."""
+    if not enabled() or not session_id:
+        return None
+    label = classify_followup(prompt)
+    if label is None:
+        return None
+    _log({"event": "followup_label", "session": session_id, "label": label, "prompt_head": redact(prompt[:80])})
+    if label in ("corrected", "missed_context"):
+        from hooks.hook_helpers import save_hook_state
+        save_hook_state(session_id, CORRECTION_KEY, label)
+    return label
+
+
+def check_correction_captured(session_id: str, entries: Optional[list[dict]], text: str) -> Optional[str]:
+    """One-shot: when this turn began with a user correction, its [cm] must
+    hold a correction entry (or decline via "jv":{"_correction":"none: why"})."""
+    if not enabled():
+        return None
+    from hooks.hook_helpers import delete_hook_state, load_hook_state, record_metric
+    pending = load_hook_state(session_id, CORRECTION_KEY)
+    if not pending:
+        return None
+    delete_hook_state(session_id, CORRECTION_KEY)   # one re-prompt at most
+    if any((e.get("type") or "") == "correction" for e in (entries or [])):
+        record_metric(session_id, "correction_captured")
+        return None
+    jv = _cm_json(text).get("jv")
+    if isinstance(jv, dict) and "_correction" in jv:
+        _log({"event": "correction_declined", "session": session_id, "detail": str(jv["_correction"])[:300]})
+        return None
+    record_metric(session_id, "correction_capture_reprompted")
+    return ("The user corrected you at the start of this turn. Add a correction entry to your [cm] block: what you got "
+            "wrong, the fix, and how to avoid it. If there was genuinely nothing to learn, say why with "
+            "\"jv\":{\"_correction\":\"none: <why>\"}.")
+
+
 def _log(record: dict) -> None:
     try:
         record["ts"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -907,6 +1048,48 @@ def report() -> dict:
             "followed_rate": round(sum((c.get("followed") or 0) >= 0.5 for c in cals) / len(cals), 3),
             "jev_vs_analyser": _agreement(cals, "followed", _analyser_outcome),
         }
+    out["vs_user_labels"] = _vs_user_labels(log)
+    return out
+
+
+def _vs_user_labels(log: list[dict]) -> dict:
+    """Score each check against the user's next message. A follow-up label
+    joins to the latest event of each kind logged earlier in the same session
+    (that is, the previous turn)."""
+    def auc(P, N):
+        return round(sum((p > n) + .5 * (p == n) for p in P for n in N) / (len(P) * len(N)), 3) if P and N else None
+    last: dict = {}
+    pairs: dict = {"stop_check": [], "context_check": [], "assessed": []}
+    labels: dict = {}
+    for r in log:   # the log is append-only, so file order is time order
+        ev, s = r.get("event"), r.get("session")
+        if ev in pairs:
+            last[(s, ev)] = r
+        elif ev == "followup_label":
+            labels[r["label"]] = labels.get(r["label"], 0) + 1
+            for kind in pairs:
+                prev = last.pop((s, kind), None)
+                if prev is not None:
+                    pairs[kind].append((prev, r["label"]))
+    out: dict = {"labels": labels}
+    for kind, target, field in (("stop_check", "premature_stop", "p"), ("context_check", "missed_context", "p")):
+        ps = [(e, l) for e, l in pairs[kind] if e.get(field) is not None]
+        if not ps:
+            continue
+        pos = [e[field] for e, l in ps if l == target]
+        neg = [e[field] for e, l in ps if l == "no_complaint"]
+        out[kind] = {"n": len(ps), "auc_vs_" + target: auc(pos, neg),
+                     "fired_then_" + target: sum(e.get("fired") and l == target for e, l in ps),
+                     "fired_then_no_complaint": sum(e.get("fired") and l == "no_complaint" for e, l in ps),
+                     "not_fired_then_" + target: sum(not e.get("fired") and l == target for e, l in ps)}
+        if kind == "stop_check":
+            out[kind]["legacy_fired_then_premature_stop"] = sum(bool(e.get("legacy_fired")) and l == target for e, l in ps)
+            out[kind]["legacy_fired_then_no_complaint"] = sum(bool(e.get("legacy_fired")) and l == "no_complaint" for e, l in ps)
+    sig = [(e["block"]["signals"], l) for e, l in pairs["assessed"] if (e.get("block") or {}).get("signals")]
+    if sig:
+        out["turn_signals_auc_vs_any_complaint"] = {
+            k: auc([s[k] for s, l in sig if l != "no_complaint" and s.get(k) is not None],
+                   [s[k] for s, l in sig if l == "no_complaint" and s.get(k) is not None]) for k in TURN_SIGNALS}
     return out
 
 

@@ -1004,6 +1004,14 @@ def main() -> None:
         record_metric(session_id, "calibration_inject_failed",
                       f"{type(_e).__name__}: {str(_e)[:120]}")
 
+    # The user's new prompt labels the previous turn (correction / premature
+    # stop / missed context / no complaint) for scoring every logged signal.
+    try:
+        from cairn.jev_gate import label_previous_turn
+        label_previous_turn(session_id, user_message)
+    except Exception as _e:
+        log(f"follow-up label failed open: {_e}")
+
     # Jev quality gate: last turn's flagged entries, shown once. Fails open.
     try:
         from cairn.jev_gate import pending_reminder

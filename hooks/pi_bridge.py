@@ -188,7 +188,8 @@ def cmd_retrieve(a):
             pass
     jev = ""
     try:
-        from cairn.jev_gate import pending_reminder
+        from cairn.jev_gate import label_previous_turn, pending_reminder
+        label_previous_turn(a.session, query)
         jev = pending_reminder(a.session)
     except Exception as e:
         sys.stderr.write(f"cairn jev gate reminder error: {e}\n")
@@ -430,7 +431,8 @@ def cmd_enforce(a):
     # logged and the obligation clears.
     try:
         from cairn import jev_gate
-        reason = jev_gate.check_obligation(a.session, text, parsed.entries)
+        reason = jev_gate.check_correction_captured(a.session, parsed.entries, text) \
+            or jev_gate.check_obligation(a.session, text, parsed.entries)
         if reason:
             print(reason)
             return
@@ -453,15 +455,15 @@ def _behavioural_reason(text, parsed, a):
             sys.stderr.write(f"cairn {check.__name__} error: {e}\n")
             return None
 
+    from cairn import jev_gate
     if parsed.intent == "resolved":
         record_metric(a.session, "trailing_intent_resolved_escape")
     else:
-        hit = run(enf.check_trailing_intent, text, session_id=a.session)
-        if hit:
-            record_metric(a.session, "trailing_intent_blocked", hit)
-            return (f"Your response ends with a stated intent to act: \"{hit}\". "
-                    "Either follow through now, or remove the promise. "
-                    "If you genuinely have nothing more to do, add 'intent: resolved' to your [cm] block.")
+        # Jev premature-stop check (the old trailing-intent check runs inside it, logged only)
+        reason = run(jev_gate.stop_check, a.session, a.transcript, text)
+        if reason:
+            record_metric(a.session, "trailing_intent_blocked", "jev_stop_check")
+            return reason
     hit = run(enf.check_asserted_absence_without_cairn, text, a.transcript, session_id=a.session)
     if hit:
         record_metric(a.session, "absence_without_cairn_blocked", hit[:80])
@@ -489,7 +491,6 @@ def _behavioural_reason(text, parsed, a):
                 f"Pattern: \"{phrase}\"\nCorrection: {correction}\n\n"
                 "Review your response and adjust if this correction applies. "
                 "If it doesn't apply here, proceed as-is.")
-    from cairn import jev_gate
     return run(jev_gate.context_check, a.session, a.transcript, text)
 
 def cmd_checkpoint(a):

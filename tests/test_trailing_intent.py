@@ -270,12 +270,14 @@ class TestTrailingIntentIntegration:
             ),
         }
 
-        with patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
+        # The block now comes from the Jev stop check; simulate it firing.
+        with patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+             patch("cairn.jev_gate.stop_check", return_value="Your reply names work that still remains and stops there. If nothing remains, add 'int: resolved' to your [cm] block."):
             code, result = run_hook(db_path, payload)
 
         assert result is not None, "Should have blocked"
         assert result["decision"] == "block"
-        assert "intent: resolved" in result["reason"]
+        assert "int: resolved" in result["reason"]
 
     # Verifies: intent:resolved in memory block bypasses intent check
     def test_intent_resolved_allows_stop(self):

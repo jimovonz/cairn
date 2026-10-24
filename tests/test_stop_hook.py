@@ -942,6 +942,8 @@ def test_main_multiple_entries_stored_with_metrics():
 # Verifies: high cosine similarity on trailing sentence triggers trailing intent block
 @pytest.mark.adversarial
 def test_main_trailing_intent_blocks():
+    # The premature-stop decision is now the Jev stop check (cairn/jev_gate.stop_check);
+    # simulate it firing and verify the hook blocks and records the metric.
     db_path, conn = fresh_db()
     import hooks.hook_helpers as hh
     mock_emb = _make_mock_embedder()
@@ -969,7 +971,8 @@ def test_main_trailing_intent_blocks():
         with patch("sys.stdin", StringIO(json.dumps(payload))), \
              patch("sys.stdout", captured_output), \
              patch("sys.exit", mock_exit), \
-             patch.object(hh, "get_embedder", return_value=mock_emb), patch("cairn.config.EPHEMERAL_DB_PATH", db_path):
+             patch.object(hh, "get_embedder", return_value=mock_emb), patch("cairn.config.EPHEMERAL_DB_PATH", db_path), \
+             patch("cairn.jev_gate.stop_check", return_value="Your reply names work that still remains and stops there. If nothing remains, add 'int: resolved' to your [cm] block."):
             try:
                 stop_hook.main()
             except SystemExit:

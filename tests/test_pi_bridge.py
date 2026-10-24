@@ -152,10 +152,12 @@ def test_enforce_blocks_trailing_intent(monkeypatch, tmp_path, capsys):
     f = tmp_path / "r.txt"
     f.write_text("I checked the config. Let me now run the migration.\n\n"
                  '[cm]: # \'{"ok":true,"ctx":"s","kw":["a"]}\'')
+    import cairn.jev_gate as jg   # the premature-stop decision is the Jev stop check
+    monkeypatch.setattr(jg, "stop_check", lambda *a, **k: "Your reply names work that still remains")
     a = _Args()
     a.text_file = str(f)
     pb.cmd_enforce(a)
-    assert "stated intent to act" in capsys.readouterr().out
+    assert "names work that still remains" in capsys.readouterr().out
 
 
 def test_enforce_intent_resolved_allows(monkeypatch, tmp_path, capsys):

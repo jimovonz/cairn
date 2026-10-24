@@ -304,3 +304,76 @@ def test_context_check_below_threshold_is_logged_not_fired(ctx):
 def test_context_check_can_be_switched_off(ctx, monkeypatch):
     monkeypatch.setenv("CAIRN_CONTEXT_CHECK", "0")
     assert jg.context_check("s", "t.jsonl", REPLY) is None and ctx["asked"] == 0
+
+
+# --- premature-stop check, follow-up labels, correction capture -------------
+
+@pytest.fixture
+def stop(gate, monkeypatch):
+    monkeypatch.setattr(jg, "_key", lambda: "k")
+    monkeypatch.setattr(jg, "turn_state", lambda *a, **k: "[USER PROMPT] implement the rest")
+    monkeypatch.setattr(jg, "turn_number", lambda p: 5)
+    monkeypatch.setattr(jg, "regex_checks", lambda text, path: {"unkept_promise": False})
+    s = {"a": 0.7, "b": 0.6, "calls": 0}
+    def ask(key, st, q):
+        s["calls"] += 1
+        if "offers" in q:
+            return ({"q": {"noul": s["b"]}, "offers": {"noul": 0.8}, "ending": {"choice": "offers_to_continue"}}, 0.0001, 0.4)
+        return ({"q": {"noul": s["a"]}}, 0.0001, 0.4)
+    monkeypatch.setattr(jg, "_ask", ask)
+    return s
+
+
+def test_stop_check_fires_on_mean_and_logs_legacy(stop):
+    reason = jg.stop_check("s", "t.jsonl", "Done. Remaining: wire the CLI. Want me to do that?")
+    assert reason and "carry on" in reason and stop["calls"] == 2
+    rec = _log()[-1]
+    assert rec["event"] == "stop_check" and rec["p"] == 0.65 and rec["legacy_fired"] is False
+    assert rec["ending"] == "offers_to_continue" and rec["fired"] is True
+
+
+def test_stop_check_below_threshold_logged_only(stop):
+    stop["a"], stop["b"] = 0.3, 0.4
+    assert jg.stop_check("s", "t.jsonl", "All done; tests pass.") is None
+    assert _log()[-1]["fired"] is False
+
+
+@pytest.mark.parametrize("prompt,label", [
+    ("WTF?!?! USE CAIRN!!!! you have gmail access", "missed_context"),
+    ("If you do not know, do you not have explicit instructions to search?", "missed_context"),
+    ("do it", "premature_stop"), ("Implement the rest", "premature_stop"), ("y", "premature_stop"),
+    ("wtf!?!? Comitted and pushed what?!", "corrected"), ("No, IN YOUR MODEL", "corrected"),
+    ("Is this proposal likely to improve Cairn?", "no_complaint"),
+])
+def test_classify_followup(prompt, label):
+    assert jg.classify_followup(prompt) == label
+
+
+def test_correction_label_arms_capture_requirement(gate):
+    assert jg.label_previous_turn("s", "WTF?! that is wrong") == "corrected"
+    reason = jg.check_correction_captured("s", [{"type": "fact", "topic": "x"}], "text")
+    assert reason and "correction entry" in reason
+    assert jg.check_correction_captured("s", [], "text") is None      # one-shot
+
+
+def test_correction_capture_satisfied_or_declined(gate):
+    jg.label_previous_turn("s", "No, the other machine")
+    assert jg.check_correction_captured("s", [{"type": "correction", "topic": "x"}], "") is None
+    jg.label_previous_turn("s", "No, the other machine")
+    text = "ok\n\n[cm]: # '{\"jv\":{\"_correction\":\"none: user restated a preference\"},\"ok\":true}'"
+    assert jg.check_correction_captured("s", [], text) is None
+    assert _log()[-1]["event"] == "correction_declined"
+
+
+def test_report_scores_checks_against_user_labels(gate, monkeypatch):
+    monkeypatch.setattr(jg, "_deliveries", lambda s, t: (0, 0))
+    with open(jg.JEV_GATE_LOG, "w") as f:
+        for p, fired, legacy, follow in [(0.8, True, False, "do it"), (0.2, False, True, "thanks, next question?"),
+                                         (0.7, True, False, "continue")]:
+            f.write(json.dumps({"event": "stop_check", "session": "s", "p": p, "fired": fired, "legacy_fired": legacy}) + "\n")
+            f.write(json.dumps({"event": "followup_label", "session": "s", "label": jg.classify_followup(follow)}) + "\n")
+    v = jg.report()["vs_user_labels"]
+    assert v["labels"] == {"premature_stop": 2, "no_complaint": 1}
+    s = v["stop_check"]
+    assert s["auc_vs_premature_stop"] == 1.0 and s["fired_then_premature_stop"] == 2
+    assert s["legacy_fired_then_no_complaint"] == 1

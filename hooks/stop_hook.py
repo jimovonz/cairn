@@ -1147,26 +1147,25 @@ def main() -> None:
         _emit_decision(session_id, result)
         sys.exit(0)
 
-    # Trailing intent detection — block if response ends with unfulfilled action intent
+    # Premature stop: the reply names work it could do and stops anyway. Jev
+    # judges the reply (cairn/jev_gate.stop_check); the old regex/embedding
+    # trailing-intent check runs inside it, logged only, for comparison.
     if intent == "resolved":
-        log("Intent explicitly resolved via memory block — skipping trailing intent check")
+        log("Intent explicitly resolved via memory block — skipping stop check")
         record_metric(session_id, "trailing_intent_resolved_escape")
-    elif not is_continuation:
-        intent_result: Optional[str] = check_trailing_intent(text, session_id=session_id)
-        if intent_result:
-            log(f"Trailing intent detected: {intent_result}")
-            record_metric(session_id, "trailing_intent_blocked", intent_result)
-            increment_continuation(session_id)
-            result = {
-                "decision": "block",
-                "reason": (
-                    f"Your response ends with a stated intent to act: \"{intent_result}\". "
-                    "Either follow through now, or remove the promise. "
-                    "If you genuinely have nothing more to do, add 'intent: resolved' to your <memory> block."
-                )
-            }
-            _emit_decision(session_id, result)
-            sys.exit(0)
+    elif not is_continuation and not is_subagent:
+        try:
+            from cairn import jev_gate as _jg
+            stop_reason = _jg.stop_check(session_id, transcript_path, text)
+            if stop_reason:
+                record_metric(session_id, "trailing_intent_blocked", "jev_stop_check")
+                increment_continuation(session_id)
+                _emit_decision(session_id, {"decision": "block", "reason": stop_reason})
+                sys.exit(0)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            log(f"stop check failed open: {exc}")
 
     # Asserted-absence detection — block claiming a capability/credential does not exist
     # without having consulted cairn in this turn. Distinct from check_declined_without_trying,
@@ -1271,6 +1270,20 @@ def main() -> None:
             raise
         except Exception as exc:
             log(f"context check failed open: {exc}")
+
+    # The user opened this turn with a correction: require a correction entry (one-shot).
+    if not is_subagent:
+        try:
+            from cairn import jev_gate as _jg
+            corr_reason = _jg.check_correction_captured(session_id, entries, text)
+            if corr_reason:
+                increment_continuation(session_id)
+                _emit_decision(session_id, {"decision": "block", "reason": corr_reason})
+                sys.exit(0)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            log(f"correction capture check failed open: {exc}")
 
     # Jev quality gate: answer last turn's flags (one-shot re-prompt), then queue
     # this turn's entries for assessment in a detached process. Check before

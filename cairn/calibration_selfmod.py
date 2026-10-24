@@ -308,13 +308,15 @@ def surface_low_follow_rephrase(db_path: Optional[str] = None) -> list[int]:
     surfaced = []
     try:
         _ensure_review_queue_table(conn)
+        # Resolved outcomes, not deliveries: pending outcomes are not "not followed".
         rows = conn.execute(
-            "SELECT cr.id, cr.delivered_count, cr.followed_count "
+            "SELECT cr.id, (cr.followed_count + cr.ignored_count + cr.corrected_count), cr.followed_count "
             "FROM calibration_rows cr "
             "LEFT JOIN calibration_review_queue rq "
             "  ON rq.row_id = cr.id AND rq.suggestion_type = ? "
             "  AND rq.resolved_at IS NULL "
-            "WHERE cr.archived_at IS NULL AND cr.delivered_count >= 5 "
+            "WHERE cr.archived_at IS NULL "
+            "AND (cr.followed_count + cr.ignored_count + cr.corrected_count) >= 5 "
             "AND rq.id IS NULL",
             (SURFACE_LOW_FOLLOW_REPHRASE,),
         ).fetchall()
@@ -328,7 +330,7 @@ def surface_low_follow_rephrase(db_path: Optional[str] = None) -> list[int]:
                     "(row_id, suggestion_type, detail) VALUES (?, ?, ?)",
                     (rid, SURFACE_LOW_FOLLOW_REPHRASE,
                      json.dumps({"follow_rate": round(rate, 3),
-                                 "deliveries": dc}))
+                                 "resolved": dc}))
                 )
                 _emit_metric("calibration_review_surfaced",
                              {"row_id": rid,
@@ -352,13 +354,13 @@ def surface_promotion_candidates(
     try:
         _ensure_review_queue_table(conn)
         rows = conn.execute(
-            "SELECT cr.id, cr.delivered_count, cr.followed_count "
+            "SELECT cr.id, (cr.followed_count + cr.ignored_count + cr.corrected_count), cr.followed_count "
             "FROM calibration_rows cr "
             "LEFT JOIN calibration_review_queue rq "
             "  ON rq.row_id = cr.id AND rq.suggestion_type = ? "
             "  AND rq.resolved_at IS NULL "
             "WHERE cr.archived_at IS NULL AND cr.pinned = 0 "
-            "AND cr.delivered_count >= ? AND rq.id IS NULL",
+            "AND (cr.followed_count + cr.ignored_count + cr.corrected_count) >= ? AND rq.id IS NULL",
             (SURFACE_PROMOTION_CANDIDATE, AUTO_PROMOTE_MIN_DELIVERIES),
         ).fetchall()
         for rid, dc, fc in rows:

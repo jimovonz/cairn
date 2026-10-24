@@ -248,9 +248,9 @@ def test_decay_unused_skips_delivered_rows():
 def test_surface_low_follow_rephrase_picks_mid_band():
     durable, eph, td = _fresh_dbs()
     conn = sqlite3.connect(durable)
-    mid = _seed(conn, delivered_count=10, followed_count=5)  # 50% — in band
-    high = _seed(conn, delivered_count=10, followed_count=9)  # 90% — skip
-    low = _seed(conn, delivered_count=10, followed_count=1)   # 10% — skip
+    mid = _seed(conn, delivered_count=10, followed_count=5, ignored_count=5)  # 50% — in band
+    high = _seed(conn, delivered_count=10, followed_count=9, ignored_count=1)  # 90% — skip
+    low = _seed(conn, delivered_count=10, followed_count=1, ignored_count=9)   # 10% — skip
     conn.commit()
     conn.close()
     with patch.object(sm, "DB_PATH", durable):
@@ -261,7 +261,7 @@ def test_surface_low_follow_rephrase_picks_mid_band():
 def test_surface_low_follow_idempotent():
     durable, eph, td = _fresh_dbs()
     conn = sqlite3.connect(durable)
-    rid = _seed(conn, delivered_count=10, followed_count=5)
+    rid = _seed(conn, delivered_count=10, followed_count=5, ignored_count=5)
     conn.commit()
     conn.close()
     with patch.object(sm, "DB_PATH", durable):
@@ -274,7 +274,7 @@ def test_surface_low_follow_idempotent():
 def test_surface_promotion_candidates_picks_corroborated_but_low_followrate():
     durable, eph, td = _fresh_dbs()
     conn = sqlite3.connect(durable)
-    rid = _seed(conn, delivered_count=10, followed_count=6)  # 60%
+    rid = _seed(conn, delivered_count=10, followed_count=6, ignored_count=4)  # 60%
     conn.commit()
     conn.close()
     econn = sqlite3.connect(eph)
@@ -294,7 +294,7 @@ def test_surface_promotion_candidates_picks_corroborated_but_low_followrate():
 def test_resolve_review_item_marks_resolved():
     durable, eph, td = _fresh_dbs()
     conn = sqlite3.connect(durable)
-    rid = _seed(conn, delivered_count=10, followed_count=5)
+    rid = _seed(conn, delivered_count=10, followed_count=5, ignored_count=5)
     conn.commit()
     conn.close()
     with patch.object(sm, "DB_PATH", durable):
@@ -324,7 +324,7 @@ def test_run_all_orchestrates_all_passes():
     conn = sqlite3.connect(durable)
     archive_me = _seed(conn, delivered_count=15, followed_count=2,
                        ignored_count=13)
-    surface_me = _seed(conn, delivered_count=10, followed_count=5)
+    surface_me = _seed(conn, delivered_count=10, followed_count=5, ignored_count=5)
     conn.commit()
     conn.close()
     with patch.object(sm, "DB_PATH", durable), \
