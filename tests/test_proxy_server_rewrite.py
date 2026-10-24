@@ -179,3 +179,20 @@ def test_directive_reappended_but_logged_once():
         os.unlink(log_before)
     except FileNotFoundError:
         pass
+
+
+def test_turn_survives_cache_control_moving_off_the_prompt():
+    # Observed live: Claude Code marks the prompt's last block with cache_control
+    # on the first call and moves the marker to newer messages afterwards.
+    s = "pytest-turn-ctx-5"
+    _clean(s)
+    sidecar.append_prompt_context(s, "CTX-5")
+    first_prompt = {"role": "user", "content": [{"type": "text", "text": "fix it",
+                                                 "cache_control": {"type": "ephemeral"}}]}
+    server._rewrite_request(_req([first_prompt]), s)
+    later = [_prompt("fix it"), _call(0),
+             {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t0", "content": "ok",
+                                           "cache_control": {"type": "ephemeral"}}]}]
+    data = json.loads(server._rewrite_request(_req(later), s))
+    assert "CTX-5" in json.dumps(data["messages"][-1])
+    _clean(s)

@@ -241,7 +241,12 @@ def turn_anchor(data: dict) -> Optional[dict]:
     messages = data.get("messages", [])
     for i in range(len(messages) - 1, -1, -1):
         if _is_prompt_message(messages[i]):
-            raw = json.dumps(messages[i].get("content"), sort_keys=True)
+            # Text only: Claude Code moves cache_control off this message on
+            # later calls, so hashing the raw blocks would end the turn early.
+            content = messages[i].get("content")
+            raw = content if isinstance(content, str) else "\n".join(
+                b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+            raw = raw.split("\n<system-reminder>\n" + _CTX_SENTINEL)[0]   # never our own injection
             return {"idx": i, "sha": hashlib.sha256(raw.encode("utf-8")).hexdigest()}
     return None
 
