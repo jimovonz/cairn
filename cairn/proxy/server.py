@@ -285,7 +285,13 @@ def run_proxy(port: int, debug: bool) -> None:
 
         async def _ensure_session(self):
             if self.session is None or self.session.closed:
-                self.session = aiohttp.ClientSession(trust_env=True)
+                # No total cap: a long streamed answer can legitimately run past
+                # aiohttp's default 300 s total timeout, which cut such responses
+                # at 299 s and made Claude Code retry the same request forever.
+                # Bound stalls instead (no bytes for 10 min).
+                self.session = aiohttp.ClientSession(
+                    trust_env=True,
+                    timeout=aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=600))
 
         async def handle(self, request):
             await self._ensure_session()
