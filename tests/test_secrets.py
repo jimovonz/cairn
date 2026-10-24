@@ -95,3 +95,16 @@ def test_ignores_api_ids_and_ansi(text):
 
 def test_pasted_openrouter_key_detected():
     assert sec.has_secret("Here is my API key: sk-or-v1-0a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5")
+
+
+@pytest.mark.parametrize("text", [
+    "STEP part ROBOTIS_U2D2_Power_Hub_Board sits behind the servo",
+    "class MyLongComponent_Name_With_Words_Version2 holds it",
+])
+def test_ignores_underscore_identifiers(text):
+    # Live false positive: a CAD component name was moved into the secret store.
+    assert not sec.has_secret(text), text
+
+
+def test_key_with_underscores_still_detected():
+    assert sec.has_secret("token: sk_" "live_51HxQz8Kd93LmN0pQrS7tUvWx")  # split: keeps push-protection scanners quiet

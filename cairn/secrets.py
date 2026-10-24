@@ -74,6 +74,11 @@ def find_secrets(text: str) -> list[tuple[int, int, str]]:
     for m in _LONG.finditer(text):
         tok = m.group(0)
         mixed = bool(re.search(r"[a-z]", tok) and re.search(r"[A-Z]", tok) and re.search(r"\d", tok))
+        # Underscore-joined words (ROBOTIS_U2D2_Power_Hub_Board) are identifiers,
+        # not keys: three or more segments that each read as a word or model code.
+        parts = tok.split("_")
+        if len(parts) >= 3 and all(re.fullmatch(r"[A-Za-z]{2,}|[A-Za-z]+\d{0,3}[A-Za-z]*\d{0,3}", p) for p in parts if p):
+            mixed = labelled = False
         labelled = bool(_LABEL.search(text[max(0, m.start() - 40):m.start()])) and bool(re.search(r"\d", tok))
         if (mixed and len(tok) >= 28) or labelled:
             spans.append((m.start(), m.end()))
