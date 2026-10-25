@@ -532,9 +532,16 @@ def cmd_checkpoint(a):
     except Exception:
         return
     try:
-        from cairn.config import CHECKPOINT_MAX_NOTES_PER_SESSION
+        from cairn.config import CHECKPOINT_COOLDOWN, CHECKPOINT_MAX_NOTES_PER_SESSION
         from hooks.hook_helpers import load_hook_state, save_hook_state
-        from hooks.posttool_hook import NUDGE_TEXT, _is_high_signal_bash, _is_high_signal_edit
+        from hooks.posttool_hook import (
+            NUDGE_TEXT,
+            _get_last_nudge_count,
+            _increment_tool_count,
+            _is_high_signal_bash,
+            _is_high_signal_edit,
+            _set_last_nudge_count,
+        )
     except Exception as e:
         sys.stderr.write(f"cairn checkpoint import error: {e}\n")
         return
@@ -543,6 +550,23 @@ def cmd_checkpoint(a):
     tool = str(payload.get("tool") or "").lower()
     tool_input = payload.get("input") or {}
     tool_output = payload.get("output") or {}
+    if tool not in ("bash", "powershell", "edit", "write"):
+        return
+
+    # Cooldown, in the same order posttool_hook.main() applies it: count every
+    # whitelisted call, then suppress if a nudge fired within CHECKPOINT_COOLDOWN
+    # calls, and only then test the result. Without it pi nudged on every
+    # high-signal result (most bash output matches an error pattern or exceeds
+    # 60 lines) and burned the per-session budget almost immediately.
+    try:
+        current_count = _increment_tool_count(a.session)
+        last_nudge = _get_last_nudge_count(a.session)
+        if last_nudge > 0 and current_count - last_nudge < CHECKPOINT_COOLDOWN:
+            return
+    except Exception as e:
+        sys.stderr.write(f"cairn checkpoint cooldown error: {e}\n")
+        return
+
     try:
         if tool in ("bash", "powershell"):
             high, _reason = _is_high_signal_bash(tool_input, tool_output)
@@ -563,6 +587,7 @@ def cmd_checkpoint(a):
         if nudge_total >= CHECKPOINT_MAX_NOTES_PER_SESSION:
             return
         save_hook_state(a.session, "checkpoint_nudge_total", str(nudge_total + 1))
+        _set_last_nudge_count(a.session, current_count)
     except Exception as e:
         sys.stderr.write(f"cairn checkpoint budget error: {e}\n")
         return

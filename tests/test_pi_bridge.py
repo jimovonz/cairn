@@ -1,6 +1,8 @@
 """The pi bridge must contribute the same write-path labels and provenance as
 the Claude Code Stop hook, or every pi turn widens an unlabelled, unattributable
 slice of the store (remediation programme, write-path gate)."""
+import json
+
 import hooks.pi_bridge as pb
 from cairn import config
 
@@ -171,3 +173,28 @@ def test_enforce_intent_resolved_allows(monkeypatch, tmp_path, capsys):
     a.text_file = str(f)
     pb.cmd_enforce(a)
     assert capsys.readouterr().out == ""
+
+
+def test_cmd_checkpoint_applies_cooldown(monkeypatch, tmp_path, capsys):
+    # Restored from the pi session that first wrote it (lost on a reset): without
+    # the cooldown pi nudged on every high-signal result and spent the whole
+    # per-session budget at once.
+    import hooks.hook_helpers as hh
+    import hooks.posttool_hook as ph
+    from cairn import config
+    state = {}
+    for mod in (hh, ph):
+        monkeypatch.setattr(mod, "load_hook_state", lambda s, k: state.get((s, k)))
+        monkeypatch.setattr(mod, "save_hook_state", lambda s, k, v: state.__setitem__((s, k), v))
+    monkeypatch.setattr(ph, "_is_high_signal_bash", lambda i, o: (True, "error"))
+    f = tmp_path / "p.json"
+    f.write_text(json.dumps({"tool": "bash", "input": {"command": "x"}, "output": {"stdout": "Error"}}))
+    a = _Args()
+    a.text_file = str(f)
+    fired = []
+    for _ in range(config.CHECKPOINT_COOLDOWN + 1):
+        pb.cmd_checkpoint(a)
+        fired.append(bool(capsys.readouterr().out))
+    assert fired[0] is True
+    assert not any(fired[1:config.CHECKPOINT_COOLDOWN])
+    assert fired[config.CHECKPOINT_COOLDOWN] is True
