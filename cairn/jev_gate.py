@@ -498,7 +498,9 @@ CONTEXT_Q = {"q": {"type": "noul", "instructions": (
 
 # --- premature-stop check (synchronous, at the stop) -------------------------
 
-STOP_THRESHOLD = float(os.environ.get("CAIRN_STOP_CHECK_THRESHOLD", "0.57"))
+# 0.57 was calibrated on the separate stop calls; the combined call scores
+# 0.01-0.07 lower, and at 0.57 it never fired in 102 turns (max 0.555).
+STOP_THRESHOLD = float(os.environ.get("CAIRN_STOP_CHECK_THRESHOLD", "0.50"))
 _STOP_RULE = ("The user wants the assistant to do any work it can do itself without asking. Stopping to ask is right "
               "only for irreversible or outward-facing actions (delete, push, publish, send) or a genuine choice "
               "between options.")

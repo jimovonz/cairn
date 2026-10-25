@@ -80,6 +80,14 @@ Detail: **`/skill:cairn-devcontainer`** — load it when working on dev-containe
 Opt-in peer-to-peer LAN replication (Ed25519 pairing, TLS pinning, Lamport LWW, port defaults).
 
 Detail: **`/skill:cairn-sync`** — load it when working on multi-node sync.
+## Turn quality gate, secrets, malformed blocks
+
+- **`cairn/jev_gate.py`** — one synchronous Jev call per turn at the stop (`judge_turn`): premature stop and missed context re-prompt; block quality and local secret checks become a next-turn obligation (`save_flags` → `pending_reminder` → `check_obligation`); the rest is logged to `cairn/jev_gate_log.jsonl`. `assess_delivered` runs in the background. `report`, `spotcheck`, `spotcheck-signals` are the CLI. Tests run with `CAIRN_JEV_GATE=0` (conftest).
+- **`cairn/secrets.py`** — secret detection and `$NAME` pointer extraction; one detector shared with the gate. Never store a credential value in a memory.
+- **Malformed `[cm]`** — repair in `hooks/parser._salvage_json` / `_salvage_entries`; partial recovery stages a next-prompt notice (`hook_helpers.stage_cm_partial_notice`).
+- **Proxy turn context** — per-prompt context is re-appended to every call of the turn (`request_inject.turn_anchor` / `same_turn`, `.staged_context/<sid>_turn_context.json`); upstream has no total timeout (long streams were cut at 300 s).
+- **Stop-hook economy** — a `rem` naming a pending user decision ends the turn (`enforcement.awaits_user`); re-prompts are capped at 2 per turn; `ctx:i` forces a continuation only at top similarity ≥ `CTX_BLOCK_MIN_SIM`.
+
 ## Calibration system (Phases 1–7)
 
 Calibration captures *how to interact with this user* (level, style, preferences), complementing Cairn knowledge which captures *what is known*. The schema, analyser, injector, self-modification, dashboard, and CLI are detailed in `docs/spec-calibration-system.md` and the **`/skill:cairn-calibration`** skill.
