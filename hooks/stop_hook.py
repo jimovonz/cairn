@@ -31,7 +31,7 @@ import sys
 import os
 from typing import Optional
 
-from hooks.hook_helpers import log, get_conn, get_ephemeral_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery, restore_stripped_cm
+from hooks.hook_helpers import log, get_conn, get_ephemeral_conn, record_metric, flush_metrics, get_embedder, get_session_project, DB_PATH, strip_memory_block, strip_seen_entries, save_injected_ids, record_layer_delivery, restore_stripped_cm, stage_cm_partial_notice
 from hooks.parser import (parse_memory_block, parse_memory_notes, linkdef_error_locus,
                           linkdef_diagnosis)
 from hooks.hash_verify import compute_response_hash
@@ -123,6 +123,11 @@ def _snapshot_excerpts(session_id: str, transcript_path: str, assistant_message:
         return
     lines = assistant_message.split("\n")
     excerpt = "\n".join(lines[:SOURCE_EXCERPT_LINES * 2])
+    try:   # excerpts are verbatim response text: same pointer rule as memories
+        from cairn.secrets import extract
+        excerpt, _ = extract(excerpt)
+    except Exception:
+        pass
     for (mem_id,) in rows:
         conn.execute(
             "INSERT OR IGNORE INTO memory_source_excerpt (memory_id, session_id, transcript_path, excerpt) "
@@ -144,7 +149,7 @@ AMEND_ONLY_SUFFIX = (
 from hooks.retrieval import (retrieve_context, layer2_cross_project_search,
                         load_context_cache, save_context_cache, is_context_cached, add_to_context_cache,
                         CONTEXT_CACHE_SIM_THRESHOLD)
-from cairn.config import MAX_CONTINUATIONS, WEAK_ENTRY_SCORE_FLOOR, CONTEXT_BOOTSTRAP_INTERVAL, CHECKPOINT_MAX_NOTES_PER_SESSION, GENERATION_PROMPT_VERSION
+from cairn.config import MAX_CONTINUATIONS, CTX_BLOCK_MIN_SIM, WEAK_ENTRY_SCORE_FLOOR, CONTEXT_BOOTSTRAP_INTERVAL, CHECKPOINT_MAX_NOTES_PER_SESSION, GENERATION_PROMPT_VERSION
 
 
 def collect_memory_notes(transcript_path: str, session_id: str,
@@ -457,6 +462,10 @@ def main() -> None:
         record_metric(session_id, "linkdef_recovered", parsed.recovery)
     entries, complete, remaining = parsed.entries, parsed.complete, parsed.remaining
     context, context_need = parsed.context, parsed.context_need
+    # Partly recovered: some entries were dropped. Tell the next prompt
+    # instead of re-prompting now (the good entries are already kept).
+    if "partial" in (getattr(parsed, "recovery", None) or ""):
+        stage_cm_partial_notice(session_id, text)
     confidence_updates, retrieval_outcome = parsed.confidence_updates, parsed.retrieval_outcome
     keywords, intent = parsed.keywords, parsed.intent
     hash_claimed = parsed.hash_claimed
@@ -866,8 +875,19 @@ def main() -> None:
 
                         # Central dedup gate — strip entries already injected
                         retrieved = strip_seen_entries(retrieved, session_id) or ""
+                        _sims = [float(s) for s in re.findall(r'sim="([0-9.]+)"', retrieved)]
                         if not retrieved:
                             log(f"All entries already seen for: {context_need[:50]}...")
+                        elif _sims and max(_sims) < CTX_BLOCK_MIN_SIM and getattr(
+                                __import__("cairn.config", fromlist=["x"]), "PROXY_ENABLED", False):
+                            # Only a strong match is worth a forced extra turn (which re-reads
+                            # the whole conversation and arrives after the answer is written).
+                            # Weaker results ride along with the next prompt instead.
+                            from cairn.proxy import sidecar as _sidecar
+                            _sidecar.append_prompt_context(session_id, f"CAIRN CONTEXT:\n{retrieved}")
+                            record_metric(session_id, "context_deferred_to_next_prompt", context_need[:100],
+                                          max(_sims))
+                            log(f"L3 context deferred to next prompt (top sim {max(_sims):.2f})")
                         else:
                             # Track newly injected IDs
                             injected_ids = [int(i) for i in re.findall(r'id="(\d+)"', retrieved)]
@@ -1116,6 +1136,14 @@ def main() -> None:
     # See memories #959, #928, #888, #897 for the full history.
     # The retrieved_ids tracking is kept for future use if a better heuristic is found.
 
+    # Waiting on the user is not incomplete work: a remainder that names a
+    # pending user decision ends the turn instead of forcing a contentless
+    # continuation (observed: "Await user approval to ..." re-prompted 3 times).
+    from hooks.enforcement import awaits_user
+    if complete is False and awaits_user(remaining):
+        record_metric(session_id, "incomplete_awaiting_user", (remaining or "")[:80])
+        complete = True
+
     # Check completeness — complete must be explicitly True to pass.
     # If omitted (None) or False, treat as incomplete.
     if complete is not True:
@@ -1142,26 +1170,29 @@ def main() -> None:
         _emit_decision(session_id, result)
         sys.exit(0)
 
-    # Trailing intent detection — block if response ends with unfulfilled action intent
+    # One Jev call judges the whole turn (cairn/jev_gate.judge_turn): premature
+    # stop, missed context (acts only if the turn made no Cairn query), entry
+    # detail, block quality and turn signals. Its re-prompts apply on the first
+    # stop only; its flags are saved further down, after the previous turn's
+    # obligation is checked. The old trailing-intent check runs inside it, logged.
+    _judgement = None
     if intent == "resolved":
-        log("Intent explicitly resolved via memory block — skipping trailing intent check")
         record_metric(session_id, "trailing_intent_resolved_escape")
-    elif not is_continuation:
-        intent_result: Optional[str] = check_trailing_intent(text, session_id=session_id)
-        if intent_result:
-            log(f"Trailing intent detected: {intent_result}")
-            record_metric(session_id, "trailing_intent_blocked", intent_result)
-            increment_continuation(session_id)
-            result = {
-                "decision": "block",
-                "reason": (
-                    f"Your response ends with a stated intent to act: \"{intent_result}\". "
-                    "Either follow through now, or remove the promise. "
-                    "If you genuinely have nothing more to do, add 'intent: resolved' to your <memory> block."
-                )
-            }
-            _emit_decision(session_id, result)
-            sys.exit(0)
+    if not is_subagent:
+        try:
+            from cairn import jev_gate as _jg
+            _judgement = _jg.judge_turn(session_id, transcript_path, text, entries,
+                                        intent_resolved=(intent == "resolved"))
+            if _judgement.reprompt and not is_continuation:
+                if _judgement.stop_reason:
+                    record_metric(session_id, "trailing_intent_blocked", "jev_judge_turn")
+                increment_continuation(session_id)
+                _emit_decision(session_id, {"decision": "block", "reason": _judgement.reprompt})
+                sys.exit(0)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            log(f"turn judgement failed open: {exc}")
 
     # Asserted-absence detection — block claiming a capability/credential does not exist
     # without having consulted cairn in this turn. Distinct from check_declined_without_trying,
@@ -1250,6 +1281,40 @@ def main() -> None:
             }
             _emit_decision(session_id, result)
             sys.exit(0)
+
+    # The user opened this turn with a correction: require a correction entry (one-shot).
+    if not is_subagent:
+        try:
+            from cairn import jev_gate as _jg
+            corr_reason = _jg.check_correction_captured(session_id, entries, text)
+            if corr_reason:
+                increment_continuation(session_id)
+                _emit_decision(session_id, {"decision": "block", "reason": corr_reason})
+                sys.exit(0)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            log(f"correction capture check failed open: {exc}")
+
+    # Jev quality gate: answer last turn's flags (one-shot re-prompt), then queue
+    # this turn's entries for assessment in a detached process. Check before
+    # spawning so the new assessment cannot overwrite the obligation being checked.
+    if not is_subagent:
+        try:
+            from cairn import jev_gate
+            jev_reason = jev_gate.check_obligation(session_id, text, entries)
+            if jev_reason:
+                record_metric(session_id, "jev_gate_blocked")
+                increment_continuation(session_id)
+                _emit_decision(session_id, {"decision": "block", "reason": jev_reason})
+                sys.exit(0)
+            if _judgement is not None:
+                jev_gate.save_flags(session_id, _judgement.flags)
+            jev_gate.spawn_assess(session_id, transcript_path, entries or [])   # delivered memories, background
+        except SystemExit:
+            raise
+        except Exception as exc:
+            log(f"jev gate failed open: {exc}")
 
     # Collect mid-response memory notes from the transcript
     _captured_notes = []

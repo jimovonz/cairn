@@ -96,7 +96,71 @@ def _detect_format(first_record: dict[str, Any]) -> str:
         producer = (first_record.get("data") or {}).get("producer", "")
         if isinstance(producer, str) and producer.startswith("copilot"):
             return "copilot"
+    # pi: {"type":"session","version":N,"id":...,"cwd":...} header line.
+    if first_record.get("type") == "session" and "version" in first_record:
+        return "pi"
     return "cli"
+
+
+# pi built-in tool names -> Claude-Code-equivalent names (see Copilot map above).
+_PI_TO_CLI_TOOL_NAMES = {
+    "bash": "Bash",
+    "read": "Read",
+    "edit": "Edit",
+    "write": "Write",
+    "grep": "Grep",
+    "find": "Glob",
+    "ls": "Glob",
+    "multiedit": "MultiEdit",
+    "multi_edit": "MultiEdit",
+    "powershell": "Bash",
+}
+
+
+def _normalize_pi_record(record: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Convert one pi session record to the CLI shape, or return None to skip.
+
+    pi writes {"type":"message","message":{"role": user|assistant|toolResult,...}};
+    assistant tool calls are {"type":"toolCall","id","name","arguments"} blocks
+    and results are separate toolResult messages. Everything else (session,
+    model_change, custom_message injections) is skipped.
+    """
+    if record.get("type") != "message":
+        return None
+    msg = record.get("message") or {}
+    role = msg.get("role")
+    content = msg.get("content")
+    if role == "user":
+        return {"type": "user", "message": {"role": "user", "content": content}}
+    if role == "assistant":
+        blocks = []
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "toolCall":
+                name = block.get("name", "")
+                blocks.append({
+                    "type": "tool_use",
+                    "id": block.get("id", ""),
+                    "name": _PI_TO_CLI_TOOL_NAMES.get(name, name),
+                    "input": _normalize_tool_input(block.get("arguments")),
+                })
+            elif block.get("type") == "text":
+                blocks.append({"type": "text", "text": block.get("text", "")})
+        if isinstance(content, str):
+            blocks.append({"type": "text", "text": content})
+        return {"type": "assistant", "message": {"role": "assistant", "content": blocks}}
+    if role == "toolResult":
+        parts = content if isinstance(content, list) else []
+        text = "\n".join(b.get("text", "") for b in parts
+                         if isinstance(b, dict) and b.get("type") == "text")
+        return {"type": "user", "message": {"role": "user", "content": [{
+            "type": "tool_result",
+            "tool_use_id": msg.get("toolCallId", ""),
+            "content": text,
+            "is_error": bool(msg.get("isError")),
+        }]}}
+    return None
 
 
 def _normalize_copilot_record(
@@ -190,6 +254,10 @@ def iter_normalized_entries(transcript_path: str) -> Iterator[dict[str, Any]]:
 
             if fmt == "cli":
                 yield record
+            elif fmt == "pi":
+                normalized = _normalize_pi_record(record)
+                if normalized is not None:
+                    yield normalized
             else:
                 normalized = _normalize_copilot_record(record, copilot_session_id)
                 if normalized is not None:
@@ -199,7 +267,7 @@ def iter_normalized_entries(transcript_path: str) -> Iterator[dict[str, Any]]:
 
 
 def detect_transcript_format(transcript_path: str) -> str:
-    """Return 'cli', 'copilot', or 'unknown' for a transcript file.
+    """Return 'cli', 'copilot', 'pi', or 'unknown' for a transcript file.
 
     Used by register_session to record provenance in the sessions table and
     by tests. Reads at most one parseable record from the file.

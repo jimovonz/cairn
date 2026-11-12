@@ -161,7 +161,7 @@ def cmd_show_profile(args) -> int:
 
 def cmd_review(args) -> int:
     """Surface Tier 2 review-queue items: low-follow rows flagged for
-    archive (>=10 deliveries, <20% followed), and rows already auto-
+    archive (>=10 resolved outcomes, <20% followed), and rows already auto-
     archived by Phase 6 Tier 1 for reference."""
     conn = _open(DB_PATH)
     try:
@@ -169,8 +169,10 @@ def cmd_review(args) -> int:
             "SELECT id, content, delivered_count, followed_count, "
             "ignored_count, corrected_count "
             "FROM calibration_rows "
-            "WHERE archived_at IS NULL AND delivered_count >= 10 "
-            "AND (followed_count * 1.0 / delivered_count) < 0.20 "
+            "WHERE archived_at IS NULL "
+            "AND (followed_count + ignored_count + corrected_count) >= 10 "
+            "AND (followed_count * 1.0 / "
+            "(followed_count + ignored_count + corrected_count)) < 0.20 "
             "ORDER BY delivered_count DESC"
         ).fetchall()
         recent_archives = conn.execute(
@@ -178,11 +180,27 @@ def cmd_review(args) -> int:
             "FROM calibration_rows WHERE archived_at IS NOT NULL "
             "ORDER BY archived_at DESC LIMIT 10"
         ).fetchall()
+        # Tier 2 suggestions (promotion candidates incl. analyser rows that
+        # may no longer pin themselves, rephrase candidates).
+        try:
+            queued = conn.execute(
+                "SELECT rq.id, rq.row_id, rq.suggestion_type, rq.detail, cr.content "
+                "FROM calibration_review_queue rq JOIN calibration_rows cr ON cr.id = rq.row_id "
+                "WHERE rq.resolved_at IS NULL ORDER BY rq.surfaced_at DESC"
+            ).fetchall()
+        except sqlite3.OperationalError:   # table created lazily by selfmod
+            queued = []
     finally:
         conn.close()
-    if not low_follow and not recent_archives:
+    if not low_follow and not recent_archives and not queued:
         print("Review queue empty — nothing to surface")
         return 0
+    if queued:
+        print(f"=== Review queue ({len(queued)}) — resolve with resolve_review_item(id, 'approved'|'dismissed') ===")
+        for qid, rid, kind, detail, content in queued:
+            print(f"  [{qid}] {kind} row #{rid} {detail or ''}")
+            print(f"     {content}")
+        print()
     if low_follow:
         print(f"=== Low-follow candidates ({len(low_follow)}) — archive? ===")
         for rid, content, dc, fc, ic, cc in low_follow:

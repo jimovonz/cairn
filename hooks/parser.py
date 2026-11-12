@@ -60,7 +60,19 @@ def _g(d: dict, *keys, default=None):
 _CTX_EXPAND = {"s": "sufficient", "i": "insufficient"}
 
 
+_BLOCK_KEYS = {"e", "entries", "ok", "complete", "ctx", "context", "kw", "keywords", "t", "type", "c", "content"}
+
+
 def _salvage_json(raw: str, max_fixes: int = 400):
+    data = _salvage_json_raw(raw, max_fixes)
+    # A "repair" that leaves no recognisable field (e.g. {bad json} closed to
+    # {}) is not a recovery; let the caller fall back.
+    if isinstance(data, dict) and not (_BLOCK_KEYS & set(data)):
+        return None
+    return data
+
+
+def _salvage_json_raw(raw: str, max_fixes: int = 400):
     """Best-effort repair of the two failure modes the model reliably produces
     in long single-line [cm] blocks (confirmed from hook.log): unescaped inner
     double-quotes inside content strings (JSONDecodeError "Expecting ...
@@ -100,10 +112,124 @@ def _salvage_json(raw: str, max_fixes: int = 400):
                     s = s[:q] + "\\" + s[q:]
                     continue
                 return None
-            # other errors (missing property name, unterminated string at EOF,
-            # bare control char) are not safely repairable here
+            if "Expecting property name" in msg:
+                # 98 of 107 logged failures. Trailing comma before } / ], or a
+                # key that lost its opening quote, or a truncated block.
+                prev = len(s[:pos].rstrip()) - 1
+                if prev >= 0 and s[prev] == ",":
+                    s = s[:prev] + s[prev + 1:]
+                    continue
+                m = re.match(r"\s*([A-Za-z_][\w-]*)\"?\s*:", s[pos:])
+                if m:
+                    key_start = pos + m.start(1)
+                    key_end = pos + m.end(1)
+                    tail = s[key_end:]
+                    s = s[:key_start] + '"' + m.group(1) + '"' + (tail[1:] if tail.startswith('"') else tail)
+                    continue
+                # Truncation only: the break is at the end, nothing discarded.
+                closed = _close_truncated(s[:pos]) if not s[pos:].strip() else None
+                if closed is not None and closed != s:
+                    s = closed
+                    continue
+                return None
+            if "Expecting value" in msg:
+                prev = len(s[:pos].rstrip()) - 1
+                if prev >= 0 and s[prev] == "," and s[pos:pos + 1] in ("]", "}"):
+                    s = s[:prev] + s[prev + 1:]
+                    continue
+                closed = _close_truncated(s[:pos].rstrip().rstrip(",:")) if not s[pos:].strip() else None
+                if closed is not None and closed != s:
+                    s = closed
+                    continue
+                return None
+            if "Extra data" in msg:
+                s = s[:pos]          # text after a complete object
+                continue
+            if "Unterminated string" in msg or "Expecting" in msg:
+                # a block cut off mid-value: close the open string/containers
+                closed = _close_truncated(s)
+                if closed is not None and closed != s:
+                    s = closed
+                    continue
+            # bare control chars and anything else are not safely repairable
             return None
     return None
+
+
+def _close_truncated(s: str) -> Optional[str]:
+    """Close an unterminated string and any open containers at the end of a
+    truncated block (a recorded cause of these failures: a missing terminating
+    delimiter). Drops a dangling comma or colon first. None if the text never
+    opened an object."""
+    stack, in_str, esc = [], False, False
+    for ch in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack:
+            stack.pop()
+    if not stack and not in_str:
+        return None
+    out = s + ('"' if in_str else "")
+    out = out.rstrip()
+    while out and out[-1] in ",:":
+        out = out[:-1].rstrip()
+    return out + "".join(reversed(stack))
+
+
+_ENTRY_OBJ = re.compile(r'\{[^{}]*?"(?:t|type)"\s*:\s*"[^"]*"[^{}]*?\}')
+
+
+def _salvage_entries(raw: str) -> Optional[dict]:
+    """Last resort when the whole block will not parse: keep every entry object
+    that does, and default the block fields. One broken entry no longer costs
+    the rest of the turn's memories. None if no entry could be recovered."""
+    entries = []
+    for m in _ENTRY_OBJ.finditer(raw):
+        try:
+            obj = _json.loads(m.group(0))
+        except (_json.JSONDecodeError, ValueError):
+            obj = _salvage_json(m.group(0), max_fixes=50)
+        if isinstance(obj, dict) and (obj.get("c") or obj.get("content")):
+            entries.append(obj)
+    if not entries:
+        return None
+    data: dict = {"e": entries, "ok": True, "ctx": "s"}
+    kw = re.search(r'"kw"\s*:\s*(\[[^\]]*\])', raw[raw.rfind("]", 0, len(raw)) - 2000 if len(raw) > 2000 else 0:])
+    try:
+        if kw:
+            data["kw"] = _json.loads(kw.group(1))
+    except (_json.JSONDecodeError, ValueError):
+        pass
+    return data
+
+
+def _log_parse_failure(raw: str, error: str) -> None:
+    """Keep the whole failed block (secrets redacted) so repair rates can be
+    measured; hook.log keeps only 120 chars."""
+    try:
+        import os
+        try:
+            from cairn.secrets import find_secrets
+            for s0, e0, _v in reversed(find_secrets(raw)):
+                raw = raw[:s0] + "[REDACTED]" + raw[e0:]
+        except Exception:
+            pass
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cairn",
+                            "cm_parse_failures.jsonl")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(_json.dumps({"error": error, "raw": raw[:20000]}) + "\n")
+    except Exception:
+        pass
 
 
 _LINKDEF_LINE = r"^\[(?:cairn-memory|cm)\]:\s*#\s*'(.+)'\s*$"
@@ -220,11 +346,18 @@ def _parse_linkdef(text: str) -> Optional[ParseResult]:
         # stray backslash. Attempt a decoder-driven repair before giving up so
         # the memory still lands instead of triggering a re-prompt churn.
         data = _salvage_json(raw_json)
+        tag = "salvage"
+        if data is None:
+            data = _salvage_entries(raw_json)
+            tag = "partial"
         if data is None:
             log(f"Link-def JSON parse error: {e} — raw: {raw_json[:120]}")
+            _log_parse_failure(raw_json, str(e))
             return None
-        log(f"Link-def JSON salvaged after parse error ({e})")
-        recovery = f"{recovery}+salvage" if recovery else "salvage"
+        if tag == "partial":
+            _log_parse_failure(raw_json, f"partial salvage: {e}")
+        log(f"Link-def JSON {'partially ' if tag == 'partial' else ''}salvaged after parse error ({e})")
+        recovery = f"{recovery}+{tag}" if recovery else tag
 
     if not isinstance(data, dict):
         log(f"Link-def JSON is not a dict: {type(data)}")

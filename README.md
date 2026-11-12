@@ -302,6 +302,29 @@ Retrieved results pass through 10 configurable gates before injection:
 
 All thresholds configurable in `cairn/config.py`.
 
+### Turn quality gate (Jev)
+
+One synchronous call per turn to the Jev decision model (TypeSafe `jev-1.13` via OpenRouter, `cairn/jev_gate.py`) judges the turn, its `[cm]` block and the final reply together; a background call judges delivered memories and calibration rows. Everything is logged to `cairn/jev_gate_log.jsonl`; `python -m cairn.jev_gate report` summarises it and scores each check against the user's next message (corrected / continue / use-Cairn).
+
+| Check | Action |
+|-------|--------|
+| Premature stop: reply names work it could do and stops (mean of two questions ≥ `CAIRN_STOP_CHECK_THRESHOLD`, 0.50) | re-prompt once; `int: resolved` skips |
+| Missed context: reply shows a guess / no access / generic answer, and the turn made no Cairn query (≥ `CAIRN_CONTEXT_CHECK_THRESHOLD`, 0.8) | re-prompt once to search Cairn |
+| Block quality: generic or missing a finding; empty block with omission ≥ 0.5 | next-turn obligation (correct, or rebut via `"jv":{"_block":"complete: why"}`) |
+| Secret in an entry (local regex) | next-turn obligation |
+| Entry detail mismatch, turn signals, durable/type/standalone, delivered-memory stale/used/relevant, calibration applies/followed | logged only (`CAIRN_JEV_DETAIL_ENFORCE=1` re-enables detail) |
+| User correction at the start of a turn | that turn's `[cm]` must carry a `correction` entry |
+
+Turn text is redacted before it leaves the machine. `CAIRN_JEV_GATE=0` disables the gate; without an OpenRouter key it is inert.
+
+### Secrets
+
+Credential values never enter Cairn: on write (`hooks/storage.insert_memories`) and in source excerpts, detected values move to `~/.config/cairn/secrets.env` (mode 600) and the memory keeps a `$NAME` pointer. `python -m cairn.secrets {list|set|get|scan|protect|rename}` manages the store and cleans existing databases.
+
+### Malformed `[cm]` blocks
+
+The parser repairs common breakage locally (unescaped quotes, stray backslashes, trailing commas, half-quoted keys, trailing text, truncation). If the block still will not parse, every intact entry is kept and the next prompt is told to re-add the rest; a blocking re-prompt happens only when nothing is recoverable. Failed blocks are logged in full (redacted) to `cairn/cm_parse_failures.jsonl`.
+
 ### Relevance grading & write-side quality
 
 Two feedback loops close the gap between *what gets injected* and *what was useful*, building the labelled data for a future trained gate.
@@ -469,6 +492,10 @@ Notable subsystem toggles (all `CAIRN_<NAME>` env overrides; defaults from `cair
 | `CAIRN_NO_INJECT` | unset | truthy skips prompt-hook context injection — set by cairn's internal analysis passes (analyser/audit/offline-A-B/labeller) |
 | `AB_TEST_ENABLED` | on | Live per-prompt write-side A/B experiment |
 | `CAIRN_TZ` | system tz | Override local timezone for date stamping |
+| `CAIRN_JEV_GATE` | on (needs an OpenRouter key) | Turn quality gate; `=0` disables |
+| `CAIRN_STOP_CHECK_THRESHOLD` / `CAIRN_CONTEXT_CHECK_THRESHOLD` | `0.50` / `0.8` | Premature-stop and missed-context re-prompt thresholds (`CAIRN_STOP_CHECK=0` / `CAIRN_CONTEXT_CHECK=0` disable) |
+| `CAIRN_JEV_DETAIL_ENFORCE` | off | Re-enable enforcement of the entry-detail check |
+| `CAIRN_SECRETS_FILE` | `~/.config/cairn/secrets.env` | Secret store for `$NAME` pointers |
 | `CAIRN_ALLOW_STDLIB_SQLITE` | off | Override the pysqlite3 requirement with stdlib `sqlite3` (`=1`; unsafe under concurrent WAL access) |
 
 ## Key design decisions

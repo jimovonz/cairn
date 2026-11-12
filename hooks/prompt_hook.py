@@ -973,6 +973,18 @@ def main() -> None:
         except Exception as e:
             log(f"Failed to load rg-grading nudge: {e}")
 
+    # Malformed-[cm] notice (deferred from the previous stop hook — non-blocking).
+    _cm_notice = os.path.join(staged_dir, f"{session_id}_cm_partial.txt")
+    if os.path.exists(_cm_notice):
+        try:
+            with open(_cm_notice, "r") as f:
+                _t = f.read().strip()
+            os.remove(_cm_notice)
+            if _t:
+                context_parts.append(_t)
+        except Exception as e:
+            log(f"Failed to load cm partial notice: {e}")
+
     # Content-density reminder (deferred from previous stop hook — non-blocking).
     # Consume-once: remove after injecting so it never re-serves on later prompts.
     density_reminder_file = os.path.join(staged_dir, f"{session_id}_density_reminder.txt")
@@ -1003,6 +1015,23 @@ def main() -> None:
         # pre-per-qf-sidecar bug where deliveries silently went to 0.
         record_metric(session_id, "calibration_inject_failed",
                       f"{type(_e).__name__}: {str(_e)[:120]}")
+
+    # The user's new prompt labels the previous turn (correction / premature
+    # stop / missed context / no complaint) for scoring every logged signal.
+    try:
+        from cairn.jev_gate import label_previous_turn
+        label_previous_turn(session_id, user_message)
+    except Exception as _e:
+        log(f"follow-up label failed open: {_e}")
+
+    # Jev quality gate: last turn's flagged entries, shown once. Fails open.
+    try:
+        from cairn.jev_gate import pending_reminder
+        jev_note = pending_reminder(session_id)
+        if jev_note:
+            context_parts.append(jev_note)
+    except Exception as _e:
+        log(f"jev gate reminder failed open: {_e}")
 
     if not context_parts:
         sys.exit(0)

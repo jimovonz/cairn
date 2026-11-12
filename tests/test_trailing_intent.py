@@ -270,12 +270,14 @@ class TestTrailingIntentIntegration:
             ),
         }
 
-        with patch.object(hook_helpers, 'get_embedder', return_value=mock_emb):
+        # The block now comes from the Jev stop check; simulate it firing.
+        with patch.object(hook_helpers, 'get_embedder', return_value=mock_emb), \
+             patch("cairn.jev_gate.judge_turn", return_value=_stop_judgement()):
             code, result = run_hook(db_path, payload)
 
         assert result is not None, "Should have blocked"
         assert result["decision"] == "block"
-        assert "intent: resolved" in result["reason"]
+        assert "int: resolved" in result["reason"]
 
     # Verifies: intent:resolved in memory block bypasses intent check
     def test_intent_resolved_allows_stop(self):
@@ -376,3 +378,12 @@ class TestContentQualityGate:
         assert count == 1, "Only the good memory should be inserted"
         row = conn.execute("SELECT topic FROM memories").fetchone()
         assert row[0] == "good"
+
+
+def _stop_judgement():
+    """A turn judgement whose premature-stop question fired (cairn/jev_gate.judge_turn)."""
+    from cairn.jev_gate import Judgement
+    j = Judgement()
+    j.stop_reason = ("Your reply names work that still remains and stops there. "
+                     "If nothing remains, add 'int: resolved' to your [cm] block.")
+    return j

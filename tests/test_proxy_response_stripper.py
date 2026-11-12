@@ -90,3 +90,41 @@ def test_multiple_memnotes_captured_separately():
     assert emitted == "A  B  C"
     notes = [c for c in s.captured if c.startswith("<memory_note>")]
     assert len(notes) == 2
+
+
+# Mentions of the note tag (documenting the format) must stay visible. Matching
+# them held everything after the tag and truncated the reply.
+
+def test_memnote_in_inline_code_passes_through():
+    body = "| Mid-turn `<memory_note>` capture | yes | no |\nMore rows follow."
+    emitted, s = run([body + CM])
+    assert emitted == body
+    assert not any(c.startswith("<memory_note>") for c in s.captured)
+
+
+def test_memnote_in_fenced_block_passes_through():
+    body = "Format:\n```\n" + NOTE_TAG + "\n```\nAfter the fence."
+    for pieces in ([body + CM], list(body + CM)):
+        emitted, s = run(pieces)
+        assert emitted == body
+        assert not any(c.startswith("<memory_note>") for c in s.captured)
+
+
+def test_unclosed_memnote_before_newline_released():
+    body = "Prose mentions <memory_note> without closing it.\nNext line stays."
+    emitted, s = run(list(body + CM))
+    assert emitted == body
+
+
+def test_unclosed_memnote_at_end_of_stream_released():
+    body = "Trailing mention <memory_note>"
+    emitted, s = run([body])
+    assert emitted == body
+    assert s.captured == []
+
+
+def test_real_memnote_still_captured_after_code_span():
+    full = "Use `x` here. " + NOTE_TAG + " Done." + CM
+    emitted, s = run(list(full))
+    assert emitted == "Use `x` here.  Done."
+    assert NOTE_TAG in s.captured

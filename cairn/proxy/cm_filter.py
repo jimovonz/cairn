@@ -171,10 +171,36 @@ class ResponseTextStripper:
             i = self._find_line_start(m)
             if i >= 0 and (best_idx is None or i < best_idx):
                 best_idx, best = i, (m, "noteline")
-        i = self._buf.find(MEMNOTE_OPEN)
+        i = self._find_memnote()
         if i >= 0 and (best_idx is None or i < best_idx):
             best_idx, best = i, (MEMNOTE_OPEN, "memnote")
         return best_idx, best[0], best[1]
+
+    def _in_code(self, idx: int) -> bool:
+        """Whether _buf[idx] sits in a code span or fenced block. Judged from the
+        byte-exact ``original`` so state carries across feed boundaries: an odd
+        count of fence lines before idx means an open fence; otherwise an odd
+        count of backticks earlier on the same line means an open inline span."""
+        pos = len(self.original) - len(self._buf) + idx
+        before = self.original[:pos]
+        fences = sum(1 for ln in before.split("\n")[:-1] if ln.lstrip().startswith("```"))
+        if fences % 2:
+            return True
+        line = before.rsplit("\n", 1)[-1]
+        if line.lstrip().startswith("```"):
+            return True
+        return line.count("`") % 2 == 1
+
+    def _find_memnote(self) -> int:
+        """First MEMNOTE_OPEN in _buf that is not inside code. A note quoted in
+        a code span (documenting the format) must stay visible; matching it would
+        hold everything after it and truncate the reply."""
+        start = 0
+        while True:
+            i = self._buf.find(MEMNOTE_OPEN, start)
+            if i < 0 or not self._in_code(i):
+                return i
+            start = i + 1
 
     def feed(self, text: str) -> str:
         self.original += text
@@ -187,6 +213,15 @@ class ResponseTextStripper:
                 return out
             if self._state == _IN_MEMNOTE:
                 j = self._buf.find(MEMNOTE_CLOSE)
+                nl = self._buf.find("\n")
+                if nl >= 0 and (j < 0 or nl < j):
+                    # Notes are one line; a newline before the close tag means
+                    # this was a prose mention, not a note — release it visibly.
+                    out += self._pending + self._buf[:nl]
+                    self._pending = ""
+                    self._buf = self._buf[nl:]
+                    self._state = _NORMAL
+                    continue
                 if j < 0:
                     # keep waiting; hold all but a possible split close tag
                     hold = len(MEMNOTE_CLOSE) - 1
@@ -252,7 +287,14 @@ class ResponseTextStripper:
                 self.captured.append(self._pending)
                 self._pending = ""
             return ""
-        if self._state in (_IN_MEMNOTE, _IN_NOTELINE):
+        if self._state == _IN_MEMNOTE:
+            # Unclosed tag at end of stream is a mention, not a note — keep it.
+            out = self._pending + self._buf
+            self._pending = ""
+            self._buf = ""
+            self._state = _NORMAL
+            return out
+        if self._state == _IN_NOTELINE:
             # Unterminated artifact at end of stream — capture what we have.
             self._pending += self._buf
             self._buf = ""

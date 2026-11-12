@@ -1,10 +1,11 @@
 """Phase 6 — Calibration self-modification (Tier 1 autonomous + Tier 2 surfaced).
 
 **Tier 1 (autonomous, bounded scalar adjustments):**
-- `auto_archive_low_follow` — rows with >=10 deliveries and <20% followed
+- `auto_archive_low_follow` — rows with >=10 resolved outcomes and <20% followed
   get archived with archive_reason="auto-archive-low-follow"
-- `auto_promote_corroborated` — rows with N>=5 deliveries and >=80% followed
-  + corroborated across >=3 distinct sessions get pinned (confidence
+- `auto_promote_corroborated` — explicit rows with N>=5 resolved outcomes and
+  >=80% followed + corroborated across >=3 distinct sessions get pinned
+  (other sources are queued for review instead) (confidence
   boosted to PINNED_CONFIDENCE)
 - `decay_unused` — rows with delivered_count=0 older than half-life
   (per source tier) have confidence decayed multiplicatively
@@ -56,11 +57,12 @@ EPH_DB_PATH = os.environ.get(
 
 
 # Tier 1 thresholds — bounded, conservative
-AUTO_ARCHIVE_MIN_DELIVERIES = 10
+AUTO_ARCHIVE_MIN_RESOLVED = 10
 AUTO_ARCHIVE_MAX_FOLLOW_RATE = 0.20
 AUTO_PROMOTE_MIN_DELIVERIES = 5
 AUTO_PROMOTE_MIN_FOLLOW_RATE = 0.80
 AUTO_PROMOTE_MIN_SESSIONS = 3
+AUTO_PROMOTE_SOURCES = ("explicit",)  # analyser inferences go to review
 PINNED_CONFIDENCE = 0.95
 
 # Half-lives in days per source tier (spec source-tiers table)
@@ -137,12 +139,16 @@ def auto_archive_low_follow(db_path: Optional[str] = None) -> list[int]:
     path = db_path or DB_PATH
     conn = _open(path)
     try:
+        # Rate over resolved outcomes, not deliveries: delivered_count is bumped
+        # at injection but outcomes are credited later by the analyser, so a
+        # delivered-count denominator archives rows whose follows are pending.
         rows = conn.execute(
             "SELECT id FROM calibration_rows "
             "WHERE archived_at IS NULL "
-            "AND delivered_count >= ? "
-            "AND (followed_count * 1.0 / delivered_count) < ?",
-            (AUTO_ARCHIVE_MIN_DELIVERIES, AUTO_ARCHIVE_MAX_FOLLOW_RATE),
+            "AND (followed_count + ignored_count + corrected_count) >= ? "
+            "AND (followed_count * 1.0 / "
+            "(followed_count + ignored_count + corrected_count)) < ?",
+            (AUTO_ARCHIVE_MIN_RESOLVED, AUTO_ARCHIVE_MAX_FOLLOW_RATE),
         ).fetchall()
         ids = [r[0] for r in rows]
         for rid in ids:
@@ -180,33 +186,61 @@ def auto_promote_corroborated(
         eph_path: Optional[str] = None) -> list[int]:
     """Pin rows that are highly followed across multiple distinct sessions.
 
+    Only user-stated rows (AUTO_PROMOTE_SOURCES) pin autonomously. Qualifying
+    analyser inferences go to the review queue instead: follow rate rewards
+    rules that are easy to comply with, so deference-style observations
+    would otherwise pin themselves.
+
     Returns the list of row IDs promoted.
     """
     durable = db_path or DB_PATH
     eph = eph_path or EPH_DB_PATH
     conn = _open(durable)
     try:
+        _ensure_review_queue_table(conn)
         candidates = conn.execute(
-            "SELECT id FROM calibration_rows "
+            "SELECT id, source FROM calibration_rows "
             "WHERE archived_at IS NULL AND pinned = 0 "
-            "AND delivered_count >= ? "
-            "AND (followed_count * 1.0 / delivered_count) >= ?",
+            "AND (followed_count + ignored_count + corrected_count) >= ? "
+            "AND (followed_count * 1.0 / "
+            "(followed_count + ignored_count + corrected_count)) >= ?",
             (AUTO_PROMOTE_MIN_DELIVERIES, AUTO_PROMOTE_MIN_FOLLOW_RATE),
         ).fetchall()
         promoted = []
-        for (rid,) in candidates:
+        for rid, source in candidates:
             sessions = _distinct_sessions_for_row(eph, rid)
-            if sessions >= AUTO_PROMOTE_MIN_SESSIONS:
-                conn.execute(
-                    "UPDATE calibration_rows SET pinned = 1, "
-                    "confidence = ?, updated_at = CURRENT_TIMESTAMP "
-                    "WHERE id = ?",
-                    (PINNED_CONFIDENCE, rid),
-                )
-                _emit_metric("calibration_row_promoted",
-                             {"row_id": rid, "source_sessions": sessions},
-                             eph_path=eph)
-                promoted.append(rid)
+            if sessions < AUTO_PROMOTE_MIN_SESSIONS:
+                continue
+            if source not in AUTO_PROMOTE_SOURCES:
+                queued = conn.execute(
+                    "SELECT 1 FROM calibration_review_queue WHERE row_id = ? "
+                    "AND suggestion_type = ? AND resolved_at IS NULL",
+                    (rid, SURFACE_PROMOTION_CANDIDATE),
+                ).fetchone()
+                if not queued:
+                    conn.execute(
+                        "INSERT INTO calibration_review_queue "
+                        "(row_id, suggestion_type, detail) VALUES (?, ?, ?)",
+                        (rid, SURFACE_PROMOTION_CANDIDATE,
+                         json.dumps({"reason": "non-explicit-source",
+                                     "source": source,
+                                     "sessions": sessions})),
+                    )
+                    _emit_metric("calibration_review_surfaced",
+                                 {"row_id": rid,
+                                  "suggestion_type": SURFACE_PROMOTION_CANDIDATE},
+                                 eph_path=eph)
+                continue
+            conn.execute(
+                "UPDATE calibration_rows SET pinned = 1, "
+                "confidence = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ?",
+                (PINNED_CONFIDENCE, rid),
+            )
+            _emit_metric("calibration_row_promoted",
+                         {"row_id": rid, "source_sessions": sessions},
+                         eph_path=eph)
+            promoted.append(rid)
         conn.commit()
         return promoted
     finally:
@@ -274,13 +308,15 @@ def surface_low_follow_rephrase(db_path: Optional[str] = None) -> list[int]:
     surfaced = []
     try:
         _ensure_review_queue_table(conn)
+        # Resolved outcomes, not deliveries: pending outcomes are not "not followed".
         rows = conn.execute(
-            "SELECT cr.id, cr.delivered_count, cr.followed_count "
+            "SELECT cr.id, (cr.followed_count + cr.ignored_count + cr.corrected_count), cr.followed_count "
             "FROM calibration_rows cr "
             "LEFT JOIN calibration_review_queue rq "
             "  ON rq.row_id = cr.id AND rq.suggestion_type = ? "
             "  AND rq.resolved_at IS NULL "
-            "WHERE cr.archived_at IS NULL AND cr.delivered_count >= 5 "
+            "WHERE cr.archived_at IS NULL "
+            "AND (cr.followed_count + cr.ignored_count + cr.corrected_count) >= 5 "
             "AND rq.id IS NULL",
             (SURFACE_LOW_FOLLOW_REPHRASE,),
         ).fetchall()
@@ -294,7 +330,7 @@ def surface_low_follow_rephrase(db_path: Optional[str] = None) -> list[int]:
                     "(row_id, suggestion_type, detail) VALUES (?, ?, ?)",
                     (rid, SURFACE_LOW_FOLLOW_REPHRASE,
                      json.dumps({"follow_rate": round(rate, 3),
-                                 "deliveries": dc}))
+                                 "resolved": dc}))
                 )
                 _emit_metric("calibration_review_surfaced",
                              {"row_id": rid,
@@ -318,13 +354,13 @@ def surface_promotion_candidates(
     try:
         _ensure_review_queue_table(conn)
         rows = conn.execute(
-            "SELECT cr.id, cr.delivered_count, cr.followed_count "
+            "SELECT cr.id, (cr.followed_count + cr.ignored_count + cr.corrected_count), cr.followed_count "
             "FROM calibration_rows cr "
             "LEFT JOIN calibration_review_queue rq "
             "  ON rq.row_id = cr.id AND rq.suggestion_type = ? "
             "  AND rq.resolved_at IS NULL "
             "WHERE cr.archived_at IS NULL AND cr.pinned = 0 "
-            "AND cr.delivered_count >= ? AND rq.id IS NULL",
+            "AND (cr.followed_count + cr.ignored_count + cr.corrected_count) >= ? AND rq.id IS NULL",
             (SURFACE_PROMOTION_CANDIDATE, AUTO_PROMOTE_MIN_DELIVERIES),
         ).fetchall()
         for rid, dc, fc in rows:

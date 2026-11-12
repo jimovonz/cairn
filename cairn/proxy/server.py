@@ -29,7 +29,7 @@ from cairn import config
 from cairn.proxy.response_filter import CairnResponseFilter
 from cairn.proxy.request_inject import (reinject_cm, inject_cm_markers,
                                          inject_bootstrap, inject_prompt_context,
-                                         inject_prompt_directive,
+                                         inject_prompt_directive, same_turn, turn_anchor,
                                          sanitize_empty_text_blocks)
 from cairn.proxy import sidecar
 
@@ -239,13 +239,29 @@ def _rewrite_request(body: bytes, session_id: str) -> bytes:
                 inject_bootstrap(data, bootstrap_text, move_breakpoint=not unstable)
                 if cur_sha != prev_sha or unstable != prev_unstable:
                     sidecar.write_prefix_state(session_id, cur_sha, unstable)
-            inject_prompt_context(data, sidecar.consume_prompt_context(session_id))
+            # Per-prompt context is staged once per turn, but Claude Code
+            # rebuilds the history on every call without it, so it is kept for
+            # the whole turn and re-appended to the end of each later request
+            # (after the cache breakpoint: the cached prefix is untouched). A new
+            # prompt, or a history rewrite, ends the turn.
+            _ctx = sidecar.consume_prompt_context(session_id)
+            _directive = sidecar.consume_prompt_directive(session_id)
+            _fresh = bool(_ctx or _directive)
+            if _fresh:
+                _anchor = turn_anchor(data)
+                if _anchor:
+                    sidecar.write_turn_context(session_id, dict(_anchor, context=_ctx, directive=_directive))
+            else:
+                _stored = sidecar.read_turn_context(session_id)
+                if same_turn(data, _stored):
+                    _ctx, _directive = _stored.get("context", ""), _stored.get("directive", "")
+            inject_prompt_context(data, _ctx)
             # Bare imperative directive, appended after the wrapped context so
             # it is the last thing in the user's turn — where an aside sits.
-            _directive = sidecar.consume_prompt_directive(session_id)
             if _directive:
                 inject_prompt_directive(data, _directive)
-                sidecar.log_directive(session_id, _directive)
+                if _fresh:
+                    sidecar.log_directive(session_id, _directive)
         # Phase 1.5: fold this request's paring deltas into the session totals
         # (best-effort; record_pare_savings swallows any error). Runs for every
         # paring request, not just tool requests — markers apply on all of them.
@@ -269,7 +285,13 @@ def run_proxy(port: int, debug: bool) -> None:
 
         async def _ensure_session(self):
             if self.session is None or self.session.closed:
-                self.session = aiohttp.ClientSession(trust_env=True)
+                # No total cap: a long streamed answer can legitimately run past
+                # aiohttp's default 300 s total timeout, which cut such responses
+                # at 299 s and made Claude Code retry the same request forever.
+                # Bound stalls instead (no bytes for 10 min).
+                self.session = aiohttp.ClientSession(
+                    trust_env=True,
+                    timeout=aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=600))
 
         async def handle(self, request):
             await self._ensure_session()

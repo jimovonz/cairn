@@ -28,6 +28,9 @@ def _hermetic_proxy_state(monkeypatch):
     """Belt-and-braces: keep the env unset and force config.PROXY_ENABLED False in
     case cairn.config was imported before this conftest (e.g. by a plugin)."""
     monkeypatch.delenv("CAIRN_PROXY_ENABLED", raising=False)
+    # The Jev quality gate calls an external API from a detached process; keep
+    # it off unless a test opts in (tests/test_jev_gate.py).
+    monkeypatch.setenv("CAIRN_JEV_GATE", "0")
     try:
         import cairn.config as _cfg
         monkeypatch.setattr(_cfg, "PROXY_ENABLED", False, raising=False)

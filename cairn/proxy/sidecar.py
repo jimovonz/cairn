@@ -194,6 +194,34 @@ def consume_prompt_context(session_id: str) -> str:
     return data.strip()
 
 
+# -- turn context: keep the consumed per-prompt context for the whole turn -----
+# Claude Code rebuilds the request history on every model call and knows
+# nothing of what the proxy appended, so context injected into the first call
+# of a turn vanished from every later call (after the first tool use). The
+# proxy now records what it consumed, anchored to the prompt message, and
+# re-appends it to the end of each later request in the same turn.
+def turn_context_path(session_id: str) -> str:
+    return _path(session_id, "_turn_context.json")
+
+
+def write_turn_context(session_id: str, record: dict) -> None:
+    path = turn_context_path(session_id)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        json.dump(record, fh)
+    os.replace(tmp, path)
+
+
+def read_turn_context(session_id: str) -> Optional[dict]:
+    try:
+        with open(turn_context_path(session_id), encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+            return json.load(fh)
+    except (FileNotFoundError, ValueError):
+        return None
+
+
 # -- directives: bare imperative text appended to the user's own turn ----------
 # Separate queue from prompt_context because the two are framed differently on
 # the wire: context is <system-reminder>-wrapped, a directive is not. A short

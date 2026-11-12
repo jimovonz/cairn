@@ -285,6 +285,19 @@ def check_trailing_intent(text: str, session_id: str = "") -> Optional[str]:
     return None
 
 
+_AWAITS_USER = re.compile(
+    r"(?i)^\s*(user:|await(ing)?\s+(the\s+)?user|wait(ing)?\s+(on|for)\s+(the\s+)?user|"
+    r"pending\s+(the\s+)?user|needs?\s+(the\s+)?user'?s?\s+(decision|approval|go-?ahead|input|answer)|"
+    r"user\s+(decision|approval|to\s+(decide|approve|confirm|choose)))")
+
+
+def awaits_user(remaining: Optional[str]) -> bool:
+    """True when the declared remainder is a decision only the user can make
+    (e.g. "Await user approval to ...", "user: pick A or B"). Such a turn is
+    finished from the agent's side; re-prompting it only produces filler."""
+    return bool(remaining) and bool(_AWAITS_USER.search(remaining))
+
+
 # --- Continuation counting (SQLite-backed) ---
 
 def get_continuation_count(session_id: str) -> int:
@@ -348,10 +361,13 @@ def _response_has_tool_calls(transcript_path: str) -> bool:
     from hooks.transcript_adapter import iter_normalized_entries
     try:
         entries = list(iter_normalized_entries(transcript_path))
-        # Scan backwards from end — find tool calls after the last user message
+        # Scan backwards to the last REAL user prompt. Tool results also arrive
+        # as role=user entries; stopping at those hid every tool call made
+        # before the last result, so tried-and-failed turns read as untried.
+        from hooks.hook_helpers import _is_real_user_turn
         for entry in reversed(entries):
             msg = entry.get("message", {})
-            if isinstance(msg, dict) and msg.get("role") == "user":
+            if isinstance(msg, dict) and msg.get("role") == "user" and _is_real_user_turn(msg):
                 break
             tool_name = entry.get("tool_name", "")
             if tool_name in _ACTION_TOOLS:

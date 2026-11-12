@@ -1151,3 +1151,42 @@ def test_linkdef_error_locus_points_at_break():
     # A genuinely valid block returns None (nothing to point at)
     good = '[cm]: # ' + "'" + '{"ok":true,"ctx":"s","kw":["x"]}' + "'"
     assert linkdef_error_locus(good) is None
+
+
+# --- malformed [cm] repair without a new turn --------------------------------
+# hook.log: 98 of 107 unrepaired failures were "Expecting property name"
+# (trailing comma / broken key quote / truncation).
+
+def _cm(body):
+    return "Answer.\n\n[cm]: # '" + body + "'"
+
+
+def test_repairs_trailing_commas():
+    p = parse_memory_block(_cm('{"e":[{"t":"fact","to":"a","c":"b"},],"ok":true,"ctx":"s","kw":["k"],}'))
+    assert [e["topic"] for e in p.entries] == ["a"] and p.complete is True and "salvage" in p.recovery
+
+
+def test_repairs_key_missing_opening_quote():
+    p = parse_memory_block(_cm('{"e":[{"t":"fact","to":"a","c":"b"}],ok":true,"ctx":"s","kw":["k"]}'))
+    assert [e["topic"] for e in p.entries] == ["a"] and p.complete is True
+
+
+def test_repairs_trailing_text_after_block():
+    p = parse_memory_block(_cm('{"e":[{"t":"fact","to":"a","c":"b"}],"ok":true,"ctx":"s","kw":["k"]} and more'))
+    assert [e["topic"] for e in p.entries] == ["a"]
+
+
+def test_repairs_truncated_block():
+    p = parse_memory_block(_cm('{"e":[{"t":"fact","to":"a","c":"b"},{"t":"decision","to":"d","c":"cut off mid'))
+    assert [e["topic"] for e in p.entries] == ["a", "d"]
+
+
+def test_partial_salvage_keeps_good_entries():
+    body = '{"e":[{"t":"fact","to":"a","c":"good"},{"t":"fact","to":"b","c":"bad \x01 value",,}],"ok":true,"ctx":"s"}'
+    p = parse_memory_block(_cm(body))
+    assert [e["topic"] for e in p.entries] == ["a"] and p.recovery and "partial" in p.recovery
+
+
+def test_valid_block_untouched_by_repair():
+    p = parse_memory_block(_cm('{"e":[{"t":"fact","to":"a","c":"b, c"}],"ok":false,"rem":"x","ctx":"s","kw":["k"]}'))
+    assert p.complete is False and p.recovery is None

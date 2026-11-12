@@ -467,11 +467,16 @@ def composite_score(
 ) -> float:
     """Compute a single scalar retrieval score combining all signals.
     Reduces cognitive load on the LLM by pre-ranking results."""
-    from cairn.config import SCORE_W_SIMILARITY, SCORE_W_CONFIDENCE, SCORE_W_RECENCY, SCORE_W_SCOPE, SCORE_W_KEYWORDS
+    from cairn.config import (SCORE_W_SIMILARITY, SCORE_W_CONFIDENCE, SCORE_W_RECENCY, SCORE_W_SCOPE,
+                              SCORE_W_KEYWORDS, SCORE_GLOBAL_SIM_FACTOR)
     recency = _recency_decay(updated_at_str) if updated_at_str else 0.5
     scope = _scope_weight(project, current_project, mem_type) if project is not None else 0.5
+    # Scope scales similarity instead of adding to it (decision 2067): a weak
+    # project match must not outrank a strong global one. 1.0 for project /
+    # scope-exempt types, SCORE_GLOBAL_SIM_FACTOR for other projects.
+    scope_mult = 1.0 if scope >= 1.0 else (SCORE_GLOBAL_SIM_FACTOR if project is not None else 1.0)
     return (
-        SCORE_W_SIMILARITY * similarity +
+        SCORE_W_SIMILARITY * similarity * scope_mult +
         SCORE_W_CONFIDENCE * (confidence ** 2) +
         SCORE_W_KEYWORDS * kw_overlap +
         SCORE_W_RECENCY * recency +

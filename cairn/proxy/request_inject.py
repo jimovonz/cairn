@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from typing import Optional
 
 
 def _as_block_list(value):
@@ -221,6 +222,44 @@ def inject_prompt_context(data: dict, context_text: str) -> dict:
                 content.append({"type": "text", "text": payload})
             return data
     return data
+
+
+def _is_prompt_message(msg) -> bool:
+    """A user message the person typed, as opposed to a tool-result carrier."""
+    if not isinstance(msg, dict) or msg.get("role") != "user":
+        return False
+    content = msg.get("content")
+    if isinstance(content, str):
+        return True
+    return isinstance(content, list) and not any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+
+
+def turn_anchor(data: dict) -> Optional[dict]:
+    """{"idx", "sha"} of the latest prompt message — the start of this turn.
+    The sha covers the message as Claude Code sent it, before any injection."""
+    messages = data.get("messages", [])
+    for i in range(len(messages) - 1, -1, -1):
+        if _is_prompt_message(messages[i]):
+            # Text only: Claude Code moves cache_control off this message on
+            # later calls, so hashing the raw blocks would end the turn early.
+            content = messages[i].get("content")
+            raw = content if isinstance(content, str) else "\n".join(
+                b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+            raw = raw.split("\n<system-reminder>\n" + _CTX_SENTINEL)[0]   # never our own injection
+            return {"idx": i, "sha": hashlib.sha256(raw.encode("utf-8")).hexdigest()}
+    return None
+
+
+def same_turn(data: dict, stored: Optional[dict]) -> bool:
+    """True when ``stored`` (a turn context recorded at the turn's first call)
+    still belongs to this request: the latest prompt is the same message, at
+    the same position. A new prompt, or a compaction that rewrote history,
+    ends the turn."""
+    if not stored:
+        return False
+    anchor = turn_anchor(data)
+    return bool(anchor) and anchor["idx"] == stored.get("idx") and anchor["sha"] == stored.get("sha")
 
 
 def inject_prompt_directive(data: dict, directive_text: str) -> dict:
